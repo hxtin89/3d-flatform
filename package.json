@@ -1,0 +1,20 @@
+{
+  "name": "sbb-pointcloud-pipeline",
+  "version": "1.0.0",
+  "description": "Local self-hosted point cloud pipeline: LAZ → PDAL → COPC → 3D Tiles → CesiumJS",
+  "scripts": {
+    "pipeline:download": "bash pipeline/download.sh",
+    "pipeline:inspect": "bash pipeline/inspect.sh",
+    "pipeline:prepare": "bash pipeline/prepare.sh",
+    "pipeline:copc": "bash pipeline/copc.sh",
+    "pipeline:tiles": "bash pipeline/tiles.sh",
+    "pipeline:tiles:copc": "bash pipeline/copc-tiles.sh",
+    "pipeline:serve": "npx sirv-cli local-storage/tilesets --port 8081 --cors",
+    "pipeline:all": "bash pipeline/all.sh",
+    "viewer:dev": "cd viewer && npm run dev",
+    "viewer:install": "cd viewer && npm install"
+  },
+  "devDependencies": {
+    "sirv-cli": "^2.0.2"
+  }
+}
