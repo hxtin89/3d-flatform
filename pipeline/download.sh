@@ -8,11 +8,24 @@ RAW_DIR="$ROOT_DIR/local-storage/raw"
 DATASET="${1:-autzen}"
 RAW_DATASET_DIR="$RAW_DIR/$DATASET"
 OUTPUT_FILE="$RAW_DIR/$DATASET.laz"
+RAW_SOURCE_FILE="$RAW_DIR/$DATASET"
 
 mkdir -p "$RAW_DIR"
 
 echo "=== Pipeline: Download ==="
 echo "→ Dataset: $DATASET"
+
+if [[ "$DATASET" = /* ]] && [ -f "$DATASET" ]; then
+  SIZE=$(du -sh "$DATASET" | cut -f1)
+  echo "✓ Raw source file exists: $DATASET ($SIZE), skipping download."
+  exit 0
+fi
+
+if [ -f "$RAW_SOURCE_FILE" ]; then
+  SIZE=$(du -sh "$RAW_SOURCE_FILE" | cut -f1)
+  echo "✓ Raw source file exists: $RAW_SOURCE_FILE ($SIZE), skipping download."
+  exit 0
+fi
 
 if [ -d "$RAW_DATASET_DIR" ]; then
   FILE_COUNT=$(find "$RAW_DATASET_DIR" -maxdepth 1 -type f \( -name "*.las" -o -name "*.laz" \) | wc -l | tr -d ' ')

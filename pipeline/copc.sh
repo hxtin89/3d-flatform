@@ -11,6 +11,7 @@ OUTPUT_DIR="$ROOT_DIR/local-storage/intermediate/$DATASET"
 OUTPUT_FILE="$OUTPUT_DIR/$DATASET.copc.laz"
 PIPELINE_FILE="$OUTPUT_DIR/copc.pipeline.json"
 SUMMARY_FILE="$OUTPUT_DIR/copc.summary.json"
+COPC_THREADS="${COPC_THREADS:-1}"
 
 echo "=== Pipeline: COPC Generation ==="
 
@@ -31,6 +32,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "→ Input:  $INPUT_FILE"
 echo "→ Output: $OUTPUT_FILE"
+echo "→ Threads: $COPC_THREADS"
 
 cat > "$PIPELINE_FILE" <<EOF
 {
@@ -41,7 +43,8 @@ cat > "$PIPELINE_FILE" <<EOF
     },
     {
       "type": "writers.copc",
-      "filename": "$OUTPUT_FILE"
+      "filename": "$OUTPUT_FILE",
+      "threads": $COPC_THREADS
     }
   ]
 }

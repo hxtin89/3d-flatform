@@ -85,10 +85,18 @@ else
     --overwrite
 fi
 
+run_tool python "$SCRIPT_DIR/dataset_report.py" \
+  --root "$ROOT_DIR" \
+  --dataset "$DATASET-copc" \
+  --source-dataset "$DATASET" \
+  --source-type copc-custom \
+  --tiles-dir "$OUTPUT_DIR"
+
 echo ""
 echo "✓ COPC 3D Tiles generated:"
 echo "  tileset.json : $OUTPUT_DIR/tileset.json"
 echo "  report       : $OUTPUT_DIR/conversion-report.json"
+echo "  dataset report: $OUTPUT_DIR/dataset-report.json"
 echo ""
 echo "  → Restart tile server after conversion: npm run pipeline:serve"
 echo "  → Open viewer: http://localhost:5173/?dataset=$DATASET-copc&debugTiles=1"
