@@ -6,6 +6,9 @@ export type PresetName = 'low' | 'medium' | 'high';
 export interface PresetConfig {
   name: PresetName;
   label: string;
+  userMode: 'Overview' | 'Explore' | 'Detail';
+  dataDensity: 'p02' | 'p10' | 'full';
+  renderQuality: 'low' | 'medium' | 'high-safe';
   maximumScreenSpaceError: number;
   /** In bytes — replaces deprecated maximumMemoryUsage */
   cacheBytes: number;
@@ -19,46 +22,57 @@ export interface PresetConfig {
 export const PRESETS: Record<PresetName, PresetConfig> = {
   low: {
     name: 'low',
-    label: 'Low',
-    maximumScreenSpaceError: 16,
+    label: 'Overview',
+    userMode: 'Overview',
+    dataDensity: 'p02',
+    renderQuality: 'low',
+    maximumScreenSpaceError: 64,
     cacheBytes: 256 * 1024 * 1024,           // 256 MB
     maximumCacheOverflowBytes: 128 * 1024 * 1024,
     attenuation: false,
     geometricErrorScale: 1.0,
     maximumAttenuation: 4,
-    description: 'Lower memory & quality. Best for weaker GPUs.',
+    description: 'Whole-site overview using the lightest data and render budget.',
   },
   medium: {
     name: 'medium',
-    label: 'Medium',
-    maximumScreenSpaceError: 8,
+    label: 'Explore',
+    userMode: 'Explore',
+    dataDensity: 'p10',
+    renderQuality: 'medium',
+    maximumScreenSpaceError: 32,
     cacheBytes: 512 * 1024 * 1024,           // 512 MB
     maximumCacheOverflowBytes: 256 * 1024 * 1024,
     attenuation: false,
     geometricErrorScale: 1.0,
     maximumAttenuation: 8,
-    description: 'Balanced quality and performance. Default.',
+    description: 'Area exploration with a balanced data and render budget.',
   },
   high: {
     name: 'high',
-    label: 'High',
-    maximumScreenSpaceError: 2,
-    cacheBytes: 1024 * 1024 * 1024,          // 1 GB
+    label: 'Detail',
+    userMode: 'Detail',
+    dataDensity: 'full',
+    renderQuality: 'high-safe',
+    maximumScreenSpaceError: 64,
+    cacheBytes: 768 * 1024 * 1024,           // 768 MB
     maximumCacheOverflowBytes: 512 * 1024 * 1024,
     attenuation: false,
     geometricErrorScale: 1.0,
     maximumAttenuation: 16,
-    description: 'Maximum visual quality. Requires more GPU memory.',
+    description: 'Selected-area detail with a bounded high-quality budget.',
   },
 };
 
 export function applyPreset(
   tileset: Cesium.Cesium3DTileset,
-  presetName: PresetName
+  presetName: PresetName,
+  overrides: { maximumScreenSpaceError?: number } = {}
 ): void {
   const preset = PRESETS[presetName];
+  const maximumScreenSpaceError = overrides.maximumScreenSpaceError ?? preset.maximumScreenSpaceError;
 
-  tileset.maximumScreenSpaceError = preset.maximumScreenSpaceError;
+  tileset.maximumScreenSpaceError = maximumScreenSpaceError;
   tileset.cacheBytes = preset.cacheBytes;
   tileset.maximumCacheOverflowBytes = preset.maximumCacheOverflowBytes;
 
@@ -75,7 +89,7 @@ export function applyPreset(
   tileset.pointCloudShading = shading;
 
   console.log(
-    `[Preset] Applied "${preset.name}": SSE=${preset.maximumScreenSpaceError}, Cache=${preset.cacheBytes / 1024 / 1024}MB, Attenuation=${preset.attenuation}`
+    `[Mode] Applied "${preset.userMode}": density=${preset.dataDensity}, quality=${preset.renderQuality}, SSE=${maximumScreenSpaceError}, Cache=${preset.cacheBytes / 1024 / 1024}MB`
   );
 }
 

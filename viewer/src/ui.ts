@@ -22,6 +22,17 @@ const statTiles = document.getElementById('stat-tiles')!;
 
 // ── Preset buttons ───────────────────────────────────────────────
 const presetButtons = document.querySelectorAll<HTMLButtonElement>('.preset-btn');
+const areaSelect = document.getElementById('area-select') as HTMLSelectElement | null;
+const useCurrentViewButton = document.getElementById(
+  'btn-use-current-view'
+) as HTMLButtonElement | null;
+const areaDetectStatus = document.getElementById('area-detect-status');
+const contextLayerToggle = document.getElementById(
+  'toggle-context-layer'
+) as HTMLInputElement | null;
+const detailSseSelect = document.getElementById(
+  'select-detail-sse'
+) as HTMLSelectElement | null;
 
 export function setStatus(state: ViewerState, message?: string): void {
   const titleMap: Record<ViewerState, string> = {
@@ -82,12 +93,92 @@ export function initPresetButtons(
 ): void {
   presetButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (btn.disabled) return;
       const preset = btn.dataset.preset as PresetName;
       if (!PRESETS[preset]) return;
-      setActivePreset(preset);
       onChange(preset);
     });
   });
+}
+
+export function setPresetAvailability(
+  preset: PresetName,
+  enabled: boolean,
+  label: string
+): void {
+  const btn = document.querySelector<HTMLButtonElement>(`.preset-btn[data-preset="${preset}"]`);
+  if (btn) {
+    btn.disabled = !enabled;
+    btn.title = enabled ? '' : label;
+  }
+  const status = document.getElementById(`mode-status-${preset}`);
+  if (status) status.textContent = label;
+}
+
+export function initAreaSelect(onChange: (areaId: string) => void): void {
+  areaSelect?.addEventListener('change', () => {
+    if (areaSelect.value) onChange(areaSelect.value);
+  });
+}
+
+export function initUseCurrentViewButton(onClick: () => void): void {
+  useCurrentViewButton?.addEventListener('click', onClick);
+}
+
+export function initContextLayerToggle(onChange: (enabled: boolean) => void): void {
+  contextLayerToggle?.addEventListener('change', () => {
+    onChange(Boolean(contextLayerToggle.checked));
+  });
+}
+
+export function initDetailSseSelect(onChange: (sse: number) => void): void {
+  detailSseSelect?.addEventListener('change', () => {
+    const sse = Number(detailSseSelect.value);
+    if (Number.isFinite(sse) && sse > 0) onChange(sse);
+  });
+}
+
+export function setContextLayerAvailability(enabled: boolean, label: string): void {
+  if (!contextLayerToggle) return;
+  contextLayerToggle.disabled = !enabled;
+  contextLayerToggle.title = enabled ? '' : label;
+}
+
+export function isContextLayerEnabled(): boolean {
+  return contextLayerToggle?.checked ?? false;
+}
+
+export function setAreaOptions(
+  areas: Array<{ areaId: string; label: string }>,
+  selectedAreaId: string | null
+): void {
+  if (!areaSelect) return;
+  areaSelect.innerHTML = '';
+  if (areas.length === 0) {
+    areaSelect.disabled = true;
+    areaSelect.append(new Option('No area manifest', ''));
+    return;
+  }
+  areas.forEach((area) => {
+    areaSelect.append(new Option(area.label, area.areaId));
+  });
+  areaSelect.value = selectedAreaId ?? areas[0].areaId;
+  areaSelect.disabled = false;
+}
+
+export function setSelectedAreaOption(areaId: string | null): void {
+  if (!areaSelect || !areaId) return;
+  areaSelect.value = areaId;
+}
+
+export function setUseCurrentViewAvailability(enabled: boolean, label: string): void {
+  if (!useCurrentViewButton) return;
+  useCurrentViewButton.disabled = !enabled;
+  useCurrentViewButton.title = enabled ? '' : label;
+}
+
+export function setAreaDetectionStatus(message: string): void {
+  if (areaDetectStatus) areaDetectStatus.textContent = message;
 }
 
 export function initFlyHomeButton(onFly: () => void): void {

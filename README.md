@@ -49,8 +49,8 @@ http://localhost:5173/?source=cloudfront
 CloudFront mode uses `viewer/.env`:
 
 ```env
-VITE_AWS_CMS_S3_BUCKET_NAME=wilderness-international-cms-dev
-VITE_AWS_CMS_CLOUDFRONT_DISTRIBUTION_DOMAIN=d189h36wq57fqa.cloudfront.net
+VITE_AWS_MEDIA_S3_BUCKET_NAME=wilderness-international-media-dev
+VITE_AWS_MEDIA_CLOUDFRONT_DISTRIBUTION_DOMAIN=d3ikc68ccylu0h.cloudfront.net
 VITE_POINTCLOUD_TILES_FOLDER=pointcloud-tiles
 ```
 
