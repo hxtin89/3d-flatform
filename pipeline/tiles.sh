@@ -186,11 +186,19 @@ else
 fi
 
 if [ -f "$OUTPUT_DIR/tileset.json" ]; then
+  run_tool python "$SCRIPT_DIR/dataset_report.py" \
+    --root "$ROOT_DIR" \
+    --dataset "$DATASET" \
+    --source-dataset "$DATASET" \
+    --source-type py3dtiles-fallback \
+    --tiles-dir "$OUTPUT_DIR"
+
   TILE_COUNT=$(find "$OUTPUT_DIR" -name "*.pnts" -o -name "*.b3dm" | wc -l | tr -d ' ')
   TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" | cut -f1)
   echo ""
   echo "✓ 3D Tiles generated:"
   echo "  tileset.json : $OUTPUT_DIR/tileset.json"
+  echo "  report       : $OUTPUT_DIR/dataset-report.json"
   echo "  Tile files   : $TILE_COUNT"
   echo "  Total size   : $TOTAL_SIZE"
   echo ""
