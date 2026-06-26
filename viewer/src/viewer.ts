@@ -167,6 +167,7 @@ export class PointCloudViewer {
   private orbitRange = 1;
   private activeDrag: 'orbit' | 'pan' | null = null;
   private lastPointer: Cesium.Cartesian2 | null = null;
+  private touchInputCleanup: (() => void) | null = null;
   private firstTileLoadedReported = false;
   private firstVisibleReported = false;
   private loadStartTime = 0;
@@ -509,6 +510,8 @@ export class PointCloudViewer {
 
   private installLocalPointCloudControls(): void {
     this.inputHandler?.destroy();
+    this.touchInputCleanup?.();
+    this.touchInputCleanup = null;
     const handler = new Cesium.ScreenSpaceEventHandler(this.viewer.scene.canvas);
     this.inputHandler = handler;
 
@@ -565,6 +568,81 @@ export class PointCloudViewer {
       );
       this.applyOrbitCamera();
     }, Cesium.ScreenSpaceEventType.WHEEL);
+
+    const canvas = this.viewer.scene.canvas;
+    let lastTouchDistance = 0;
+    let lastTouchMidpoint: Cesium.Cartesian2 | null = null;
+
+    const touchPoint = (touch: Touch): Cesium.Cartesian2 => {
+      const rect = canvas.getBoundingClientRect();
+      return new Cesium.Cartesian2(touch.clientX - rect.left, touch.clientY - rect.top);
+    };
+    const touchMidpoint = (touches: TouchList): Cesium.Cartesian2 => {
+      const first = touchPoint(touches[0]);
+      const second = touchPoint(touches[1]);
+      return new Cesium.Cartesian2(
+        (first.x + second.x) * 0.5,
+        (first.y + second.y) * 0.5
+      );
+    };
+    const touchDistance = (touches: TouchList): number => {
+      const first = touchPoint(touches[0]);
+      const second = touchPoint(touches[1]);
+      return Cesium.Cartesian2.distance(first, second);
+    };
+    const resetTwoFingerTouch = (): void => {
+      lastTouchDistance = 0;
+      lastTouchMidpoint = null;
+    };
+    const beginTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length < 2) return;
+      event.preventDefault();
+      this.callbacks.onInteraction();
+      lastTouchDistance = touchDistance(event.touches);
+      lastTouchMidpoint = touchMidpoint(event.touches);
+    };
+    const moveTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length < 2 || !lastTouchMidpoint || lastTouchDistance <= 0) return;
+      event.preventDefault();
+      this.callbacks.onInteraction();
+      const nextDistance = touchDistance(event.touches);
+      const nextMidpoint = touchMidpoint(event.touches);
+      const dx = nextMidpoint.x - lastTouchMidpoint.x;
+      const dy = nextMidpoint.y - lastTouchMidpoint.y;
+
+      if (Math.abs(nextDistance - lastTouchDistance) > 0.5) {
+        this.orbitRange = Cesium.Math.clamp(
+          this.orbitRange * (lastTouchDistance / nextDistance),
+          this.minCameraDistance,
+          this.maxCameraDistance
+        );
+      }
+      if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
+        this.panOrbitTarget(dx, dy);
+      }
+
+      lastTouchDistance = nextDistance;
+      lastTouchMidpoint = nextMidpoint;
+      this.applyOrbitCamera();
+    };
+    const endTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length >= 2) {
+        beginTwoFingerTouch(event);
+      } else {
+        resetTwoFingerTouch();
+      }
+    };
+
+    canvas.addEventListener('touchstart', beginTwoFingerTouch, { passive: false });
+    canvas.addEventListener('touchmove', moveTwoFingerTouch, { passive: false });
+    canvas.addEventListener('touchend', endTwoFingerTouch, { passive: false });
+    canvas.addEventListener('touchcancel', resetTwoFingerTouch, { passive: false });
+    this.touchInputCleanup = () => {
+      canvas.removeEventListener('touchstart', beginTwoFingerTouch);
+      canvas.removeEventListener('touchmove', moveTwoFingerTouch);
+      canvas.removeEventListener('touchend', endTwoFingerTouch);
+      canvas.removeEventListener('touchcancel', resetTwoFingerTouch);
+    };
   }
 
   private panOrbitTarget(dx: number, dy: number): void {
@@ -735,6 +813,8 @@ export class PointCloudViewer {
   destroy(): void {
     this.unloadTilesets();
     this.inputHandler?.destroy();
+    this.touchInputCleanup?.();
+    this.touchInputCleanup = null;
     this.viewer.destroy();
   }
 

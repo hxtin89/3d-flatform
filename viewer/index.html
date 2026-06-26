@@ -49,114 +49,113 @@
 
   <!-- Controls panel -->
   <div class="controls-panel" id="controls-panel">
-    <!-- User modes -->
-    <div class="control-group">
-      <div class="control-label">Mode</div>
-      <div class="preset-buttons">
-        <button class="preset-btn active" id="preset-low" data-preset="low">Overview</button>
-        <button class="preset-btn" id="preset-medium" data-preset="medium">Explore</button>
-        <button class="preset-btn" id="preset-high" data-preset="high">Detail</button>
-      </div>
-      <div class="mode-status-row">
-        <span id="mode-status-low">ready</span>
-        <span id="mode-status-medium">—</span>
-        <span id="mode-status-high">—</span>
-      </div>
-      <label class="context-toggle" title="Show low-density surrounding context in Explore and Detail">
-        <input id="toggle-context-layer" type="checkbox" />
-        <span>Context layer</span>
-      </label>
-    </div>
-
-    <!-- Area selector -->
-    <div class="control-group" id="area-control">
-      <div class="control-label">Area</div>
-      <select class="area-select" id="area-select" disabled>
-        <option>No area manifest</option>
-      </select>
-      <button class="action-btn area-action-btn" id="btn-use-current-view" type="button" disabled>Use current view</button>
-      <div class="area-detect-status" id="area-detect-status">Area manifest is not ready yet.</div>
-    </div>
-
-    <!-- Stats -->
-    <div class="control-group">
-      <div class="control-label">Rendering</div>
-      <div class="stats-grid">
-        <div class="stat-row">
-          <span class="stat-key">SSE</span>
-          <span class="stat-val" id="stat-sse">—</span>
+    <button class="panel-toggle" id="controls-panel-toggle" type="button" aria-label="Hide controls panel" aria-expanded="true">=</button>
+    <div class="panel-content" id="controls-panel-content">
+      <!-- User modes -->
+      <div class="control-group">
+        <div class="control-label">Mode</div>
+        <div class="preset-buttons">
+          <button class="preset-btn active" id="preset-low" data-preset="low">Overview</button>
+          <button class="preset-btn" id="preset-medium" data-preset="medium">Explore</button>
+          <button class="preset-btn" id="preset-high" data-preset="high">Detail</button>
         </div>
-        <div class="stat-row">
-          <span class="stat-key">Detail SSE</span>
-          <span class="stat-val">
-            <select class="debug-select" id="select-detail-sse">
-              <option value="32">32</option>
-              <option value="128">128</option>
-              <option value="256" selected>256</option>
-            </select>
-          </span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-key">Memory</span>
-          <span class="stat-val" id="stat-memory">—</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-key">Tiles loaded</span>
-          <span class="stat-val" id="stat-tiles">—</span>
+        <div class="mode-status-row">
+          <span id="mode-status-low">ready</span>
+          <span id="mode-status-medium">—</span>
+          <span id="mode-status-high">—</span>
         </div>
       </div>
-    </div>
 
-    <!-- Dataset report -->
-    <div class="control-group dataset-report">
-      <div class="report-heading">
-        <div>
-          <div class="control-label">Dataset Report</div>
-          <div class="report-subtitle">
-            <span data-report-field="report-dataset">—</span>
-            <span>·</span>
-            <span data-report-field="report-status">loading</span>
+      <!-- Area selector -->
+      <div class="control-group" id="area-control">
+        <div class="control-label">Area</div>
+        <select class="area-select" id="area-select" disabled>
+          <option>No area manifest</option>
+        </select>
+        <button class="action-btn area-action-btn" id="btn-use-current-view" type="button" disabled>Use current view</button>
+        <div class="area-detect-status" id="area-detect-status">Area manifest is not ready yet.</div>
+      </div>
+
+      <!-- Stats -->
+      <div class="control-group">
+        <div class="control-label">Rendering</div>
+        <div class="stats-grid">
+          <div class="stat-row">
+            <span class="stat-key">SSE</span>
+            <span class="stat-val" id="stat-sse">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">Detail SSE</span>
+            <span class="stat-val">
+              <select class="debug-select" id="select-detail-sse">
+                <option value="32">32</option>
+                <option value="128">128</option>
+                <option value="256" selected>256</option>
+              </select>
+            </span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">Memory</span>
+            <span class="stat-val" id="stat-memory">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">Tiles loaded</span>
+            <span class="stat-val" id="stat-tiles">—</span>
           </div>
         </div>
-        <button class="copy-btn" id="btn-copy-report" type="button">Copy Report</button>
       </div>
 
-      <div class="report-grid compact-report-grid">
-        <div class="stat-row"><span class="stat-key">Source Points</span><span class="stat-val" data-report-field="sourcePointCount">—</span></div>
-        <div class="stat-row"><span class="stat-key">Visible Points</span><span class="stat-val" data-report-field="visiblePointsEstimated">—</span></div>
-        <div class="stat-row"><span class="stat-key">Tileset Size</span><span class="stat-val" data-report-field="tilesSize">—</span></div>
-        <div class="stat-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
-        <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
-        <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val" data-report-field="selectedTiles">—</span></div>
-        <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val" data-report-field="networkMbLoaded">—</span></div>
-        <div class="stat-row"><span class="stat-key">Tileset Memory</span><span class="stat-val" data-report-field="tilesetMemoryBytes">unsupported</span></div>
-        <div class="stat-row"><span class="stat-key">Interaction FPS</span><span class="stat-val" data-report-field="interactionFps">—</span></div>
-        <div class="stat-row"><span class="stat-key">Initial FPS</span><span class="stat-val" data-report-field="initialFps">—</span></div>
-        <div class="stat-row"><span class="stat-key">Visible Time</span><span class="stat-val" data-report-field="firstVisibleTime">—</span></div>
+      <!-- Dataset report -->
+      <div class="control-group dataset-report">
+        <div class="report-heading">
+          <div>
+            <div class="control-label">Dataset Report</div>
+            <div class="report-subtitle">
+              <span data-report-field="report-dataset">—</span>
+              <span>·</span>
+              <span data-report-field="report-status">loading</span>
+            </div>
+          </div>
+          <button class="copy-btn" id="btn-copy-report" type="button">Copy Report</button>
+        </div>
+
+        <div class="report-grid compact-report-grid">
+          <div class="stat-row"><span class="stat-key">Source Points</span><span class="stat-val" data-report-field="sourcePointCount">—</span></div>
+          <div class="stat-row"><span class="stat-key">Visible Points</span><span class="stat-val" data-report-field="visiblePointsEstimated">—</span></div>
+          <div class="stat-row"><span class="stat-key">Tileset Size</span><span class="stat-val" data-report-field="tilesSize">—</span></div>
+          <div class="stat-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
+          <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
+          <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val" data-report-field="selectedTiles">—</span></div>
+          <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val" data-report-field="networkMbLoaded">—</span></div>
+          <div class="stat-row"><span class="stat-key">Tileset Memory</span><span class="stat-val" data-report-field="tilesetMemoryBytes">unsupported</span></div>
+          <div class="stat-row"><span class="stat-key">Interaction FPS</span><span class="stat-val" data-report-field="interactionFps">—</span></div>
+          <div class="stat-row"><span class="stat-key">Initial FPS</span><span class="stat-val" data-report-field="initialFps">—</span></div>
+          <div class="stat-row"><span class="stat-key">Visible Time</span><span class="stat-val" data-report-field="firstVisibleTime">—</span></div>
+        </div>
+        <div class="copy-status" id="copy-status"></div>
       </div>
-      <div class="copy-status" id="copy-status"></div>
-    </div>
 
-    <!-- Camera controls -->
-    <div class="control-group">
-      <div class="control-label">Camera</div>
-      <button class="action-btn" id="btn-fly-home">↩ Fly to Point Cloud</button>
-    </div>
+      <!-- Camera controls -->
+      <div class="control-group">
+        <div class="control-label">Camera</div>
+        <button class="action-btn" id="btn-fly-home">↩ Fly to Point Cloud</button>
+      </div>
 
-    <!-- Tile server info -->
-    <div class="control-group server-info">
-      <div class="control-label">Tile Server</div>
-      <div class="server-url" id="server-url">http://localhost:8081</div>
+      <!-- Tile server info -->
+      <div class="control-group server-info">
+        <div class="control-label">Tile Server</div>
+        <div class="server-url" id="server-url">http://localhost:8081</div>
+      </div>
     </div>
   </div>
 
   <!-- Keyboard shortcut hint -->
   <div class="keyboard-hint">
-    <span>Left-drag: Orbit</span>
+    <span>Drag: Orbit</span>
     <span>·</span>
-    <span>Scroll: Zoom</span>
+    <span>Scroll/Pinch: Zoom</span>
     <span>·</span>
-    <span>Right-drag: Pan</span>
+    <span>Right/2-finger drag: Pan</span>
   </div>
 
   <script type="module" src="/src/main.ts"></script>
