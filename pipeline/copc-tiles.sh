@@ -65,23 +65,41 @@ fi
 
 OUTPUT_DIR="$ROOT_DIR/local-storage/tilesets/$DATASET-copc"
 CONDA_ENV_PYTHON="${CONDA_ENV_PYTHON:-/Volumes/WD_BLACK/conda/envs/$CONDA_ENV/bin/python}"
+COPC_TILE_COORDINATE_MODE="${COPC_TILE_COORDINATE_MODE:-local}"
+COPC_TILE_ENU_ORIGIN_SOURCE="${COPC_TILE_ENU_ORIGIN_SOURCE:-}"
+
+if [ "$COPC_TILE_COORDINATE_MODE" != "local" ] && [ "$COPC_TILE_COORDINATE_MODE" != "globe" ]; then
+  echo "✗ Error: COPC_TILE_COORDINATE_MODE must be local or globe." >&2
+  exit 1
+fi
+
+COORDINATE_ARGS=(--coordinate-mode "$COPC_TILE_COORDINATE_MODE")
+if [ "$COPC_TILE_COORDINATE_MODE" = "globe" ] && [ -n "$COPC_TILE_ENU_ORIGIN_SOURCE" ]; then
+  COORDINATE_ARGS+=(--enu-origin-source "$COPC_TILE_ENU_ORIGIN_SOURCE")
+fi
 
 echo "=== Pipeline: COPC → 3D Tiles PNTS ==="
 echo "→ Dataset: $DATASET-copc"
 echo "→ Input:   $INPUT_FILE"
 echo "→ Output:  $OUTPUT_DIR"
+echo "→ Coordinate mode: $COPC_TILE_COORDINATE_MODE"
+if [ "$COPC_TILE_COORDINATE_MODE" = "globe" ] && [ -n "$COPC_TILE_ENU_ORIGIN_SOURCE" ]; then
+  echo "→ ENU origin: $COPC_TILE_ENU_ORIGIN_SOURCE (source CRS)"
+fi
 
 if [ -x "$CONDA_ENV_PYTHON" ]; then
   "$CONDA_ENV_PYTHON" "$SCRIPT_DIR/copc_to_3dtiles.py" \
     "$INPUT_FILE" \
     --out "$OUTPUT_DIR" \
     --dataset "$DATASET-copc" \
+    "${COORDINATE_ARGS[@]}" \
     --overwrite
 else
   run_tool python "$SCRIPT_DIR/copc_to_3dtiles.py" \
     "$INPUT_FILE" \
     --out "$OUTPUT_DIR" \
     --dataset "$DATASET-copc" \
+    "${COORDINATE_ARGS[@]}" \
     --overwrite
 fi
 

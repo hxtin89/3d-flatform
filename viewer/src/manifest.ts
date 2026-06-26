@@ -16,6 +16,7 @@ export interface AreaManifestEntry {
   label: string;
   sourceChunkId: string;
   bbox: number[];
+  sourceBbox?: number[];
   pointCount: number | null;
   datasets: {
     explore?: ModeDataset;
@@ -28,6 +29,12 @@ export interface AreaManifest {
   dataset: string;
   defaultMode: LogicalMode;
   defaultAreaId: string | null;
+  coordinateMode?: 'local' | 'globe';
+  bboxFrame?: 'source' | 'enu';
+  rootTransform?: number[] | null;
+  enuOriginSource?: number[] | null;
+  enuOriginEcef?: number[] | null;
+  enuOriginLonLat?: number[] | null;
   datasets: {
     overview: ModeDataset;
   };
@@ -119,6 +126,7 @@ export function findAreaForViewSamples(
     };
   }
 
+  const comparableSamples = samples.map((sample) => toManifestFrame(manifest, sample));
   const scores = new Map<string, {
     area: AreaManifestEntry;
     score: number;
@@ -130,7 +138,7 @@ export function findAreaForViewSamples(
 
   let matchedSampleCount = 0;
 
-  for (const sample of samples) {
+  for (const sample of comparableSamples) {
     let matchedThisSample = false;
     for (const area of manifest.areas) {
       const match = matchAreaSample(area, sample);
@@ -194,6 +202,24 @@ export function findAreaForViewSamples(
     matchedSampleCount,
     fallbackUsed,
     reason: 'matched',
+  };
+}
+
+function toManifestFrame(manifest: AreaManifest, sample: AreaViewSample): AreaViewSample {
+  if (manifest.coordinateMode !== 'globe' || manifest.bboxFrame !== 'enu') return sample;
+  const transform = manifest.rootTransform;
+  if (!Array.isArray(transform) || transform.length !== 16) return sample;
+  if (transform.some((value) => !Number.isFinite(value))) return sample;
+
+  const dx = sample.x - transform[12];
+  const dy = sample.y - transform[13];
+  const dz = sample.z - transform[14];
+
+  return {
+    ...sample,
+    x: dx * transform[0] + dy * transform[1] + dz * transform[2],
+    y: dx * transform[4] + dy * transform[5] + dz * transform[6],
+    z: dx * transform[8] + dy * transform[9] + dz * transform[10],
   };
 }
 

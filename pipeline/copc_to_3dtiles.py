@@ -22,11 +22,19 @@ from laspy._compression.selection import DecompressionSelection
 from laspy.copc import CopcReader, load_octree_for_query
 from laspy.errors import LaspyException
 
+try:
+    from pyproj import CRS, Transformer
+except ImportError:  # pragma: no cover - only needed for globe mode.
+    CRS = None
+    Transformer = None
+
 
 WARN_TILE_POINTS = 150_000
 WARN_TILE_BYTES = 5 * 1024 * 1024
 WARN_TOTAL_TILES = 5_000
 WARN_ROOT_BBOX_SIDE = 1_000_000
+COORDINATE_MODE_LOCAL = "local"
+COORDINATE_MODE_GLOBE = "globe"
 
 
 @dataclass
@@ -76,6 +84,64 @@ class PackedTileRecord:
     children: list["PackedTileRecord"] = field(default_factory=list)
 
 
+@dataclass
+class CoordinateFrame:
+    mode: str
+    root_center: np.ndarray
+    root_transform: list[float]
+    source_crs: Any | None = None
+    source_to_ecef: Any | None = None
+    source_to_wgs84: Any | None = None
+    enu_origin_source: np.ndarray | None = None
+    enu_origin_ecef: np.ndarray | None = None
+    enu_origin_lonlat: tuple[float, float, float] | None = None
+    east: np.ndarray | None = None
+    north: np.ndarray | None = None
+    up: np.ndarray | None = None
+
+    @property
+    def is_globe(self) -> bool:
+        return self.mode == COORDINATE_MODE_GLOBE
+
+    def points_to_frame(self, xyz_source: np.ndarray) -> np.ndarray:
+        if not self.is_globe:
+            return xyz_source
+        ecef = self.source_points_to_ecef(xyz_source)
+        return self.ecef_to_enu(ecef)
+
+    def bounds_to_frame(self, mins: np.ndarray, maxs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if not self.is_globe:
+            return mins, maxs
+        corners = bounds_corners(mins, maxs)
+        frame_corners = self.points_to_frame(corners)
+        return frame_corners.min(axis=0), frame_corners.max(axis=0)
+
+    def source_points_to_ecef(self, xyz_source: np.ndarray) -> np.ndarray:
+        if self.source_to_ecef is None:
+            raise ValueError("Globe coordinate frame is missing source-to-ECEF transformer.")
+        x, y, z = self.source_to_ecef.transform(
+            xyz_source[:, 0],
+            xyz_source[:, 1],
+            xyz_source[:, 2],
+        )
+        return np.column_stack((x, y, z)).astype(np.float64)
+
+    def ecef_to_enu(self, xyz_ecef: np.ndarray) -> np.ndarray:
+        if (
+            self.enu_origin_ecef is None
+            or self.east is None
+            or self.north is None
+            or self.up is None
+        ):
+            raise ValueError("Globe coordinate frame is missing ENU basis.")
+        relative = xyz_ecef - self.enu_origin_ecef
+        return np.column_stack((
+            relative @ self.east,
+            relative @ self.north,
+            relative @ self.up,
+        )).astype(np.float64)
+
+
 def padded_json_bytes(value: dict[str, Any], start_offset: int) -> bytes:
     raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
     padding = (8 - ((start_offset + len(raw)) % 8)) % 8
@@ -85,6 +151,127 @@ def padded_json_bytes(value: dict[str, Any], start_offset: int) -> bytes:
 def pad_binary(raw: bytes) -> bytes:
     padding = (8 - (len(raw) % 8)) % 8
     return raw + (b"\x00" * padding)
+
+
+def identity_transform() -> list[float]:
+    return [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+
+
+def translation_transform(center: np.ndarray) -> list[float]:
+    return [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        float(center[0]), float(center[1]), float(center[2]), 1.0,
+    ]
+
+
+def parse_source_vector(value: str) -> np.ndarray:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 3 or any(part == "" for part in parts):
+        raise ValueError('Expected "x,y,z".')
+    return np.asarray([float(part) for part in parts], dtype=np.float64)
+
+
+def bounds_corners(mins: np.ndarray, maxs: np.ndarray) -> np.ndarray:
+    return np.asarray(
+        [
+            [x, y, z]
+            for x in (mins[0], maxs[0])
+            for y in (mins[1], maxs[1])
+            for z in (mins[2], maxs[2])
+        ],
+        dtype=np.float64,
+    )
+
+
+def enu_basis(lon_degrees: float, lat_degrees: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    lon = math.radians(lon_degrees)
+    lat = math.radians(lat_degrees)
+    sin_lon = math.sin(lon)
+    cos_lon = math.cos(lon)
+    sin_lat = math.sin(lat)
+    cos_lat = math.cos(lat)
+    east = np.asarray([-sin_lon, cos_lon, 0.0], dtype=np.float64)
+    north = np.asarray([-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat], dtype=np.float64)
+    up = np.asarray([cos_lat * cos_lon, cos_lat * sin_lon, sin_lat], dtype=np.float64)
+    return east, north, up
+
+
+def enu_to_ecef_transform(
+    origin_ecef: np.ndarray,
+    east: np.ndarray,
+    north: np.ndarray,
+    up: np.ndarray,
+) -> list[float]:
+    return [
+        float(east[0]), float(east[1]), float(east[2]), 0.0,
+        float(north[0]), float(north[1]), float(north[2]), 0.0,
+        float(up[0]), float(up[1]), float(up[2]), 0.0,
+        float(origin_ecef[0]), float(origin_ecef[1]), float(origin_ecef[2]), 1.0,
+    ]
+
+
+def build_coordinate_frame(
+    args: argparse.Namespace,
+    source_crs: Any | None,
+    source_mins: np.ndarray,
+    source_maxs: np.ndarray,
+) -> CoordinateFrame:
+    if args.coordinate_mode == COORDINATE_MODE_LOCAL:
+        return CoordinateFrame(
+            mode=COORDINATE_MODE_LOCAL,
+            root_center=np.zeros(3, dtype=np.float64),
+            root_transform=identity_transform(),
+        )
+
+    if CRS is None or Transformer is None:
+        raise SystemExit("pyproj is required for --coordinate-mode globe.")
+    if source_crs is None:
+        raise SystemExit("--coordinate-mode globe requires CRS metadata in the COPC header.")
+
+    origin_source = (
+        parse_source_vector(args.enu_origin_source)
+        if args.enu_origin_source
+        else (source_mins + source_maxs) / 2.0
+    )
+    ecef_crs = CRS.from_epsg(4978)
+    wgs84_crs = CRS.from_epsg(4326)
+    source_to_ecef = Transformer.from_crs(source_crs, ecef_crs, always_xy=True)
+    source_to_wgs84 = Transformer.from_crs(source_crs, wgs84_crs, always_xy=True)
+    origin_ecef = np.asarray(
+        source_to_ecef.transform(
+            float(origin_source[0]),
+            float(origin_source[1]),
+            float(origin_source[2]),
+        ),
+        dtype=np.float64,
+    )
+    lon, lat, height = source_to_wgs84.transform(
+        float(origin_source[0]),
+        float(origin_source[1]),
+        float(origin_source[2]),
+    )
+    east, north, up = enu_basis(float(lon), float(lat))
+    return CoordinateFrame(
+        mode=COORDINATE_MODE_GLOBE,
+        root_center=np.zeros(3, dtype=np.float64),
+        root_transform=enu_to_ecef_transform(origin_ecef, east, north, up),
+        source_crs=source_crs,
+        source_to_ecef=source_to_ecef,
+        source_to_wgs84=source_to_wgs84,
+        enu_origin_source=origin_source,
+        enu_origin_ecef=origin_ecef,
+        enu_origin_lonlat=(float(lon), float(lat), float(height)),
+        east=east,
+        north=north,
+        up=up,
+    )
 
 
 def write_pnts(
@@ -405,7 +592,8 @@ def convert(args: argparse.Namespace) -> None:
 
     with CopcReader.open(input_path, decompression_selection=decompression_selection) as reader:
         header = reader.header
-        crs = crs_status(header)
+        source_crs = header.parse_crs()
+        crs = {"has_crs": source_crs is not None, "wkt": source_crs.to_wkt() if source_crs else None}
         if not crs["has_crs"]:
             warnings.append({"code": "missing_crs_metadata", "message": "Source COPC has no CRS metadata."})
 
@@ -436,9 +624,29 @@ def convert(args: argparse.Namespace) -> None:
 
         source_mins = np.asarray(header.mins, dtype=np.float64)
         source_maxs = np.asarray(header.maxs, dtype=np.float64)
-        root_mins = root_record.bounds_mins
-        root_maxs = root_record.bounds_maxs
-        root_center = (root_mins + root_maxs) / 2.0
+        coordinate_frame = build_coordinate_frame(args, source_crs, source_mins, source_maxs)
+        if coordinate_frame.is_globe:
+            for record in records_by_key.values():
+                record.bounds_mins, record.bounds_maxs = coordinate_frame.bounds_to_frame(
+                    record.bounds_mins,
+                    record.bounds_maxs,
+                )
+
+        if coordinate_frame.is_globe:
+            record_mins = np.array([record.bounds_mins for record in records_by_key.values()])
+            record_maxs = np.array([record.bounds_maxs for record in records_by_key.values()])
+            root_mins = record_mins.min(axis=0)
+            root_maxs = record_maxs.max(axis=0)
+            root_record.bounds_mins = root_mins
+            root_record.bounds_maxs = root_maxs
+        else:
+            root_mins = root_record.bounds_mins
+            root_maxs = root_record.bounds_maxs
+        root_center = (
+            coordinate_frame.root_center
+            if coordinate_frame.is_globe
+            else (root_mins + root_maxs) / 2.0
+        )
         root_size = root_maxs - root_mins
         root_diagonal = float(np.linalg.norm(root_size))
         if np.any(root_size > WARN_ROOT_BBOX_SIDE):
@@ -461,13 +669,15 @@ def convert(args: argparse.Namespace) -> None:
                 continue
 
             points = reader._fetch_and_decompress_points_of_nodes([nodes_by_key[key_tuple(record.key)]])
-            xyz_world = np.column_stack((points.x, points.y, points.z)).astype(np.float64)
-            if xyz_world.shape[0] == 0:
+            xyz_source = np.column_stack((points.x, points.y, points.z)).astype(np.float64)
+            if xyz_source.shape[0] == 0:
                 skipped_empty_nodes += 1
                 continue
 
             if args.point_step > 1:
-                xyz_world = xyz_world[::args.point_step]
+                xyz_source = xyz_source[::args.point_step]
+
+            xyz_world = coordinate_frame.points_to_frame(xyz_source)
 
             tile_center_world = (record.bounds_mins + record.bounds_maxs) / 2.0
             local_positions = xyz_world - tile_center_world
@@ -578,12 +788,11 @@ def convert(args: argparse.Namespace) -> None:
                 "tile_maxs": all_tile_maxs.tolist(),
             })
 
-        root_transform = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            float(root_center[0]), float(root_center[1]), float(root_center[2]), 1.0
-        ]
+        root_transform = (
+            coordinate_frame.root_transform
+            if coordinate_frame.is_globe
+            else translation_transform(root_center)
+        )
 
         root_tile["transform"] = root_transform
 
@@ -593,7 +802,8 @@ def convert(args: argparse.Namespace) -> None:
                 "extras": {
                     "generator": "SBB COPC Node PNTS Converter V1",
                     "dataset": args.dataset,
-                    "local_only": True,
+                    "local_only": not coordinate_frame.is_globe,
+                    "coordinateMode": coordinate_frame.mode,
                 },
             },
             "geometricError": root_diagonal,
@@ -611,6 +821,7 @@ def convert(args: argparse.Namespace) -> None:
             "pointStep": args.point_step,
             "densityTarget": args.density_target,
             "densityApproximate": args.point_step > 1,
+            "coordinateMode": coordinate_frame.mode,
             "actualDensityRatio": actual_density_ratio(int(header.point_count), emitted_points),
             "tile_count": tile_count,
             "skipped_empty_nodes": skipped_empty_nodes,
@@ -629,6 +840,11 @@ def convert(args: argparse.Namespace) -> None:
             "has_rgb": has_rgb,
             "warnings": warnings,
         }
+        if coordinate_frame.is_globe:
+            report["root_bbox_enu"] = {"mins": root_mins.tolist(), "maxs": root_maxs.tolist()}
+            report["enuOriginSource"] = coordinate_frame.enu_origin_source.tolist()
+            report["enuOriginEcef"] = coordinate_frame.enu_origin_ecef.tolist()
+            report["enuOriginLonLat"] = list(coordinate_frame.enu_origin_lonlat)
         if tile_packing is not None:
             report["tilePacking"] = tile_packing
         (output_dir / "conversion-report.json").write_text(
@@ -663,6 +879,17 @@ def parse_args() -> argparse.Namespace:
         help="Human label for the intended approximate density, e.g. p02, p10, full.",
     )
     parser.add_argument(
+        "--coordinate-mode",
+        choices=[COORDINATE_MODE_LOCAL, COORDINATE_MODE_GLOBE],
+        default=COORDINATE_MODE_LOCAL,
+        help="Coordinate frame for output PNTS. Globe mode writes ENU local coordinates with an ECEF root transform.",
+    )
+    parser.add_argument(
+        "--enu-origin-source",
+        default=None,
+        help='Globe-mode ENU origin in the source CRS as "x,y,z" (not lon/lat). Defaults to source bbox center.',
+    )
+    parser.add_argument(
         "--tile-pack-mode",
         choices=["none", "level-group"],
         default="none",
@@ -691,6 +918,13 @@ def parse_args() -> argparse.Namespace:
         parser.error("--point-step must be >= 1")
     if args.tile_pack_group_level < 1:
         parser.error("--tile-pack-group-level must be >= 1")
+    if args.enu_origin_source and args.coordinate_mode != COORDINATE_MODE_GLOBE:
+        parser.error("--enu-origin-source requires --coordinate-mode globe")
+    if args.enu_origin_source:
+        try:
+            parse_source_vector(args.enu_origin_source)
+        except ValueError as error:
+            parser.error(f"--enu-origin-source {error}")
     if args.tile_pack_target_bytes < 1:
         parser.error("--tile-pack-target-bytes must be >= 1")
     if args.tile_pack_hard_max_bytes < args.tile_pack_target_bytes:

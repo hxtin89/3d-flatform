@@ -46,6 +46,17 @@ open:
 http://localhost:5173/?source=cloudfront
 ```
 
+To opt into the MapTiler Satellite Earth basemap, add a MapTiler key to
+`viewer/.env` and open the viewer with `?basemap=maptiler`:
+
+```env
+VITE_MAPTILER_API_KEY=YOUR_MAPTILER_API_KEY
+```
+
+```text
+http://localhost:5173/?basemap=maptiler
+```
+
 CloudFront mode uses `viewer/.env`:
 
 ```env

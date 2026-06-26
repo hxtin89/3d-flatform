@@ -42,6 +42,25 @@ def merge_bounds(bounds: list[tuple[list[float], list[float]]]) -> tuple[list[fl
     return mins, maxs
 
 
+def vectors_close(left: list[float], right: list[float], tolerance: float = 1e-6) -> bool:
+    return len(left) == len(right) and all(abs(left[i] - right[i]) <= tolerance for i in range(len(left)))
+
+
+def strip_child_transform_if_needed(path: Path, expected_transform: list[float]) -> None:
+    tileset = read_json(path)
+    root = tileset.get("root")
+    if not isinstance(root, dict):
+        raise SystemExit(f"Child tileset root is missing or invalid: {path}")
+
+    child_transform = root.get("transform")
+    if child_transform is None:
+        return
+    if not vectors_close([float(value) for value in child_transform], expected_transform):
+        raise SystemExit(f"Child globe transform does not match shared wrapper transform: {path}")
+    del root["transform"]
+    path.write_text(json.dumps(tileset, separators=(",", ":")), encoding="utf-8")
+
+
 def build(args: argparse.Namespace) -> None:
     output_dir = Path(args.output).resolve()
     chunks_dir = output_dir / "chunks"
@@ -69,13 +88,42 @@ def build(args: argparse.Namespace) -> None:
     tile_pack_root_error_after: list[float] = []
     tile_pack_source_node_count = 0
     tile_pack_packed_count = 0
+    coordinate_modes = set()
+    enu_origin_source: list[float] | None = None
+    enu_origin_ecef: list[float] | None = None
+    enu_origin_lonlat: list[float] | None = None
+    root_transform: list[float] | None = None
 
     for report_path in reports:
         report = read_json(report_path)
         rel_tileset = report_path.parent.relative_to(output_dir) / "tileset.json"
-        source_bbox = report.get("source_bbox") or report.get("root_bbox")
-        mins = source_bbox["mins"]
-        maxs = source_bbox["maxs"]
+        coordinate_mode = str(report.get("coordinateMode") or "local")
+        coordinate_modes.add(coordinate_mode)
+        if coordinate_mode == "globe":
+            bbox = report.get("root_bbox_enu") or report.get("root_bbox")
+            report_origin = report.get("enuOriginSource")
+            report_origin_ecef = report.get("enuOriginEcef")
+            report_origin_lonlat = report.get("enuOriginLonLat")
+            report_transform = report.get("root_transform")
+            if not report_origin or not report_origin_ecef or not report_origin_lonlat or not report_transform:
+                raise SystemExit(f"Globe child report is missing ENU metadata: {report_path}")
+            report_origin = [float(value) for value in report_origin]
+            report_origin_ecef = [float(value) for value in report_origin_ecef]
+            report_origin_lonlat = [float(value) for value in report_origin_lonlat]
+            report_transform = [float(value) for value in report_transform]
+            if enu_origin_source is None:
+                enu_origin_source = report_origin
+                enu_origin_ecef = report_origin_ecef
+                enu_origin_lonlat = report_origin_lonlat
+                root_transform = report_transform
+            elif not vectors_close(report_origin, enu_origin_source):
+                raise SystemExit(f"Globe child ENU origin does not match shared origin: {report_path}")
+            elif root_transform is not None and not vectors_close(report_transform, root_transform):
+                raise SystemExit(f"Globe child root transform does not match shared wrapper transform: {report_path}")
+        else:
+            bbox = report.get("source_bbox") or report.get("root_bbox")
+        mins = bbox["mins"]
+        maxs = bbox["maxs"]
         bounds.append((mins, maxs))
         child_error = diagonal(mins, maxs)
         children.append({
@@ -116,8 +164,27 @@ def build(args: argparse.Namespace) -> None:
         for warning in report.get("warnings", []):
             warnings.append({"chunk": report_path.parent.name, **warning})
 
+    if "globe" in coordinate_modes and coordinate_modes != {"globe"}:
+        raise SystemExit("Cannot build a mixed local/globe chunked tileset.")
+
+    globe_mode = coordinate_modes == {"globe"}
+    if globe_mode:
+        if root_transform is None:
+            raise SystemExit("Globe chunked tileset is missing a shared root transform.")
+        for report_path in reports:
+            strip_child_transform_if_needed(report_path.parent / "tileset.json", root_transform)
+
     root_mins, root_maxs = merge_bounds(bounds)
     root_error = diagonal(root_mins, root_maxs)
+    root_tile = {
+        "boundingVolume": {"box": box_from_bounds(root_mins, root_maxs)},
+        "geometricError": root_error,
+        "refine": "ADD",
+        "children": children,
+    }
+    if globe_mode:
+        root_tile["transform"] = root_transform
+
     tileset = {
         "asset": {
             "version": "1.0",
@@ -125,16 +192,12 @@ def build(args: argparse.Namespace) -> None:
                 "generator": "SBB Chunked COPC External Tileset V1",
                 "dataset": args.dataset,
                 "sourceDataset": args.source_dataset,
-                "local_only": True,
+                "local_only": not globe_mode,
+                "coordinateMode": "globe" if globe_mode else "local",
             },
         },
         "geometricError": root_error,
-        "root": {
-            "boundingVolume": {"box": box_from_bounds(root_mins, root_maxs)},
-            "geometricError": root_error,
-            "refine": "ADD",
-            "children": children,
-        },
+        "root": root_tile,
     }
 
     report = {
@@ -147,12 +210,19 @@ def build(args: argparse.Namespace) -> None:
         "pointStep": point_steps.pop() if len(point_steps) == 1 else None,
         "densityTarget": density_targets.pop() if len(density_targets) == 1 else None,
         "densityApproximate": density_approximate,
+        "coordinateMode": "globe" if globe_mode else "local",
         "actualDensityRatio": total_points / total_source_points if total_source_points else None,
         "tile_count": total_tiles,
         "root_bbox": {"mins": root_mins, "maxs": root_maxs},
         "has_rgb": has_rgb,
         "warnings": warnings,
     }
+    if globe_mode:
+        report["root_bbox_enu"] = {"mins": root_mins, "maxs": root_maxs}
+        report["root_transform"] = root_transform
+        report["enuOriginSource"] = enu_origin_source
+        report["enuOriginEcef"] = enu_origin_ecef
+        report["enuOriginLonLat"] = enu_origin_lonlat
     if tile_pack_modes:
         report["tilePacking"] = {
             "mode": tile_pack_modes.pop() if len(tile_pack_modes) == 1 else "mixed",

@@ -2,6 +2,7 @@
 import * as Cesium from 'cesium';
 
 export type PresetName = 'low' | 'medium' | 'high';
+export type PresetVariant = 'local' | 'globe';
 
 export interface PresetConfig {
   name: PresetName;
@@ -64,12 +65,30 @@ export const PRESETS: Record<PresetName, PresetConfig> = {
   },
 };
 
+export const GLOBE_PRESETS: Partial<Record<PresetName, PresetConfig>> = {
+  low: {
+    ...PRESETS.low,
+    maximumScreenSpaceError: 128,
+    description: 'Globe overview using a higher SSE budget for Earth-scale framing.',
+  },
+  high: {
+    ...PRESETS.high,
+    maximumScreenSpaceError: 256,
+    description: 'Selected-area detail using a higher SSE budget for Earth-scale framing.',
+  },
+};
+
 export function applyPreset(
   tileset: Cesium.Cesium3DTileset,
   presetName: PresetName,
-  overrides: { maximumScreenSpaceError?: number } = {}
+  overrides: { maximumScreenSpaceError?: number } = {},
+  options: { variant?: PresetVariant } = {}
 ): void {
-  const preset = PRESETS[presetName];
+  const preset = options.variant === 'globe'
+    ? GLOBE_PRESETS[presetName] ?? PRESETS[presetName]
+    : PRESETS[presetName];
+    console.log('presetName', presetName);
+    console.log('preset', preset);
   const maximumScreenSpaceError = overrides.maximumScreenSpaceError ?? preset.maximumScreenSpaceError;
 
   tileset.maximumScreenSpaceError = maximumScreenSpaceError;
@@ -89,7 +108,7 @@ export function applyPreset(
   tileset.pointCloudShading = shading;
 
   console.log(
-    `[Mode] Applied "${preset.userMode}": density=${preset.dataDensity}, quality=${preset.renderQuality}, SSE=${maximumScreenSpaceError}, Cache=${preset.cacheBytes / 1024 / 1024}MB`
+    `[Mode] Applied "${preset.userMode}": variant=${options.variant ?? 'local'}, density=${preset.dataDensity}, quality=${preset.renderQuality}, SSE=${maximumScreenSpaceError}, Cache=${preset.cacheBytes / 1024 / 1024}MB`
   );
 }
 

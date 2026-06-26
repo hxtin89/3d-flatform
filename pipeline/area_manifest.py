@@ -69,18 +69,52 @@ def chunk_reports(root: Path, args: argparse.Namespace) -> list[tuple[str, Path,
     return reports
 
 
+def chunked_report(root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    tilesets_dir = root / "local-storage" / "tilesets"
+    report_path = dataset_dir(tilesets_dir, args, f"{args.dataset}-chunked-copc") / "chunked-conversion-report.json"
+    return read_json(report_path) if report_path.exists() else {}
+
+
+def bbox_values(bbox: dict[str, Any]) -> list[Any]:
+    mins = bbox.get("mins") or [0, 0, 0]
+    maxs = bbox.get("maxs") or [0, 0, 0]
+    return [*mins, *maxs]
+
+
 def build_manifest(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
     dataset = args.dataset
     tilesets_dir = root / "local-storage" / "tilesets"
     logical_dir = tilesets_dir / logical_dataset(args)
+    reports = chunk_reports(root, args)
+    group_report = chunked_report(root, args)
+    globe_mode = all((report.get("coordinateMode") == "globe") for _, _, report in reports)
+    manifest_extras: dict[str, Any] = {}
+    if globe_mode:
+        root_transform = group_report.get("root_transform") or next(
+            (report.get("root_transform") for _, _, report in reports if report.get("root_transform")),
+            None,
+        )
+        manifest_extras = {
+            "coordinateMode": "globe",
+            "bboxFrame": "enu",
+            "rootTransform": root_transform,
+            "enuOriginSource": group_report.get("enuOriginSource") or reports[0][2].get("enuOriginSource"),
+            "enuOriginEcef": group_report.get("enuOriginEcef") or reports[0][2].get("enuOriginEcef"),
+            "enuOriginLonLat": group_report.get("enuOriginLonLat") or reports[0][2].get("enuOriginLonLat"),
+        }
+    else:
+        manifest_extras = {
+            "coordinateMode": "local",
+            "bboxFrame": "source",
+        }
 
     areas = []
-    for index, (chunk_id, _, report) in enumerate(chunk_reports(root, args), start=1):
+    for index, (chunk_id, _, report) in enumerate(reports, start=1):
         area_id = f"area-{index:03d}"
         source_bbox = report.get("source_bbox") or report.get("root_bbox") or {}
-        mins = source_bbox.get("mins") or [0, 0, 0]
-        maxs = source_bbox.get("maxs") or [0, 0, 0]
+        area_bbox = report.get("root_bbox_enu") if globe_mode else source_bbox
+        area_bbox = area_bbox or source_bbox
         explore_dataset = public_dataset(args, f"{dataset}-{EXPLORE_GROUP_SUFFIX}/areas/{area_id}")
         detail_dataset = public_dataset(args, f"{dataset}-{DETAIL_GROUP_SUFFIX}/areas/{area_id}")
         context_dataset = public_dataset(args, f"{dataset}-{DETAIL_CONTEXT_GROUP_SUFFIX}/areas/{area_id}")
@@ -88,7 +122,8 @@ def build_manifest(args: argparse.Namespace) -> None:
             "areaId": area_id,
             "label": f"Area {index:03d}",
             "sourceChunkId": chunk_id,
-            "bbox": [*mins, *maxs],
+            "bbox": bbox_values(area_bbox),
+            "sourceBbox": bbox_values(source_bbox),
             "pointCount": report.get("source_point_count") or report.get("emitted_point_count"),
             "datasets": {
                 "explore": mode_dataset(explore_dataset, status_for(tilesets_dir, explore_dataset)),
@@ -106,6 +141,7 @@ def build_manifest(args: argparse.Namespace) -> None:
             "overview": mode_dataset(overview_dataset, status_for(tilesets_dir, overview_dataset)),
         },
         "areas": areas,
+        **manifest_extras,
     }
     write_json(logical_dir / "area-manifest.json", manifest)
     print(f"✓ Area manifest: {logical_dir / 'area-manifest.json'}")
@@ -266,7 +302,13 @@ def build_detail_wrapper(args: argparse.Namespace) -> None:
 
     child_report = read_json(child_report_path)
     child_tileset_json = read_json(child_tileset)
-    source_bbox = child_report.get("root_bbox") or child_report.get("source_bbox")
+    globe_mode = child_report.get("coordinateMode") == "globe"
+    source_bbox = (
+        child_report.get("root_bbox_enu")
+        if globe_mode
+        else child_report.get("root_bbox")
+    ) or child_report.get("root_bbox") or child_report.get("source_bbox")
+    root_transform = child_report.get("root_transform") if globe_mode else None
     geometric_error = (
         child_tileset_json.get("geometricError")
         or child_tileset_json.get("root", {}).get("geometricError")
@@ -282,7 +324,8 @@ def build_detail_wrapper(args: argparse.Namespace) -> None:
                 "sourceDataset": dataset,
                 "areaId": area_id,
                 "sourceChunkId": chunk_id,
-                "local_only": True,
+                "local_only": not globe_mode,
+                "coordinateMode": "globe" if globe_mode else "local",
             },
         },
         "geometricError": geometric_error,
@@ -293,6 +336,10 @@ def build_detail_wrapper(args: argparse.Namespace) -> None:
             "content": {"uri": child_rel_uri.as_posix()},
         },
     }
+    if globe_mode:
+        if not isinstance(root_transform, list) or len(root_transform) != 16:
+            raise SystemExit(f"Globe detail wrapper missing root_transform: {child_report_path}")
+        tileset["root"]["transform"] = root_transform
     write_json(output_dir / "tileset.json", tileset)
 
     report = {
