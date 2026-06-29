@@ -400,15 +400,44 @@ function activeNetworkFragments(): string[] {
   const fragments = new Set<string>();
   fragments.add(resolvedDataset);
   if (contextDataset) fragments.add(contextDataset);
+
+  const focusSourceRoot = sourceDatasetRoot(resolvedDataset, datasetReport);
   if (sourceChunkId) {
-    fragments.add(`${logicalDataset}-chunked-copc/chunks/${sourceChunkId}`);
+    fragments.add(
+      focusSourceRoot
+        ? `${focusSourceRoot}-chunked-copc/chunks/${sourceChunkId}`
+        : `${logicalDataset}-chunked-copc/chunks/${sourceChunkId}`
+    );
   }
+
+  const contextSourceRoot = sourceDatasetRoot(contextDataset, contextReport) ?? focusSourceRoot;
   if (contextDataset?.includes('overview-p001-excluding')) {
-    fragments.add(`${logicalDataset}-overview-p001/chunks`);
+    fragments.add(
+      contextSourceRoot
+        ? `${contextSourceRoot}-overview-p001/chunks`
+        : `${logicalDataset}-overview-p001/chunks`
+    );
   } else if (contextDataset?.includes('overview-p02-excluding')) {
-    fragments.add(`${logicalDataset}-overview-p02/chunks`);
+    fragments.add(
+      contextSourceRoot
+        ? `${contextSourceRoot}-overview-p02/chunks`
+        : `${logicalDataset}-overview-p02/chunks`
+    );
   }
   return [...fragments].filter(Boolean);
+}
+
+function sourceDatasetRoot(dataset: string | null, report: DatasetReport | null): string | null {
+  const sourceDataset = report?.sourceDataset;
+  if (!dataset || !sourceDataset) return null;
+
+  const segments = dataset.split('/').filter(Boolean);
+  const sourceIndex = segments.findIndex((segment) => (
+    segment === sourceDataset || segment.startsWith(`${sourceDataset}-`)
+  ));
+  if (sourceIndex < 0) return null;
+
+  return [...segments.slice(0, sourceIndex), sourceDataset].join('/');
 }
 
 function updateCacheHitRate(entries: PerformanceEntry[]): void {
