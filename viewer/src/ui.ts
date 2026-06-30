@@ -33,6 +33,10 @@ const contextLayerToggle = document.getElementById(
 const detailSseSelect = document.getElementById(
   'select-detail-sse'
 ) as HTMLSelectElement | null;
+const controlsPanel = document.getElementById('controls-panel');
+const controlsPanelToggle = document.getElementById(
+  'controls-panel-toggle'
+) as HTMLButtonElement | null;
 
 export function setStatus(state: ViewerState, message?: string): void {
   const titleMap: Record<ViewerState, string> = {
@@ -135,6 +139,18 @@ export function initDetailSseSelect(onChange: (sse: number) => void): void {
   detailSseSelect?.addEventListener('change', () => {
     const sse = Number(detailSseSelect.value);
     if (Number.isFinite(sse) && sse > 0) onChange(sse);
+  });
+}
+
+export function initControlsPanelToggle(): void {
+  if (!controlsPanel || !controlsPanelToggle) return;
+  controlsPanelToggle.addEventListener('click', () => {
+    const collapsed = controlsPanel.classList.toggle('collapsed');
+    controlsPanelToggle.setAttribute('aria-expanded', String(!collapsed));
+    controlsPanelToggle.setAttribute(
+      'aria-label',
+      collapsed ? 'Show controls panel' : 'Hide controls panel'
+    );
   });
 }
 

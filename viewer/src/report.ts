@@ -74,6 +74,13 @@ export type BrowserMetricName =
 type BrowserMetricValue = string | number | boolean;
 type BrowserMetrics = Record<BrowserMetricName, BrowserMetricValue>;
 
+interface CloudFrontMetrics {
+  pntsRequests: number;
+  tilesetRequests: number;
+  bytesTransferred: number;
+  cacheHitRatio: number | null;
+}
+
 export interface AreaDetectionReportContext {
   status: string;
   detectedAreaId: string | null;
@@ -131,6 +138,7 @@ let initialFpsStop: (() => void) | null = null;
 let interactionFpsStop: (() => void) | null = null;
 let measuredNetworkBytes = 0;
 let measuringNetwork = false;
+let cloudFrontMetrics: CloudFrontMetrics = emptyCloudFrontMetrics();
 
 const fields = new Map<string, HTMLElement>();
 const measuredNetworkUrls = new Set<string>();
@@ -215,6 +223,7 @@ export function resetBrowserMetrics(): void {
   interactionFpsStop = null;
   measuredNetworkBytes = 0;
   measuringNetwork = false;
+  cloudFrontMetrics = emptyCloudFrontMetrics();
   measuredNetworkUrls.clear();
   performance.clearResourceTimings();
   Object.assign(browserMetrics, {
@@ -244,6 +253,7 @@ export function resetBrowserMetrics(): void {
     tilesetMemoryBytes: 'unsupported',
     cacheHitRate: 'unknown',
   });
+  renderCloudFrontMetrics();
   for (const [metric, value] of Object.entries(browserMetrics)) {
     setText(metric, formatBrowserMetric(metric as BrowserMetricName, value as string | number));
   }
@@ -370,6 +380,8 @@ function updateNetworkMetrics(): void {
       0
     );
   }, 0);
+  cloudFrontMetrics = buildCloudFrontMetrics(entries, bytes || measuredNetworkBytes);
+  renderCloudFrontMetrics();
   updateBrowserMetric('networkRequests', entries.length);
   updateCacheHitRate(entries);
   if (bytes > 0) {
@@ -388,15 +400,44 @@ function activeNetworkFragments(): string[] {
   const fragments = new Set<string>();
   fragments.add(resolvedDataset);
   if (contextDataset) fragments.add(contextDataset);
+
+  const focusSourceRoot = sourceDatasetRoot(resolvedDataset, datasetReport);
   if (sourceChunkId) {
-    fragments.add(`${logicalDataset}-chunked-copc/chunks/${sourceChunkId}`);
+    fragments.add(
+      focusSourceRoot
+        ? `${focusSourceRoot}-chunked-copc/chunks/${sourceChunkId}`
+        : `${logicalDataset}-chunked-copc/chunks/${sourceChunkId}`
+    );
   }
+
+  const contextSourceRoot = sourceDatasetRoot(contextDataset, contextReport) ?? focusSourceRoot;
   if (contextDataset?.includes('overview-p001-excluding')) {
-    fragments.add(`${logicalDataset}-overview-p001/chunks`);
+    fragments.add(
+      contextSourceRoot
+        ? `${contextSourceRoot}-overview-p001/chunks`
+        : `${logicalDataset}-overview-p001/chunks`
+    );
   } else if (contextDataset?.includes('overview-p02-excluding')) {
-    fragments.add(`${logicalDataset}-overview-p02/chunks`);
+    fragments.add(
+      contextSourceRoot
+        ? `${contextSourceRoot}-overview-p02/chunks`
+        : `${logicalDataset}-overview-p02/chunks`
+    );
   }
   return [...fragments].filter(Boolean);
+}
+
+function sourceDatasetRoot(dataset: string | null, report: DatasetReport | null): string | null {
+  const sourceDataset = report?.sourceDataset;
+  if (!dataset || !sourceDataset) return null;
+
+  const segments = dataset.split('/').filter(Boolean);
+  const sourceIndex = segments.findIndex((segment) => (
+    segment === sourceDataset || segment.startsWith(`${sourceDataset}-`)
+  ));
+  if (sourceIndex < 0) return null;
+
+  return [...segments.slice(0, sourceIndex), sourceDataset].join('/');
 }
 
 function updateCacheHitRate(entries: PerformanceEntry[]): void {
@@ -414,7 +455,48 @@ function updateCacheHitRate(entries: PerformanceEntry[]): void {
   const cached = measurable.filter((entry) => (
     entry.transferSize === 0 && (entry.encodedBodySize > 0 || entry.decodedBodySize > 0)
   )).length;
-  updateBrowserMetric('cacheHitRate', `${Math.round((cached / measurable.length) * 100)}%`);
+  const hitRatio = cached / measurable.length;
+  cloudFrontMetrics = { ...cloudFrontMetrics, cacheHitRatio: hitRatio };
+  renderCloudFrontMetrics();
+  updateBrowserMetric('cacheHitRate', `${Math.round(hitRatio * 100)}%`);
+}
+
+function emptyCloudFrontMetrics(): CloudFrontMetrics {
+  return {
+    pntsRequests: 0,
+    tilesetRequests: 0,
+    bytesTransferred: 0,
+    cacheHitRatio: null,
+  };
+}
+
+function buildCloudFrontMetrics(entries: PerformanceEntry[], bytesTransferred: number): CloudFrontMetrics {
+  return {
+    pntsRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('.pnts')).length,
+    tilesetRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('/tileset.json')).length,
+    bytesTransferred,
+    cacheHitRatio: cloudFrontMetrics.cacheHitRatio,
+  };
+}
+
+function resourcePath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
+function renderCloudFrontMetrics(): void {
+  setText('pntsRequests', formatNumber(cloudFrontMetrics.pntsRequests));
+  setText('tilesetRequests', formatNumber(cloudFrontMetrics.tilesetRequests));
+  setText('bytesTransferred', formatBytes(cloudFrontMetrics.bytesTransferred));
+  setText(
+    'cacheHitRatio',
+    cloudFrontMetrics.cacheHitRatio == null
+      ? 'unknown'
+      : `${Math.round(cloudFrontMetrics.cacheHitRatio * 100)}%`
+  );
 }
 
 function measureResourceContentLength(entries: PerformanceEntry[]): void {
@@ -546,6 +628,7 @@ async function copyReport(): Promise<void> {
     userAgent: navigator.userAgent,
     pipeline: datasetReport,
     browser: browserMetrics,
+    cloudfront: cloudFrontMetrics,
     areaDetection: areaDetectionContext,
   };
   await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));

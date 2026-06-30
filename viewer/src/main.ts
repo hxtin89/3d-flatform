@@ -21,6 +21,7 @@ import {
   initAreaSelect,
   initUseCurrentViewButton,
   initContextLayerToggle,
+  initControlsPanelToggle,
   initDetailSseSelect,
   isContextLayerEnabled,
   setAreaOptions,
@@ -150,6 +151,7 @@ initDetailSseSelect((sse: number) => {
 initFlyHomeButton(() => {
   viewer.flyHome();
 });
+initControlsPanelToggle();
 
 // Set initial active preset
 setActivePreset(viewer.getCurrentPreset());
