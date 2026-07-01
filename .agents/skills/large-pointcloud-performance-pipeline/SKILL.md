@@ -10,15 +10,15 @@ Use this skill for large LAS datasets where whole-file COPC or whole-scene rende
 The target flow is:
 
 ```text
-raw LAS
-  -> prepared LAZ
-  -> chunked LAZ
-  -> per-chunk COPC
-  -> full chunked COPC 3D Tiles
+raw LAS (~ 4 hours running on local Mac M2, RAM 16GB)
+  -> prepared LAZ (30 mins)
+  -> chunked LAZ (30 mins)
+  -> per-chunk COPC (60 mins)
+  -> full chunked COPC 3D Tiles (40 mins)
   -> logical modes:
-       Overview = all areas, approximate p02
-       Explore  = selected area, approximate p10
-       Detail   = selected area, full reference
+       Overview = all areas, approximate p02 (60 mins)
+       Explore  = selected area, approximate p10 (45 mins)
+       Detail   = selected area, full reference (30 mins)
        Context  = optional p001 overview around Explore/Detail focus
 ```
 
