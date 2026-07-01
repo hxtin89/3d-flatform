@@ -141,6 +141,26 @@ type RuntimeTile = {
   content?: RuntimeTileContent;
 };
 
+type TilesetDocument = {
+  asset?: {
+    extras?: {
+      coordinateMode?: string;
+      local_only?: boolean;
+    };
+  };
+  root?: {
+    boundingVolume?: {
+      box?: number[];
+    };
+    children?: Array<{
+      boundingVolume?: {
+        box?: number[];
+      };
+    }>;
+    transform?: number[];
+  };
+};
+
 type RuntimeTileset = {
   _selectedTiles?: RuntimeTile[];
   selectedTiles?: RuntimeTile[];
@@ -373,12 +393,27 @@ export class PointCloudViewer {
 
   private async loadLayer(config: SceneLayerConfig): Promise<Cesium.Cesium3DTileset> {
     const preset = PRESETS[config.preset];
-    const tileset = await Cesium.Cesium3DTileset.fromUrl(tilesetUrlFor(config.dataset), {
-      maximumScreenSpaceError: preset.maximumScreenSpaceError,
-      cacheBytes: preset.cacheBytes,
-      maximumCacheOverflowBytes: preset.maximumCacheOverflowBytes,
-      skipLevelOfDetail: false,
-    });
+    const tilesetUrl = tilesetUrlFor(config.dataset);
+    const shouldAlignAreaToMap = MAPTILER_BASEMAP_ENABLED;
+    const documentPromise = shouldAlignAreaToMap
+      ? fetch(tilesetUrl).then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          return response.json() as Promise<TilesetDocument>;
+        })
+      : Promise.resolve(null);
+    const [tileset, document] = await Promise.all([
+      Cesium.Cesium3DTileset.fromUrl(tilesetUrl, {
+        maximumScreenSpaceError: preset.maximumScreenSpaceError,
+        cacheBytes: preset.cacheBytes,
+        maximumCacheOverflowBytes: preset.maximumCacheOverflowBytes,
+        skipLevelOfDetail: false,
+      }),
+      documentPromise,
+    ]);
+
+    if (document && this.isGlobeDocument(document)) {
+      this.alignTilesetBottomToEllipsoid(tileset, document);
+    }
 
     if (DEBUG_TILES) {
       tileset.debugShowBoundingVolume = true;
@@ -387,6 +422,66 @@ export class PointCloudViewer {
     }
 
     return tileset;
+  }
+
+  private isGlobeDocument(document: TilesetDocument): boolean {
+    return document.asset?.extras?.coordinateMode === 'globe' ||
+      document.asset?.extras?.local_only === false;
+  }
+
+  private alignTilesetBottomToEllipsoid(
+    tileset: Cesium.Cesium3DTileset,
+    document: TilesetDocument
+  ): void {
+    const root = document.root;
+    const rootBox = root?.boundingVolume?.box;
+    const transform = document.root?.transform;
+    if (!rootBox || rootBox.length !== 12 || !transform || transform.length !== 16) return;
+
+    const rootTransform = Cesium.Matrix4.fromArray(transform);
+    const localCenter = new Cesium.Cartesian3(rootBox[0], rootBox[1], rootBox[2]);
+    const worldCenter = Cesium.Matrix4.multiplyByPoint(
+      rootTransform,
+      localCenter,
+      new Cesium.Cartesian3()
+    );
+    const childBoxes = root?.children
+      ?.map((child) => child.boundingVolume?.box)
+      .filter((box): box is number[] => Array.isArray(box) && box.length === 12) ?? [];
+    const boxes = childBoxes.length > 1 ? childBoxes : [rootBox];
+    const bottomHeights = boxes.map((box) => {
+      let boxMinimumHeight = Number.POSITIVE_INFINITY;
+      for (const xSign of [-1, 1]) {
+        for (const ySign of [-1, 1]) {
+          for (const zSign of [-1, 1]) {
+            const corner = new Cesium.Cartesian3(
+              box[0] + xSign * box[3] + ySign * box[6] + zSign * box[9],
+              box[1] + xSign * box[4] + ySign * box[7] + zSign * box[10],
+              box[2] + xSign * box[5] + ySign * box[8] + zSign * box[11]
+            );
+            const worldCorner = Cesium.Matrix4.multiplyByPoint(
+              rootTransform,
+              corner,
+              new Cesium.Cartesian3()
+            );
+            const height = Cesium.Cartographic.fromCartesian(worldCorner)?.height;
+            if (height !== undefined) {
+              boxMinimumHeight = Math.min(boxMinimumHeight, height);
+            }
+          }
+        }
+      }
+      return boxMinimumHeight;
+    }).filter(Number.isFinite).sort((a, b) => a - b);
+
+    if (bottomHeights.length === 0) return;
+    const middle = Math.floor(bottomHeights.length / 2);
+    const minimumHeight = bottomHeights.length % 2 === 0
+      ? (bottomHeights[middle - 1] + bottomHeights[middle]) * 0.5
+      : bottomHeights[middle];
+    const up = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(worldCenter, new Cesium.Cartesian3());
+    const translation = Cesium.Cartesian3.multiplyByScalar(up, -minimumHeight, up);
+    tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
   }
 
   private installTileFailureLogging(tileset: Cesium.Cesium3DTileset): void {
@@ -538,21 +633,35 @@ export class PointCloudViewer {
     });
   }
 
-  private syncOrbitStateFromCamera(target: Cesium.Cartesian3): void {
-    this.orbitTarget = Cesium.Cartesian3.clone(target);
-    const offset = Cesium.Cartesian3.subtract(
-      this.viewer.camera.positionWC,
-      this.orbitTarget,
+  private syncOrbitStateFromCamera(referenceTarget: Cesium.Cartesian3): void {
+    const camera = this.viewer.camera;
+    const direction = Cesium.Cartesian3.normalize(
+      camera.directionWC,
       new Cesium.Cartesian3()
     );
-    const distance = Cesium.Cartesian3.magnitude(offset);
-    if (distance <= 0) return;
-
-    this.orbitRange = Cesium.Math.clamp(
-      distance,
+    const toReference = Cesium.Cartesian3.subtract(
+      referenceTarget,
+      camera.positionWC,
+      new Cesium.Cartesian3()
+    );
+    const referenceDistance = Cesium.Cartesian3.magnitude(toReference);
+    const projectedDistance = Cesium.Cartesian3.dot(toReference, direction);
+    const distance = Cesium.Math.clamp(
+      projectedDistance > this.minCameraDistance ? projectedDistance : referenceDistance,
       this.minCameraDistance,
       this.maxCameraDistance
     );
+    this.orbitTarget = Cesium.Cartesian3.add(
+      camera.positionWC,
+      Cesium.Cartesian3.multiplyByScalar(direction, distance, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    const offset = Cesium.Cartesian3.negate(
+      Cesium.Cartesian3.multiplyByScalar(direction, distance, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+
+    this.orbitRange = distance;
     this.orbitHeading = Math.atan2(offset.x, offset.y);
     this.orbitPitch = Math.asin(Cesium.Math.clamp(offset.z / distance, -1, 1));
   }
@@ -583,7 +692,7 @@ export class PointCloudViewer {
     controller.enableTilt = false;
     controller.enableLook = false;
     controller.enableZoom = true;
-    controller.inertiaZoom = 0.35;
+    controller.inertiaZoom = 0;
     controller.zoomEventTypes = [
       Cesium.CameraEventType.WHEEL,
       Cesium.CameraEventType.PINCH,
@@ -591,6 +700,9 @@ export class PointCloudViewer {
 
     handler.setInputAction((event: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       this.callbacks.onInteraction();
+      if (this.cameraLimitTileset) {
+        this.syncOrbitStateFromCamera(this.cameraLimitTileset.boundingSphere.center);
+      }
       this.activeDrag = 'orbit';
       this.lastPointer = Cesium.Cartesian2.clone(event.position);
     }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
@@ -642,6 +754,9 @@ export class PointCloudViewer {
 
     handler.setInputAction((event: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       this.callbacks.onInteraction();
+      if (this.cameraLimitTileset) {
+        this.syncOrbitStateFromCamera(this.cameraLimitTileset.boundingSphere.center);
+      }
       this.activeDrag = 'orbit';
       this.lastPointer = Cesium.Cartesian2.clone(event.position);
     }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
@@ -774,7 +889,7 @@ export class PointCloudViewer {
     if (!this.cameraLimitTileset) return;
 
     const camera = this.viewer.camera;
-    const target = this.cameraLimitTileset.boundingSphere.center;
+    const target = this.orbitTarget;
     const offset = Cesium.Cartesian3.subtract(
       camera.positionWC,
       target,
@@ -833,7 +948,7 @@ export class PointCloudViewer {
     const camera = this.viewer.camera;
     const range = Cesium.Cartesian3.distance(
       camera.positionWC,
-      this.cameraLimitTileset.boundingSphere.center
+      this.orbitTarget
     );
     const panScale = Math.max(range, this.panScaleBase * 0.2) * 0.0012;
     const right = Cesium.Cartesian3.multiplyByScalar(
@@ -850,6 +965,7 @@ export class PointCloudViewer {
     const amount = Cesium.Cartesian3.magnitude(move);
     if (amount <= 0) return;
     camera.move(Cesium.Cartesian3.normalize(move, move), amount);
+    Cesium.Cartesian3.add(this.orbitTarget, move, this.orbitTarget);
   }
 
   private panOrbitTarget(dx: number, dy: number): void {
