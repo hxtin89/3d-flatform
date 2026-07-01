@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 from laspy._compression.selection import DecompressionSelection
-from laspy.copc import CopcReader, load_octree_for_query
+from laspy.copc import Bounds, CopcReader, load_octree_for_query
 from laspy.errors import LaspyException
 
 try:
@@ -35,6 +35,40 @@ WARN_TOTAL_TILES = 5_000
 WARN_ROOT_BBOX_SIDE = 1_000_000
 COORDINATE_MODE_LOCAL = "local"
 COORDINATE_MODE_GLOBE = "globe"
+
+
+def parse_clip_bounds(value: str | None) -> tuple[np.ndarray, np.ndarray] | None:
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 6 or any(part == "" for part in parts):
+        raise ValueError('Expected "minX,minY,minZ,maxX,maxY,maxZ".')
+    values = np.asarray([float(part) for part in parts], dtype=np.float64)
+    mins = values[:3]
+    maxs = values[3:]
+    if np.any(~np.isfinite(values)) or np.any(maxs <= mins):
+        raise ValueError("Clip max values must be finite and greater than min values.")
+    return mins, maxs
+
+
+def clip_point_mask(
+    points: Any,
+    header: Any,
+    clip_bounds: tuple[np.ndarray, np.ndarray] | None,
+    include_max_x: bool,
+    include_max_y: bool,
+) -> np.ndarray | None:
+    if clip_bounds is None:
+        return None
+    mins, maxs = clip_bounds
+    raw_mins = np.rint((mins - header.offsets) / header.scales).astype(np.int64)
+    raw_maxs = np.rint((maxs - header.offsets) / header.scales).astype(np.int64)
+    x_keep = points.X >= raw_mins[0]
+    x_keep &= points.X <= raw_maxs[0] if include_max_x else points.X < raw_maxs[0]
+    y_keep = points.Y >= raw_mins[1]
+    y_keep &= points.Y <= raw_maxs[1] if include_max_y else points.Y < raw_maxs[1]
+    z_keep = (points.Z >= raw_mins[2]) & (points.Z <= raw_maxs[2])
+    return x_keep & y_keep & z_keep
 
 
 @dataclass
@@ -570,6 +604,40 @@ def build_packed_tree(
     }
 
 
+def prepare_record_bounds(
+    records_by_key: dict[tuple[int, int, int, int], TileRecord],
+    root_record: TileRecord,
+    coordinate_frame: CoordinateFrame,
+    source_mins: np.ndarray,
+    source_maxs: np.ndarray,
+    has_clip_bounds: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Put hierarchy bounds in the output frame and choose stable root bounds."""
+    if coordinate_frame.is_globe:
+        for record in records_by_key.values():
+            record.bounds_mins, record.bounds_maxs = coordinate_frame.bounds_to_frame(
+                record.bounds_mins,
+                record.bounds_maxs,
+            )
+
+    if has_clip_bounds:
+        root_mins, root_maxs = coordinate_frame.bounds_to_frame(source_mins, source_maxs)
+    elif coordinate_frame.is_globe:
+        root_mins = np.array(
+            [record.bounds_mins for record in records_by_key.values()]
+        ).min(axis=0)
+        root_maxs = np.array(
+            [record.bounds_maxs for record in records_by_key.values()]
+        ).max(axis=0)
+    else:
+        root_mins = root_record.bounds_mins
+        root_maxs = root_record.bounds_maxs
+
+    root_record.bounds_mins = root_mins
+    root_record.bounds_maxs = root_maxs
+    return root_mins, root_maxs
+
+
 def convert(args: argparse.Namespace) -> None:
     input_path = Path(args.input).resolve()
     output_dir = Path(args.out).resolve()
@@ -590,6 +658,11 @@ def convert(args: argparse.Namespace) -> None:
     if has_rgb:
         decompression_selection |= DecompressionSelection.RGB
 
+    try:
+        clip_bounds = parse_clip_bounds(getattr(args, "clip_bounds", None))
+    except ValueError as error:
+        raise SystemExit(f"--clip-bounds {error}") from error
+
     with CopcReader.open(input_path, decompression_selection=decompression_selection) as reader:
         header = reader.header
         source_crs = header.parse_crs()
@@ -597,7 +670,13 @@ def convert(args: argparse.Namespace) -> None:
         if not crs["has_crs"]:
             warnings.append({"code": "missing_crs_metadata", "message": "Source COPC has no CRS metadata."})
 
-        nodes = load_octree_for_query(reader.source, reader.copc_info, reader.root_page)
+        query_bounds = Bounds(*clip_bounds) if clip_bounds is not None else None
+        nodes = load_octree_for_query(
+            reader.source,
+            reader.copc_info,
+            reader.root_page,
+            query_bounds=query_bounds,
+        )
         nodes_by_key = {key_tuple(node.key): node for node in nodes}
         records_by_key: dict[tuple[int, int, int, int], TileRecord] = {}
 
@@ -622,26 +701,18 @@ def convert(args: argparse.Namespace) -> None:
         if root_record is None:
             raise LaspyException("COPC hierarchy did not contain root node.")
 
-        source_mins = np.asarray(header.mins, dtype=np.float64)
-        source_maxs = np.asarray(header.maxs, dtype=np.float64)
-        coordinate_frame = build_coordinate_frame(args, source_crs, source_mins, source_maxs)
-        if coordinate_frame.is_globe:
-            for record in records_by_key.values():
-                record.bounds_mins, record.bounds_maxs = coordinate_frame.bounds_to_frame(
-                    record.bounds_mins,
-                    record.bounds_maxs,
-                )
-
-        if coordinate_frame.is_globe:
-            record_mins = np.array([record.bounds_mins for record in records_by_key.values()])
-            record_maxs = np.array([record.bounds_maxs for record in records_by_key.values()])
-            root_mins = record_mins.min(axis=0)
-            root_maxs = record_maxs.max(axis=0)
-            root_record.bounds_mins = root_mins
-            root_record.bounds_maxs = root_maxs
-        else:
-            root_mins = root_record.bounds_mins
-            root_maxs = root_record.bounds_maxs
+        header_mins = np.asarray(header.mins, dtype=np.float64)
+        header_maxs = np.asarray(header.maxs, dtype=np.float64)
+        source_mins, source_maxs = clip_bounds or (header_mins, header_maxs)
+        coordinate_frame = build_coordinate_frame(args, source_crs, header_mins, header_maxs)
+        root_mins, root_maxs = prepare_record_bounds(
+            records_by_key,
+            root_record,
+            coordinate_frame,
+            source_mins,
+            source_maxs,
+            clip_bounds is not None,
+        )
         root_center = (
             coordinate_frame.root_center
             if coordinate_frame.is_globe
@@ -657,6 +728,7 @@ def convert(args: argparse.Namespace) -> None:
             })
 
         emitted_points = 0
+        selected_source_points = 0
         max_tile_points = 0
         max_tile_bytes = 0
         tile_count = 0
@@ -669,15 +741,31 @@ def convert(args: argparse.Namespace) -> None:
                 continue
 
             points = reader._fetch_and_decompress_points_of_nodes([nodes_by_key[key_tuple(record.key)]])
+            mask = clip_point_mask(
+                points,
+                header,
+                clip_bounds,
+                bool(getattr(args, "clip_include_max_x", False)),
+                bool(getattr(args, "clip_include_max_y", False)),
+            )
+            if mask is not None:
+                points.array = points.array[mask].copy()
             xyz_source = np.column_stack((points.x, points.y, points.z)).astype(np.float64)
             if xyz_source.shape[0] == 0:
                 skipped_empty_nodes += 1
                 continue
 
+            selected_source_points += int(xyz_source.shape[0])
+
             if args.point_step > 1:
                 xyz_source = xyz_source[::args.point_step]
 
             xyz_world = coordinate_frame.points_to_frame(xyz_source)
+
+            actual_mins = xyz_world.min(axis=0)
+            actual_maxs = xyz_world.max(axis=0)
+            record.bounds_mins = actual_mins
+            record.bounds_maxs = actual_maxs
 
             tile_center_world = (record.bounds_mins + record.bounds_maxs) / 2.0
             local_positions = xyz_world - tile_center_world
@@ -775,8 +863,10 @@ def convert(args: argparse.Namespace) -> None:
         if tile_count > WARN_TOTAL_TILES:
             warnings.append({"code": "total_tiles_gt_5000", "tiles": tile_count})
 
-        tile_mins = np.array([record.bounds_mins for record in records_by_key.values()])
-        tile_maxs = np.array([record.bounds_maxs for record in records_by_key.values()])
+        content_records = [record for record in records_by_key.values() if record.content_uri]
+        measured_records = content_records or [root_record]
+        tile_mins = np.array([record.bounds_mins for record in measured_records])
+        tile_maxs = np.array([record.bounds_maxs for record in measured_records])
         all_tile_mins = tile_mins.min(axis=0)
         all_tile_maxs = tile_maxs.max(axis=0)
         if np.any(all_tile_mins < root_mins - 1e-6) or np.any(all_tile_maxs > root_maxs + 1e-6):
@@ -816,13 +906,16 @@ def convert(args: argparse.Namespace) -> None:
             "dataset": args.dataset,
             "input": str(input_path),
             "output": str(output_dir),
-            "source_point_count": int(header.point_count),
+            "source_point_count": selected_source_points if clip_bounds is not None else int(header.point_count),
             "emitted_point_count": emitted_points,
             "pointStep": args.point_step,
             "densityTarget": args.density_target,
             "densityApproximate": args.point_step > 1,
             "coordinateMode": coordinate_frame.mode,
-            "actualDensityRatio": actual_density_ratio(int(header.point_count), emitted_points),
+            "actualDensityRatio": actual_density_ratio(
+                selected_source_points if clip_bounds is not None else int(header.point_count),
+                emitted_points,
+            ),
             "tile_count": tile_count,
             "skipped_empty_nodes": skipped_empty_nodes,
             "max_tile_points": max_tile_points,
@@ -840,6 +933,14 @@ def convert(args: argparse.Namespace) -> None:
             "has_rgb": has_rgb,
             "warnings": warnings,
         }
+        if clip_bounds is not None:
+            report["clipBounds"] = {
+                "mins": source_mins.tolist(),
+                "maxs": source_maxs.tolist(),
+                "includeMaxX": bool(getattr(args, "clip_include_max_x", False)),
+                "includeMaxY": bool(getattr(args, "clip_include_max_y", False)),
+                "boundaryPolicy": "half-open-xy-outer-inclusive-v1",
+            }
         if coordinate_frame.is_globe:
             report["root_bbox_enu"] = {"mins": root_mins.tolist(), "maxs": root_maxs.tolist()}
             report["enuOriginSource"] = coordinate_frame.enu_origin_source.tolist()
@@ -866,6 +967,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", required=True, help="Output tileset directory")
     parser.add_argument("--dataset", required=True, help="Dataset name for reports")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing output directory")
+    parser.add_argument(
+        "--clip-bounds",
+        default=None,
+        help='Optional exact source-CRS clip as "minX,minY,minZ,maxX,maxY,maxZ".',
+    )
+    parser.add_argument(
+        "--clip-include-max-x",
+        action="store_true",
+        help="Include the clip upper X boundary (use only for the outermost east cell).",
+    )
+    parser.add_argument(
+        "--clip-include-max-y",
+        action="store_true",
+        help="Include the clip upper Y boundary (use only for the outermost north cell).",
+    )
     parser.add_argument("--color-scale", type=float, default=256.0, help="Scale LAS RGB values to uint8")
     parser.add_argument(
         "--point-step",
@@ -916,6 +1032,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.point_step < 1:
         parser.error("--point-step must be >= 1")
+    try:
+        parse_clip_bounds(args.clip_bounds)
+    except ValueError as error:
+        parser.error(f"--clip-bounds {error}")
     if args.tile_pack_group_level < 1:
         parser.error("--tile-pack-group-level must be >= 1")
     if args.enu_origin_source and args.coordinate_mode != COORDINATE_MODE_GLOBE:

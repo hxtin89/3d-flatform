@@ -33,6 +33,9 @@ const contextLayerToggle = document.getElementById(
 const detailSseSelect = document.getElementById(
   'select-detail-sse'
 ) as HTMLSelectElement | null;
+const detailContextSelect = document.getElementById(
+  'select-detail-context'
+) as HTMLSelectElement | null;
 const controlsPanel = document.getElementById('controls-panel');
 const controlsPanelToggle = document.getElementById(
   'controls-panel-toggle'
@@ -140,6 +143,29 @@ export function initDetailSseSelect(onChange: (sse: number) => void): void {
     const sse = Number(detailSseSelect.value);
     if (Number.isFinite(sse) && sse > 0) onChange(sse);
   });
+}
+
+export function initDetailContextSelect(
+  onChange: (mode: 'off' | 'dim' | 'full') => void
+): void {
+  detailContextSelect?.addEventListener('change', () => {
+    const mode = detailContextSelect.value;
+    if (mode === 'off' || mode === 'dim' || mode === 'full') onChange(mode);
+  });
+}
+
+export function getDetailContextMode(): 'off' | 'dim' | 'full' {
+  const mode = detailContextSelect?.value;
+  return mode === 'dim' || mode === 'full' ? mode : 'off';
+}
+
+export function setDetailContextAvailability(enabled: boolean): void {
+  if (!detailContextSelect) return;
+  detailContextSelect.disabled = !enabled;
+}
+
+export function setDetailContextModeValue(mode: 'off' | 'dim' | 'full'): void {
+  if (detailContextSelect) detailContextSelect.value = mode;
 }
 
 export function initControlsPanelToggle(): void {

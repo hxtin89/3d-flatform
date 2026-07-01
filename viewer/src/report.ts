@@ -1,5 +1,6 @@
 import { DATASET, TILE_CONFIG } from './viewer';
 import { PRESETS, type PresetName } from './presets';
+import { activeDatasetFragments } from './detail-micro-lifecycle';
 
 type SizeMetric = { bytes: number; human: string } | null;
 
@@ -26,6 +27,9 @@ interface DatasetReport {
   actualDensityRatio?: number | null;
   areaId?: string | null;
   sourceChunkId?: string | null;
+  microAreaId?: string | null;
+  sourceBbox?: number[] | null;
+  bbox?: number[] | null;
   sourceOverviewDataset?: string | null;
   excludedAreaId?: string | null;
   excludedSourceChunkId?: string | null;
@@ -69,7 +73,36 @@ export type BrowserMetricName =
   | 'loadedPointsEstimated'
   | 'visiblePointsEstimated'
   | 'tilesetMemoryBytes'
-  | 'cacheHitRate';
+  | 'cacheHitRate'
+  | 'microSwitchCount'
+  | 'microTransitionMs'
+  | 'microTransitionPeakMemoryBytes'
+  | 'microTransitionTimeout'
+  | 'visibleP100LayerCount'
+  | 'residentP100TilesetCount'
+  | 'visibleP10LayerCount'
+  | 'residentP10TilesetCount'
+  | 'detailContextMode'
+  | 'dimAlphaSupported'
+  | 'baseDataset'
+  | 'baseResident'
+  | 'baseLoadedTiles'
+  | 'baseActiveTiles'
+  | 'baseVisiblePointsEstimated'
+  | 'baseResidentMemoryBytes'
+  | 'baseVisibleMemoryBytes'
+  | 'detailDataset'
+  | 'detailLoadedTiles'
+  | 'detailActiveTiles'
+  | 'detailVisiblePointsEstimated'
+  | 'detailResidentMemoryBytes'
+  | 'detailVisibleMemoryBytes'
+  | 'combinedActiveTiles'
+  | 'combinedResidentMemoryBytes'
+  | 'combinedTransferBytes'
+  | 'detailContextFallbackReason'
+  | 'performanceGateStatus'
+  | 'performanceGateFailures';
 
 type BrowserMetricValue = string | number | boolean;
 type BrowserMetrics = Record<BrowserMetricName, BrowserMetricValue>;
@@ -119,6 +152,35 @@ const browserMetrics: BrowserMetrics = {
   visiblePointsEstimated: '—',
   tilesetMemoryBytes: 'unsupported',
   cacheHitRate: 'unknown',
+  microSwitchCount: 0,
+  microTransitionMs: '—',
+  microTransitionPeakMemoryBytes: 0,
+  microTransitionTimeout: false,
+  visibleP100LayerCount: 0,
+  residentP100TilesetCount: 0,
+  visibleP10LayerCount: 0,
+  residentP10TilesetCount: 0,
+  detailContextMode: 'off',
+  dimAlphaSupported: true,
+  baseDataset: '—',
+  baseResident: false,
+  baseLoadedTiles: 0,
+  baseActiveTiles: 0,
+  baseVisiblePointsEstimated: 0,
+  baseResidentMemoryBytes: 0,
+  baseVisibleMemoryBytes: 0,
+  detailDataset: '—',
+  detailLoadedTiles: 0,
+  detailActiveTiles: 0,
+  detailVisiblePointsEstimated: 0,
+  detailResidentMemoryBytes: 0,
+  detailVisibleMemoryBytes: 'unsupported',
+  combinedActiveTiles: 0,
+  combinedResidentMemoryBytes: 0,
+  combinedTransferBytes: '—',
+  detailContextFallbackReason: 'none',
+  performanceGateStatus: 'ok',
+  performanceGateFailures: 'none',
 };
 
 let datasetReport: DatasetReport | null = null;
@@ -128,6 +190,14 @@ let resolvedDataset = DATASET;
 let selectedAreaId: string | null = null;
 let modeStatus = 'ready';
 let sourceChunkId: string | null = null;
+let detailScope = 'none';
+let selectedMicroAreaId: string | null = null;
+let microManifestDataset: string | null = null;
+let microSwitchReason: string | null = null;
+let microTransitionState: string | null = null;
+let microFallbackReason: string | null = null;
+let detailExitReason: string | null = null;
+let detailContextModeReport: string = 'off';
 let contextDataset: string | null = null;
 let contextStatus: string | null = null;
 let contextExcludedAreaId: string | null = null;
@@ -174,7 +244,7 @@ export function initDatasetReport(): void {
   });
 }
 
-export function updateBrowserMetric(metric: BrowserMetricName, value: string | number): void {
+export function updateBrowserMetric(metric: BrowserMetricName, value: string | number | boolean): void {
   browserMetrics[metric] = value;
   setText(metric, formatBrowserMetric(metric, value));
 
@@ -199,17 +269,40 @@ export function setReportDatasetContext(context: {
   contextStatus?: string | null;
   contextExcludedAreaId?: string | null;
   contextExcludedSourceChunkId?: string | null;
+  detailScope?: string;
+  selectedMicroAreaId?: string | null;
+  microManifestDataset?: string | null;
 }): void {
   logicalDataset = context.logicalDataset;
   resolvedDataset = context.resolvedDataset;
   selectedAreaId = context.selectedAreaId;
   modeStatus = context.modeStatus;
   sourceChunkId = context.sourceChunkId;
+  detailScope = context.detailScope ?? 'none';
+  selectedMicroAreaId = context.selectedMicroAreaId ?? null;
+  microManifestDataset = context.microManifestDataset ?? null;
   contextDataset = context.contextDataset ?? null;
   contextStatus = context.contextStatus ?? null;
   contextExcludedAreaId = context.contextExcludedAreaId ?? null;
   contextExcludedSourceChunkId = context.contextExcludedSourceChunkId ?? null;
   renderDatasetContext();
+}
+
+export function setReportDetailContextMode(mode: string): void {
+  detailContextModeReport = mode;
+  updateBrowserMetric('detailContextMode', mode);
+}
+
+export function setReportMicroTransitionContext(context: {
+  reason?: string | null;
+  state?: string | null;
+  fallbackReason?: string | null;
+  exitReason?: string | null;
+}): void {
+  if (context.reason !== undefined) microSwitchReason = context.reason;
+  if (context.state !== undefined) microTransitionState = context.state;
+  if (context.fallbackReason !== undefined) microFallbackReason = context.fallbackReason;
+  if (context.exitReason !== undefined) detailExitReason = context.exitReason;
 }
 
 export function setReportAreaDetectionContext(context: AreaDetectionReportContext): void {
@@ -252,6 +345,34 @@ export function resetBrowserMetrics(): void {
     visiblePointsEstimated: '—',
     tilesetMemoryBytes: 'unsupported',
     cacheHitRate: 'unknown',
+    microTransitionMs: '—',
+    microTransitionPeakMemoryBytes: 0,
+    microTransitionTimeout: false,
+    visibleP100LayerCount: detailScope === 'micro' ? 1 : 0,
+    residentP100TilesetCount: detailScope === 'micro' ? 1 : 0,
+    visibleP10LayerCount: 0,
+    residentP10TilesetCount: 0,
+    detailContextMode: 'off',
+    dimAlphaSupported: true,
+    baseDataset: '—',
+    baseResident: false,
+    baseLoadedTiles: 0,
+    baseActiveTiles: 0,
+    baseVisiblePointsEstimated: 0,
+    baseResidentMemoryBytes: 0,
+    baseVisibleMemoryBytes: 0,
+    detailDataset: resolvedDataset,
+    detailLoadedTiles: 0,
+    detailActiveTiles: 0,
+    detailVisiblePointsEstimated: 0,
+    detailResidentMemoryBytes: 0,
+    detailVisibleMemoryBytes: 'unsupported',
+    combinedActiveTiles: 0,
+    combinedResidentMemoryBytes: 0,
+    combinedTransferBytes: cloudFrontMetrics.bytesTransferred,
+    detailContextFallbackReason: 'none',
+    performanceGateStatus: 'ok',
+    performanceGateFailures: 'none',
   });
   renderCloudFrontMetrics();
   for (const [metric, value] of Object.entries(browserMetrics)) {
@@ -383,6 +504,7 @@ function updateNetworkMetrics(): void {
   cloudFrontMetrics = buildCloudFrontMetrics(entries, bytes || measuredNetworkBytes);
   renderCloudFrontMetrics();
   updateBrowserMetric('networkRequests', entries.length);
+  updateBrowserMetric('combinedTransferBytes', cloudFrontMetrics.bytesTransferred);
   updateCacheHitRate(entries);
   if (bytes > 0) {
     updateBrowserMetric('networkMbLoaded', bytes / 1024 / 1024);
@@ -397,9 +519,14 @@ function updateNetworkMetrics(): void {
 }
 
 function activeNetworkFragments(): string[] {
-  const fragments = new Set<string>();
-  fragments.add(resolvedDataset);
-  if (contextDataset) fragments.add(contextDataset);
+  const reportedBaseDataset = typeof browserMetrics.baseDataset === 'string'
+    ? browserMetrics.baseDataset
+    : null;
+  const fragments = new Set(activeDatasetFragments({
+    resolvedDataset,
+    contextDataset,
+    baseDataset: reportedBaseDataset,
+  }));
 
   const focusSourceRoot = sourceDatasetRoot(resolvedDataset, datasetReport);
   if (sourceChunkId) {
@@ -574,6 +701,44 @@ async function copyReport(): Promise<void> {
     selectedAreaId,
     modeStatus,
     sourceChunkId,
+    detailScope,
+    selectedMicroAreaId,
+    microManifestDataset,
+    microPointCount: datasetReport?.pointCount ?? null,
+    microTileCount: datasetReport?.tileCount ?? null,
+    microAverageTileBytes: datasetReport?.averageTileBytes ?? null,
+    microPackingGroupLevel: datasetReport?.tilePacking?.groupLevel ?? null,
+    microBbox: datasetReport?.bbox ?? null,
+    microSourceBbox: datasetReport?.sourceBbox ?? null,
+    microSwitchReason,
+    microTransitionState,
+    microFallbackReason,
+    detailExitReason,
+    detailContextMode: detailContextModeReport,
+    dimAlphaSupported: browserMetrics.dimAlphaSupported,
+    baseDataset: browserMetrics.baseDataset,
+    baseResident: browserMetrics.baseResident,
+    baseLoadedTiles: browserMetrics.baseLoadedTiles,
+    baseActiveTiles: browserMetrics.baseActiveTiles,
+    baseVisiblePointsEstimated: browserMetrics.baseVisiblePointsEstimated,
+    baseResidentMemoryBytes: browserMetrics.baseResidentMemoryBytes,
+    baseVisibleMemoryBytes: browserMetrics.baseVisibleMemoryBytes,
+    detailDataset: browserMetrics.detailDataset,
+    detailLoadedTiles: browserMetrics.detailLoadedTiles,
+    detailActiveTiles: browserMetrics.detailActiveTiles,
+    detailVisiblePointsEstimated: browserMetrics.detailVisiblePointsEstimated,
+    detailResidentMemoryBytes: browserMetrics.detailResidentMemoryBytes,
+    detailVisibleMemoryBytes: browserMetrics.detailVisibleMemoryBytes,
+    combinedActiveTiles: browserMetrics.combinedActiveTiles,
+    combinedResidentMemoryBytes: browserMetrics.combinedResidentMemoryBytes,
+    combinedTransferBytes: browserMetrics.combinedTransferBytes,
+    visibleP10LayerCount: browserMetrics.visibleP10LayerCount,
+    residentP10TilesetCount: browserMetrics.residentP10TilesetCount,
+    visibleP100LayerCount: browserMetrics.visibleP100LayerCount,
+    residentP100TilesetCount: browserMetrics.residentP100TilesetCount,
+    detailContextFallbackReason: browserMetrics.detailContextFallbackReason,
+    performanceGateStatus: browserMetrics.performanceGateStatus,
+    performanceGateFailures: browserMetrics.performanceGateFailures,
     sourceType: datasetReport?.sourceType ?? 'unknown',
     sourceDataset: datasetReport?.sourceDataset ?? logicalDataset,
     focusDataset: resolvedDataset,
@@ -641,12 +806,23 @@ function pageReloaded(): boolean {
   return nav?.type === 'reload';
 }
 
-function formatBrowserMetric(metric: BrowserMetricName, value: string | number): string {
+function formatBrowserMetric(metric: BrowserMetricName, value: string | number | boolean): string {
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
   if (typeof value === 'string') return value;
   if (metric.endsWith('Time')) return `${Math.round(value)} ms`;
   if (metric.endsWith('Fps')) return `${Math.round(value)} fps`;
   if (metric === 'memoryUsage') return `${value.toFixed(1)} MB`;
-  if (metric === 'tilesetMemoryBytes') return formatBytes(value);
+  if (
+    metric === 'tilesetMemoryBytes' ||
+    metric === 'baseResidentMemoryBytes' ||
+    metric === 'detailResidentMemoryBytes' ||
+    metric === 'combinedResidentMemoryBytes' ||
+    metric === 'combinedTransferBytes' ||
+    metric === 'baseVisibleMemoryBytes' ||
+    metric === 'detailVisibleMemoryBytes'
+  ) {
+    return typeof value === 'number' ? formatBytes(value) : String(value);
+  }
   if (metric === 'networkMbLoaded') return `${value.toFixed(2)} MB`;
   if (
     metric === 'loadedPointsEstimated' ||

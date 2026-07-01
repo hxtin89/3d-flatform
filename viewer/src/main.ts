@@ -6,6 +6,7 @@ import {
   TILE_SOURCE,
   PointCloudViewer,
   type CameraSnapshot,
+  type DetailContextMode,
   type ViewerState,
 } from './viewer';
 import { type PresetName } from './presets';
@@ -23,7 +24,10 @@ import {
   initContextLayerToggle,
   initControlsPanelToggle,
   initDetailSseSelect,
+  initDetailContextSelect,
   isContextLayerEnabled,
+  setDetailContextAvailability,
+  setDetailContextModeValue,
   setAreaOptions,
   setAreaDetectionStatus,
   setContextLayerAvailability,
@@ -39,21 +43,28 @@ import {
   updateReportMode,
   setReportDatasetContext,
   setReportAreaDetectionContext,
+  setReportMicroTransitionContext,
+  setReportDetailContextMode,
   reloadDatasetReport,
   resetBrowserMetrics,
   type BrowserMetricName,
 } from './report';
 import {
   fetchAreaManifest,
+  fetchMicroAreaManifest,
   findAreaForViewSamples,
+  findMicroAreaForViewSamples,
   modeForPreset,
   resolveDataset,
   selectedArea,
   statusLabel,
   type AreaManifest,
   type AreaManifestEntry,
+  type MicroAreaEntry,
+  type MicroAreaManifest,
   type ResolvedDataset,
 } from './manifest';
+import { evaluateZoomExitState } from './detail-micro-lifecycle';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
@@ -65,6 +76,13 @@ let currentArea: AreaManifestEntry | null = null;
 let currentResolved: ResolvedDataset = resolveDataset(DATASET, 'low', null, null);
 let preDetailCameraSnapshot: CameraSnapshot | null = null;
 let contextLayerEnabled = false;
+let currentMicroArea: MicroAreaEntry | null = null;
+const microManifestCache = new Map<string, MicroAreaManifest>();
+let microMoveTimer: number | null = null;
+let microConfirmationTimer: number | null = null;
+let microSwitchGeneration = 0;
+let microSwitchCount = 0;
+let microZoomExitArmed = false;
 
 type CurrentViewDetection = {
   area: AreaManifestEntry;
@@ -97,11 +115,19 @@ const viewer = new PointCloudViewer('cesium-container', {
       memory: viewer.getCacheMB(),
     });
   },
-  onBrowserMetric: (metric: BrowserMetricName, value: number | string) => {
+  onBrowserMetric: (metric: BrowserMetricName, value: number | string | boolean) => {
     updateBrowserMetric(metric, value);
   },
   onInteraction: () => {
     markInteraction();
+  },
+  onViewSettled: () => {
+    scheduleMicroViewEvaluation();
+  },
+  onDetailContextModeChange: (mode: DetailContextMode, reason: string | null) => {
+    setDetailContextModeValue(mode);
+    setReportDetailContextMode(mode);
+    if (reason) setAreaDetectionStatus(`Detail Context disabled: ${reason}`);
   },
 });
 
@@ -148,6 +174,13 @@ initDetailSseSelect((sse: number) => {
   });
 });
 
+initDetailContextSelect((mode: DetailContextMode) => {
+  setReportDetailContextMode(mode);
+  viewer.setDetailContextMode(mode).catch((err) => {
+    console.error('[Main] Failed to set Detail context mode:', err);
+  });
+});
+
 initFlyHomeButton(() => {
   viewer.flyHome();
 });
@@ -187,6 +220,131 @@ async function bootstrap(): Promise<void> {
   await applyMode('low');
 }
 
+async function loadMicroManifest(area: AreaManifestEntry): Promise<MicroAreaManifest | null> {
+  const ref = area.datasets.detailMicro;
+  if (!ref || ref.status !== 'ready') return null;
+  const cached = microManifestCache.get(ref.manifest);
+  if (cached) return cached;
+  const manifest = await fetchMicroAreaManifest(ref.manifest);
+  if (manifest) microManifestCache.set(ref.manifest, manifest);
+  return manifest;
+}
+
+function microZoomExitThreshold(cell: MicroAreaEntry): number {
+  const width = Math.max(cell.bbox[3] - cell.bbox[0], 0);
+  const height = Math.max(cell.bbox[4] - cell.bbox[1], 0);
+  return Math.hypot(width, height) * 2.5;
+}
+
+function clearMicroTimers(): void {
+  if (microMoveTimer !== null) window.clearTimeout(microMoveTimer);
+  if (microConfirmationTimer !== null) window.clearTimeout(microConfirmationTimer);
+  microMoveTimer = null;
+  microConfirmationTimer = null;
+}
+
+function scheduleMicroViewEvaluation(): void {
+  if (viewer.getCurrentPreset() !== 'high' || currentResolved.detailScope !== 'micro') return;
+  clearMicroTimers();
+  microSwitchGeneration += 1;
+  viewer.cancelMicroTransition();
+  const generation = microSwitchGeneration;
+  microMoveTimer = window.setTimeout(() => {
+    evaluateMicroView(generation).catch((error) => {
+      console.error('[Micro] View evaluation failed:', error);
+      setReportMicroTransitionContext({ state: 'failed', fallbackReason: error.message });
+    });
+  }, 300);
+}
+
+async function evaluateMicroView(generation: number): Promise<void> {
+  if (
+    generation !== microSwitchGeneration ||
+    viewer.getCurrentPreset() !== 'high' ||
+    !areaManifest ||
+    !currentArea ||
+    !currentMicroArea
+  ) return;
+
+  const zoomExit = evaluateZoomExitState({
+    armed: microZoomExitArmed,
+    cameraRange: viewer.getCameraRange(),
+    exitThreshold: microZoomExitThreshold(currentMicroArea),
+  });
+  microZoomExitArmed = zoomExit.armed;
+  if (zoomExit.shouldExit) {
+    setReportMicroTransitionContext({ state: 'exit_detail', exitReason: 'camera_range_exceeded' });
+    await applyMode('medium');
+    return;
+  }
+
+  const samples = viewer.getCurrentViewSamples();
+  const parentDetection = findAreaForViewSamples(areaManifest, samples);
+  if (parentDetection.area && parentDetection.area.areaId !== currentArea.areaId) {
+    currentArea = parentDetection.area;
+    currentMicroArea = null;
+    setSelectedAreaOption(currentArea.areaId);
+    if (currentArea.datasets.detailMicro?.status !== 'ready') {
+      setReportMicroTransitionContext({
+        state: 'fallback_explore',
+        fallbackReason: 'target_area_not_micro_ready',
+      });
+      await applyMode('medium');
+    } else {
+      await applyMode('high');
+    }
+    return;
+  }
+
+  const microManifest = await loadMicroManifest(currentArea);
+  if (!microManifest) return;
+  const first = findMicroAreaForViewSamples(
+    areaManifest,
+    microManifest,
+    samples,
+    currentMicroArea.microAreaId,
+    15
+  );
+  if (!first.cell || first.cell.microAreaId === currentMicroArea.microAreaId) return;
+
+  await new Promise<void>((resolve) => {
+    microConfirmationTimer = window.setTimeout(resolve, 200);
+  });
+  if (generation !== microSwitchGeneration || viewer.getCurrentPreset() !== 'high') return;
+  const second = findMicroAreaForViewSamples(
+    areaManifest,
+    microManifest,
+    viewer.getCurrentViewSamples(),
+    currentMicroArea.microAreaId,
+    15
+  );
+  if (!second.cell || second.cell.microAreaId !== first.cell.microAreaId || second.cell.status !== 'ready') return;
+
+  const next = second.cell;
+  setReportMicroTransitionContext({ reason: 'camera_move_end', state: 'preloading', fallbackReason: null });
+  const result = await viewer.switchMicroLayer({
+    dataset: next.dataset,
+    preset: 'high',
+    detailScope: 'micro',
+  });
+  updateBrowserMetric('microTransitionMs', result.durationMs);
+  updateBrowserMetric('microTransitionPeakMemoryBytes', result.peakMemoryBytes);
+  updateBrowserMetric('microTransitionTimeout', result.reason === 'timeout' ? 1 : 0);
+  if (result.status !== 'ready') {
+    setReportMicroTransitionContext({ state: result.status, fallbackReason: result.reason });
+    return;
+  }
+
+  currentMicroArea = next;
+  microSwitchCount += 1;
+  updateBrowserMetric('microSwitchCount', microSwitchCount);
+  currentResolved = resolveDataset(DATASET, 'high', areaManifest, currentArea, currentMicroArea);
+  setDatasetLabel(currentResolved.resolvedDataset);
+  setReportDatasetContext(currentResolved);
+  setReportMicroTransitionContext({ state: 'ready', reason: 'camera_move_end' });
+  await reloadDatasetReport();
+}
+
 async function applyMode(
   preset: PresetName,
   opts: { detectCurrentViewForDetail?: boolean; forceReload?: boolean } = {}
@@ -211,7 +369,28 @@ async function applyMode(
     }
   }
 
-  const resolved = resolveDataset(DATASET, preset, areaManifest, currentArea);
+  if (preset !== 'high') {
+    currentMicroArea = null;
+    microZoomExitArmed = false;
+  } else if (currentArea?.datasets.detailMicro) {
+    const microManifest = await loadMicroManifest(currentArea);
+    const samples = viewer.getCurrentViewSamples();
+    const microDetection = microManifest
+      ? findMicroAreaForViewSamples(areaManifest!, microManifest, samples)
+      : null;
+    currentMicroArea = microDetection?.cell?.status === 'ready' ? microDetection.cell : null;
+    if (!currentMicroArea) {
+      setReportMicroTransitionContext({
+        state: 'fallback_explore',
+        fallbackReason: microDetection?.reason ?? 'micro_manifest_unavailable',
+      });
+      setAreaDetectionStatus('Micro Detail is unavailable for the current view; loading Explore.');
+      await applyMode('medium');
+      return;
+    }
+  }
+
+  const resolved = resolveDataset(DATASET, preset, areaManifest, currentArea, currentMicroArea);
   if (preset !== 'low' && resolved.modeStatus !== 'ready') {
     if (currentViewDetection) {
       const mode = modeForPreset(preset);
@@ -229,8 +408,141 @@ async function applyMode(
     }
     return;
   }
-  const wantsContext = preset !== 'low' && contextLayerEnabled;
+  const wantsContext = preset !== 'low' && contextLayerEnabled && resolved.detailScope !== 'micro';
   const canLoadContext = wantsContext && resolved.contextStatus === 'ready' && Boolean(resolved.contextDataset);
+  const reportResolved = canLoadContext ? resolved : {
+    ...resolved,
+    contextDataset: null,
+    contextStatus: null,
+    contextStatusLabel: null,
+    contextExcludedAreaId: null,
+    contextExcludedSourceChunkId: null,
+  };
+  const exploreResolved = resolveDataset(DATASET, 'medium', areaManifest, currentArea);
+  const microLayer = resolved.detailScope === 'micro' && currentMicroArea
+    ? {
+        dataset: resolved.resolvedDataset,
+        preset: 'high' as const,
+        detailScope: 'micro' as const,
+      }
+    : null;
+
+  if (preset === 'medium' && viewer.isDetailMicroActive()) {
+    const exploreTilesetBefore = viewer.getBaseTileset();
+    const reusedExplore = await viewer.exitDetailMicroToExplore(exploreResolved.resolvedDataset);
+    if (exploreTilesetBefore) {
+      console.assert(
+        viewer.getExploreTilesetForIdentityCheck() === exploreTilesetBefore,
+        'Explore p10 identity must be preserved across Detail → Explore'
+      );
+    }
+    viewer.setPreset('medium');
+    setActivePreset('medium');
+    setDatasetLabel(exploreResolved.resolvedDataset);
+    currentResolved = canLoadContext ? exploreResolved : {
+      ...exploreResolved,
+      contextDataset: null,
+      contextStatus: null,
+      contextStatusLabel: null,
+      contextExcludedAreaId: null,
+      contextExcludedSourceChunkId: null,
+    };
+    updateReportMode('medium');
+    setReportDatasetContext(currentResolved);
+    setDetailContextModeValue('off');
+    setReportDetailContextMode('off');
+    await reloadDatasetReport();
+    const exploreContext = canLoadContext && exploreResolved.contextDataset
+      ? { dataset: exploreResolved.contextDataset, preset: 'low' as const, detailScope: 'none' as const }
+      : null;
+    if (reusedExplore) {
+      await viewer.syncExploreContextLayer(exploreContext);
+    } else {
+      await viewer.loadScene({
+        primary: { dataset: exploreResolved.resolvedDataset, preset: 'medium', detailScope: 'none' },
+        context: exploreContext,
+        cameraBehavior: 'preserve',
+      });
+    }
+    updateStats({
+      sse: viewer.getSSE(),
+      memory: viewer.getCacheMB(),
+      tiles: viewer.getExploreTilesetForIdentityCheck() ? 0 : 0,
+    });
+    return;
+  }
+
+  if (preset === 'high' && microLayer) {
+    if (
+      viewer.isDetailMicroActive() &&
+      viewer.getActiveDataset() === microLayer.dataset &&
+      !opts.forceReload
+    ) {
+      viewer.setPreset('high');
+      setActivePreset('high');
+      currentResolved = reportResolved;
+      setReportDatasetContext(reportResolved);
+      updateModeAvailability();
+      return;
+    }
+
+    const fromExplore = previousPreset === 'medium' &&
+      viewer.canReuseExploreBase(exploreResolved.resolvedDataset);
+    const exploreTilesetBefore = fromExplore
+      ? viewer.getExploreTilesetForIdentityCheck()
+      : null;
+
+    if (!fromExplore) {
+      resetBrowserMetrics();
+      updateBrowserMetric('framingMode', 'preserve');
+      await reloadDatasetReport();
+    } else {
+      updateBrowserMetric('framingMode', 'preserve');
+    }
+
+    setDetailContextModeValue('off');
+    setReportDetailContextMode('off');
+    const transition = await viewer.enterDetailMicro({
+      micro: microLayer,
+      exploreDataset: exploreResolved.resolvedDataset,
+      fromExplore,
+    });
+
+    updateBrowserMetric('microTransitionMs', transition.durationMs);
+    updateBrowserMetric('microTransitionPeakMemoryBytes', transition.peakMemoryBytes);
+    updateBrowserMetric('microTransitionTimeout', transition.reason === 'timeout');
+    if (transition.status !== 'ready') {
+      setReportMicroTransitionContext({
+        state: transition.status,
+        fallbackReason: transition.reason,
+      });
+      return;
+    }
+    microZoomExitArmed = false;
+
+    if (fromExplore && exploreTilesetBefore) {
+      console.assert(
+        viewer.getBaseTileset() === exploreTilesetBefore,
+        'detailBaseTileset === exploreTileset'
+      );
+    }
+
+    viewer.setPreset('high');
+    setActivePreset('high');
+    setDatasetLabel(resolved.resolvedDataset);
+    currentResolved = reportResolved;
+    updateReportMode('high');
+    setReportDatasetContext(reportResolved);
+    await reloadDatasetReport();
+    updateModeAvailability();
+    updateStats({
+      sse: viewer.getSSE(),
+      memory: viewer.getCacheMB(),
+      tiles: 0,
+    });
+    return;
+  }
+
   if (wantsContext && !canLoadContext) {
     setAreaDetectionStatus(
       `Context layer is ${resolved.contextStatusLabel ?? 'not ready'}; loading ${modeForPreset(preset)} focus only. Run npm run pipeline:area:overview:p001:excluding -- ${DATASET}.`
@@ -244,14 +556,6 @@ async function applyMode(
     preDetailCameraSnapshot = viewer.captureCameraSnapshot();
   }
 
-  const reportResolved = canLoadContext ? resolved : {
-    ...resolved,
-    contextDataset: null,
-    contextStatus: null,
-    contextStatusLabel: null,
-    contextExcludedAreaId: null,
-    contextExcludedSourceChunkId: null,
-  };
   currentResolved = reportResolved;
   viewer.setPreset(preset);
   setActivePreset(preset);
@@ -265,9 +569,9 @@ async function applyMode(
   await reloadDatasetReport();
   if (preset !== 'low') {
     await viewer.loadScene({
-      primary: { dataset: resolved.resolvedDataset, preset },
+      primary: { dataset: resolved.resolvedDataset, preset, detailScope: resolved.detailScope },
       context: canLoadContext && resolved.contextDataset
-        ? { dataset: resolved.contextDataset, preset: 'low' }
+        ? { dataset: resolved.contextDataset, preset: 'low', detailScope: 'none' }
         : null,
       cameraBehavior: 'preserve',
     });
@@ -290,12 +594,14 @@ async function applyMode(
 
 function updateModeAvailability(): void {
   contextLayerEnabled = isContextLayerEnabled();
+  const preset = viewer.getCurrentPreset();
+  setDetailContextAvailability(preset === 'high' && currentResolved.detailScope === 'micro');
   const overviewStatus = resolveDataset(DATASET, 'low', areaManifest, currentArea).modeStatus;
   setPresetAvailability('low', true, statusLabel('overview', overviewStatus));
   const exploreResolved = resolveDataset(DATASET, 'medium', areaManifest, currentArea);
   const exploreStatus = exploreResolved.modeStatus;
-  const detailResolved = resolveDataset(DATASET, 'high', areaManifest, currentArea);
-  const detailStatus = detailResolved.modeStatus;
+  const detailResolved = resolveDataset(DATASET, 'high', areaManifest, currentArea, currentMicroArea);
+  const detailStatus = currentArea?.datasets.detailMicro?.status ?? detailResolved.modeStatus;
   setContextLayerAvailability(Boolean(areaManifest?.areas.length), 'Area manifest is not ready yet.');
   setPresetAvailability(
     'medium',
@@ -417,7 +723,8 @@ async function useCurrentView(): Promise<void> {
   }
 
   const resolved = resolveDataset(DATASET, preset, areaManifest, detectedArea);
-  if (preset !== 'low' && resolved.modeStatus !== 'ready') {
+  const microReady = preset === 'high' && detectedArea.datasets.detailMicro?.status === 'ready';
+  if (preset !== 'low' && resolved.modeStatus !== 'ready' && !microReady) {
     const mode = modeForPreset(preset);
     const status = statusLabel(mode, resolved.modeStatus);
     currentArea = detectedArea;
@@ -451,6 +758,7 @@ async function selectArea(
   area: AreaManifestEntry | null,
   opts: { reloadCurrentMode: boolean; statusMessage?: string }
 ): Promise<void> {
+  if (area?.areaId !== currentArea?.areaId) currentMicroArea = null;
   currentArea = area;
   setSelectedAreaOption(currentArea?.areaId ?? null);
   updateModeAvailability();
@@ -463,8 +771,9 @@ async function selectArea(
   }
 
   const preset = viewer.getCurrentPreset();
-  const resolved = resolveDataset(DATASET, preset, areaManifest, currentArea);
-  if (resolved.modeStatus !== 'ready') {
+  const resolved = resolveDataset(DATASET, preset, areaManifest, currentArea, currentMicroArea);
+  const microReady = preset === 'high' && currentArea?.datasets.detailMicro?.status === 'ready';
+  if (resolved.modeStatus !== 'ready' && !microReady) {
     await applyMode('low');
     return;
   }

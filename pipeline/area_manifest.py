@@ -118,6 +118,17 @@ def build_manifest(args: argparse.Namespace) -> None:
         explore_dataset = public_dataset(args, f"{dataset}-{EXPLORE_GROUP_SUFFIX}/areas/{area_id}")
         detail_dataset = public_dataset(args, f"{dataset}-{DETAIL_GROUP_SUFFIX}/areas/{area_id}")
         context_dataset = public_dataset(args, f"{dataset}-{DETAIL_CONTEXT_GROUP_SUFFIX}/areas/{area_id}")
+        micro_manifest = tilesets_dir / detail_dataset / "micro-manifest.json"
+        area_datasets: dict[str, Any] = {
+            "explore": mode_dataset(explore_dataset, status_for(tilesets_dir, explore_dataset)),
+            "detail": mode_dataset(detail_dataset, status_for(tilesets_dir, detail_dataset)),
+            "context": mode_dataset(context_dataset, status_for(tilesets_dir, context_dataset)),
+        }
+        if micro_manifest.exists():
+            area_datasets["detailMicro"] = {
+                "manifest": f"{detail_dataset}/micro-manifest.json",
+                "status": STATUS_READY,
+            }
         areas.append({
             "areaId": area_id,
             "label": f"Area {index:03d}",
@@ -125,11 +136,7 @@ def build_manifest(args: argparse.Namespace) -> None:
             "bbox": bbox_values(area_bbox),
             "sourceBbox": bbox_values(source_bbox),
             "pointCount": report.get("source_point_count") or report.get("emitted_point_count"),
-            "datasets": {
-                "explore": mode_dataset(explore_dataset, status_for(tilesets_dir, explore_dataset)),
-                "detail": mode_dataset(detail_dataset, status_for(tilesets_dir, detail_dataset)),
-                "context": mode_dataset(context_dataset, status_for(tilesets_dir, context_dataset)),
-            },
+            "datasets": area_datasets,
         })
 
     overview_dataset = public_dataset(args, f"{dataset}-overview-p02")

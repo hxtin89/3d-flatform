@@ -88,11 +88,27 @@
             <span class="stat-key">Detail SSE</span>
             <span class="stat-val">
               <select class="debug-select" id="select-detail-sse">
-                <option value="32">32</option>
-                <option value="128">128</option>
-                <option value="256" selected>256</option>
+                <option value="64">64</option>
+                <option value="128" selected>128</option>
+                <option value="256">256</option>
               </select>
             </span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">Detail Context</span>
+            <span class="stat-val">
+              <select class="debug-select" id="select-detail-context" disabled>
+                <option value="off" selected>Off</option>
+                <option value="dim">Dim p10</option>
+                <option value="full">Full p10</option>
+              </select>
+            </span>
+          </div>
+          <div class="stat-row context-toggle-row">
+            <label class="context-toggle">
+              <input type="checkbox" id="toggle-context-layer" disabled />
+              Overview context (p001)
+            </label>
           </div>
           <div class="stat-row">
             <span class="stat-key">Memory</span>
