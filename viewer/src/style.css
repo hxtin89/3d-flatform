@@ -425,6 +425,28 @@ html, body {
   font-size: 11px;
 }
 
+.overview-point-size-val {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overview-slider {
+  width: 56px;
+  accent-color: var(--accent, #4f8cff);
+  cursor: pointer;
+}
+
+.overview-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+#overview-point-size-val {
+  min-width: 24px;
+  text-align: right;
+}
+
 .area-select {
   width: 100%;
   min-height: 30px;

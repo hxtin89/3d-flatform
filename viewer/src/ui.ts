@@ -33,6 +33,10 @@ const contextLayerToggle = document.getElementById(
 const detailSseSelect = document.getElementById(
   'select-detail-sse'
 ) as HTMLSelectElement | null;
+const overviewPointSizeSlider = document.getElementById(
+  'slider-overview-point-size'
+) as HTMLInputElement | null;
+const overviewPointSizeValue = document.getElementById('overview-point-size-val');
 const controlsPanel = document.getElementById('controls-panel');
 const controlsPanelToggle = document.getElementById(
   'controls-panel-toggle'
@@ -140,6 +144,26 @@ export function initDetailSseSelect(onChange: (sse: number) => void): void {
     const sse = Number(detailSseSelect.value);
     if (Number.isFinite(sse) && sse > 0) onChange(sse);
   });
+}
+
+export function initOverviewPointSizeSlider(onChange: (scale: number) => void): void {
+  overviewPointSizeSlider?.addEventListener('input', () => {
+    const scale = Number(overviewPointSizeSlider.value);
+    if (Number.isFinite(scale)) onChange(scale);
+  });
+}
+
+export function setOverviewPointSizeScale(scale: number): void {
+  if (!overviewPointSizeSlider) return;
+  const value = String(scale);
+  if (overviewPointSizeSlider.value !== value) overviewPointSizeSlider.value = value;
+  if (overviewPointSizeValue) overviewPointSizeValue.textContent = `${scale}×`;
+}
+
+export function setOverviewPointSizeAvailability(enabled: boolean, label: string): void {
+  if (!overviewPointSizeSlider) return;
+  overviewPointSizeSlider.disabled = !enabled;
+  overviewPointSizeSlider.title = enabled ? '' : label;
 }
 
 export function initControlsPanelToggle(): void {

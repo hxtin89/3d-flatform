@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/env.sh"
 DATASET="${1:-2404PeruB2}"
 
@@ -16,5 +17,12 @@ COPC_TILE_PACK_TARGET_BYTES="${COPC_TILE_PACK_TARGET_BYTES:-524288}" \
 COPC_TILE_PACK_HARD_MAX_BYTES="${COPC_TILE_PACK_HARD_MAX_BYTES:-5242880}" \
 COPC_TILE_CHUNK_OVERWRITE="${COPC_TILE_CHUNK_OVERWRITE:-0}" \
 bash "$SCRIPT_DIR/copc-tiles-chunks.sh" "$DATASET"
+
+OUTPUT_DATASET="$(pointcloud_public_dataset "${DATASET}-overview-p02")"
+OUTPUT_DIR="$ROOT_DIR/local-storage/tilesets/$OUTPUT_DATASET"
+
+run_tool python "$SCRIPT_DIR/validate_overview_bootstrap.py" \
+  --tileset-dir "$OUTPUT_DIR" \
+  --output "$OUTPUT_DIR/bootstrap-validation.json"
 
 bash "$SCRIPT_DIR/area-manifest.sh" "$DATASET"

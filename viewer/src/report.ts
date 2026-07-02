@@ -69,7 +69,23 @@ export type BrowserMetricName =
   | 'loadedPointsEstimated'
   | 'visiblePointsEstimated'
   | 'tilesetMemoryBytes'
-  | 'cacheHitRate';
+  | 'cacheHitRate'
+  | 'pointSizePx'
+  | 'pointSizeBand'
+  | 'pointSizeScale'
+  | 'cameraRangeRatio'
+  | 'cacheBytesRuntime'
+  | 'overviewSsePhase'
+  | 'overviewSse'
+  | 'overviewBootstrapRequests'
+  | 'overviewBootstrapBytes'
+  | 'overviewTravelRequests'
+  | 'overviewTravelBytes'
+  | 'overviewRefiningRequests'
+  | 'overviewRefiningBytes'
+  | 'overviewReadyRequests'
+  | 'overviewReadyBytes'
+  | 'overviewTravelDistance';
 
 type BrowserMetricValue = string | number | boolean;
 type BrowserMetrics = Record<BrowserMetricName, BrowserMetricValue>;
@@ -119,6 +135,22 @@ const browserMetrics: BrowserMetrics = {
   visiblePointsEstimated: '—',
   tilesetMemoryBytes: 'unsupported',
   cacheHitRate: 'unknown',
+  pointSizePx: '—',
+  pointSizeBand: '—',
+  pointSizeScale: '—',
+  cameraRangeRatio: '—',
+  cacheBytesRuntime: '—',
+  overviewSsePhase: '—',
+  overviewSse: '—',
+  overviewBootstrapRequests: 0,
+  overviewBootstrapBytes: 0,
+  overviewTravelRequests: 0,
+  overviewTravelBytes: 0,
+  overviewRefiningRequests: 0,
+  overviewRefiningBytes: 0,
+  overviewReadyRequests: 0,
+  overviewReadyBytes: 0,
+  overviewTravelDistance: 0,
 };
 
 let datasetReport: DatasetReport | null = null;
@@ -139,6 +171,13 @@ let interactionFpsStop: (() => void) | null = null;
 let measuredNetworkBytes = 0;
 let measuringNetwork = false;
 let cloudFrontMetrics: CloudFrontMetrics = emptyCloudFrontMetrics();
+let overviewSseValidation: Record<string, unknown> | null = null;
+
+export function setOverviewSseValidation(
+  validation: Record<string, unknown> | null
+): void {
+  overviewSseValidation = validation;
+}
 
 const fields = new Map<string, HTMLElement>();
 const measuredNetworkUrls = new Set<string>();
@@ -252,6 +291,22 @@ export function resetBrowserMetrics(): void {
     visiblePointsEstimated: '—',
     tilesetMemoryBytes: 'unsupported',
     cacheHitRate: 'unknown',
+    pointSizePx: '—',
+    pointSizeBand: '—',
+    pointSizeScale: '—',
+    cameraRangeRatio: '—',
+    cacheBytesRuntime: '—',
+    overviewSsePhase: '—',
+    overviewSse: '—',
+    overviewBootstrapRequests: 0,
+    overviewBootstrapBytes: 0,
+    overviewTravelRequests: 0,
+    overviewTravelBytes: 0,
+    overviewRefiningRequests: 0,
+    overviewRefiningBytes: 0,
+    overviewReadyRequests: 0,
+    overviewReadyBytes: 0,
+    overviewTravelDistance: 0,
   });
   renderCloudFrontMetrics();
   for (const [metric, value] of Object.entries(browserMetrics)) {
@@ -342,6 +397,9 @@ function renderDatasetReport(report: DatasetReport): void {
 
 function renderModeConfig(): void {
   const preset = PRESETS[currentPresetName];
+  const runtimeCacheBytes = typeof browserMetrics.cacheBytesRuntime === 'number'
+    ? browserMetrics.cacheBytesRuntime
+    : preset.cacheBytes;
   setText('userMode', preset.userMode);
   setText('dataDensity', preset.dataDensity);
   setText('renderQuality', preset.renderQuality);
@@ -349,7 +407,7 @@ function renderModeConfig(): void {
   setText('focusEffectiveSSE', String(browserMetrics.focusEffectiveSSE));
   setText('contextEffectiveSSE', String(browserMetrics.contextEffectiveSSE));
   setText('framingMode', String(browserMetrics.framingMode));
-  setText('cacheBytes', formatBytes(preset.cacheBytes));
+  setText('cacheBytes', formatBytes(runtimeCacheBytes));
 }
 
 function renderDatasetContext(): void {
@@ -565,6 +623,9 @@ function sampleFps(onDone: (fps: number) => void, durationMs: number): () => voi
 
 async function copyReport(): Promise<void> {
   const preset = PRESETS[currentPresetName];
+  const runtimeCacheBytes = typeof browserMetrics.cacheBytesRuntime === 'number'
+    ? browserMetrics.cacheBytesRuntime
+    : preset.cacheBytes;
   const focusDensity = datasetReport?.densityTarget ?? preset.dataDensity;
   const contextDensity = contextReport?.densityTarget ?? null;
   const payload = {
@@ -614,14 +675,44 @@ async function copyReport(): Promise<void> {
     selectedTiles: browserMetrics.selectedTiles,
     visiblePointsEstimated: browserMetrics.visiblePointsEstimated,
     tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
+    overviewTuning: {
+      pointSizePx: browserMetrics.pointSizePx,
+      pointSizeBand: browserMetrics.pointSizeBand,
+      pointSizeScale: browserMetrics.pointSizeScale,
+      cameraRangeRatio: browserMetrics.cameraRangeRatio,
+    },
+    overviewSse: {
+      phase: browserMetrics.overviewSsePhase,
+      sse: browserMetrics.overviewSse,
+      validation: overviewSseValidation,
+      travelDistance: browserMetrics.overviewTravelDistance,
+      metrics: {
+        bootstrap: {
+          requests: browserMetrics.overviewBootstrapRequests,
+          bytes: browserMetrics.overviewBootstrapBytes,
+        },
+        travel: {
+          requests: browserMetrics.overviewTravelRequests,
+          bytes: browserMetrics.overviewTravelBytes,
+        },
+        refining: {
+          requests: browserMetrics.overviewRefiningRequests,
+          bytes: browserMetrics.overviewRefiningBytes,
+        },
+        ready: {
+          requests: browserMetrics.overviewReadyRequests,
+          bytes: browserMetrics.overviewReadyBytes,
+        },
+      },
+    },
     debugSummary: {
       visiblePointsEstimated: browserMetrics.visiblePointsEstimated,
       selectedTiles: browserMetrics.selectedTiles,
       tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
     },
     cacheBytes: {
-      bytes: preset.cacheBytes,
-      human: formatBytes(preset.cacheBytes),
+      bytes: runtimeCacheBytes,
+      human: formatBytes(runtimeCacheBytes),
     },
     timestamp: new Date().toISOString(),
     url: window.location.href,
@@ -648,6 +739,22 @@ function formatBrowserMetric(metric: BrowserMetricName, value: string | number):
   if (metric === 'memoryUsage') return `${value.toFixed(1)} MB`;
   if (metric === 'tilesetMemoryBytes') return formatBytes(value);
   if (metric === 'networkMbLoaded') return `${value.toFixed(2)} MB`;
+  if (metric === 'pointSizePx') return `${value} px`;
+  if (metric === 'pointSizeScale') return `${value}×`;
+  if (metric === 'cameraRangeRatio') return value.toFixed(2);
+  if (metric === 'cacheBytesRuntime') return formatBytes(value);
+  if (metric === 'overviewSse') return String(value);
+  if (metric === 'overviewTravelDistance') {
+    return typeof value === 'number' && value > 0
+      ? `${(value / 1000).toFixed(1)} km`
+      : '—';
+  }
+  if (metric.startsWith('overview') && metric.endsWith('Bytes')) {
+    return typeof value === 'number' ? formatBytes(value) : value;
+  }
+  if (metric.startsWith('overview') && metric.endsWith('Requests')) {
+    return formatNumber(value);
+  }
   if (
     metric === 'loadedPointsEstimated' ||
     metric === 'visiblePointsEstimated' ||

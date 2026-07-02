@@ -94,6 +94,17 @@
               </select>
             </span>
           </div>
+          <div class="stat-row" id="overview-point-size-row">
+            <span class="stat-key">Point Size</span>
+            <span class="stat-val overview-point-size-val">
+              <input type="range" class="overview-slider" id="slider-overview-point-size" min="0.5" max="2" step="0.25" value="1" disabled>
+              <span id="overview-point-size-val">1×</span>
+            </span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">SSE Phase</span>
+            <span class="stat-val" data-report-field="overviewSsePhase">—</span>
+          </div>
           <div class="stat-row">
             <span class="stat-key">Memory</span>
             <span class="stat-val" id="stat-memory">—</span>
@@ -126,6 +137,10 @@
           <div class="stat-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
           <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
           <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val" data-report-field="selectedTiles">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Size</span><span class="stat-val" data-report-field="pointSizePx">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Band</span><span class="stat-val" data-report-field="pointSizeBand">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Scale</span><span class="stat-val" data-report-field="pointSizeScale">—</span></div>
+          <div class="stat-row"><span class="stat-key">Cam Range Ratio</span><span class="stat-val" data-report-field="cameraRangeRatio">—</span></div>
           <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val" data-report-field="networkMbLoaded">—</span></div>
           <div class="stat-row"><span class="stat-key">PNTS Requests</span><span class="stat-val" data-report-field="pntsRequests">—</span></div>
           <div class="stat-row"><span class="stat-key">Tileset Requests</span><span class="stat-val" data-report-field="tilesetRequests">—</span></div>

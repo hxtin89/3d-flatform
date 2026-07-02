@@ -69,7 +69,7 @@ export const GLOBE_PRESETS: Partial<Record<PresetName, PresetConfig>> = {
   low: {
     ...PRESETS.low,
     maximumScreenSpaceError: 128,
-    description: 'Globe overview using a higher SSE budget for Earth-scale framing.',
+    description: 'Globe overview tuned for ~3–5M visible points (SSE 128).',
   },
   high: {
     ...PRESETS.high,
@@ -115,4 +115,107 @@ export function applyPreset(
 /** Returns human-readable MB for display */
 export function cacheBytesToMB(bytes: number): number {
   return Math.round(bytes / 1024 / 1024);
+}
+
+export type OverviewPointSizeBand = 'near' | 'medium' | 'far';
+
+export const OVERVIEW_CACHE_BYTES = 512 * 1024 * 1024;
+export const OVERVIEW_CACHE_OVERFLOW_BYTES = 256 * 1024 * 1024;
+export const OVERVIEW_POINT_SIZE_SCALE_MIN = 0.5;
+export const OVERVIEW_POINT_SIZE_SCALE_MAX = 2;
+export const OVERVIEW_POINT_SIZE_SCALE_STEP = 0.25;
+export const OVERVIEW_POINT_SIZE_SCALE_DEFAULT = 0.5;
+export const OVERVIEW_POINT_SIZE_PX_MIN = 0.5;
+export const OVERVIEW_POINT_SIZE_PX_MAX = 6;
+
+// Khuyen nghi
+//OVERVIEW_SSE_BOOTSTRAP = 64; // vì coarse có content
+//OVERVIEW_SSE_TRAVEL = 256;   // chỉ fly xa / cache miss lớn
+//OVERVIEW_SSE_READY = 128;    // default cân bằng
+
+export const OVERVIEW_SSE_BOOTSTRAP = 96;
+export const OVERVIEW_SSE_TRAVEL = 256;
+export const OVERVIEW_SSE_READY = 96;
+export const OVERVIEW_SSE_BOOTSTRAP_TIMEOUT_MS = 2500;
+export const OVERVIEW_SSE_TRAVEL_SETTLE_MS = 750;
+export const OVERVIEW_TRAVEL_DISTANCE_THRESHOLD_M = 10_000; // 10 km
+
+const OVERVIEW_BAND_NEAR_MEDIUM = 0.75;
+const OVERVIEW_BAND_MEDIUM_FAR = 2.5;
+const OVERVIEW_BAND_HYSTERESIS = 0.1;
+
+export function overviewBandForRatio(
+  ratio: number,
+  currentBand: OverviewPointSizeBand | null
+): OverviewPointSizeBand {
+  if (currentBand === null) {
+    if (ratio <= OVERVIEW_BAND_NEAR_MEDIUM) return 'near';
+    if (ratio <= OVERVIEW_BAND_MEDIUM_FAR) return 'medium';
+    return 'far';
+  }
+  const upNearMedium = OVERVIEW_BAND_NEAR_MEDIUM * (1 + OVERVIEW_BAND_HYSTERESIS);
+  const downNearMedium = OVERVIEW_BAND_NEAR_MEDIUM * (1 - OVERVIEW_BAND_HYSTERESIS);
+  const upMediumFar = OVERVIEW_BAND_MEDIUM_FAR * (1 + OVERVIEW_BAND_HYSTERESIS);
+  const downMediumFar = OVERVIEW_BAND_MEDIUM_FAR * (1 - OVERVIEW_BAND_HYSTERESIS);
+  switch (currentBand) {
+    case 'near':
+      if (ratio > upMediumFar) return 'far';
+      if (ratio > upNearMedium) return 'medium';
+      return 'near';
+    case 'medium':
+      if (ratio < downNearMedium) return 'near';
+      if (ratio > upMediumFar) return 'far';
+      return 'medium';
+    case 'far':
+      if (ratio < downNearMedium) return 'near';
+      if (ratio < downMediumFar) return 'medium';
+      return 'far';
+  }
+}
+
+export function overviewBasePointSize(band: OverviewPointSizeBand): number {
+  switch (band) {
+    case 'near':
+      return 1;
+    case 'medium':
+      return 2;
+    case 'far':
+      return 3;
+  }
+}
+
+export function clampOverviewPointSizeScale(scale: number): number {
+  if (!Number.isFinite(scale)) return OVERVIEW_POINT_SIZE_SCALE_DEFAULT;
+  const snapped = Math.round(scale / OVERVIEW_POINT_SIZE_SCALE_STEP) * OVERVIEW_POINT_SIZE_SCALE_STEP;
+  return Cesium.Math.clamp(
+    Number(snapped.toFixed(2)),
+    OVERVIEW_POINT_SIZE_SCALE_MIN,
+    OVERVIEW_POINT_SIZE_SCALE_MAX
+  );
+}
+
+export function clampOverviewPointSizePx(px: number): number {
+  return Cesium.Math.clamp(px, OVERVIEW_POINT_SIZE_PX_MIN, OVERVIEW_POINT_SIZE_PX_MAX);
+}
+
+export function createOverviewPointSizeStyle(pointSizePx: number): Cesium.Cesium3DTileStyle {
+  return new Cesium.Cesium3DTileStyle({ pointSize: pointSizePx });
+}
+
+export interface OverviewRuntimeTuningOptions {
+  pointSizePx: number;
+}
+
+export function applyOverviewRuntimeTuning(
+  tileset: Cesium.Cesium3DTileset,
+  options: OverviewRuntimeTuningOptions
+): void {
+  tileset.cacheBytes = OVERVIEW_CACHE_BYTES;
+  tileset.maximumCacheOverflowBytes = OVERVIEW_CACHE_OVERFLOW_BYTES;
+  const shading = tileset.pointCloudShading;
+  if (shading) {
+    shading.attenuation = false;
+    shading.eyeDomeLighting = false;
+  }
+  tileset.style = createOverviewPointSizeStyle(options.pointSizePx);
 }

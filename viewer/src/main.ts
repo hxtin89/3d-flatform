@@ -23,6 +23,9 @@ import {
   initContextLayerToggle,
   initControlsPanelToggle,
   initDetailSseSelect,
+  initOverviewPointSizeSlider,
+  setOverviewPointSizeScale,
+  setOverviewPointSizeAvailability,
   isContextLayerEnabled,
   setAreaOptions,
   setAreaDetectionStatus,
@@ -41,6 +44,7 @@ import {
   setReportAreaDetectionContext,
   reloadDatasetReport,
   resetBrowserMetrics,
+  setOverviewSseValidation,
   type BrowserMetricName,
 } from './report';
 import {
@@ -96,9 +100,18 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
+    const isOverview = preset === 'low';
+    setOverviewPointSizeAvailability(
+      isOverview,
+      isOverview ? '' : 'Available in Overview only'
+    );
+    if (isOverview) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   },
   onBrowserMetric: (metric: BrowserMetricName, value: number | string) => {
     updateBrowserMetric(metric, value);
+  },
+  onOverviewSseValidation: (validation: Record<string, unknown> | null) => {
+    setOverviewSseValidation(validation);
   },
   onInteraction: () => {
     markInteraction();
@@ -146,6 +159,11 @@ initDetailSseSelect((sse: number) => {
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),
   });
+});
+
+initOverviewPointSizeSlider((scale: number) => {
+  viewer.setOverviewPointSizeScale(scale);
+  setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
 });
 
 initFlyHomeButton(() => {
