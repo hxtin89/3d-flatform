@@ -124,7 +124,7 @@ export const OVERVIEW_CACHE_OVERFLOW_BYTES = 256 * 1024 * 1024;
 export const OVERVIEW_POINT_SIZE_SCALE_MIN = 0.5;
 export const OVERVIEW_POINT_SIZE_SCALE_MAX = 2;
 export const OVERVIEW_POINT_SIZE_SCALE_STEP = 0.25;
-export const OVERVIEW_POINT_SIZE_SCALE_DEFAULT = 0.5;
+export const OVERVIEW_POINT_SIZE_SCALE_DEFAULT = 1; // default 0.5 px in local mode point size
 export const OVERVIEW_POINT_SIZE_PX_MIN = 0.5;
 export const OVERVIEW_POINT_SIZE_PX_MAX = 6;
 
@@ -133,7 +133,7 @@ export const OVERVIEW_POINT_SIZE_PX_MAX = 6;
 //OVERVIEW_SSE_TRAVEL = 256;   // chỉ fly xa / cache miss lớn
 //OVERVIEW_SSE_READY = 128;    // default cân bằng
 
-export const OVERVIEW_SSE_BOOTSTRAP = 96;
+export const OVERVIEW_SSE_BOOTSTRAP = 128;
 export const OVERVIEW_SSE_TRAVEL = 256;
 export const OVERVIEW_SSE_READY = 96;
 export const OVERVIEW_SSE_BOOTSTRAP_TIMEOUT_MS = 2500;

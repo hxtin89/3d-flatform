@@ -40,15 +40,26 @@ export const DATASET = requestedDataset?.match(DATASET_PATTERN)
     ? CLOUDFRONT_DEFAULT_DATASET
     : LOCAL_DEFAULT_DATASET;
 const DEBUG_TILES = searchParams.get('debugTiles') === '1';
+const DEBUG_OVERVIEW = searchParams.get('debugOverview') === '1';
 const REQUESTED_BASEMAP = searchParams.get('basemap');
 const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
 const MOBILE_VIEWPORT_QUERY = '(max-width: 640px)';
-const LIMIT_RADIUS_FOR_MINIMUM_ZOOM = 0.05;
+//Với Peru Overview hiện tại:
+//focusRadius ≈ 7,996.7 m (~8 km)
+//Ratio 0.07 tương đương khoảng 559.8 m
+//Raio 0.08 tương đương khoảng 621.4 m
+//Raio 0.09 tương đương khoảng 683.1 m
+//Raio 0.10 tương đương khoảng 744.8 m
+const LIMIT_RADIUS_FOR_MINIMUM_ZOOM = 0.10; // giới hạn khoảng cách tới tâm xoay, không phải độ cao mặt đất
 const MIN_CAMERA_DISTANCE_FLOOR = 0.25;
 const MIN_CAMERA_DISTANCE_RATIO = 0.0005;
 const MIN_CAMERA_DISTANCE_CEILING = 5;
 const INTERACTION_DRAG_START_THRESHOLD_PX = 20;
+/** 1 px in local mode point size */
+const OVERVIEW_GLOBE_POINT_SIZE_PX_MIN = OVERVIEW_POINT_SIZE_SCALE_DEFAULT * 1;
+const OVERVIEW_DEBUG_LOG_INTERVAL_MS = 500;
+const OVERVIEW_DEBUG_REPEAT_INTERVAL_MS = 3_000;
 const MAPTILER_GLOBE_FRUSTUM_FAR = 20_000_000;
 const MAPTILER_SATELLITE_URL = 'https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg';
 const MAPTILER_ATTRIBUTION = '<a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> <a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>';
@@ -182,6 +193,9 @@ type TilesetDocument = {
 type RuntimeTileset = {
   _selectedTiles?: RuntimeTile[];
   selectedTiles?: RuntimeTile[];
+  _requestedTiles?: RuntimeTile[];
+  _requestedTilesInFlight?: RuntimeTile[];
+  _processingQueue?: RuntimeTile[];
   asset?: {
     extras?: {
       coordinateMode?: string;
@@ -226,12 +240,15 @@ export class PointCloudViewer {
   private detailSseOverride = PRESETS.high.maximumScreenSpaceError;
   private lastLayerRuntimeKey = '';
   private globeControlsActive = false;
+  private globeOverviewOrbitZoomActive = false;
   private overviewRuntimeActive = false;
   private overviewPointSizeBand: OverviewPointSizeBand | null = null;
   private overviewPointSizeScale = OVERVIEW_POINT_SIZE_SCALE_DEFAULT;
   private overviewPointSizePx = 0;
   private overviewCameraRangeRatio = 0;
   private lastOverviewReportKey = '';
+  private lastOverviewDebugLogAt = 0;
+  private lastOverviewDebugKey = '';
   private overviewSseController = new OverviewSseController();
   private overviewFirstVisibleFired = false;
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
@@ -338,7 +355,8 @@ export class PointCloudViewer {
       this.configureCameraLimits(
         primaryTileset,
         contextTileset,
-        options.cameraBehavior === 'flyTo' || !options.cameraBehavior
+        options.cameraBehavior === 'flyTo' || !options.cameraBehavior,
+        options.primary.preset === 'low'
       );
       this.installPointCloudControls(primaryTileset, contextTileset);
 
@@ -604,32 +622,45 @@ export class PointCloudViewer {
   private configureCameraLimits(
     primaryTileset: Cesium.Cesium3DTileset,
     contextTileset: Cesium.Cesium3DTileset | null,
-    resetOrbit: boolean
+    resetOrbit: boolean,
+    overviewMode: boolean
   ): void {
     const focusRadius = Math.max(primaryTileset.boundingSphere.radius, 1);
     const limitTileset = contextTileset ?? primaryTileset;
     const limitRadius = Math.max(limitTileset.boundingSphere.radius, focusRadius, 1);
+    const usesGlobeControls = this.isGlobeTileset(limitTileset);
+    const baseMinCameraDistance = Cesium.Math.clamp(
+      focusRadius * MIN_CAMERA_DISTANCE_RATIO,
+      MIN_CAMERA_DISTANCE_FLOOR,
+      MIN_CAMERA_DISTANCE_CEILING
+    );
+    this.globeOverviewOrbitZoomActive = usesGlobeControls && overviewMode;
     this.cameraLimitTileset = limitTileset;
     if (resetOrbit) {
       this.orbitTarget = Cesium.Cartesian3.clone(limitTileset.boundingSphere.center);
       this.orbitRange = Cesium.Math.clamp(limitRadius * 3.5, focusRadius * 0.01, limitRadius * 12);
     }
     this.panScaleBase = limitRadius;
-    this.minCameraDistance = Cesium.Math.clamp(
-      focusRadius * MIN_CAMERA_DISTANCE_RATIO,
-      MIN_CAMERA_DISTANCE_FLOOR,
-      MIN_CAMERA_DISTANCE_CEILING
-    );
+    this.minCameraDistance = this.globeOverviewOrbitZoomActive
+      ? Math.max(baseMinCameraDistance, focusRadius * LIMIT_RADIUS_FOR_MINIMUM_ZOOM)
+      : baseMinCameraDistance;
     this.maxCameraDistance = limitRadius * 12;
     if (!resetOrbit) {
       this.syncOrbitStateFromCamera(primaryTileset.boundingSphere.center);
     }
 
     const controller = this.viewer.scene.screenSpaceCameraController;
-    controller.minimumZoomDistance = this.minCameraDistance;
+    // Cesium interprets this as height above the ellipsoid. Globe orbit zoom
+    // uses minCameraDistance separately as distance to orbitTarget.
+    controller.minimumZoomDistance = baseMinCameraDistance;
     controller.maximumZoomDistance = this.maxCameraDistance;
-    if (this.isGlobeTileset(limitTileset)) {
-      controller.minimumZoomDistance = Math.max(this.minCameraDistance, focusRadius * LIMIT_RADIUS_FOR_MINIMUM_ZOOM);
+    if (usesGlobeControls) {
+      if (!this.globeOverviewOrbitZoomActive) {
+        controller.minimumZoomDistance = Math.max(
+          baseMinCameraDistance,
+          focusRadius * LIMIT_RADIUS_FOR_MINIMUM_ZOOM
+        );
+      }
       controller.maximumZoomDistance = Math.max(this.maxCameraDistance, limitRadius * 80);
     }
 
@@ -779,7 +810,88 @@ export class PointCloudViewer {
 
   private installGlobePointCloudControls(): void {
     this.inputHandler?.destroy();
+    this.touchInputCleanup?.();
+    this.touchInputCleanup = null;
     const handler = new Cesium.ScreenSpaceEventHandler(this.viewer.scene.canvas);
+    let motionFrame: number | null = null;
+    let pendingDx = 0;
+    let pendingDy = 0;
+    let pendingDrag: 'orbit' | 'pan' | null = null;
+
+    const zoomByFactor = (factor: number): void => {
+      const camera = this.viewer.camera;
+      const offset = Cesium.Cartesian3.subtract(
+        camera.positionWC,
+        this.orbitTarget,
+        new Cesium.Cartesian3()
+      );
+      const currentRange = Cesium.Cartesian3.magnitude(offset);
+      if (currentRange <= 0) return;
+
+      const nextRange = Cesium.Math.clamp(
+        currentRange * factor,
+        this.minCameraDistance,
+        this.maxCameraDistance
+      );
+      if (Math.abs(nextRange - currentRange) < 0.001) return;
+
+      Cesium.Cartesian3.normalize(offset, offset);
+      Cesium.Cartesian3.multiplyByScalar(offset, nextRange, offset);
+      const destination = Cesium.Cartesian3.add(
+        this.orbitTarget,
+        offset,
+        new Cesium.Cartesian3()
+      );
+      const direction = Cesium.Cartesian3.normalize(
+        Cesium.Cartesian3.subtract(
+          this.orbitTarget,
+          destination,
+          new Cesium.Cartesian3()
+        ),
+        new Cesium.Cartesian3()
+      );
+      camera.setView({
+        destination,
+        orientation: {
+          direction,
+          up: camera.upWC,
+        },
+      });
+    };
+
+    const scheduleCameraMotion = (
+      drag: 'orbit' | 'pan',
+      dx: number,
+      dy: number
+    ): void => {
+      if (pendingDrag !== null && pendingDrag !== drag) {
+        pendingDx = 0;
+        pendingDy = 0;
+      }
+      pendingDrag = drag;
+      pendingDx += dx;
+      pendingDy += dy;
+      if (motionFrame !== null) return;
+
+      motionFrame = requestAnimationFrame(() => {
+        motionFrame = null;
+        const nextDrag = pendingDrag;
+        const nextDx = pendingDx;
+        const nextDy = pendingDy;
+        pendingDrag = null;
+        pendingDx = 0;
+        pendingDy = 0;
+
+        // A scene reload may replace the input handler before this frame runs.
+        if (this.inputHandler !== handler || !nextDrag) return;
+        if (nextDrag === 'orbit') {
+          this.rotateGlobeCamera(nextDx, nextDy);
+        } else {
+          this.panGlobeCamera(nextDx, nextDy);
+        }
+      });
+    };
+
     this.inputHandler = handler;
     this.activeDrag = null;
     this.dragInteractionStarted = false;
@@ -791,7 +903,7 @@ export class PointCloudViewer {
     controller.enableTranslate = false;
     controller.enableTilt = false;
     controller.enableLook = false;
-    controller.enableZoom = true;
+    controller.enableZoom = !this.globeOverviewOrbitZoomActive;
     controller.inertiaZoom = 0;
     controller.zoomEventTypes = [
       Cesium.CameraEventType.WHEEL,
@@ -844,16 +956,87 @@ export class PointCloudViewer {
       }
       this.lastPointer = Cesium.Cartesian2.clone(movement.endPosition);
 
-      if (this.activeDrag === 'orbit') {
-        this.rotateGlobeCamera(dx, dy);
-      } else {
-        this.panGlobeCamera(dx, dy);
-      }
+      scheduleCameraMotion(this.activeDrag, dx, dy);
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
-    handler.setInputAction(() => {
+    handler.setInputAction((delta: number) => {
       this.callbacks.onInteraction();
+      if (this.globeOverviewOrbitZoomActive) {
+        zoomByFactor(delta > 0 ? 0.86 : 1.16);
+      }
     }, Cesium.ScreenSpaceEventType.WHEEL);
+
+    const canvas = this.viewer.scene.canvas;
+    let lastTouchDistance = 0;
+    let lastTouchMidpoint: Cesium.Cartesian2 | null = null;
+
+    const touchPoint = (touch: Touch): Cesium.Cartesian2 => {
+      const rect = canvas.getBoundingClientRect();
+      return new Cesium.Cartesian2(touch.clientX - rect.left, touch.clientY - rect.top);
+    };
+    const touchMidpoint = (touches: TouchList): Cesium.Cartesian2 => {
+      const first = touchPoint(touches[0]);
+      const second = touchPoint(touches[1]);
+      return new Cesium.Cartesian2(
+        (first.x + second.x) * 0.5,
+        (first.y + second.y) * 0.5
+      );
+    };
+    const touchDistance = (touches: TouchList): number => {
+      const first = touchPoint(touches[0]);
+      const second = touchPoint(touches[1]);
+      return Cesium.Cartesian2.distance(first, second);
+    };
+    const resetTwoFingerTouch = (): void => {
+      lastTouchDistance = 0;
+      lastTouchMidpoint = null;
+    };
+    const beginTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length < 2) return;
+      event.preventDefault();
+      this.callbacks.onInteraction();
+      lastTouchDistance = touchDistance(event.touches);
+      lastTouchMidpoint = touchMidpoint(event.touches);
+    };
+    const moveTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length < 2 || !lastTouchMidpoint || lastTouchDistance <= 0) return;
+      event.preventDefault();
+      this.callbacks.onInteraction();
+      const nextDistance = touchDistance(event.touches);
+      const nextMidpoint = touchMidpoint(event.touches);
+      const dx = nextMidpoint.x - lastTouchMidpoint.x;
+      const dy = nextMidpoint.y - lastTouchMidpoint.y;
+
+      if (Math.abs(nextDistance - lastTouchDistance) > 0.5) {
+        zoomByFactor(lastTouchDistance / nextDistance);
+      }
+      if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
+        this.panGlobeCamera(dx, dy);
+      }
+
+      lastTouchDistance = nextDistance;
+      lastTouchMidpoint = nextMidpoint;
+    };
+    const endTwoFingerTouch = (event: TouchEvent): void => {
+      if (event.touches.length >= 2) {
+        beginTwoFingerTouch(event);
+      } else {
+        resetTwoFingerTouch();
+      }
+    };
+
+    if (this.globeOverviewOrbitZoomActive) {
+      canvas.addEventListener('touchstart', beginTwoFingerTouch, { passive: false });
+      canvas.addEventListener('touchmove', moveTwoFingerTouch, { passive: false });
+      canvas.addEventListener('touchend', endTwoFingerTouch, { passive: false });
+      canvas.addEventListener('touchcancel', resetTwoFingerTouch, { passive: false });
+      this.touchInputCleanup = () => {
+        canvas.removeEventListener('touchstart', beginTwoFingerTouch);
+        canvas.removeEventListener('touchmove', moveTwoFingerTouch);
+        canvas.removeEventListener('touchend', endTwoFingerTouch);
+        canvas.removeEventListener('touchcancel', resetTwoFingerTouch);
+      };
+    }
   }
 
   private installLocalPointCloudControls(): void {
@@ -1231,9 +1414,7 @@ export class PointCloudViewer {
     this.overviewPointSizeBand = null;
     this.updateOverviewCameraRangeRatio();
     const band = overviewBandForRatio(this.overviewCameraRangeRatio, null);
-    const px = clampOverviewPointSizePx(
-      overviewBasePointSize(band) * this.overviewPointSizeScale
-    );
+    const px = this.pointSizePxForOverviewBand(band);
     this.overviewPointSizeBand = band;
     this.overviewPointSizePx = px;
     this.lastOverviewReportKey = '';
@@ -1244,6 +1425,7 @@ export class PointCloudViewer {
     this.overviewSseController.activate(this.primaryTileset, validation);
     this.registerFirstVisibleListener();
     this.reportOverviewTuning();
+    this.logOverviewDiagnostics(true);
   }
 
   private registerFirstVisibleListener(): void {
@@ -1305,9 +1487,7 @@ export class PointCloudViewer {
       this.overviewCameraRangeRatio,
       this.overviewPointSizeBand
     );
-    const nextPx = clampOverviewPointSizePx(
-      overviewBasePointSize(nextBand) * this.overviewPointSizeScale
-    );
+    const nextPx = this.pointSizePxForOverviewBand(nextBand);
     const pxChanged = nextPx !== this.overviewPointSizePx;
     this.overviewPointSizeBand = nextBand;
     this.overviewPointSizePx = nextPx;
@@ -1315,6 +1495,73 @@ export class PointCloudViewer {
       this.primaryTileset.style = createOverviewPointSizeStyle(nextPx);
     }
     this.reportOverviewTuning();
+    this.logOverviewDiagnostics();
+  }
+
+  private pointSizePxForOverviewBand(band: OverviewPointSizeBand): number {
+    const px = clampOverviewPointSizePx(
+      overviewBasePointSize(band) * this.overviewPointSizeScale
+    );
+    return this.globeControlsActive
+      ? Math.max(px, OVERVIEW_GLOBE_POINT_SIZE_PX_MIN)
+      : px;
+  }
+
+  private logOverviewDiagnostics(force = false): void {
+    if (!DEBUG_OVERVIEW || !this.overviewRuntimeActive || !this.primaryTileset) return;
+
+    const now = performance.now();
+    if (!force && now - this.lastOverviewDebugLogAt < OVERVIEW_DEBUG_LOG_INTERVAL_MS) return;
+
+    const tileset = this.primaryTileset;
+    const runtime = tileset as unknown as RuntimeTileset;
+    const selectedTiles = runtime._selectedTiles?.length
+      ?? runtime.selectedTiles?.length
+      ?? runtime.statistics?.numberOfTilesSelected
+      ?? 'unsupported';
+    const requestedTiles = runtime._requestedTiles?.length ?? 'unsupported';
+    const requestedTilesInFlight = runtime._requestedTilesInFlight?.length ?? 'unsupported';
+    const processingQueue = runtime._processingQueue?.length ?? 'unsupported';
+    const phase = this.overviewSseController.getPhase();
+    const key = [
+      phase,
+      tileset.maximumScreenSpaceError,
+      tileset.tilesLoaded,
+      selectedTiles,
+      requestedTiles,
+      requestedTilesInFlight,
+      processingQueue,
+      this.overviewPointSizePx,
+      this.overviewPointSizeBand,
+      this.overviewCameraRangeRatio.toFixed(3),
+    ].join('|');
+    if (
+      !force
+      && key === this.lastOverviewDebugKey
+      && now - this.lastOverviewDebugLogAt < OVERVIEW_DEBUG_REPEAT_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.lastOverviewDebugLogAt = now;
+    this.lastOverviewDebugKey = key;
+    console.log('[Overview Debug]', {
+      dataset: this.activeDataset,
+      phase,
+      maximumScreenSpaceError: tileset.maximumScreenSpaceError,
+      tilesLoaded: tileset.tilesLoaded,
+      selectedTiles,
+      requestedTiles,
+      requestedTilesInFlight,
+      processingQueue,
+      statistics: runtime.statistics ? { ...runtime.statistics } : undefined,
+      visiblePointsEstimated: selectedPointCount(runtime),
+      pointSizePx: this.overviewPointSizePx,
+      pointSizeBand: this.overviewPointSizeBand,
+      pointSizeScale: this.overviewPointSizeScale,
+      cameraRangeRatio: Number(this.overviewCameraRangeRatio.toFixed(3)),
+      tilesetMemoryBytes: tileset.totalMemoryUsageInBytes,
+    });
   }
 
   private updateOverviewCameraRangeRatio(): void {
