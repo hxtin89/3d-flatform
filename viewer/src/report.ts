@@ -1,4 +1,4 @@
-import { DATASET, TILE_CONFIG } from './viewer';
+import { DATASET, LOD_MODE, TILE_CONFIG } from './viewer';
 import { PRESETS, type PresetName } from './presets';
 
 type SizeMetric = { bytes: number; human: string } | null;
@@ -85,7 +85,17 @@ export type BrowserMetricName =
   | 'overviewRefiningBytes'
   | 'overviewReadyRequests'
   | 'overviewReadyBytes'
-  | 'overviewTravelDistance';
+  | 'overviewTravelDistance'
+  | 'lodMode'
+  | 'lodCurrentLevel'
+  | 'lodDesiredLevel'
+  | 'lodAreaId'
+  | 'lodRangeRatio'
+  | 'lodTransitionStatus'
+  | 'lodTransitionReason'
+  | 'lodTransitionMs'
+  | 'lodTransitionCount'
+  | 'lodGeneration';
 
 type BrowserMetricValue = string | number | boolean;
 type BrowserMetrics = Record<BrowserMetricName, BrowserMetricValue>;
@@ -151,6 +161,16 @@ const browserMetrics: BrowserMetrics = {
   overviewReadyRequests: 0,
   overviewReadyBytes: 0,
   overviewTravelDistance: 0,
+  lodMode: LOD_MODE,
+  lodCurrentLevel: '—',
+  lodDesiredLevel: '—',
+  lodAreaId: '—',
+  lodRangeRatio: '—',
+  lodTransitionStatus: 'idle',
+  lodTransitionReason: '—',
+  lodTransitionMs: '—',
+  lodTransitionCount: 0,
+  lodGeneration: '—',
 };
 
 let datasetReport: DatasetReport | null = null;
@@ -194,6 +214,7 @@ export function initDatasetReport(): void {
   renderDatasetContext();
   setText('pageReloaded', String(browserMetrics.pageReloaded));
   setText('crashSuspected', String(browserMetrics.crashSuspected));
+  setText('lodMode', String(browserMetrics.lodMode));
   renderModeConfig();
   updateNetworkMetrics();
   updateMemoryMetric();

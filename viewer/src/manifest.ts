@@ -318,3 +318,212 @@ export function statusLabel(mode: LogicalMode, status: ModeStatus): string {
   if (mode === 'explore') return 'Not built yet';
   return status;
 }
+
+// ── Auto-LOD manifest (?lod=auto) ──────────────────────────────────────────
+// Self-contained contract produced by pipeline/area_auto_lod_manifest.py.
+// Kept separate from the manual-mode `AreaManifest` so manual behavior is
+// untouched. The type contract lives in `./auto-lod-controller` so the
+// controller stays zero-dependency and unit-testable without Cesium.
+export type {
+  AutoLodArea,
+  AutoLodLevel,
+  AutoLodManifest,
+  AutoLodPreset,
+  LodStatus,
+} from './auto-lod-controller';
+
+import type { AutoLodArea, AutoLodLevel, AutoLodManifest } from './auto-lod-controller';
+
+export async function fetchAutoLodManifest(dataset: string): Promise<AutoLodManifest | null> {
+  if (!TILE_CONFIG.baseUrl) return null;
+  const response = await fetch(`${TILE_CONFIG.baseUrl}/${dataset}/area-manifest-auto-lod.json`, {
+    cache: 'no-store',
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Auto-LOD manifest HTTP ${response.status}`);
+  const raw = await response.json();
+  return parseAutoLodManifest(raw, dataset);
+}
+
+/** Strict runtime validator. Throws Error("Invalid Auto-LOD manifest: ...") on any violation. */
+export function parseAutoLodManifest(raw: unknown, expectedDataset: string): AutoLodManifest {
+  const label = 'Invalid Auto-LOD manifest';
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error(`${label}: root must be an object.`);
+  }
+  const r = raw as Record<string, unknown>;
+
+  if (r.get !== undefined) throw new Error(`${label}: unexpected Map instance.`);
+  if (r.version !== 1) throw new Error(`${label}: version must equal 1, got ${JSON.stringify(r.version)}.`);
+  if (r.mode !== 'auto-lod') throw new Error(`${label}: mode must equal "auto-lod", got ${JSON.stringify(r.mode)}.`);
+  if (typeof r.dataset !== 'string' || !r.dataset) {
+    throw new Error(`${label}: dataset must be a non-empty string.`);
+  }
+  if (r.dataset !== expectedDataset) {
+    throw new Error(`${label}: dataset "${r.dataset}" does not match URL dataset "${expectedDataset}".`);
+  }
+  if (r.defaultLevel !== 'p02' && r.defaultLevel !== 'p10' && r.defaultLevel !== 'p100') {
+    throw new Error(`${label}: defaultLevel must be one of p02|p10|p100.`);
+  }
+
+  const coord = r.coordinateMode;
+  if (coord !== undefined && coord !== 'local' && coord !== 'globe') {
+    throw new Error(`${label}: coordinateMode must be "local" or "globe".`);
+  }
+  const isGlobe = coord === 'globe';
+
+  const levels = r.levels;
+  if (typeof levels !== 'object' || levels === null || Array.isArray(levels)) {
+    throw new Error(`${label}: levels must be an object.`);
+  }
+  const lv = levels as Record<string, any>;
+  if (lv.p02?.scope !== 'global' || lv.p02?.preset !== 'low') {
+    throw new Error(`${label}: levels.p02 must have scope="global", preset="low".`);
+  }
+  if (typeof lv.p02?.dataset !== 'string' || !lv.p02.dataset.trim()) {
+    throw new Error(`${label}: levels.p02.dataset must be a non-empty string.`);
+  }
+  if (lv.p02?.status !== 'ready' && lv.p02?.status !== 'not_built') {
+    throw new Error(`${label}: levels.p02.status must be "ready" or "not_built".`);
+  }
+  if (lv.p10?.scope !== 'area' || lv.p10?.preset !== 'medium') {
+    throw new Error(`${label}: levels.p10 must have scope="area", preset="medium".`);
+  }
+  if (lv.p100?.scope !== 'area' || lv.p100?.preset !== 'high') {
+    throw new Error(`${label}: levels.p100 must have scope="area", preset="high".`);
+  }
+
+  const t = r.thresholds;
+  if (typeof t !== 'object' || t === null || Array.isArray(t)) {
+    throw new Error(`${label}: thresholds must be an object.`);
+  }
+  const th = t as Record<string, unknown>;
+  const required = [
+    'p10EnterRatio', 'p10ExitRatio',
+    'p100EnterRatio', 'p100ExitRatio',
+    'settleMs', 'visibleTimeoutMs', 'retryMs',
+  ] as const;
+  for (const key of required) {
+    if (typeof th[key] !== 'number' || !Number.isFinite(th[key])) {
+      throw new Error(`${label}: threshold ${key} must be a finite number.`);
+    }
+  }
+  const T = th as Record<typeof required[number], number>;
+  if (!(0 < T.p100EnterRatio && T.p100EnterRatio < T.p100ExitRatio)) {
+    throw new Error(`${label}: threshold ordering violated: 0 < p100EnterRatio < p100ExitRatio.`);
+  }
+  if (!(T.p100ExitRatio < T.p10EnterRatio && T.p10EnterRatio < T.p10ExitRatio)) {
+    throw new Error(`${label}: threshold ordering violated: p100ExitRatio < p10EnterRatio < p10ExitRatio.`);
+  }
+  if (T.settleMs < 0 || T.visibleTimeoutMs <= 0 || T.retryMs <= 0) {
+    throw new Error(`${label}: settleMs>=0, visibleTimeoutMs>0, retryMs>0.`);
+  }
+
+  const rootTransform = r.rootTransform;
+  if (isGlobe) {
+    if (!Array.isArray(rootTransform) || rootTransform.length !== 16) {
+      throw new Error(`${label}: globe manifest requires rootTransform with 16 finite numbers.`);
+    }
+    if (!rootTransform.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      throw new Error(`${label}: rootTransform entries must be finite numbers.`);
+    }
+  }
+
+  const areas = r.areas;
+  if (!Array.isArray(areas) || areas.length === 0) {
+    throw new Error(`${label}: areas must be a non-empty array.`);
+  }
+  const seenArea = new Set<string>();
+  const seenChunk = new Set<string>();
+  areas.forEach((a, i) => {
+    if (typeof a !== 'object' || a === null || Array.isArray(a)) {
+      throw new Error(`${label}: areas[${i}] must be an object.`);
+    }
+    const area = a as Record<string, unknown>;
+    if (typeof area.areaId !== 'string' || !area.areaId) {
+      throw new Error(`${label}: areas[${i}].areaId must be a non-empty string.`);
+    }
+    if (seenArea.has(area.areaId)) {
+      throw new Error(`${label}: duplicate areaId "${area.areaId}".`);
+    }
+    seenArea.add(area.areaId);
+    if (typeof area.sourceChunkId !== 'string' || !area.sourceChunkId) {
+      throw new Error(`${label}: areas[${i}].sourceChunkId must be a non-empty string.`);
+    }
+    if (seenChunk.has(area.sourceChunkId)) {
+      throw new Error(`${label}: duplicate sourceChunkId "${area.sourceChunkId}" (area ${area.areaId}).`);
+    }
+    seenChunk.add(area.sourceChunkId);
+    const bbox = area.bbox;
+    if (!Array.isArray(bbox) || bbox.length !== 6 || !bbox.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      throw new Error(`${label}: areas[${i}].bbox must be six finite numbers.`);
+    }
+    const [minx, miny, minz, maxx, maxy, maxz] = bbox;
+    if (!(maxx >= minx && maxy >= miny && maxz >= minz)) {
+      throw new Error(`${label}: areas[${i}].bbox must satisfy min <= max on every axis.`);
+    }
+    const levelsBlock = area.levels;
+    if (typeof levelsBlock !== 'object' || levelsBlock === null) {
+      throw new Error(`${label}: areas[${i}].levels must be an object.`);
+    }
+    const lb = levelsBlock as Record<string, any>;
+    for (const lvl of ['p10', 'p100'] as const) {
+      const slot = lb[lvl];
+      if (typeof slot !== 'object' || slot === null) {
+        throw new Error(`${label}: areas[${i}].levels.${lvl} must be an object.`);
+      }
+      if (typeof slot.dataset !== 'string') {
+        throw new Error(`${label}: areas[${i}].levels.${lvl}.dataset must be a string.`);
+      }
+      // Empty dataset is allowed when status is `not_built`; a `ready` dataset
+      // path must be non-empty (so we never try to fetch an empty URL).
+      if (slot.status === 'ready' && !slot.dataset.trim()) {
+        throw new Error(
+          `${label}: areas[${i}].levels.${lvl}.dataset must be non-empty when status="ready".`
+        );
+      }
+      if (slot.status !== 'ready' && slot.status !== 'not_built') {
+        throw new Error(`${label}: areas[${i}].levels.${lvl}.status must be ready|not_built.`);
+      }
+    }
+  });
+
+  return raw as unknown as AutoLodManifest;
+}
+
+/**
+ * Detect which auto-LOD area the camera currently points at.
+ * Reuses the existing `findAreaForViewSamples` matcher; the auto-LOD manifest
+ * carries the same bbox frame as the manual manifest so we project samples into
+ * the manifest frame by adapting the matcher to treat AutoLodArea like AreaManifestEntry.
+ */
+export function autoLodAreaForSamples(
+  manifest: AutoLodManifest | null,
+  samples: AreaViewSample[]
+): { areaId: string | null; reason: string } {
+  if (!manifest) return { areaId: null, reason: 'manifest_not_ready' };
+  if (samples.length === 0) return { areaId: null, reason: 'no_samples' };
+  const proxy: AreaManifest = {
+    dataset: manifest.dataset,
+    defaultMode: 'overview',
+    defaultAreaId: manifest.areas[0]?.areaId ?? null,
+    coordinateMode: manifest.coordinateMode,
+    bboxFrame: manifest.bboxFrame,
+    rootTransform: manifest.rootTransform,
+    enuOriginSource: manifest.enuOriginSource,
+    enuOriginEcef: manifest.enuOriginEcef,
+    enuOriginLonLat: manifest.enuOriginLonLat,
+    datasets: { overview: { dataset: '', status: 'not_built' } },
+    areas: manifest.areas.map((area) => ({
+      areaId: area.areaId,
+      label: area.label,
+      sourceChunkId: area.sourceChunkId,
+      bbox: area.bbox,
+      sourceBbox: area.sourceBbox ?? undefined,
+      pointCount: area.pointCount,
+      datasets: {},
+    })),
+  };
+  const result = findAreaForViewSamples(proxy, samples);
+  return { areaId: result.area?.areaId ?? null, reason: result.reason };
+}

@@ -41,6 +41,10 @@ export const DATASET = requestedDataset?.match(DATASET_PATTERN)
     : LOCAL_DEFAULT_DATASET;
 const DEBUG_TILES = searchParams.get('debugTiles') === '1';
 const DEBUG_OVERVIEW = searchParams.get('debugOverview') === '1';
+/** Viewer LOD mode controlled by `?lod=auto`. Manual otherwise. */
+export const LOD_MODE: 'auto' | 'manual' = searchParams.get('lod') === 'auto'
+  ? 'auto'
+  : 'manual';
 const REQUESTED_BASEMAP = searchParams.get('basemap');
 const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
@@ -154,6 +158,20 @@ export interface ViewerCallbacks {
   onInteraction: () => void;
 }
 
+// ── Auto-LOD candidate lifecycle (?lod=auto) ─────────────────────────────
+// Pure data contract used by PointCloudViewer.stageAutoLodCandidate(). Kept
+// in viewer.ts because PresetName lives here.
+export type AutoLodLevelName = 'p02' | 'p10' | 'p100';
+
+export interface AutoLodStageRequest {
+  generation: number;
+  level: AutoLodLevelName;
+  dataset: string;
+  preset: PresetName;
+  /** Called once (first tile visible) for the stage that is still active. */
+  onVisible?: (generation: number) => void;
+}
+
 interface LayerRuntimeStats {
   loadedTiles: number;
   selectedTiles: number | string;
@@ -252,6 +270,17 @@ export class PointCloudViewer {
   private overviewSseController = new OverviewSseController();
   private overviewFirstVisibleFired = false;
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
+
+  // Auto-LOD runtime state. `autoLodAnchor` reuses the initial p02 loaded via
+  // loadScene(); `autoLodFocus` is the committed area focus layer; `autoLodCandidate`
+  // is the staged-but-not-yet-committed layer being prepared in parallel.
+  private autoLodAnchor: Cesium.Cesium3DTileset | null = null;
+  private autoLodFocus: Cesium.Cesium3DTileset | null = null;
+  private autoLodCandidate: Cesium.Cesium3DTileset | null = null;
+  private autoLodCandidateIsAnchor = false;
+  private autoLodActiveGeneration: number | null = null;
+  private autoLodLatestGeneration = 0;
+  private autoLodCandidateVisibleRemove: (() => void) | null = null;
 
   constructor(containerId: string, callbacks: ViewerCallbacks) {
     this.callbacks = callbacks;
@@ -1651,6 +1680,41 @@ export class PointCloudViewer {
     );
   }
 
+  // ── Auto-LOD hooks (additive; used only when ?lod=auto) ──────────────────
+  /** Distance from camera to current orbit target (globe) or orbit range (local). */
+  getActiveCameraRange(): number {
+    const range = this.currentOverviewCameraRange();
+    return Number.isFinite(range) ? range : 0;
+  }
+
+  /**
+   * Loosen the enforced minimum zoom distance for auto-LOD so the camera can
+   * keep zooming at p100. Pass null to restore the configured base floor.
+   */
+  setAutoLodMinimumZoomDistance(min: number | null): void {
+    const controller = this.viewer.scene.screenSpaceCameraController;
+    if (!controller) return;
+    if (min === null) {
+      controller.minimumZoomDistance = this.minCameraDistance;
+      return;
+    }
+    const floor = Math.max(0.05, min);
+    controller.minimumZoomDistance = Math.min(controller.minimumZoomDistance, floor);
+  }
+
+  /**
+   * Subscribe a callback to Cesium `camera.changed` events; returns an
+   * unsubscribe function. The host typically sets a dirty flag and throttles
+   * actual sampling work on a separate heartbeat (see main.ts).
+   */
+  subscribeCameraChanges(cb: () => void): () => void {
+    const changed = (this.viewer.camera as unknown as {
+      changed?: { addEventListener: (cb: () => void) => () => void };
+    }).changed;
+    if (!changed?.addEventListener) return () => undefined;
+    return changed.addEventListener(cb);
+  }
+
   captureCameraSnapshot(): CameraSnapshot {
     const camera = this.viewer.camera;
     const frustum = camera.frustum;
@@ -1695,7 +1759,246 @@ export class PointCloudViewer {
     return distance;
   }
 
+  // ── Auto-LOD candidate lifecycle (?lod=auto) ─────────────────────────────
+  // All methods below are additive and only invoked when LOD_MODE === 'auto'.
+  // They never touch primaryTileset/contextTileset/cameraLimitTileset except
+  // when adopting the initial p02 load as the navigation anchor.
+
+  /**
+   * After the initial `loadScene()` for the auto-LOD p02 has completed, hand
+   * over that primary tileset to the auto-LOD subsystem. The auto-LOD subsystem
+   * becomes the owner; `unloadTilesets()` keeps clearing `primaryTileset` but
+   * the anchor lived in `autoLodAnchor` and gets disposed by
+   * `disposeAutoLodLayers()`.
+   */
+  adoptCurrentPrimaryAsAutoLodAnchor(): void {
+    if (this.autoLodAnchor) return;
+    const tileset = this.primaryTileset;
+    if (!tileset) {
+      throw new Error('Cannot adopt auto-LOD anchor: no primary tileset loaded.');
+    }
+    this.autoLodAnchor = tileset;
+    // The anchor stays in primitives via primaryTileset; we only record it so
+    // disposeAutoLodLayers() can deduplicate before the global cleanup.
+  }
+
+  /**
+   * Stage a candidate area dataset *in parallel* with the currently displayed
+   * layer. The candidate is rendered with `show=true` so Cesium's `tileVisible`
+   * fires; the previously-displayed layer stays visible until commit hides it.
+   *
+   * Stale-request protection: `generation` is captured locally and re-checked
+   * after every await. If superseded while loading, the freshly built tileset
+   * is destroyed immediately and never added to the candidate slot.
+   */
+  async stageAutoLodCandidate(request: AutoLodStageRequest): Promise<void> {
+    // Pre-empt any prior candidate. We do NOT touch the anchor here, even when
+    // the prior candidate was an anchor-reuse: discardAutoLodCandidate()
+    // already cleared the listener and reset pointers without destroying it.
+    this.destroyAutoLodCandidate();
+
+    const gen = request.generation;
+    this.autoLodLatestGeneration = gen;
+    this.autoLodActiveGeneration = gen;
+    // Anchor reuse path: reveal the existing p02 layer beside the focus layer,
+    // then wait for the anchor's own tileVisible before committing the swap.
+    // If p02 is already the active primary, it is already visibly committed and
+    // can acknowledge on the next microtask (Fly Home while already in p02).
+    if (request.level === 'p02') {
+      if (!this.autoLodAnchor) {
+        throw new Error('Cannot stage p02 anchor reuse: anchor not adopted.');
+      }
+      this.autoLodAnchor.show = true;
+      this.autoLodCandidate = this.autoLodAnchor;
+      this.autoLodCandidateIsAnchor = true;
+      let fired = false;
+      const onVisible = (): void => {
+        if (fired || this.autoLodLatestGeneration !== gen) return;
+        fired = true;
+        request.onVisible?.(gen);
+      };
+      const anchor = this.autoLodAnchor;
+      anchor.tileVisible.addEventListener(onVisible);
+      this.autoLodCandidateVisibleRemove = () => {
+        anchor.tileVisible.removeEventListener(onVisible);
+      };
+      if (this.primaryTileset === anchor) {
+        queueMicrotask(onVisible);
+      } else {
+        this.viewer.scene.requestRender();
+      }
+      return;
+    }
+
+    // Area candidate path: load+attach in parallel.
+    const url = tilesetUrlFor(request.dataset);
+    await this.checkTileServer(url);
+    if (this.autoLodLatestGeneration !== gen) {
+      // Superseded while awaiting HEAD; nothing to destroy yet.
+      return;
+    }
+    const candidate = await this.loadLayer({ dataset: request.dataset, preset: request.preset });
+    if (this.autoLodLatestGeneration !== gen) {
+      // Superseded after loadLayer resolved: destroy the stale tileset without
+      // attaching it to the scene.
+      if (!candidate.isDestroyed()) candidate.destroy();
+      return;
+    }
+    applyPreset(candidate, request.preset, {}, { variant: this.presetVariantForTileset(candidate) });
+    let fired = false;
+    const onVisible = (): void => {
+      if (fired) return;
+      if (this.autoLodLatestGeneration !== gen) return;
+      fired = true;
+      request.onVisible?.(gen);
+    };
+    candidate.tileVisible.addEventListener(onVisible);
+    this.autoLodCandidateVisibleRemove = () => {
+      candidate.tileVisible.removeEventListener(onVisible);
+    };
+    // Render in parallel (`show=true`) so tileVisible fires. Scene overlap is
+    // acceptable for the brief window between first visibility and commit.
+    candidate.show = true;
+    this.autoLodCandidate = candidate;
+    this.autoLodCandidateIsAnchor = false;
+    this.installTileFailureLogging(candidate);
+    this.viewer.scene.primitives.add(candidate);
+  }
+
+  /**
+   * Atomically promote the staged candidate and demote the old layer.
+   * Returns false when the generation was superseded. On a successful commit:
+   *   - the candidate becomes the active primaryTileset (focus or anchor)
+   *   - activeDataset/currentPreset/camera limits are updated
+   *   - the previously-displayed layer is hidden/destroyed
+   */
+  commitAutoLodCandidate(generation: number, preset: PresetName, dataset: string): boolean {
+    if (this.autoLodActiveGeneration !== generation) return false;
+    const candidate = this.autoLodCandidate;
+    if (!candidate) return false;
+
+    if (this.autoLodCandidateIsAnchor) {
+      // p02: destroy focus, promote anchor back to primary.
+      if (this.autoLodFocus) {
+        this.destroyTileset(this.autoLodFocus);
+        this.autoLodFocus = null;
+      }
+      this.autoLodAnchor = candidate; // already the same object; keep ref
+      this.primaryTileset = candidate;
+      this.cameraLimitTileset = candidate;
+      this.activeDataset = dataset;
+      this.currentPreset = preset;
+      this.configureCameraLimits(candidate, null, false, true);
+      this.installPointCloudControls(candidate, null);
+      this.syncOverviewRuntime('low', null);
+    } else {
+      // p10/p100: promote candidate to focus; keep anchor alive but hidden.
+      candidate.show = true;
+      const previousFocus = this.autoLodFocus;
+      this.autoLodFocus = candidate;
+      this.primaryTileset = candidate;
+      this.cameraLimitTileset = candidate;
+      this.activeDataset = dataset;
+      this.currentPreset = preset;
+      if (this.autoLodAnchor) {
+        this.autoLodAnchor.show = false;
+        this.trimAutoLodAnchor();
+      }
+      if (previousFocus && previousFocus !== candidate) {
+        this.destroyTileset(previousFocus);
+      }
+      this.exitOverviewRuntime();
+      this.configureCameraLimits(candidate, this.autoLodAnchor, false, false);
+      this.installPointCloudControls(candidate, this.autoLodAnchor);
+    }
+
+    this.reportEffectiveSse();
+    this.reportLayerTileStats();
+    this.callbacks.onPresetChange(preset);
+
+    this.autoLodCandidate = null;
+    this.autoLodCandidateIsAnchor = false;
+    this.autoLodCandidateVisibleRemove?.();
+    this.autoLodCandidateVisibleRemove = null;
+    this.autoLodActiveGeneration = null;
+    return true;
+  }
+
+  /** Destroy the staged candidate without committing. Idempotent / no-op when stale. */
+  discardAutoLodCandidate(generation: number): void {
+    if (generation !== null && this.autoLodActiveGeneration !== generation) return;
+    // Invalidate any checkTileServer/loadLayer continuation for this generation.
+    this.autoLodLatestGeneration = Math.max(this.autoLodLatestGeneration, generation + 1);
+    this.destroyAutoLodCandidate();
+  }
+
+  /**
+   * Tear down every auto-LOD primitive (anchor + focus + candidate). Called by
+   * `destroy()` before the global cleanup; the global `unloadTilesets()` will
+   * no-op on auto primitives that are already destroyed.
+   */
+  disposeAutoLodLayers(): void {
+    // Invalidate any loadLayer promise that may still resolve after disposal.
+    this.autoLodLatestGeneration += 1;
+    this.destroyAutoLodCandidate();
+    if (this.autoLodFocus) {
+      this.destroyTileset(this.autoLodFocus);
+      this.autoLodFocus = null;
+    }
+    if (this.autoLodAnchor) {
+      // primaryTileset may point at the same object; remove once via
+      // destroyTileset (which guards primitives.remove + destroy).
+      this.destroyTileset(this.autoLodAnchor);
+      this.autoLodAnchor = null;
+    }
+  }
+
+  private destroyAutoLodCandidate(): void {
+    // Anchor reuse: the candidate slot aliases the anchor; do NOT destroy it,
+    // just drop the listener and clear pointers so a future stage can reuse.
+    if (this.autoLodCandidate) {
+      if (this.autoLodCandidateIsAnchor) {
+        // A cancelled p02 reveal must return to hidden-anchor state while an
+        // area focus remains active. Never destroy the navigation anchor.
+        if (this.autoLodFocus && this.autoLodAnchor) {
+          this.autoLodAnchor.show = false;
+        }
+      } else {
+        this.destroyTileset(this.autoLodCandidate);
+      }
+    }
+    this.autoLodCandidate = null;
+    this.autoLodCandidateIsAnchor = false;
+    this.autoLodCandidateVisibleRemove?.();
+    this.autoLodCandidateVisibleRemove = null;
+    this.autoLodActiveGeneration = null;
+  }
+
+  private destroyTileset(tileset: Cesium.Cesium3DTileset): void {
+    const primitives = this.viewer.scene.primitives;
+    const contains = primitives.contains(tileset);
+    if (contains) primitives.remove(tileset);
+    if (!tileset.isDestroyed()) tileset.destroy();
+    // De-sync primary/context pointers if they alias this primitive.
+    if (this.primaryTileset === tileset) this.primaryTileset = null;
+    if (this.contextTileset === tileset) this.contextTileset = null;
+    if (this.cameraLimitTileset === tileset) this.cameraLimitTileset = null;
+  }
+
+  private trimAutoLodAnchor(): void {
+    if (!this.autoLodAnchor) return;
+    // Drop loaded tiles for the hidden anchor to reclaim memory; the tileset
+    // stays alive so p02 can be re-shown without reloading.
+    try {
+      // Cesium exposes `trimLoadedTiles` on Cesium3DTileset.
+      (this.autoLodAnchor as unknown as { trimLoadedTiles?: () => void }).trimLoadedTiles?.();
+    } catch {
+      // ignore — older Cesium builds may not expose this method.
+    }
+  }
+
   destroy(): void {
+    this.disposeAutoLodLayers();
     this.unloadTilesets();
     this.inputHandler?.destroy();
     this.touchInputCleanup?.();

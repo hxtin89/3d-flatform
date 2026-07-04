@@ -18,4 +18,8 @@ export default defineConfig({
     target: 'esnext',
     chunkSizeWarningLimit: 5000,
   },
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts'],
+  },
 });

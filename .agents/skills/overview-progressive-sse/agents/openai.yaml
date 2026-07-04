@@ -1,0 +1,4 @@
+interface:
+  display_name: "Overview Progressive SSE"
+  short_description: "Tune Overview loading and Globe camera behavior"
+  default_prompt: "Use $overview-progressive-sse to diagnose Overview SSE, telemetry, sparse rendering, or Globe zoom and orbit behavior."

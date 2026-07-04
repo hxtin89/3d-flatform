@@ -39,6 +39,7 @@
       <div class="brand-dot"></div>
       <span class="brand-name">SBB Point Cloud</span>
       <span class="brand-badge" id="brand-badge">LOCAL</span>
+      <span class="brand-badge lod-auto-badge hidden" id="lod-auto-badge">LOD: AUTO</span>
     </div>
     <div class="topbar-meta" id="topbar-meta">
       <span id="meta-dataset">autzen.laz</span>
@@ -112,6 +113,34 @@
           <div class="stat-row">
             <span class="stat-key">Tiles loaded</span>
             <span class="stat-val" id="stat-tiles">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Mode</span>
+            <span class="stat-val" data-report-field="lodMode">manual</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Level</span>
+            <span class="stat-val" data-report-field="lodCurrentLevel">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Desired</span>
+            <span class="stat-val" data-report-field="lodDesiredLevel">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Area</span>
+            <span class="stat-val" data-report-field="lodAreaId">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Ratio</span>
+            <span class="stat-val" data-report-field="lodRangeRatio">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Status</span>
+            <span class="stat-val" data-report-field="lodTransitionStatus">idle</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-key">LOD Gen</span>
+            <span class="stat-val" data-report-field="lodGeneration">—</span>
           </div>
         </div>
       </div>

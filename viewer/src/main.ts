@@ -4,6 +4,7 @@ import {
   DATASET,
   TILE_CONFIG,
   TILE_SOURCE,
+  LOD_MODE,
   PointCloudViewer,
   type CameraSnapshot,
   type ViewerState,
@@ -27,6 +28,7 @@ import {
   setOverviewPointSizeScale,
   setOverviewPointSizeAvailability,
   isContextLayerEnabled,
+  setAutoLodIndicator,
   setAreaOptions,
   setAreaDetectionStatus,
   setContextLayerAvailability,
@@ -54,14 +56,26 @@ import {
   resolveDataset,
   selectedArea,
   statusLabel,
+  fetchAutoLodManifest,
+  autoLodAreaForSamples,
   type AreaManifest,
   type AreaManifestEntry,
   type ResolvedDataset,
 } from './manifest';
+import {
+  AutoLodController,
+  autoLodFocusRadius,
+  type AutoLodEvent,
+  type AutoLodLevel,
+  type AutoLodManifest,
+} from './auto-lod-controller';
+import { AutoLodRuntime, type AutoLodStageHost } from './auto-lod-runtime';
+import type { AutoLodStageRequest } from './viewer';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
 setServerUrl(TILE_CONFIG.baseUrl || 'CloudFront not configured');
+setAutoLodIndicator(LOD_MODE === 'auto');
 initDatasetReport();
 
 let areaManifest: AreaManifest | null = null;
@@ -69,6 +83,25 @@ let currentArea: AreaManifestEntry | null = null;
 let currentResolved: ResolvedDataset = resolveDataset(DATASET, 'low', null, null);
 let preDetailCameraSnapshot: CameraSnapshot | null = null;
 let contextLayerEnabled = false;
+
+// ── Auto-LOD (?lod=auto) runtime state ─────────────────────────────────────
+// Kept fully separate from the manual flow so manual behavior is untouched.
+const AUTO_LOD_MIN_ZOOM = 0.05; // allow continued zoom at p100
+const AUTO_LOD_HEARTBEAT_MS = 200;
+let autoLodController: AutoLodController | null = null;
+let autoLodRuntime: AutoLodRuntime | null = null;
+let autoLodManifest: AutoLodManifest | null = null;
+let autoLodReady = false;
+let autoLodCameraDirty = false;
+let autoLodCameraRemoveCleanup: (() => void) | null = null;
+let autoLodHeartbeat: number | null = null;
+let autoLodLastProbe: { areaId: string | null; ratio: number } | null = null;
+let autoLodTransitionCount = 0;
+let autoLodLastTransitionDurationMs = 0;
+let autoLodLastGeneration = -1;
+let autoLodFlyHomePending = false;
+let autoLodLastDesiredLevel: AutoLodLevel | '—' = '—';
+let autoLodLastTransitionReason = '—';
 
 type CurrentViewDetection = {
   area: AreaManifestEntry;
@@ -154,6 +187,7 @@ initContextLayerToggle((enabled: boolean) => {
 });
 
 initDetailSseSelect((sse: number) => {
+  if (autoLodReady) return; // Detail SSE disabled in auto mode.
   viewer.setDetailSseOverride(sse);
   updateStats({
     sse: viewer.getSSE(),
@@ -167,6 +201,11 @@ initOverviewPointSizeSlider((scale: number) => {
 });
 
 initFlyHomeButton(() => {
+  if (autoLodReady && autoLodRuntime) {
+    autoLodFlyHomePending = true;
+    autoLodRuntime.requestP02();
+    return;
+  }
   viewer.flyHome();
 });
 initControlsPanelToggle();
@@ -181,6 +220,10 @@ bootstrap().catch((err) => {
 });
 
 async function bootstrap(): Promise<void> {
+  if (LOD_MODE === 'auto') {
+    await bootstrapAutoLod();
+    return;
+  }
   try {
     areaManifest = await fetchAreaManifest(DATASET);
   } catch (err) {
@@ -203,6 +246,222 @@ async function bootstrap(): Promise<void> {
   }
   updateModeAvailability();
   await applyMode('low');
+}
+
+async function bootstrapAutoLod(): Promise<void> {
+  try {
+    autoLodManifest = await fetchAutoLodManifest(DATASET);
+  } catch (err) {
+    setStatus('error', `Invalid Auto-LOD manifest: ${(err as Error).message}`);
+    return;
+  }
+  if (!autoLodManifest) {
+    setStatus(
+      'error',
+      `area-manifest-auto-lod.json not found for "${DATASET}".\n-> Run: POINTCLOUD_PUBLIC_ROOT=peru-b2-globe npm run pipeline:area:auto-lod:manifest -- 2404PeruB2`
+    );
+    return;
+  }
+
+  autoLodController = new AutoLodController({ manifest: autoLodManifest });
+  autoLodRuntime = new AutoLodRuntime({
+    controller: autoLodController,
+    host: makeAutoLodHost(),
+    hooks: {
+      onCommitted: (s) => {
+        autoLodTransitionCount += 1;
+        autoLodLastTransitionDurationMs = s.transitionMs;
+        autoLodLastGeneration = s.generation;
+        viewer.setAutoLodMinimumZoomDistance(AUTO_LOD_MIN_ZOOM);
+        setActivePreset(s.preset);
+        setDatasetLabel(s.dataset);
+        updateReportMode(s.preset);
+        // Reports only update after commit (per plan).
+        resetBrowserMetrics();
+        updateAutoLodTelemetry();
+        reloadDatasetReport().catch(() => undefined);
+        setAreaDetectionStatus(autoLodStatusMessage(s.level, s.areaId));
+        // Fly Home requested p02: frame the global p02 scene once committed.
+        if (s.level === 'p02' && autoLodFlyHomePending) {
+          autoLodFlyHomePending = false;
+          viewer.flyHome();
+        }
+      },
+      onTimeout: (s) => {
+        autoLodLastGeneration = s.generation;
+        autoLodLastTransitionReason = 'timeout';
+        setAreaDetectionStatus(
+          `Auto-LOD: ${s.level} load timed out; keeping current dataset.`
+        );
+        updateAutoLodTelemetry();
+      },
+      onLoadError: (s) => {
+        autoLodLastGeneration = s.generation;
+        autoLodLastTransitionReason = `error:${s.error.message}`;
+        setAreaDetectionStatus(
+          `Auto-LOD: ${s.level} load failed — ${s.error.message}. Keeping current.`
+        );
+        updateAutoLodTelemetry();
+      },
+      onDesiredLevel: (level, areaId) => {
+        updateBrowserMetric('lodDesiredLevel', level);
+        autoLodLastDesiredLevel = level;
+        autoLodLastTransitionReason = autoLodFlyHomePending ? 'fly_home' : 'camera';
+        // non-blocking — no UI swap yet.
+      },
+    },
+  });
+
+  setDatasetLabel(autoLodManifest.dataset);
+
+  // Disable all manual controls in auto mode (incl. Detail SSE).
+  setPresetAvailability('low', false, 'Auto-LOD mode (camera-driven)');
+  setPresetAvailability('medium', false, 'Auto-LOD mode (camera-driven)');
+  setPresetAvailability('high', false, 'Auto-LOD mode (camera-driven)');
+  setContextLayerAvailability(false, 'Auto-LOD mode');
+  setUseCurrentViewAvailability(false, 'Auto-LOD mode');
+  setAreaOptions([], null);
+  setOverviewPointSizeAvailability(false, 'Auto-LOD mode');
+  const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
+  if (detailSseSelect) detailSseSelect.disabled = true;
+  setAreaDetectionStatus('Auto-LOD: camera-driven p02 ⇄ p10 ⇄ p100');
+  updateAutoLodTelemetry();
+
+  const p02 = autoLodManifest.levels.p02;
+  if (p02.status !== 'ready' || !p02.dataset) {
+    setStatus('error', `p02 overview dataset not built: ${p02.dataset || '(missing)'}`);
+    return;
+  }
+
+  await viewer.loadScene({
+    primary: { dataset: p02.dataset, preset: 'low' },
+    cameraBehavior: 'flyTo',
+  });
+  viewer.adoptCurrentPrimaryAsAutoLodAnchor();
+  viewer.setAutoLodMinimumZoomDistance(AUTO_LOD_MIN_ZOOM);
+  autoLodReady = true;
+  autoLodLastDesiredLevel = 'p02';
+  setDatasetLabel(p02.dataset);
+  setActivePreset('low');
+  updateReportMode('low');
+  resetBrowserMetrics();
+  updateAutoLodTelemetry();
+  reloadDatasetReport().catch(() => undefined);
+
+  startAutoLodHeartbeat();
+  setupAutoLodCameraListener();
+}
+
+function makeAutoLodHost(): AutoLodStageHost {
+  return {
+    stage: async (request) => {
+      const stageRequest: AutoLodStageRequest = {
+        generation: request.generation,
+        level: request.level,
+        dataset: request.dataset,
+        preset: request.preset,
+        onVisible: (g) => autoLodRuntime?.reportCandidateVisible(g),
+      };
+      await viewer.stageAutoLodCandidate(stageRequest);
+    },
+    commit: (generation, preset, dataset) =>
+      viewer.commitAutoLodCandidate(generation, preset, dataset),
+    discard: (generation) => viewer.discardAutoLodCandidate(generation),
+  };
+}
+
+/** camera.changed only marks a dirty flag; the heartbeat 200 ms later does the work. */
+function setupAutoLodCameraListener(): void {
+  autoLodCameraRemoveCleanup = viewer.subscribeCameraChanges(() => {
+    autoLodCameraDirty = true;
+  });
+}
+
+function disposeAutoLod(): void {
+  autoLodReady = false;
+  if (autoLodHeartbeat !== null) {
+    window.clearInterval(autoLodHeartbeat);
+    autoLodHeartbeat = null;
+  }
+  autoLodCameraRemoveCleanup?.();
+  autoLodCameraRemoveCleanup = null;
+  autoLodRuntime?.dispose();
+  autoLodRuntime = null;
+}
+
+window.addEventListener('beforeunload', disposeAutoLod);
+
+function startAutoLodHeartbeat(): void {
+  if (autoLodHeartbeat !== null) return;
+  let lastSampleAt = 0;
+  autoLodHeartbeat = window.setInterval(() => {
+    if (!autoLodReady || !autoLodController || !autoLodManifest) return;
+    if (!autoLodRuntime) return;
+
+    const dirty = autoLodCameraDirty;
+
+    // No movement: feed cached probe so settle/timeout/retry still progress.
+    if (!dirty) {
+      if (autoLodLastProbe) {
+        const evt = autoLodController.update(autoLodLastProbe);
+        autoLodRuntime.dispatchEvent(evt);
+      }
+      return;
+    }
+
+    // Throttle re-sampling to at most 5 batches per second when moving.
+    const now = performance.now();
+    if (now - lastSampleAt < 200) {
+      // Keep dirty flag set so the next heartbeat retries real sampling.
+      if (autoLodLastProbe) {
+        const evt = autoLodController.update(autoLodLastProbe);
+        autoLodRuntime.dispatchEvent(evt);
+      }
+      return;
+    }
+    // Camera moved past the throttle window: clear dirty and sample now.
+    autoLodCameraDirty = false;
+    lastSampleAt = now;
+
+    const samples = viewer.getCurrentViewSamples();
+    const detected = autoLodAreaForSamples(autoLodManifest, samples);
+    const area = autoLodController.areaById(detected.areaId);
+    const range = viewer.getActiveCameraRange();
+    const focus = area ? autoLodFocusRadius(area) : 0;
+    const ratio = focus > 0 ? range / focus : 0;
+
+    autoLodLastProbe = { areaId: detected.areaId, ratio };
+    const evt = autoLodController.update(autoLodLastProbe);
+    autoLodRuntime.dispatchEvent(evt);
+    updateAutoLodTelemetry();
+  }, AUTO_LOD_HEARTBEAT_MS);
+}
+
+function autoLodStatusMessage(level: AutoLodLevel, areaId: string | null): string {
+  const label = areaId ? autoLodController?.areaById(areaId)?.label ?? areaId : 'global';
+  return `Auto-LOD → ${level} (${label})`;
+}
+
+function updateAutoLodTelemetry(): void {
+  if (!autoLodController) return;
+  const state = autoLodController.getState();
+  setReportDatasetContext({
+    logicalDataset: autoLodManifest?.dataset ?? DATASET,
+    resolvedDataset: viewer.getActiveDataset(),
+    selectedAreaId: state.areaId,
+    modeStatus: state.status,
+    sourceChunkId: autoLodController.areaById(state.areaId)?.sourceChunkId ?? null,
+  });
+  updateBrowserMetric('lodCurrentLevel', state.level);
+  updateBrowserMetric('lodDesiredLevel', autoLodLastDesiredLevel);
+  updateBrowserMetric('lodAreaId', state.areaId ?? '');
+  updateBrowserMetric('lodRangeRatio', Number(state.lastRatio.toFixed(3)));
+  updateBrowserMetric('lodTransitionStatus', state.status);
+  updateBrowserMetric('lodTransitionReason', autoLodLastTransitionReason);
+  updateBrowserMetric('lodTransitionCount', autoLodTransitionCount);
+  updateBrowserMetric('lodGeneration', state.inflightGeneration ?? autoLodLastGeneration);
+  // Duration is the most recent committed stage's elapsed time, not time-since.
+  updateBrowserMetric('lodTransitionMs', Math.round(autoLodLastTransitionDurationMs));
 }
 
 async function applyMode(

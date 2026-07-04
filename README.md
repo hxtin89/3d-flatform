@@ -109,8 +109,49 @@ They automatically run missing geospatial tools through the `pointcloud-pipeline
 - Loads `tileset.json` from local tile server by default, or CloudFront with `?source=cloudfront` (no Cesium ion)
 - Flies camera to point cloud bounding sphere on load
 - **Quality presets**: Low / Medium / High (screen-space error + memory + point cloud shading)
+- **Auto-LOD mode** (`?lod=auto`): camera-driven switching `p02 ⇄ p10 ⇄ p100` across prebuilt datasets, with hysteresis, settle time, load timeout/retry, and stale-request protection (see `plans/plan-auto-lod.md`)
 - **Error state**: friendly message if tile server is down or tileset missing
 - Dark glassmorphism UI with live rendering stats
+
+## Auto-LOD manifest
+
+Generate the self-contained `area-manifest-auto-lod.json` (no PNTS rebuild) after the
+three mode datasets (`overview-p02`, `explore-p10`, `detail-p100`) and the legacy
+`area-manifest.json` exist:
+
+```bash
+POINTCLOUD_PUBLIC_ROOT=peru-b2-globe \
+npm run pipeline:area:auto-lod:manifest -- 2404PeruB2
+# → local-storage/tilesets/peru-b2-globe/area-manifest-auto-lod.json
+```
+
+The generator is self-contained, atomic (`0644`), does not hardcode the Peru
+dataset, requires a valid overview dataset in the source manifest, and validates
+threshold ordering, globe `rootTransform` (16 finite numbers), duplicate
+`areaId`/`sourceChunkId`, and `bbox` min≤max. Invalid input fails with a clear
+`ManifestError`.
+
+Open the viewer in auto mode:
+
+```
+http://localhost:5173/?dataset=peru-b2-globe&lod=auto
+```
+
+The viewer keeps the manual mode and `area-manifest.json` untouched; manual controls
+(including presets, area selector, context layer, point size slider, and Detail SSE)
+are disabled while `lod=auto` is active. The camera-driven state machine:
+
+- Stages a candidate dataset *in parallel* with the currently displayed layer.
+- Only swaps the scene after the candidate's first `tileVisible`.
+- Reuses the p02 anchor on every return to p02 (no reload).
+- Trims the p02 anchor's loaded tiles while a focus layer is active.
+- Camera change events feed a 200 ms heartbeat that throttles area detection
+  (no `pickPosition` sampling when the camera is steady).
+- Hysteresis on threshold ratios prevents load looping near the boundary.
+- Visible-timeout keeps the active dataset and schedules a retry.
+- Stale-request protection (generation token) discards candidates that complete
+  after a newer request superseded them.
+- Fly Home forces an immediate p02 transition that bypasses hysteresis.
 
 ## Architecture
 

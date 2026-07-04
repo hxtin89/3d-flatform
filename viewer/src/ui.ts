@@ -1,6 +1,6 @@
 // ui.ts — UI state management for the point cloud viewer
 import { type PresetName, PRESETS } from './presets';
-import { type ViewerState } from './viewer';
+import { LOD_MODE, type ViewerState } from './viewer';
 
 // ── Status overlay ──────────────────────────────────────────────
 const statusOverlay = document.getElementById('status-overlay')!;
@@ -229,4 +229,12 @@ export function initFlyHomeButton(onFly: () => void): void {
 export function setServerUrl(url: string): void {
   const el = document.getElementById('server-url');
   if (el) el.textContent = url;
+}
+
+// ── Auto-LOD indicator / control gating ────────────────────────────────────
+const lodAutoBadge = document.getElementById('lod-auto-badge');
+
+export function setAutoLodIndicator(active: boolean): void {
+  if (!lodAutoBadge) return;
+  lodAutoBadge.classList.toggle('hidden', !active);
 }
