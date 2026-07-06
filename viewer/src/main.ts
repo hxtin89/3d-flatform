@@ -2,6 +2,7 @@
 import './style.css';
 import {
   DATASET,
+  LOD_MODE,
   TILE_CONFIG,
   TILE_SOURCE,
   PointCloudViewer,
@@ -45,6 +46,7 @@ import {
   reloadDatasetReport,
   resetBrowserMetrics,
   setOverviewSseValidation,
+  useRuntimeOnlyDatasetReport,
   type BrowserMetricName,
 } from './report';
 import {
@@ -58,6 +60,11 @@ import {
   type AreaManifestEntry,
   type ResolvedDataset,
 } from './manifest';
+import {
+  ONE_LOD_TREE_TILESET_FILE,
+  oneLodTreeDataset,
+  oneLodTreeSse,
+} from './one-lod-tree';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
@@ -100,7 +107,7 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
-    const isOverview = preset === 'low';
+    const isOverview = preset === 'low' && LOD_MODE !== 'one-lod-tree';
     setOverviewPointSizeAvailability(
       isOverview,
       isOverview ? '' : 'Available in Overview only'
@@ -120,6 +127,10 @@ const viewer = new PointCloudViewer('cesium-container', {
 
 // Wire up UI controls
 initPresetButtons((preset: PresetName) => {
+  if (LOD_MODE === 'one-lod-tree') {
+    applyOneLodTreePreset(preset);
+    return;
+  }
   applyMode(preset, { detectCurrentViewForDetail: preset === 'high' }).catch((err) => {
     console.error('[Main] Failed to switch mode:', err);
     setStatus('error', `Mode switch failed: ${err.message}`);
@@ -154,6 +165,7 @@ initContextLayerToggle((enabled: boolean) => {
 });
 
 initDetailSseSelect((sse: number) => {
+  if (LOD_MODE === 'one-lod-tree') return;
   viewer.setDetailSseOverride(sse);
   updateStats({
     sse: viewer.getSSE(),
@@ -181,6 +193,10 @@ bootstrap().catch((err) => {
 });
 
 async function bootstrap(): Promise<void> {
+  if (LOD_MODE === 'one-lod-tree') {
+    await bootstrapOneLodTree();
+    return;
+  }
   try {
     areaManifest = await fetchAreaManifest(DATASET);
   } catch (err) {
@@ -205,6 +221,62 @@ async function bootstrap(): Promise<void> {
   await applyMode('low');
 }
 
+async function bootstrapOneLodTree(): Promise<void> {
+  const resolvedDataset = oneLodTreeDataset(DATASET);
+  currentResolved = {
+    logicalDataset: DATASET,
+    resolvedDataset,
+    selectedAreaId: null,
+    modeStatus: 'ready',
+    modeStatusLabel: 'single external tree',
+    sourceChunkId: null,
+    contextDataset: null,
+    contextStatus: null,
+    contextStatusLabel: null,
+    contextExcludedAreaId: null,
+    contextExcludedSourceChunkId: null,
+  };
+
+  setDatasetLabel(resolvedDataset);
+  setReportDatasetContext(currentResolved);
+  useRuntimeOnlyDatasetReport();
+  setAreaOptions([], null);
+  setUseCurrentViewAvailability(false, 'Single-tree mode');
+  setContextLayerAvailability(false, 'Single-tree mode');
+  setOverviewPointSizeAvailability(false, 'Single-tree mode');
+  setPresetAvailability('low', true, `Single tree · SSE ${oneLodTreeSse('low')}`);
+  setPresetAvailability('medium', true, `Single tree · SSE ${oneLodTreeSse('medium')}`);
+  setPresetAvailability('high', true, `Single tree · SSE ${oneLodTreeSse('high')}`);
+  const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
+  if (detailSseSelect) detailSseSelect.disabled = true;
+  setAreaDetectionStatus('One LOD Tree: Cesium camera-driven external refinement');
+
+  resetBrowserMetrics();
+  updateBrowserMetric('framingMode', 'flyTo');
+  await viewer.loadOneLodTree(resolvedDataset, ONE_LOD_TREE_TILESET_FILE);
+  useRuntimeOnlyDatasetReport();
+  setActivePreset('low');
+  updateReportMode('low');
+  updateStats({
+    sse: viewer.getSSE(),
+    memory: viewer.getCacheMB(),
+    tiles: 0,
+  });
+}
+
+function applyOneLodTreePreset(preset: PresetName): void {
+  viewer.setOneLodTreePreset(preset);
+  setActivePreset(preset);
+  updateReportMode(preset);
+  updateBrowserMetric('focusEffectiveSSE', oneLodTreeSse(preset));
+  updateStats({
+    sse: viewer.getSSE(),
+    memory: viewer.getCacheMB(),
+  });
+  setAreaDetectionStatus(
+    `One LOD Tree: ${modeForPreset(preset)} render budget · SSE ${oneLodTreeSse(preset)}`
+  );
+}
 async function applyMode(
   preset: PresetName,
   opts: { detectCurrentViewForDetail?: boolean; forceReload?: boolean } = {}

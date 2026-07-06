@@ -251,6 +251,15 @@ export function setReportDatasetContext(context: {
   renderDatasetContext();
 }
 
+/** Use Cesium runtime metrics when a composed tileset has no dataset report. */
+export function useRuntimeOnlyDatasetReport(): void {
+  datasetReport = null;
+  contextReport = null;
+  resetPipelineFields();
+  renderDatasetContext();
+  setText('report-status', 'runtime metrics');
+}
+
 export function setReportAreaDetectionContext(context: AreaDetectionReportContext): void {
   areaDetectionContext = context;
 }

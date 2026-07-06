@@ -13,6 +13,7 @@
     "pipeline:tiles:copc": "bash pipeline/copc-tiles.sh",
     "pipeline:tiles:copc:chunks": "bash pipeline/copc-tiles-chunks.sh",
     "pipeline:area:manifest": "bash pipeline/area-manifest.sh",
+    "pipeline:area:one-lod-tree": "bash pipeline/area-one-lod-tree.sh",
     "pipeline:area:overview": "bash pipeline/area-overview.sh",
     "pipeline:area:overview:excluding": "bash pipeline/area-overview-excluding.sh",
     "pipeline:area:overview:p001": "bash pipeline/area-overview-p001.sh",

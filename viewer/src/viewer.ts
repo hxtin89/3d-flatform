@@ -17,6 +17,13 @@ import {
   type OverviewSseMetricCallback,
 } from './overview-sse-controller';
 import { type BrowserMetricName } from './report';
+import {
+  ONE_LOD_TREE_TILESET_FILE,
+  oneLodTreeCachePolicy,
+  oneLodTreeSse,
+  shouldTrimOneLodTree,
+  tilesetEntryUrl,
+} from './one-lod-tree';
 
 // Disable Cesium ion — fully self-hosted setup
 Cesium.Ion.defaultAccessToken = '';
@@ -41,6 +48,10 @@ export const DATASET = requestedDataset?.match(DATASET_PATTERN)
     : LOCAL_DEFAULT_DATASET;
 const DEBUG_TILES = searchParams.get('debugTiles') === '1';
 const DEBUG_OVERVIEW = searchParams.get('debugOverview') === '1';
+/** Viewer LOD mode controlled by `?lod=...`. */
+export const LOD_MODE: 'manual' | 'one-lod-tree' = searchParams.get('lod') === 'one-lod-tree'
+  ? 'one-lod-tree'
+  : 'manual';
 const REQUESTED_BASEMAP = searchParams.get('basemap');
 const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
@@ -252,6 +263,7 @@ export class PointCloudViewer {
   private overviewSseController = new OverviewSseController();
   private overviewFirstVisibleFired = false;
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
+  private oneLodTreeTrimGeneration = 0;
 
   constructor(containerId: string, callbacks: ViewerCallbacks) {
     this.callbacks = callbacks;
@@ -315,6 +327,178 @@ export class PointCloudViewer {
       primary: { dataset, preset: this.currentPreset },
       cameraBehavior: 'flyTo',
     });
+  }
+
+  /**
+   * Load the one-lod sidecar entry without entering the shared manual/auto
+   * loadScene path. This keeps progressive Overview SSE and focus/context
+   * layer swapping disabled for the lifetime of this single tileset.
+   */
+  async loadOneLodTree(
+    dataset: string,
+    tilesetFile = ONE_LOD_TREE_TILESET_FILE
+  ): Promise<void> {
+    const url = tilesetEntryUrl(TILE_CONFIG.baseUrl, dataset, tilesetFile);
+    this.callbacks.onStateChange('loading', 'Connecting to one-lod tileset...');
+
+    try {
+      await this.checkTileServer(url);
+      this.unloadTilesets();
+      this.activeDataset = dataset;
+      this.currentPreset = 'low';
+      this.callbacks.onStateChange('loading', `Fetching ${tilesetFile}...`);
+      this.loadStartTime = performance.now();
+      this.firstTileLoadedReported = false;
+      this.firstVisibleReported = false;
+      this.tilesLoaded = 0;
+      this.activeTilesLoaded = 0;
+      this.callbacks.onTileStats(0, 0);
+      this.reportLayerTileStats();
+
+      const tilesetStart = performance.now();
+      const documentPromise = MAPTILER_BASEMAP_ENABLED
+        ? fetch(url).then(async (response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            return response.json() as Promise<TilesetDocument>;
+          })
+        : Promise.resolve(null);
+      const [tileset, document] = await Promise.all([
+        Cesium.Cesium3DTileset.fromUrl(url, {
+          maximumScreenSpaceError: oneLodTreeSse('low'),
+          cacheBytes: PRESETS.low.cacheBytes,
+          maximumCacheOverflowBytes: PRESETS.low.maximumCacheOverflowBytes,
+          skipLevelOfDetail: false,
+        }),
+        documentPromise,
+      ]);
+      this.callbacks.onBrowserMetric('tilesetLoadTime', performance.now() - tilesetStart);
+
+      if (document && this.isGlobeDocument(document)) {
+        this.alignTilesetBottomToEllipsoid(tileset, document);
+      }
+      if (DEBUG_TILES) {
+        tileset.debugShowBoundingVolume = true;
+        tileset.debugShowGeometricError = true;
+        tileset.debugShowRenderingStatistics = true;
+      }
+
+      this.viewer.scene.primitives.add(tileset);
+      this.primaryTileset = tileset;
+      this.contextTileset = null;
+      this.configureCameraLimits(tileset, null, true, false);
+      this.installPointCloudControls(tileset, null);
+      this.setOneLodTreePreset('low');
+      this.minCameraDistance = 0.05;
+      this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 0.05;
+
+      this.callbacks.onBrowserMetric('flyToTime', this.flyToTileset());
+      this.reportEffectiveSse();
+      this.callbacks.onStateChange('ready', `Streaming one-lod tree: ${url}`);
+
+      const onInitialTilesLoaded = () => {
+        if (!this.firstTileLoadedReported) {
+          this.firstTileLoadedReported = true;
+          this.callbacks.onBrowserMetric('firstTileLoadedTime', performance.now() - this.loadStartTime);
+        }
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      };
+      tileset.initialTilesLoaded.addEventListener(onInitialTilesLoaded);
+      tileset.allTilesLoaded.addEventListener(() => {
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      });
+
+      this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
+        if (!this.primaryTileset) return;
+        const loaded = this.loadedTileCount();
+        const active = this.activeTileCount();
+        if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
+          this.tilesLoaded = loaded;
+          this.activeTilesLoaded = active;
+          this.callbacks.onTileStats(loaded, active);
+        }
+        this.reportLayerTileStats();
+        if (loaded > 0 && !this.firstVisibleReported) {
+          this.firstVisibleReported = true;
+          this.callbacks.onBrowserMetric('firstVisibleTime', performance.now() - this.loadStartTime);
+        }
+      });
+      this.installTileFailureLogging(tileset);
+    } catch (err) {
+      const error = err as Error;
+      console.error('[Viewer] Failed to load one-lod tree:', error);
+      let message = error.message ?? 'Unknown error';
+      if (
+        message.includes('Failed to fetch') ||
+        message.includes('NetworkError') ||
+        message.includes('ECONNREFUSED') ||
+        message.includes('ERR_CONNECTION_REFUSED')
+      ) {
+        message = TILE_CONFIG.source === 'cloudfront'
+          ? `Cannot reach CloudFront tiles at ${TILE_CONFIG.baseUrl}.`
+          : `Cannot reach tile server at ${TILE_CONFIG.baseUrl}.\n-> Run: npm run pipeline:serve`;
+      } else if (message.includes('404') || message.includes('Not Found')) {
+        message = `${tilesetFile} not found for one-lod dataset "${dataset}".\n` +
+          '-> Run: npm run pipeline:area:one-lod-tree -- 2404PeruB2 area-001';
+      }
+      this.callbacks.onStateChange('error', message);
+    }
+  }
+
+  setOneLodTreePreset(preset: PresetName): void {
+    const previousPreset = this.currentPreset;
+    this.currentPreset = preset;
+    this.oneLodTreeTrimGeneration += 1;
+    if (this.primaryTileset) {
+      const tileset = this.primaryTileset;
+      const cachePolicy = oneLodTreeCachePolicy(preset);
+      applyPreset(
+        tileset,
+        preset,
+        { maximumScreenSpaceError: oneLodTreeSse(preset) },
+        { variant: this.presetVariantForTileset(tileset) }
+      );
+      tileset.cacheBytes = cachePolicy.cacheBytes;
+      tileset.maximumCacheOverflowBytes = cachePolicy.maximumCacheOverflowBytes;
+      if (shouldTrimOneLodTree(previousPreset, preset)) {
+        this.scheduleOneLodTreeOverviewTrim(tileset, this.oneLodTreeTrimGeneration);
+      }
+      this.reportEffectiveSse();
+    }
+    this.callbacks.onPresetChange(preset);
+  }
+
+  /**
+   * Wait for Overview selection to settle before trimming. Cesium evicts tiles
+   * that were not selected in the previous frame, so trimming synchronously
+   * would preserve the Detail selection from the click frame.
+   */
+  private scheduleOneLodTreeOverviewTrim(
+    tileset: Cesium.Cesium3DTileset,
+    generation: number
+  ): void {
+    let renderedFrames = 0;
+    const remove = this.viewer.scene.postRender.addEventListener(() => {
+      if (
+        generation !== this.oneLodTreeTrimGeneration ||
+        this.currentPreset !== 'low' ||
+        this.primaryTileset !== tileset ||
+        tileset.isDestroyed()
+      ) {
+        remove();
+        return;
+      }
+
+      renderedFrames += 1;
+      if (renderedFrames < 2) {
+        this.viewer.scene.requestRender();
+        return;
+      }
+
+      remove();
+      tileset.trimLoadedTiles();
+      this.viewer.scene.requestRender();
+    });
+    this.viewer.scene.requestRender();
   }
 
   async loadScene(options: LoadSceneOptions): Promise<void> {

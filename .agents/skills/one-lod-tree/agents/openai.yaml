@@ -1,0 +1,4 @@
+interface:
+  display_name: "One LOD Tree"
+  short_description: "Build and validate the One LOD Tree pipeline"
+  default_prompt: "Use $one-lod-tree to build, debug, or validate the SBB One LOD Tree pipeline."
