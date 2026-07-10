@@ -22,9 +22,9 @@ describe('one-lod-tree helpers', () => {
   });
 
   it('maps presets to progressively finer SSE without reloading', () => {
-    expect(oneLodTreeSse('low')).toBe(256);
-    expect(oneLodTreeSse('medium')).toBe(124);
-    expect(oneLodTreeSse('high')).toBe(96);
+    expect(oneLodTreeSse('low')).toBe(512);
+    expect(oneLodTreeSse('medium')).toBe(256);
+    expect(oneLodTreeSse('high')).toBe(128);
   });
 
   it('keeps cache headroom and trims when returning from a finer preset', () => {

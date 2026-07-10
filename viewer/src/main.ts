@@ -46,6 +46,7 @@ import {
   reloadDatasetReport,
   resetBrowserMetrics,
   setOverviewSseValidation,
+  updateSpatialLodActiveTileSamples,
   useRuntimeOnlyDatasetReport,
   type BrowserMetricName,
 } from './report';
@@ -65,6 +66,12 @@ import {
   oneLodTreeDataset,
   oneLodTreeSse,
 } from './one-lod-tree';
+import {
+  SPATIAL_LOD_TILESET_FILE,
+  spatialLodDataset,
+  spatialLodSse,
+  type SpatialLodLevelStats,
+} from './spatial-lod';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
@@ -76,6 +83,20 @@ let currentArea: AreaManifestEntry | null = null;
 let currentResolved: ResolvedDataset = resolveDataset(DATASET, 'low', null, null);
 let preDetailCameraSnapshot: CameraSnapshot | null = null;
 let contextLayerEnabled = false;
+let spatialLodLevelStats: SpatialLodLevelStats | null = { z0: 0, z1: 0, z2: 0, z3: 0, z4: 0 };
+
+function renderSpatialLodStatus(): void {
+  if (LOD_MODE !== 'spatial-lod') return;
+  const sse = viewer.getSSE();
+  if (spatialLodLevelStats === null) {
+    setAreaDetectionStatus(`Spatial LOD · SSE ${sse} · z-levels: —`);
+    return;
+  }
+  const s = spatialLodLevelStats;
+  setAreaDetectionStatus(
+    `Spatial LOD · SSE ${sse} · z0=${s.z0} z1=${s.z1} z2=${s.z2} z3=${s.z3} z4=${s.z4}`
+  );
+}
 
 type CurrentViewDetection = {
   area: AreaManifestEntry;
@@ -107,7 +128,7 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
-    const isOverview = preset === 'low' && LOD_MODE !== 'one-lod-tree';
+    const isOverview = preset === 'low' && LOD_MODE === 'manual';
     setOverviewPointSizeAvailability(
       isOverview,
       isOverview ? '' : 'Available in Overview only'
@@ -123,12 +144,23 @@ const viewer = new PointCloudViewer('cesium-container', {
   onInteraction: () => {
     markInteraction();
   },
+  onSpatialLodLevelStats: (stats: SpatialLodLevelStats | null, _active: number | string) => {
+    spatialLodLevelStats = stats;
+    renderSpatialLodStatus();
+  },
+  onSpatialLodActiveTileSamples: (samples) => {
+    updateSpatialLodActiveTileSamples(samples);
+  },
 });
 
 // Wire up UI controls
 initPresetButtons((preset: PresetName) => {
   if (LOD_MODE === 'one-lod-tree') {
     applyOneLodTreePreset(preset);
+    return;
+  }
+  if (LOD_MODE === 'spatial-lod') {
+    applySpatialLodPreset(preset);
     return;
   }
   applyMode(preset, { detectCurrentViewForDetail: preset === 'high' }).catch((err) => {
@@ -165,7 +197,7 @@ initContextLayerToggle((enabled: boolean) => {
 });
 
 initDetailSseSelect((sse: number) => {
-  if (LOD_MODE === 'one-lod-tree') return;
+  if (LOD_MODE === 'one-lod-tree' || LOD_MODE === 'spatial-lod') return;
   viewer.setDetailSseOverride(sse);
   updateStats({
     sse: viewer.getSSE(),
@@ -195,6 +227,10 @@ bootstrap().catch((err) => {
 async function bootstrap(): Promise<void> {
   if (LOD_MODE === 'one-lod-tree') {
     await bootstrapOneLodTree();
+    return;
+  }
+  if (LOD_MODE === 'spatial-lod') {
+    await bootstrapSpatialLod();
     return;
   }
   try {
@@ -275,6 +311,117 @@ function applyOneLodTreePreset(preset: PresetName): void {
   });
   setAreaDetectionStatus(
     `One LOD Tree: ${modeForPreset(preset)} render budget · SSE ${oneLodTreeSse(preset)}`
+  );
+}
+
+async function bootstrapSpatialLod(): Promise<void> {
+  const resolvedDataset = spatialLodDataset(DATASET);
+  currentResolved = {
+    logicalDataset: DATASET,
+    resolvedDataset,
+    selectedAreaId: null,
+    modeStatus: 'ready',
+    modeStatusLabel: 'spatial-lod tree',
+    sourceChunkId: null,
+    contextDataset: null,
+    contextStatus: null,
+    contextStatusLabel: null,
+    contextExcludedAreaId: null,
+    contextExcludedSourceChunkId: null,
+  };
+
+  setDatasetLabel(resolvedDataset);
+  setReportDatasetContext(currentResolved);
+  useRuntimeOnlyDatasetReport();
+
+  // Area manifest is metadata + camera navigation only.
+  try {
+    areaManifest = await fetchAreaManifest(DATASET);
+  } catch (err) {
+    console.warn('[Main] Failed to load area manifest for spatial-lod:', err);
+    areaManifest = null;
+  }
+  currentArea = selectedArea(areaManifest, areaManifest?.defaultAreaId ?? null);
+  if (currentArea) {
+    currentResolved = { ...currentResolved, selectedAreaId: currentArea.areaId };
+    setReportDatasetContext(currentResolved);
+  }
+  if (areaManifest) {
+    setAreaOptions(
+      areaManifest.areas.map((area) => ({ areaId: area.areaId, label: area.label })),
+      currentArea?.areaId ?? null
+    );
+    setUseCurrentViewAvailability(areaManifest.areas.length > 0, 'Area manifest is not ready yet.');
+  } else {
+    setAreaOptions([], null);
+    setUseCurrentViewAvailability(false, 'Area manifest is not ready yet.');
+  }
+
+  // Spatial LOD: presets only change SSE/cache, never the dataset.
+  setContextLayerAvailability(false, 'Spatial LOD mode');
+  setOverviewPointSizeAvailability(false, 'Spatial LOD mode');
+  setPresetAvailability('low', true, `Spatial · SSE ${spatialLodSse('low')}`);
+  setPresetAvailability('medium', true, `Spatial · SSE ${spatialLodSse('medium')}`);
+  setPresetAvailability('high', true, `Spatial · SSE ${spatialLodSse('high')}`);
+  const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
+  if (detailSseSelect) detailSseSelect.disabled = true;
+  setAreaDetectionStatus('Spatial LOD: camera-driven uniform refinement');
+
+  resetBrowserMetrics();
+  updateBrowserMetric('framingMode', 'flyTo');
+  await viewer.loadSpatialLod(resolvedDataset, SPATIAL_LOD_TILESET_FILE);
+  useRuntimeOnlyDatasetReport();
+  setActivePreset('low');
+  updateReportMode('low');
+  updateBrowserMetric('focusEffectiveSSE', spatialLodSse('low'));
+  updateStats({
+    sse: viewer.getSSE(),
+    memory: viewer.getCacheMB(),
+    tiles: 0,
+  });
+  renderSpatialLodStatus();
+}
+
+function applySpatialLodPreset(preset: PresetName): void {
+  viewer.setSpatialLodPreset(preset);
+  setActivePreset(preset);
+  updateReportMode(preset);
+  updateBrowserMetric('focusEffectiveSSE', spatialLodSse(preset));
+  updateStats({
+    sse: viewer.getSSE(),
+    memory: viewer.getCacheMB(),
+  });
+  renderSpatialLodStatus();
+}
+
+/** Area selection in spatial-lod mode only flies the camera; it never reloads. */
+function flyToSpatialArea(area: AreaManifestEntry | null): void {
+  if (!area || !areaManifest) return;
+  const transform = areaManifest.rootTransform;
+  if (!Array.isArray(transform) || transform.length !== 16) {
+    setAreaDetectionStatus(`Spatial LOD: ${areaLabel(area)} (no ENU transform — flying home)`);
+    viewer.flyHome();
+    return;
+  }
+  viewer.flyToEnuBBox(area.bbox, transform);
+  setAreaDetectionStatus(`Spatial LOD: flew to ${areaLabel(area)}`);
+}
+
+/** In spatial-lod mode, "Use current view" only updates Area metadata. */
+function useCurrentViewSpatial(preset: PresetName, previousAreaId: string | null): void {
+  if (!areaManifest) {
+    setAreaDetectionStatus('Area manifest is not ready yet.');
+    return;
+  }
+  const detected = detectCurrentViewArea(preset);
+  if (!detected?.area) return;
+  const area = detected.area;
+  currentArea = area;
+  setSelectedAreaOption(area.areaId);
+  currentResolved = { ...currentResolved, selectedAreaId: area.areaId };
+  setReportDatasetContext(currentResolved);
+  setAreaDetectionStatus(
+    `Spatial LOD: current view is ${areaLabel(area)} ${detectionStatusSuffix(detected.detection)} (metadata only)`
   );
 }
 async function applyMode(
@@ -462,6 +609,10 @@ function detectCurrentViewArea(preset: PresetName): {
 async function useCurrentView(): Promise<void> {
   const preset = viewer.getCurrentPreset();
   const previousAreaId = currentArea?.areaId ?? null;
+  if (LOD_MODE === 'spatial-lod') {
+    useCurrentViewSpatial(preset, previousAreaId);
+    return;
+  }
   if (!areaManifest) {
     setAreaDetectionStatus('Area manifest is not ready yet.');
     setAreaDetectionReport('manifest_not_ready', null, previousAreaId, preset, {
@@ -543,6 +694,12 @@ async function selectArea(
 ): Promise<void> {
   currentArea = area;
   setSelectedAreaOption(currentArea?.areaId ?? null);
+  if (LOD_MODE === 'spatial-lod') {
+    flyToSpatialArea(currentArea);
+    currentResolved = { ...currentResolved, selectedAreaId: currentArea?.areaId ?? null };
+    setReportDatasetContext(currentResolved);
+    return;
+  }
   updateModeAvailability();
   if (opts.statusMessage) setAreaDetectionStatus(opts.statusMessage);
 

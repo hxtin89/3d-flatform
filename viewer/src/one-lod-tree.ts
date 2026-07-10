@@ -3,9 +3,9 @@ import { PRESETS, type PresetName } from './presets';
 export const ONE_LOD_TREE_TILESET_FILE = 'tileset-one-lod-tree.json';
 
 export const ONE_LOD_TREE_SSE: Readonly<Record<PresetName, number>> = {
-  low: 256,
-  medium: 124,
-  high: 96,
+  low: 512,
+  medium: 256,
+  high: 128,
 };
 
 const SAFE_TILESET_FILE = /^[a-zA-Z0-9_-]+\.json$/;

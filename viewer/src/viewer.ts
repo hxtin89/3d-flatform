@@ -24,6 +24,24 @@ import {
   shouldTrimOneLodTree,
   tilesetEntryUrl,
 } from './one-lod-tree';
+import {
+  SPATIAL_LOD_TILESET_FILE,
+  SPATIAL_LOD_STREAMING_OPTIONS,
+  classifySpatialLodTileUri,
+  emptySpatialLodLevelStats,
+  extractTileContentUri,
+  formatSpatialLodActiveTileSamples,
+  formatSpatialLodLevelStats,
+  parseSpatialLodTileId,
+  shouldTrimSpatialLod,
+  spatialLodCachePolicy,
+  spatialLodEntryUrl,
+  spatialLodOverviewRuntimePolicy,
+  spatialLodPanScaleMetersPerPixel,
+  spatialLodSse,
+  type SpatialLodActiveTileSample,
+  type SpatialLodLevelStats,
+} from './spatial-lod';
 
 // Disable Cesium ion — fully self-hosted setup
 Cesium.Ion.defaultAccessToken = '';
@@ -49,9 +67,11 @@ export const DATASET = requestedDataset?.match(DATASET_PATTERN)
 const DEBUG_TILES = searchParams.get('debugTiles') === '1';
 const DEBUG_OVERVIEW = searchParams.get('debugOverview') === '1';
 /** Viewer LOD mode controlled by `?lod=...`. */
-export const LOD_MODE: 'manual' | 'one-lod-tree' = searchParams.get('lod') === 'one-lod-tree'
+export const LOD_MODE: 'manual' | 'one-lod-tree' | 'spatial-lod' = searchParams.get('lod') === 'one-lod-tree'
   ? 'one-lod-tree'
-  : 'manual';
+  : searchParams.get('lod') === 'spatial-lod'
+    ? 'spatial-lod'
+    : 'manual';
 const REQUESTED_BASEMAP = searchParams.get('basemap');
 const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
@@ -63,6 +83,8 @@ const MOBILE_VIEWPORT_QUERY = '(max-width: 640px)';
 //Raio 0.09 tương đương khoảng 683.1 m
 //Raio 0.10 tương đương khoảng 744.8 m
 const LIMIT_RADIUS_FOR_MINIMUM_ZOOM = 0.10; // giới hạn khoảng cách tới tâm xoay, không phải độ cao mặt đất
+const SPATIAL_LOD_GLOBE_MIN_CAMERA_DISTANCE_RATIO = 0.012;
+const SPATIAL_LOD_GLOBE_MIN_CAMERA_DISTANCE_FLOOR = 120;
 const MIN_CAMERA_DISTANCE_FLOOR = 0.25;
 const MIN_CAMERA_DISTANCE_RATIO = 0.0005;
 const MIN_CAMERA_DISTANCE_CEILING = 5;
@@ -71,6 +93,9 @@ const INTERACTION_DRAG_START_THRESHOLD_PX = 20;
 const OVERVIEW_GLOBE_POINT_SIZE_PX_MIN = OVERVIEW_POINT_SIZE_SCALE_DEFAULT * 1;
 const OVERVIEW_DEBUG_LOG_INTERVAL_MS = 500;
 const OVERVIEW_DEBUG_REPEAT_INTERVAL_MS = 3_000;
+const SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS = [
+  0, 250, 500, 1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 120_000,
+] as const;
 const MAPTILER_GLOBE_FRUSTUM_FAR = 20_000_000;
 const MAPTILER_SATELLITE_URL = 'https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg';
 const MAPTILER_ATTRIBUTION = '<a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> <a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>';
@@ -163,6 +188,11 @@ export interface ViewerCallbacks {
   onBrowserMetric: (metric: BrowserMetricName, value: number | string) => void;
   onOverviewSseValidation: (validation: Record<string, unknown> | null) => void;
   onInteraction: () => void;
+  onSpatialLodLevelStats?: (stats: SpatialLodLevelStats | null, active: number | string) => void;
+  onSpatialLodActiveTileSamples?: (
+    samples: SpatialLodActiveTileSample[],
+    formatted: string
+  ) => void;
 }
 
 interface LayerRuntimeStats {
@@ -175,10 +205,27 @@ interface LayerRuntimeStats {
 type RuntimeTileContent = {
   pointsLength?: number;
   innerContents?: RuntimeTileContent[];
+  ready?: boolean;
+  state?: unknown;
 };
 
 type RuntimeTile = {
   content?: RuntimeTileContent;
+  children?: RuntimeTile[];
+  _children?: RuntimeTile[];
+  geometricError?: number;
+  _geometricError?: number;
+  viewerRequestVolume?: RuntimeViewerRequestVolume;
+  _viewerRequestVolume?: RuntimeViewerRequestVolume;
+  refine?: unknown;
+  _refine?: unknown;
+  _contentState?: unknown;
+  contentReady?: boolean;
+  contentAvailable?: boolean;
+};
+
+type RuntimeViewerRequestVolume = {
+  distanceToCamera?: (frameState: unknown) => number;
 };
 
 type TilesetDocument = {
@@ -207,6 +254,13 @@ type RuntimeTileset = {
   _requestedTiles?: RuntimeTile[];
   _requestedTilesInFlight?: RuntimeTile[];
   _processingQueue?: RuntimeTile[];
+  skipLevelOfDetail?: boolean;
+  isSkippingLevelOfDetail?: boolean;
+  hasMixedContent?: boolean;
+  preferLeaves?: boolean;
+  foveatedConeSize?: number;
+  foveatedMinimumScreenSpaceErrorRelaxation?: number;
+  foveatedTimeDelay?: number;
   asset?: {
     extras?: {
       coordinateMode?: string;
@@ -214,6 +268,9 @@ type RuntimeTileset = {
     };
   };
   statistics?: {
+    numberOfAttemptedRequests?: number;
+    numberOfPendingRequests?: number;
+    numberOfTilesProcessing?: number;
     numberOfLoadedTilesTotal?: number;
     numberOfTilesSelected?: number;
     numberOfTilesWithContentReady?: number;
@@ -250,6 +307,7 @@ export class PointCloudViewer {
   private loadStartTime = 0;
   private detailSseOverride = PRESETS.high.maximumScreenSpaceError;
   private lastLayerRuntimeKey = '';
+  private lastCameraRuntimeKey = '';
   private globeControlsActive = false;
   private globeOverviewOrbitZoomActive = false;
   private overviewRuntimeActive = false;
@@ -264,6 +322,19 @@ export class PointCloudViewer {
   private overviewFirstVisibleFired = false;
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
   private oneLodTreeTrimGeneration = 0;
+  private spatialLodTrimGeneration = 0;
+  private spatialLodActive = false;
+  private spatialLodCameraMoveStartUnsubscribe: Cesium.Event.RemoveCallback | null = null;
+  private spatialLodCameraMoveEndUnsubscribe: Cesium.Event.RemoveCallback | null = null;
+  private spatialLodCameraMoving = false;
+  private spatialLodCameraStoppedAt = 0;
+  private spatialLodCameraMoveStarts = 0;
+  private spatialLodCameraMoveEnds = 0;
+  private spatialLodObservedZ4Requests = new Set<string>();
+  private spatialLodZ4FirstRequestDelayMs: number | null = null;
+  private spatialLodZ4RequestTimeline: Array<{ elapsedMs: number; count: number }> = [];
+  private spatialLodZ4TimelineMilestoneIndex = 0;
+  private lastSpatialLodRefinementReportKey = '';
 
   constructor(containerId: string, callbacks: ViewerCallbacks) {
     this.callbacks = callbacks;
@@ -409,6 +480,7 @@ export class PointCloudViewer {
 
       this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
         if (!this.primaryTileset) return;
+        this.syncSpatialLodOverviewSse();
         const loaded = this.loadedTileCount();
         const active = this.activeTileCount();
         if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
@@ -499,6 +571,597 @@ export class PointCloudViewer {
       this.viewer.scene.requestRender();
     });
     this.viewer.scene.requestRender();
+  }
+
+  /**
+   * Load the spatial-lod entry tileset. Like One LOD Tree this keeps the
+   * progressive Overview SSE, Context layer, and Detail override disabled
+   * for the lifetime of this single tileset. Area selection only flies the
+   * camera; it never reloads the dataset.
+   */
+  async loadSpatialLod(
+    dataset: string,
+    tilesetFile = SPATIAL_LOD_TILESET_FILE
+  ): Promise<void> {
+    const url = spatialLodEntryUrl(TILE_CONFIG.baseUrl, dataset, tilesetFile);
+    this.callbacks.onStateChange('loading', 'Connecting to spatial-lod tileset...');
+
+    try {
+      await this.checkTileServer(url);
+      this.unloadTilesets();
+      this.activeDataset = dataset;
+      this.currentPreset = 'low';
+      this.spatialLodActive = true;
+      this.callbacks.onStateChange('loading', `Fetching ${tilesetFile}...`);
+      this.loadStartTime = performance.now();
+      this.firstTileLoadedReported = false;
+      this.firstVisibleReported = false;
+      this.tilesLoaded = 0;
+      this.activeTilesLoaded = 0;
+      this.callbacks.onTileStats(0, 0);
+      this.reportLayerTileStats();
+      this.emitSpatialLodLevelStats();
+
+      const tilesetStart = performance.now();
+      const documentPromise = MAPTILER_BASEMAP_ENABLED
+        ? fetch(url).then(async (response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            return response.json() as Promise<TilesetDocument>;
+          })
+        : Promise.resolve(null);
+      const [tileset, document] = await Promise.all([
+        Cesium.Cesium3DTileset.fromUrl(url, {
+          maximumScreenSpaceError: spatialLodSse('low'),
+          cacheBytes: PRESETS.low.cacheBytes,
+          maximumCacheOverflowBytes: PRESETS.low.maximumCacheOverflowBytes,
+          ...SPATIAL_LOD_STREAMING_OPTIONS,
+        }),
+        documentPromise,
+      ]);
+      this.callbacks.onBrowserMetric('tilesetLoadTime', performance.now() - tilesetStart);
+
+      if (document && this.isGlobeDocument(document)) {
+        this.alignTilesetBottomToEllipsoid(tileset, document);
+      }
+      if (DEBUG_TILES) {
+        tileset.debugShowBoundingVolume = true;
+        tileset.debugShowGeometricError = true;
+        tileset.debugShowRenderingStatistics = true;
+      }
+
+      this.viewer.scene.primitives.add(tileset);
+      this.primaryTileset = tileset;
+      this.contextTileset = null;
+      this.startSpatialLodRefinementTelemetry();
+      this.configureCameraLimits(tileset, null, true, true);
+      this.installPointCloudControls(tileset, null);
+      this.setSpatialLodPreset('low');
+      if (this.globeControlsActive) {
+        this.minCameraDistance = Math.max(
+          tileset.boundingSphere.radius * SPATIAL_LOD_GLOBE_MIN_CAMERA_DISTANCE_RATIO,
+          SPATIAL_LOD_GLOBE_MIN_CAMERA_DISTANCE_FLOOR
+        );
+      } else {
+        this.minCameraDistance = 0.05;
+        this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 0.05;
+      }
+
+      this.callbacks.onBrowserMetric('flyToTime', this.flyToTileset());
+      this.reportEffectiveSse();
+      this.callbacks.onStateChange('ready', `Streaming spatial-lod tree: ${url}`);
+
+      const onInitialTilesLoaded = () => {
+        if (!this.firstTileLoadedReported) {
+          this.firstTileLoadedReported = true;
+          this.callbacks.onBrowserMetric('firstTileLoadedTime', performance.now() - this.loadStartTime);
+        }
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      };
+      tileset.initialTilesLoaded.addEventListener(onInitialTilesLoaded);
+      tileset.allTilesLoaded.addEventListener(() => {
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      });
+
+      this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
+        if (!this.primaryTileset) return;
+        this.syncSpatialLodOverviewSse();
+        const loaded = this.loadedTileCount();
+        const active = this.activeTileCount();
+        if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
+          this.tilesLoaded = loaded;
+          this.activeTilesLoaded = active;
+          this.callbacks.onTileStats(loaded, active);
+        }
+        this.reportLayerTileStats();
+        this.emitSpatialLodLevelStats();
+        this.emitSpatialLodRefinementStats();
+        if (loaded > 0 && !this.firstVisibleReported) {
+          this.firstVisibleReported = true;
+          this.callbacks.onBrowserMetric('firstVisibleTime', performance.now() - this.loadStartTime);
+        }
+      });
+      this.installTileFailureLogging(tileset);
+    } catch (err) {
+      const error = err as Error;
+      console.error('[Viewer] Failed to load spatial-lod tree:', error);
+      let message = error.message ?? 'Unknown error';
+      if (
+        message.includes('Failed to fetch') ||
+        message.includes('NetworkError') ||
+        message.includes('ECONNREFUSED') ||
+        message.includes('ERR_CONNECTION_REFUSED')
+      ) {
+        message = TILE_CONFIG.source === 'cloudfront'
+          ? `Cannot reach CloudFront tiles at ${TILE_CONFIG.baseUrl}.`
+          : `Cannot reach tile server at ${TILE_CONFIG.baseUrl}.\n-> Run: npm run pipeline:serve`;
+      } else if (message.includes('404') || message.includes('Not Found')) {
+        message = `${tilesetFile} not found for spatial-lod dataset "${dataset}".\n` +
+          '-> Run: npm run pipeline:spatial-lod -- 2404PeruB2';
+      }
+      this.callbacks.onStateChange('error', message);
+    }
+  }
+
+  setSpatialLodPreset(preset: PresetName): void {
+    const previousPreset = this.currentPreset;
+    this.currentPreset = preset;
+    this.spatialLodTrimGeneration += 1;
+    if (this.primaryTileset) {
+      const tileset = this.primaryTileset;
+      const cachePolicy = spatialLodCachePolicy(preset);
+      applyPreset(
+        tileset,
+        preset,
+        { maximumScreenSpaceError: spatialLodSse(preset) },
+        { variant: this.presetVariantForTileset(tileset) }
+      );
+      tileset.cacheBytes = cachePolicy.cacheBytes;
+      tileset.maximumCacheOverflowBytes = cachePolicy.maximumCacheOverflowBytes;
+      if (shouldTrimSpatialLod(previousPreset, preset)) {
+        this.scheduleSpatialLodOverviewTrim(tileset, this.spatialLodTrimGeneration);
+      }
+      this.reportEffectiveSse();
+    }
+    this.callbacks.onPresetChange(preset);
+  }
+
+  private syncSpatialLodOverviewSse(): void {
+    if (!this.spatialLodActive || this.currentPreset !== 'low' || !this.primaryTileset) {
+      return;
+    }
+    const range = this.currentOverviewCameraRange();
+    const nextBand = spatialLodOverviewRuntimePolicy(range);
+    const tileset = this.primaryTileset;
+    const sseChanged = tileset.maximumScreenSpaceError !== nextBand.sse;
+    const cacheChanged = (
+      tileset.cacheBytes !== nextBand.cacheBytes ||
+      tileset.maximumCacheOverflowBytes !== nextBand.maximumCacheOverflowBytes
+    );
+    if (!sseChanged && !cacheChanged) return;
+    tileset.maximumScreenSpaceError = nextBand.sse;
+    tileset.cacheBytes = nextBand.cacheBytes;
+    tileset.maximumCacheOverflowBytes = nextBand.maximumCacheOverflowBytes;
+    this.reportEffectiveSse();
+    this.callbacks.onBrowserMetric('cacheBytesRuntime', nextBand.cacheBytes);
+    this.viewer.scene.requestRender();
+  }
+
+  private scheduleSpatialLodOverviewTrim(
+    tileset: Cesium.Cesium3DTileset,
+    generation: number
+  ): void {
+    let renderedFrames = 0;
+    const remove = this.viewer.scene.postRender.addEventListener(() => {
+      if (
+        generation !== this.spatialLodTrimGeneration ||
+        this.currentPreset !== 'low' ||
+        this.primaryTileset !== tileset ||
+        tileset.isDestroyed()
+      ) {
+        remove();
+        return;
+      }
+      renderedFrames += 1;
+      if (renderedFrames < 2) {
+        this.viewer.scene.requestRender();
+        return;
+      }
+      remove();
+      tileset.trimLoadedTiles();
+      this.viewer.scene.requestRender();
+    });
+    this.viewer.scene.requestRender();
+  }
+
+  private startSpatialLodRefinementTelemetry(): void {
+    this.stopSpatialLodRefinementTelemetry();
+    this.spatialLodCameraMoving = false;
+    this.spatialLodCameraMoveStarts = 0;
+    this.spatialLodCameraMoveEnds = 0;
+    this.resetSpatialLodRefinementWindow(performance.now());
+    this.spatialLodCameraMoveStartUnsubscribe = this.viewer.camera.moveStart.addEventListener(() => {
+      if (!this.spatialLodActive) return;
+      this.spatialLodCameraMoving = true;
+      this.spatialLodCameraMoveStarts += 1;
+      this.resetSpatialLodRefinementWindow(performance.now());
+      this.emitSpatialLodRefinementStats(true);
+    });
+    this.spatialLodCameraMoveEndUnsubscribe = this.viewer.camera.moveEnd.addEventListener(() => {
+      if (!this.spatialLodActive) return;
+      this.spatialLodCameraMoving = false;
+      this.spatialLodCameraMoveEnds += 1;
+      this.resetSpatialLodRefinementWindow(performance.now());
+      this.emitSpatialLodRefinementStats(true);
+    });
+    this.emitSpatialLodRefinementStats(true);
+  }
+
+  private stopSpatialLodRefinementTelemetry(): void {
+    const wasActive = Boolean(
+      this.spatialLodCameraMoveStartUnsubscribe ||
+      this.spatialLodCameraMoveEndUnsubscribe
+    );
+    this.spatialLodCameraMoveStartUnsubscribe?.();
+    this.spatialLodCameraMoveEndUnsubscribe?.();
+    this.spatialLodCameraMoveStartUnsubscribe = null;
+    this.spatialLodCameraMoveEndUnsubscribe = null;
+    this.spatialLodCameraMoving = false;
+    this.spatialLodObservedZ4Requests.clear();
+    this.spatialLodZ4FirstRequestDelayMs = null;
+    this.spatialLodZ4RequestTimeline = [];
+    this.spatialLodZ4TimelineMilestoneIndex = 0;
+    this.lastSpatialLodRefinementReportKey = '';
+    if (wasActive) this.resetSpatialLodRefinementReporting();
+  }
+
+  private resetSpatialLodRefinementWindow(now: number): void {
+    this.spatialLodCameraStoppedAt = now;
+    this.spatialLodObservedZ4Requests.clear();
+    this.spatialLodZ4FirstRequestDelayMs = null;
+    this.spatialLodZ4RequestTimeline = [{ elapsedMs: 0, count: 0 }];
+    this.spatialLodZ4TimelineMilestoneIndex = 1;
+    this.lastSpatialLodRefinementReportKey = '';
+  }
+
+  private emitSpatialLodRefinementStats(force = false): void {
+    if (!this.spatialLodActive || !this.primaryTileset) return;
+    const runtime = this.primaryTileset as unknown as RuntimeTileset;
+    const requested = runtime._requestedTiles;
+    const inFlight = runtime._requestedTilesInFlight;
+    const processing = runtime._processingQueue;
+    const requestedTiles = requested?.length ?? 'unsupported';
+    const requestsInFlight = inFlight?.length ?? 'unsupported';
+    const processingTiles = runtime.statistics?.numberOfTilesProcessing
+      ?? processing?.length
+      ?? 'unsupported';
+    const pendingRequests = runtime.statistics?.numberOfPendingRequests ?? 'unsupported';
+    const attemptedRequests = runtime.statistics?.numberOfAttemptedRequests ?? 'unsupported';
+    const z4RequestedTiles = this.spatialLodQueueLevelCount(requested, 'z4');
+    const z4RequestsInFlight = this.spatialLodQueueLevelCount(inFlight, 'z4');
+    const z4ProcessingTiles = this.spatialLodQueueLevelCount(processing, 'z4');
+    const now = performance.now();
+    const idleMs = this.spatialLodCameraMoving
+      ? 0
+      : Math.max(Math.round((now - this.spatialLodCameraStoppedAt) / 100) * 100, 0);
+
+    if (!this.spatialLodCameraMoving) {
+      for (const tiles of [requested, inFlight, processing]) {
+        if (!Array.isArray(tiles)) continue;
+        for (const tile of tiles) {
+          const uri = extractTileContentUri(tile);
+          if (classifySpatialLodTileUri(uri ?? undefined) !== 'z4') continue;
+          const key = uri ?? `tile-${this.spatialLodObservedZ4Requests.size}`;
+          if (this.spatialLodObservedZ4Requests.has(key)) continue;
+          this.spatialLodObservedZ4Requests.add(key);
+          this.spatialLodZ4FirstRequestDelayMs ??= idleMs;
+        }
+      }
+      this.recordSpatialLodZ4Timeline(idleMs);
+    }
+
+    const hasBacklog = [
+      requestedTiles,
+      requestsInFlight,
+      pendingRequests,
+      processingTiles,
+      attemptedRequests,
+    ].some((value) => typeof value === 'number' && value > 0);
+    const phase = this.spatialLodCameraMoving
+      ? 'moving'
+      : hasBacklog
+        ? 'refining'
+        : 'settled';
+    const timeline = this.spatialLodZ4RequestTimeline
+      .map((sample) => `${sample.elapsedMs}ms:${sample.count}`)
+      .join(' ');
+    const key = [
+      phase,
+      idleMs,
+      this.spatialLodCameraMoveStarts,
+      this.spatialLodCameraMoveEnds,
+      requestedTiles,
+      requestsInFlight,
+      pendingRequests,
+      processingTiles,
+      attemptedRequests,
+      z4RequestedTiles,
+      z4RequestsInFlight,
+      z4ProcessingTiles,
+      this.spatialLodObservedZ4Requests.size,
+      this.spatialLodZ4FirstRequestDelayMs ?? '—',
+      timeline,
+    ].join('|');
+    if (!force && key === this.lastSpatialLodRefinementReportKey) return;
+    this.lastSpatialLodRefinementReportKey = key;
+
+    this.callbacks.onBrowserMetric('spatialLodRefinementPhase', phase);
+    this.callbacks.onBrowserMetric('spatialLodCameraIdleMs', idleMs);
+    this.callbacks.onBrowserMetric('spatialLodCameraMoveStarts', this.spatialLodCameraMoveStarts);
+    this.callbacks.onBrowserMetric('spatialLodCameraMoveEnds', this.spatialLodCameraMoveEnds);
+    this.callbacks.onBrowserMetric('spatialLodRequestedTiles', requestedTiles);
+    this.callbacks.onBrowserMetric('spatialLodRequestsInFlight', requestsInFlight);
+    this.callbacks.onBrowserMetric('spatialLodPendingRequests', pendingRequests);
+    this.callbacks.onBrowserMetric('spatialLodProcessingTiles', processingTiles);
+    this.callbacks.onBrowserMetric('spatialLodAttemptedRequests', attemptedRequests);
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestedTiles', z4RequestedTiles);
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestsInFlight', z4RequestsInFlight);
+    this.callbacks.onBrowserMetric('spatialLodZ4ProcessingTiles', z4ProcessingTiles);
+    this.callbacks.onBrowserMetric(
+      'spatialLodZ4RequestsSinceCameraStop',
+      this.spatialLodObservedZ4Requests.size
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodZ4FirstRequestDelayMs',
+      this.spatialLodZ4FirstRequestDelayMs ?? '—'
+    );
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestTimeline', timeline || '—');
+    this.callbacks.onBrowserMetric(
+      'spatialLodSkipLevelOfDetail',
+      String(runtime.skipLevelOfDetail ?? 'unsupported')
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodIsSkippingLevelOfDetail',
+      String(runtime.isSkippingLevelOfDetail ?? 'unsupported')
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodHasMixedContent',
+      String(runtime.hasMixedContent ?? false)
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodPreferLeaves',
+      String(runtime.preferLeaves ?? 'unsupported')
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodFoveatedConeSize',
+      runtime.foveatedConeSize ?? 'unsupported'
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodFoveatedRelaxation',
+      runtime.foveatedMinimumScreenSpaceErrorRelaxation ?? 'unsupported'
+    );
+    this.callbacks.onBrowserMetric(
+      'spatialLodFoveatedTimeDelay',
+      runtime.foveatedTimeDelay ?? 'unsupported'
+    );
+  }
+
+  private spatialLodQueueLevelCount(
+    tiles: RuntimeTile[] | undefined,
+    level: keyof SpatialLodLevelStats
+  ): number | string {
+    if (!Array.isArray(tiles)) return 'unsupported';
+    let count = 0;
+    for (const tile of tiles) {
+      const uri = extractTileContentUri(tile);
+      if (classifySpatialLodTileUri(uri ?? undefined) === level) count += 1;
+    }
+    return count;
+  }
+
+  private recordSpatialLodZ4Timeline(elapsedMs: number): void {
+    const count = this.spatialLodObservedZ4Requests.size;
+    const last = this.spatialLodZ4RequestTimeline.at(-1);
+    if (last && last.elapsedMs === elapsedMs) {
+      last.count = count;
+    }
+    while (
+      this.spatialLodZ4TimelineMilestoneIndex <
+        SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS.length &&
+      elapsedMs >= SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS[
+        this.spatialLodZ4TimelineMilestoneIndex
+      ]
+    ) {
+      this.spatialLodZ4RequestTimeline.push({ elapsedMs, count });
+      this.spatialLodZ4TimelineMilestoneIndex += 1;
+    }
+  }
+
+  private resetSpatialLodRefinementReporting(): void {
+    this.callbacks.onBrowserMetric('spatialLodRefinementPhase', '—');
+    this.callbacks.onBrowserMetric('spatialLodCameraIdleMs', '—');
+    this.callbacks.onBrowserMetric('spatialLodCameraMoveStarts', 0);
+    this.callbacks.onBrowserMetric('spatialLodCameraMoveEnds', 0);
+    this.callbacks.onBrowserMetric('spatialLodRequestedTiles', '—');
+    this.callbacks.onBrowserMetric('spatialLodRequestsInFlight', '—');
+    this.callbacks.onBrowserMetric('spatialLodPendingRequests', '—');
+    this.callbacks.onBrowserMetric('spatialLodProcessingTiles', '—');
+    this.callbacks.onBrowserMetric('spatialLodAttemptedRequests', '—');
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestedTiles', '—');
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestsInFlight', '—');
+    this.callbacks.onBrowserMetric('spatialLodZ4ProcessingTiles', '—');
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestsSinceCameraStop', 0);
+    this.callbacks.onBrowserMetric('spatialLodZ4FirstRequestDelayMs', '—');
+    this.callbacks.onBrowserMetric('spatialLodZ4RequestTimeline', '—');
+    this.callbacks.onBrowserMetric('spatialLodSkipLevelOfDetail', '—');
+    this.callbacks.onBrowserMetric('spatialLodIsSkippingLevelOfDetail', '—');
+    this.callbacks.onBrowserMetric('spatialLodHasMixedContent', '—');
+    this.callbacks.onBrowserMetric('spatialLodPreferLeaves', '—');
+    this.callbacks.onBrowserMetric('spatialLodFoveatedConeSize', '—');
+    this.callbacks.onBrowserMetric('spatialLodFoveatedRelaxation', '—');
+    this.callbacks.onBrowserMetric('spatialLodFoveatedTimeDelay', '—');
+  }
+
+  /**
+   * Best-effort per z0..z4 runtime report built from the selected tiles'
+   * content URIs. Falls back to zeros when Cesium does not expose URIs.
+   */
+  private emitSpatialLodLevelStats(): void {
+    if (!this.spatialLodActive || !this.primaryTileset) return;
+    const stats = emptySpatialLodLevelStats();
+    const ts = this.primaryTileset as unknown as RuntimeTileset;
+    const selected = Array.isArray(ts._selectedTiles)
+      ? ts._selectedTiles
+      : ts.selectedTiles;
+    let classified = 0;
+    const samples: SpatialLodActiveTileSample[] = [];
+    if (Array.isArray(selected)) {
+      for (const tile of selected) {
+        const uri = extractTileContentUri(tile);
+        const level = classifySpatialLodTileUri(uri ?? undefined);
+        if (level) {
+          stats[level] += 1;
+          classified += 1;
+        }
+        if (samples.length < 8) {
+          samples.push(this.spatialLodActiveTileSample(tile, uri, level));
+        }
+      }
+    }
+    // When none classify (Cesium hides URLs), report null so UI shows "—".
+    const payload = classified > 0 ? stats : null;
+    const formattedSamples = formatSpatialLodActiveTileSamples(samples);
+    this.callbacks.onBrowserMetric('activeSpatialLodLevels', formatSpatialLodLevelStats(payload));
+    this.callbacks.onBrowserMetric('activeSpatialLodTileSamples', formattedSamples);
+    this.callbacks.onSpatialLodLevelStats?.(payload, this.activeTileCount());
+    this.callbacks.onSpatialLodActiveTileSamples?.(samples, formattedSamples);
+  }
+
+  private spatialLodActiveTileSample(
+    tile: RuntimeTile,
+    uri: string | null,
+    classifiedLevel: keyof SpatialLodLevelStats | null
+  ): SpatialLodActiveTileSample {
+    const parsed = parseSpatialLodTileId(uri);
+    const children = Array.isArray(tile.children)
+      ? tile.children
+      : Array.isArray(tile._children)
+        ? tile._children
+        : null;
+    const geometricError = typeof tile.geometricError === 'number'
+      ? tile.geometricError
+      : typeof tile._geometricError === 'number'
+        ? tile._geometricError
+        : null;
+    const refine = typeof tile.refine === 'string' || typeof tile.refine === 'number'
+      ? String(tile.refine)
+      : typeof tile._refine === 'string' || typeof tile._refine === 'number'
+        ? String(tile._refine)
+        : null;
+    const level = classifiedLevel ?? parsed?.level ?? null;
+    const z4RequestVolume = level === 'z3'
+      ? this.spatialLodZ4RequestVolumeStatus(children)
+      : { inside: null, distanceMeters: null };
+    return {
+      uri,
+      level,
+      tileId: parsed?.tileId ?? null,
+      x: parsed?.x ?? null,
+      y: parsed?.y ?? null,
+      geometricError,
+      childrenCount: children?.length ?? null,
+      hasViewerRequestVolume: Boolean(tile.viewerRequestVolume || tile._viewerRequestVolume),
+      refine,
+      contentState: this.spatialLodContentState(tile),
+      cameraInsideZ4RequestVolume: z4RequestVolume.inside,
+      distanceToZ4RequestVolumeMeters: z4RequestVolume.distanceMeters,
+    };
+  }
+
+  private spatialLodZ4RequestVolumeStatus(
+    children: RuntimeTile[] | null
+  ): { inside: boolean | null; distanceMeters: number | null } {
+    if (!children) return { inside: null, distanceMeters: null };
+    const scene = this.viewer.scene as unknown as {
+      frameState?: unknown;
+      _frameState?: unknown;
+    };
+    const frameState = scene.frameState ?? scene._frameState;
+    if (!frameState) return { inside: null, distanceMeters: null };
+    let minimumDistance = Number.POSITIVE_INFINITY;
+    for (const child of children) {
+      const volume = child._viewerRequestVolume ?? child.viewerRequestVolume;
+      if (typeof volume?.distanceToCamera !== 'function') continue;
+      try {
+        const distance = volume.distanceToCamera(frameState);
+        if (Number.isFinite(distance)) minimumDistance = Math.min(minimumDistance, distance);
+      } catch {
+        // Runtime internals vary by Cesium version; keep diagnostics best-effort.
+      }
+    }
+    if (!Number.isFinite(minimumDistance)) {
+      return { inside: null, distanceMeters: null };
+    }
+    return {
+      inside: minimumDistance === 0,
+      distanceMeters: Number(minimumDistance.toFixed(1)),
+    };
+  }
+
+  private spatialLodContentState(tile: RuntimeTile): string {
+    if (tile.contentReady === true) return 'ready';
+    if (tile.contentAvailable === false) return 'unavailable';
+    if (tile._contentState !== undefined) return String(tile._contentState);
+    const content = tile.content;
+    if (!content) return 'none';
+    if (content.ready === true) return 'ready';
+    if (typeof content.pointsLength === 'number') return 'ready';
+    if (content.state !== undefined) return String(content.state);
+    return 'present';
+  }
+
+  /**
+   * Fly the camera to an ENU bbox (from an Area manifest) using the shared
+   * ENU→ECEF root transform. Used by spatial-lod Area selection, which must
+   * not reload the tileset.
+   */
+  flyToEnuBBox(bbox: number[], rootTransform: number[]): void {
+    if (!Array.isArray(bbox) || bbox.length !== 6 || !Array.isArray(rootTransform) || rootTransform.length !== 16) {
+      return;
+    }
+    const [minX, minY, minZ, maxX, maxY, maxZ] = bbox;
+    const localCenter = new Cesium.Cartesian3(
+      (minX + maxX) / 2,
+      (minY + maxY) / 2,
+      (minZ + maxZ) / 2
+    );
+    const m = Cesium.Matrix4.fromArray(rootTransform);
+    const worldCenter = Cesium.Matrix4.multiplyByPoint(m, localCenter, new Cesium.Cartesian3());
+    const halfDiagonal = new Cesium.Cartesian3(
+      (maxX - minX) / 2,
+      (maxY - minY) / 2,
+      (maxZ - minZ) / 2
+    );
+    const radius = Math.max(Cesium.Cartesian3.magnitude(halfDiagonal), 1);
+    const started = this.overviewSseController.beginTravel(radius);
+    this.orbitTarget = Cesium.Cartesian3.clone(worldCenter);
+    this.orbitRange = Cesium.Math.clamp(radius * 3.5, radius * 0.5, radius * 12);
+    this.orbitHeading = Cesium.Math.toRadians(35);
+    this.orbitPitch = Cesium.Math.toRadians(-35);
+    if (this.globeControlsActive) {
+      this.viewer.camera.viewBoundingSphere(
+        new Cesium.BoundingSphere(worldCenter, radius),
+        new Cesium.HeadingPitchRange(this.orbitHeading, this.orbitPitch, this.orbitRange)
+      );
+      this.viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    } else {
+      this.applyOrbitCamera();
+    }
+    this.overviewSseController.endTravel(started);
+    this.callbacks.onBrowserMetric('flyToTime', 0);
+  }
+
+  isSpatialLodActive(): boolean {
+    return this.spatialLodActive;
   }
 
   async loadScene(options: LoadSceneOptions): Promise<void> {
@@ -950,6 +1613,33 @@ export class PointCloudViewer {
     const scene = this.viewer.scene;
     let target: Cesium.Cartesian3 | undefined;
 
+    if (this.spatialLodActive && this.globeControlsActive) {
+      let picked: {
+        primitive?: unknown;
+        tileset?: unknown;
+        content?: { tileset?: unknown };
+        tile?: { tileset?: unknown; _tileset?: unknown };
+        _tileset?: unknown;
+      } | undefined;
+      try {
+        picked = scene.pick(position) as typeof picked;
+      } catch {
+        picked = undefined;
+      }
+      const hitPointCloudTileset = [
+        picked?.primitive,
+        picked?.tileset,
+        picked?.content?.tileset,
+        picked?.tile?.tileset,
+        picked?.tile?._tileset,
+        picked?._tileset,
+      ].some((candidate) => (
+        candidate === this.primaryTileset ||
+        candidate === this.contextTileset
+      ));
+      if (!hitPointCloudTileset) return;
+    }
+
     if (scene.pickPositionSupported) {
       try {
         target = scene.pickPosition(position);
@@ -958,7 +1648,7 @@ export class PointCloudViewer {
       }
     }
 
-    if (!target && this.globeControlsActive) {
+    if (!target && this.globeControlsActive && !this.spatialLodActive) {
       const ray = this.viewer.camera.getPickRay(position);
       if (ray) {
         target = scene.globe.pick(ray, scene);
@@ -1018,6 +1708,7 @@ export class PointCloudViewer {
         this.maxCameraDistance
       );
       if (Math.abs(nextRange - currentRange) < 0.001) return;
+      this.orbitRange = nextRange;
 
       Cesium.Cartesian3.normalize(offset, offset);
       Cesium.Cartesian3.multiplyByScalar(offset, nextRange, offset);
@@ -1457,14 +2148,68 @@ export class PointCloudViewer {
       camera.positionWC,
       this.orbitTarget
     );
-    const panScale = Math.max(range, this.panScaleBase * 0.2) * 0.0012;
+    const spatialLodGlobePan = this.spatialLodActive && this.globeControlsActive;
+    const panScale = spatialLodGlobePan
+      ? spatialLodPanScaleMetersPerPixel(range)
+      : Math.max(range, this.panScaleBase * 0.2) * 0.0012;
+    let rightAxis = camera.rightWC;
+    let upAxis = camera.upWC;
+
+    if (spatialLodGlobePan) {
+      const surfaceNormal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(
+        this.orbitTarget,
+        new Cesium.Cartesian3()
+      );
+      const projectToTangent = (
+        axis: Cesium.Cartesian3,
+        fallback: Cesium.Cartesian3
+      ): Cesium.Cartesian3 => {
+        const normalComponent = Cesium.Cartesian3.multiplyByScalar(
+          surfaceNormal,
+          Cesium.Cartesian3.dot(axis, surfaceNormal),
+          new Cesium.Cartesian3()
+        );
+        const projected = Cesium.Cartesian3.subtract(
+          axis,
+          normalComponent,
+          new Cesium.Cartesian3()
+        );
+        if (Cesium.Cartesian3.magnitude(projected) > 1e-6) {
+          return Cesium.Cartesian3.normalize(projected, projected);
+        }
+        if (Cesium.Cartesian3.magnitude(fallback) <= 1e-6) {
+          return new Cesium.Cartesian3();
+        }
+        return Cesium.Cartesian3.normalize(fallback, new Cesium.Cartesian3());
+      };
+      let fallbackRight = Cesium.Cartesian3.cross(
+        Cesium.Cartesian3.UNIT_Z,
+        surfaceNormal,
+        new Cesium.Cartesian3()
+      );
+      if (Cesium.Cartesian3.magnitude(fallbackRight) <= 1e-6) {
+        fallbackRight = Cesium.Cartesian3.cross(
+          Cesium.Cartesian3.UNIT_X,
+          surfaceNormal,
+          fallbackRight
+        );
+      }
+      rightAxis = projectToTangent(camera.rightWC, fallbackRight);
+      const fallbackUp = Cesium.Cartesian3.cross(
+        surfaceNormal,
+        rightAxis,
+        new Cesium.Cartesian3()
+      );
+      upAxis = projectToTangent(camera.upWC, fallbackUp);
+    }
+
     const right = Cesium.Cartesian3.multiplyByScalar(
-      camera.rightWC,
+      rightAxis,
       -dx * panScale,
       new Cesium.Cartesian3()
     );
     const up = Cesium.Cartesian3.multiplyByScalar(
-      camera.upWC,
+      upAxis,
       dy * panScale,
       new Cesium.Cartesian3()
     );
@@ -1891,6 +2636,7 @@ export class PointCloudViewer {
   private unloadTilesets(): void {
     this.postRenderUnsubscribe?.();
     this.postRenderUnsubscribe = null;
+    this.stopSpatialLodRefinementTelemetry();
     for (const tileset of [this.primaryTileset, this.contextTileset]) {
       if (!tileset) continue;
       this.viewer.scene.primitives.remove(tileset);
@@ -1904,6 +2650,7 @@ export class PointCloudViewer {
     this.tilesLoaded = 0;
     this.activeTilesLoaded = 0;
     this.lastLayerRuntimeKey = '';
+    this.lastCameraRuntimeKey = '';
     this.overviewRuntimeActive = false;
     this.overviewPointSizeBand = null;
     this.overviewPointSizePx = 0;
@@ -1917,6 +2664,7 @@ export class PointCloudViewer {
     this.resetOverviewSseReporting();
     this.reportOverviewTuning();
     this.reportLayerTileStats();
+    this.spatialLodActive = false;
   }
 
   private primaryPresetOverrides(
@@ -1973,6 +2721,7 @@ export class PointCloudViewer {
   }
 
   private reportLayerTileStats(): void {
+    this.reportCameraRuntimeStats();
     const focus = this.layerRuntimeStats(this.primaryTileset);
     const context = this.layerRuntimeStats(this.contextTileset);
     const selectedTiles = sumNumericStats(focus.selectedTiles, context.selectedTiles);
@@ -2001,6 +2750,34 @@ export class PointCloudViewer {
     this.callbacks.onBrowserMetric('selectedTiles', selectedTiles);
     this.callbacks.onBrowserMetric('visiblePointsEstimated', visiblePoints);
     this.callbacks.onBrowserMetric('tilesetMemoryBytes', tilesetMemoryBytes);
+  }
+
+  private reportCameraRuntimeStats(): void {
+    if (!this.primaryTileset && !this.contextTileset) {
+      if (this.lastCameraRuntimeKey === '—|—') return;
+      this.lastCameraRuntimeKey = '—|—';
+      this.callbacks.onBrowserMetric('cameraDistanceMeters', '—');
+      this.callbacks.onBrowserMetric('cameraHeightMeters', '—');
+      return;
+    }
+
+    const distance = Cesium.Cartesian3.distance(
+      this.viewer.camera.positionWC,
+      this.orbitTarget
+    );
+    const height = this.globeControlsActive
+      ? Cesium.Cartographic.fromCartesian(this.viewer.camera.positionWC)?.height
+      : null;
+    const roundedDistance = Number.isFinite(distance) ? Math.round(distance) : null;
+    const roundedHeight = typeof height === 'number' && Number.isFinite(height)
+      ? Math.round(height)
+      : null;
+    const runtimeKey = `${roundedDistance ?? '—'}|${roundedHeight ?? '—'}`;
+    if (runtimeKey === this.lastCameraRuntimeKey) return;
+    this.lastCameraRuntimeKey = runtimeKey;
+
+    this.callbacks.onBrowserMetric('cameraDistanceMeters', roundedDistance ?? '—');
+    this.callbacks.onBrowserMetric('cameraHeightMeters', roundedHeight ?? '—');
   }
 
   private layerRuntimeStats(tileset: Cesium.Cesium3DTileset | null): LayerRuntimeStats {

@@ -1,5 +1,10 @@
 import { DATASET, TILE_CONFIG } from './viewer';
 import { PRESETS, type PresetName } from './presets';
+import {
+  countSpatialLodPntsUrls,
+  formatSpatialLodLevelStats,
+  type SpatialLodActiveTileSample,
+} from './spatial-lod';
 
 type SizeMetric = { bytes: number; human: string } | null;
 
@@ -70,11 +75,38 @@ export type BrowserMetricName =
   | 'visiblePointsEstimated'
   | 'tilesetMemoryBytes'
   | 'cacheHitRate'
+  | 'cameraDistanceMeters'
+  | 'cameraHeightMeters'
   | 'pointSizePx'
   | 'pointSizeBand'
   | 'pointSizeScale'
   | 'cameraRangeRatio'
   | 'cacheBytesRuntime'
+  | 'activeSpatialLodLevels'
+  | 'activeSpatialLodTileSamples'
+  | 'requestedSpatialLodFiles'
+  | 'spatialLodRefinementPhase'
+  | 'spatialLodCameraIdleMs'
+  | 'spatialLodCameraMoveStarts'
+  | 'spatialLodCameraMoveEnds'
+  | 'spatialLodRequestedTiles'
+  | 'spatialLodRequestsInFlight'
+  | 'spatialLodPendingRequests'
+  | 'spatialLodProcessingTiles'
+  | 'spatialLodAttemptedRequests'
+  | 'spatialLodZ4RequestedTiles'
+  | 'spatialLodZ4RequestsInFlight'
+  | 'spatialLodZ4ProcessingTiles'
+  | 'spatialLodZ4RequestsSinceCameraStop'
+  | 'spatialLodZ4FirstRequestDelayMs'
+  | 'spatialLodZ4RequestTimeline'
+  | 'spatialLodSkipLevelOfDetail'
+  | 'spatialLodIsSkippingLevelOfDetail'
+  | 'spatialLodHasMixedContent'
+  | 'spatialLodPreferLeaves'
+  | 'spatialLodFoveatedConeSize'
+  | 'spatialLodFoveatedRelaxation'
+  | 'spatialLodFoveatedTimeDelay'
   | 'overviewSsePhase'
   | 'overviewSse'
   | 'overviewBootstrapRequests'
@@ -135,11 +167,38 @@ const browserMetrics: BrowserMetrics = {
   visiblePointsEstimated: '—',
   tilesetMemoryBytes: 'unsupported',
   cacheHitRate: 'unknown',
+  cameraDistanceMeters: '—',
+  cameraHeightMeters: '—',
   pointSizePx: '—',
   pointSizeBand: '—',
   pointSizeScale: '—',
   cameraRangeRatio: '—',
   cacheBytesRuntime: '—',
+  activeSpatialLodLevels: '—',
+  activeSpatialLodTileSamples: '—',
+  requestedSpatialLodFiles: '—',
+  spatialLodRefinementPhase: '—',
+  spatialLodCameraIdleMs: '—',
+  spatialLodCameraMoveStarts: 0,
+  spatialLodCameraMoveEnds: 0,
+  spatialLodRequestedTiles: '—',
+  spatialLodRequestsInFlight: '—',
+  spatialLodPendingRequests: '—',
+  spatialLodProcessingTiles: '—',
+  spatialLodAttemptedRequests: '—',
+  spatialLodZ4RequestedTiles: '—',
+  spatialLodZ4RequestsInFlight: '—',
+  spatialLodZ4ProcessingTiles: '—',
+  spatialLodZ4RequestsSinceCameraStop: 0,
+  spatialLodZ4FirstRequestDelayMs: '—',
+  spatialLodZ4RequestTimeline: '—',
+  spatialLodSkipLevelOfDetail: '—',
+  spatialLodIsSkippingLevelOfDetail: '—',
+  spatialLodHasMixedContent: '—',
+  spatialLodPreferLeaves: '—',
+  spatialLodFoveatedConeSize: '—',
+  spatialLodFoveatedRelaxation: '—',
+  spatialLodFoveatedTimeDelay: '—',
   overviewSsePhase: '—',
   overviewSse: '—',
   overviewBootstrapRequests: 0,
@@ -172,6 +231,7 @@ let measuredNetworkBytes = 0;
 let measuringNetwork = false;
 let cloudFrontMetrics: CloudFrontMetrics = emptyCloudFrontMetrics();
 let overviewSseValidation: Record<string, unknown> | null = null;
+let spatialLodActiveTileSamples: SpatialLodActiveTileSample[] = [];
 
 export function setOverviewSseValidation(
   validation: Record<string, unknown> | null
@@ -216,11 +276,21 @@ export function initDatasetReport(): void {
 export function updateBrowserMetric(metric: BrowserMetricName, value: string | number): void {
   browserMetrics[metric] = value;
   setText(metric, formatBrowserMetric(metric, value));
+  if (metric === 'focusEffectiveSSE') {
+    setText(
+      'maximumScreenSpaceError',
+      String(effectiveMaximumScreenSpaceError(PRESETS[currentPresetName]))
+    );
+  }
 
   if (metric === 'firstVisibleTime') {
     initialFpsStop?.();
     initialFpsStop = null;
   }
+}
+
+export function updateSpatialLodActiveTileSamples(samples: SpatialLodActiveTileSample[]): void {
+  spatialLodActiveTileSamples = samples.slice(0, 8);
 }
 
 export function updateReportMode(presetName: PresetName): void {
@@ -300,11 +370,38 @@ export function resetBrowserMetrics(): void {
     visiblePointsEstimated: '—',
     tilesetMemoryBytes: 'unsupported',
     cacheHitRate: 'unknown',
+    cameraDistanceMeters: '—',
+    cameraHeightMeters: '—',
     pointSizePx: '—',
     pointSizeBand: '—',
     pointSizeScale: '—',
     cameraRangeRatio: '—',
     cacheBytesRuntime: '—',
+    activeSpatialLodLevels: '—',
+    activeSpatialLodTileSamples: '—',
+    requestedSpatialLodFiles: '—',
+    spatialLodRefinementPhase: '—',
+    spatialLodCameraIdleMs: '—',
+    spatialLodCameraMoveStarts: 0,
+    spatialLodCameraMoveEnds: 0,
+    spatialLodRequestedTiles: '—',
+    spatialLodRequestsInFlight: '—',
+    spatialLodPendingRequests: '—',
+    spatialLodProcessingTiles: '—',
+    spatialLodAttemptedRequests: '—',
+    spatialLodZ4RequestedTiles: '—',
+    spatialLodZ4RequestsInFlight: '—',
+    spatialLodZ4ProcessingTiles: '—',
+    spatialLodZ4RequestsSinceCameraStop: 0,
+    spatialLodZ4FirstRequestDelayMs: '—',
+    spatialLodZ4RequestTimeline: '—',
+    spatialLodSkipLevelOfDetail: '—',
+    spatialLodIsSkippingLevelOfDetail: '—',
+    spatialLodHasMixedContent: '—',
+    spatialLodPreferLeaves: '—',
+    spatialLodFoveatedConeSize: '—',
+    spatialLodFoveatedRelaxation: '—',
+    spatialLodFoveatedTimeDelay: '—',
     overviewSsePhase: '—',
     overviewSse: '—',
     overviewBootstrapRequests: 0,
@@ -317,6 +414,7 @@ export function resetBrowserMetrics(): void {
     overviewReadyBytes: 0,
     overviewTravelDistance: 0,
   });
+  spatialLodActiveTileSamples = [];
   renderCloudFrontMetrics();
   for (const [metric, value] of Object.entries(browserMetrics)) {
     setText(metric, formatBrowserMetric(metric as BrowserMetricName, value as string | number));
@@ -412,11 +510,19 @@ function renderModeConfig(): void {
   setText('userMode', preset.userMode);
   setText('dataDensity', preset.dataDensity);
   setText('renderQuality', preset.renderQuality);
-  setText('maximumScreenSpaceError', String(preset.maximumScreenSpaceError));
+  setText('maximumScreenSpaceError', String(effectiveMaximumScreenSpaceError(preset)));
   setText('focusEffectiveSSE', String(browserMetrics.focusEffectiveSSE));
   setText('contextEffectiveSSE', String(browserMetrics.contextEffectiveSSE));
   setText('framingMode', String(browserMetrics.framingMode));
   setText('cacheBytes', formatBytes(runtimeCacheBytes));
+}
+
+function effectiveMaximumScreenSpaceError(
+  preset: { maximumScreenSpaceError: number }
+): number {
+  return typeof browserMetrics.focusEffectiveSSE === 'number'
+    ? browserMetrics.focusEffectiveSSE
+    : preset.maximumScreenSpaceError;
 }
 
 function renderDatasetContext(): void {
@@ -449,6 +555,7 @@ function updateNetworkMetrics(): void {
   }, 0);
   cloudFrontMetrics = buildCloudFrontMetrics(entries, bytes || measuredNetworkBytes);
   renderCloudFrontMetrics();
+  renderSpatialLodResourceMetrics(entries);
   updateBrowserMetric('networkRequests', entries.length);
   updateCacheHitRate(entries);
   if (bytes > 0) {
@@ -566,6 +673,18 @@ function renderCloudFrontMetrics(): void {
   );
 }
 
+function renderSpatialLodResourceMetrics(entries: PerformanceEntry[]): void {
+  const pntsUrls = entries
+    .map((entry) => entry.name)
+    .filter((url) => resourcePath(url).endsWith('.pnts'));
+  updateBrowserMetric(
+    'requestedSpatialLodFiles',
+    pntsUrls.length > 0
+      ? formatSpatialLodLevelStats(countSpatialLodPntsUrls(pntsUrls))
+      : '—'
+  );
+}
+
 function measureResourceContentLength(entries: PerformanceEntry[]): void {
   if (measuringNetwork) return;
   const pendingUrls = entries
@@ -635,6 +754,7 @@ async function copyReport(): Promise<void> {
   const runtimeCacheBytes = typeof browserMetrics.cacheBytesRuntime === 'number'
     ? browserMetrics.cacheBytesRuntime
     : preset.cacheBytes;
+  const maximumScreenSpaceError = effectiveMaximumScreenSpaceError(preset);
   const focusDensity = datasetReport?.densityTarget ?? preset.dataDensity;
   const contextDensity = contextReport?.densityTarget ?? null;
   const payload = {
@@ -672,7 +792,7 @@ async function copyReport(): Promise<void> {
     userMode: preset.userMode,
     dataDensity: preset.dataDensity,
     renderQuality: preset.renderQuality,
-    maximumScreenSpaceError: preset.maximumScreenSpaceError,
+    maximumScreenSpaceError,
     focusEffectiveSSE: browserMetrics.focusEffectiveSSE,
     contextEffectiveSSE: browserMetrics.contextEffectiveSSE,
     framingMode: browserMetrics.framingMode,
@@ -684,6 +804,54 @@ async function copyReport(): Promise<void> {
     selectedTiles: browserMetrics.selectedTiles,
     visiblePointsEstimated: browserMetrics.visiblePointsEstimated,
     tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
+    camera: {
+      distanceMeters: browserMetrics.cameraDistanceMeters,
+      heightMeters: browserMetrics.cameraHeightMeters,
+      rangeRatio: browserMetrics.cameraRangeRatio,
+    },
+    spatialLod: {
+      activeZLevels: browserMetrics.activeSpatialLodLevels,
+      activeTileSamples: spatialLodActiveTileSamples,
+      requestedZFiles: browserMetrics.requestedSpatialLodFiles,
+      loadedTiles: browserMetrics.loadedTiles,
+      activeLoadedTiles: browserMetrics.activeLoadedTiles,
+      focusLoadedTiles: browserMetrics.focusLoadedTiles,
+      focusActiveLoadedTiles: browserMetrics.focusActiveLoadedTiles,
+      pntsRequests: cloudFrontMetrics.pntsRequests,
+      tilesetRequests: cloudFrontMetrics.tilesetRequests,
+      bytesTransferred: cloudFrontMetrics.bytesTransferred,
+      tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
+      refinement: {
+        phase: browserMetrics.spatialLodRefinementPhase,
+        cameraIdleMs: browserMetrics.spatialLodCameraIdleMs,
+        cameraMoveStarts: browserMetrics.spatialLodCameraMoveStarts,
+        cameraMoveEnds: browserMetrics.spatialLodCameraMoveEnds,
+        queues: {
+          requestedTiles: browserMetrics.spatialLodRequestedTiles,
+          requestsInFlight: browserMetrics.spatialLodRequestsInFlight,
+          pendingRequests: browserMetrics.spatialLodPendingRequests,
+          processingTiles: browserMetrics.spatialLodProcessingTiles,
+          attemptedRequests: browserMetrics.spatialLodAttemptedRequests,
+        },
+        z4: {
+          requestedTiles: browserMetrics.spatialLodZ4RequestedTiles,
+          requestsInFlight: browserMetrics.spatialLodZ4RequestsInFlight,
+          processingTiles: browserMetrics.spatialLodZ4ProcessingTiles,
+          uniqueRequestsSinceCameraStop: browserMetrics.spatialLodZ4RequestsSinceCameraStop,
+          firstRequestDelayMs: browserMetrics.spatialLodZ4FirstRequestDelayMs,
+          timeline: browserMetrics.spatialLodZ4RequestTimeline,
+        },
+        traversal: {
+          skipLevelOfDetail: browserMetrics.spatialLodSkipLevelOfDetail,
+          isSkippingLevelOfDetail: browserMetrics.spatialLodIsSkippingLevelOfDetail,
+          hasMixedContent: browserMetrics.spatialLodHasMixedContent,
+          preferLeaves: browserMetrics.spatialLodPreferLeaves,
+          foveatedConeSize: browserMetrics.spatialLodFoveatedConeSize,
+          foveatedRelaxation: browserMetrics.spatialLodFoveatedRelaxation,
+          foveatedTimeDelay: browserMetrics.spatialLodFoveatedTimeDelay,
+        },
+      },
+    },
     overviewTuning: {
       pointSizePx: browserMetrics.pointSizePx,
       pointSizeBand: browserMetrics.pointSizeBand,
@@ -718,6 +886,17 @@ async function copyReport(): Promise<void> {
       visiblePointsEstimated: browserMetrics.visiblePointsEstimated,
       selectedTiles: browserMetrics.selectedTiles,
       tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
+      cameraDistanceMeters: browserMetrics.cameraDistanceMeters,
+      activeSpatialLodLevels: browserMetrics.activeSpatialLodLevels,
+      activeSpatialLodTileSamples: browserMetrics.activeSpatialLodTileSamples,
+      requestedSpatialLodFiles: browserMetrics.requestedSpatialLodFiles,
+      spatialLodRefinementPhase: browserMetrics.spatialLodRefinementPhase,
+      spatialLodPendingRequests: browserMetrics.spatialLodPendingRequests,
+      spatialLodProcessingTiles: browserMetrics.spatialLodProcessingTiles,
+      spatialLodZ4FirstRequestDelayMs: browserMetrics.spatialLodZ4FirstRequestDelayMs,
+      spatialLodZ4RequestTimeline: browserMetrics.spatialLodZ4RequestTimeline,
+      spatialLodIsSkippingLevelOfDetail: browserMetrics.spatialLodIsSkippingLevelOfDetail,
+      spatialLodHasMixedContent: browserMetrics.spatialLodHasMixedContent,
     },
     cacheBytes: {
       bytes: runtimeCacheBytes,
@@ -748,6 +927,9 @@ function formatBrowserMetric(metric: BrowserMetricName, value: string | number):
   if (metric === 'memoryUsage') return `${value.toFixed(1)} MB`;
   if (metric === 'tilesetMemoryBytes') return formatBytes(value);
   if (metric === 'networkMbLoaded') return `${value.toFixed(2)} MB`;
+  if (metric === 'cameraDistanceMeters' || metric === 'cameraHeightMeters') {
+    return formatMeters(value);
+  }
   if (metric === 'pointSizePx') return `${value} px`;
   if (metric === 'pointSizeScale') return `${value}×`;
   if (metric === 'cameraRangeRatio') return value.toFixed(2);
@@ -765,6 +947,12 @@ function formatBrowserMetric(metric: BrowserMetricName, value: string | number):
     return formatNumber(value);
   }
   if (
+    metric === 'loadedTiles' ||
+    metric === 'activeLoadedTiles' ||
+    metric === 'focusLoadedTiles' ||
+    metric === 'focusActiveLoadedTiles' ||
+    metric === 'contextLoadedTiles' ||
+    metric === 'contextActiveLoadedTiles' ||
     metric === 'loadedPointsEstimated' ||
     metric === 'visiblePointsEstimated' ||
     metric === 'selectedTiles'
@@ -792,6 +980,15 @@ function formatBytes(value: number | null | undefined): string {
     size /= 1024;
   }
   return unit === 'B' ? `${Math.round(size)} ${unit}` : `${size.toFixed(1)} ${unit}`;
+}
+
+function formatMeters(value: number): string {
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1000) {
+    return `${sign}${(abs / 1000).toFixed(abs >= 10000 ? 1 : 2)} km`;
+  }
+  return `${sign}${Math.round(abs)} m`;
 }
 
 function estimatedPointsPerTile(): number | null {

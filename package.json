@@ -14,6 +14,8 @@
     "pipeline:tiles:copc:chunks": "bash pipeline/copc-tiles-chunks.sh",
     "pipeline:area:manifest": "bash pipeline/area-manifest.sh",
     "pipeline:area:one-lod-tree": "bash pipeline/area-one-lod-tree.sh",
+    "pipeline:one-lod-tree:pack": "bash pipeline/one-lod-tree-pack.sh",
+    "pipeline:spatial-lod": "bash pipeline/spatial-lod.sh",
     "pipeline:area:overview": "bash pipeline/area-overview.sh",
     "pipeline:area:overview:excluding": "bash pipeline/area-overview-excluding.sh",
     "pipeline:area:overview:p001": "bash pipeline/area-overview-p001.sh",
@@ -22,7 +24,7 @@
     "pipeline:area:detail": "bash pipeline/area-detail.sh",
     "pipeline:area:explore:all": "bash pipeline/area-all.sh --mode explore",
     "pipeline:area:detail:all": "bash pipeline/area-all.sh --mode detail",
-    "pipeline:serve": "npx sirv-cli local-storage/tilesets --port 8081 --cors",
+    "pipeline:serve": "npx sirv-cli local-storage/tilesets --port 8081 --cors --dev",
     "pipeline:all": "bash pipeline/all.sh",
     "viewer:dev": "cd viewer && npm run dev",
     "viewer:install": "cd viewer && npm install"
