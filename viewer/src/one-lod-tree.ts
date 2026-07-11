@@ -9,7 +9,7 @@ export const ONE_LOD_TREE_SSE: Readonly<Record<PresetName, number>> = {
 };
 
 const SAFE_TILESET_FILE = /^[a-zA-Z0-9_-]+\.json$/;
-const ONE_LOD_TREE_BAND_NEAR_MEDIUM = 0.25;
+const ONE_LOD_TREE_BAND_NEAR_MEDIUM = 0.15;
 const ONE_LOD_TREE_BAND_MEDIUM_FAR = 2.5;
 const ONE_LOD_TREE_BAND_HYSTERESIS = 0.1;
 
