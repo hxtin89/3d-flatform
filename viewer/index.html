@@ -52,7 +52,7 @@
     <button class="panel-toggle" id="controls-panel-toggle" type="button" aria-label="Hide controls panel" aria-expanded="true">=</button>
     <div class="panel-content" id="controls-panel-content">
       <!-- User modes -->
-      <div class="control-group">
+      <div class="control-group" id="mode-control">
         <div class="control-label">Mode</div>
         <div class="preset-buttons">
           <button class="preset-btn active" id="preset-low" data-preset="low">Overview</button>
@@ -77,14 +77,14 @@
       </div>
 
       <!-- Stats -->
-      <div class="control-group">
-        <div class="control-label">Rendering</div>
+      <div class="control-group" id="rendering-control">
+        <div class="control-label" id="rendering-label">Rendering</div>
         <div class="stats-grid">
-          <div class="stat-row">
-            <span class="stat-key">SSE</span>
+          <div class="stat-row manual-rendering-row">
+            <span class="stat-key" id="stat-sse-label">SSE</span>
             <span class="stat-val" id="stat-sse">—</span>
           </div>
-          <div class="stat-row">
+          <div class="stat-row manual-rendering-row">
             <span class="stat-key">Detail SSE</span>
             <span class="stat-val">
               <select class="debug-select" id="select-detail-sse">
@@ -101,15 +101,15 @@
               <span id="overview-point-size-val">1×</span>
             </span>
           </div>
-          <div class="stat-row">
+          <div class="stat-row manual-rendering-row">
             <span class="stat-key">SSE Phase</span>
             <span class="stat-val" data-report-field="overviewSsePhase">—</span>
           </div>
-          <div class="stat-row">
+          <div class="stat-row manual-rendering-row">
             <span class="stat-key">Memory</span>
             <span class="stat-val" id="stat-memory">—</span>
           </div>
-          <div class="stat-row">
+          <div class="stat-row manual-rendering-row">
             <span class="stat-key">Tiles loaded</span>
             <span class="stat-val" id="stat-tiles">—</span>
           </div>
@@ -120,7 +120,7 @@
       <div class="control-group dataset-report">
         <div class="report-heading">
           <div>
-            <div class="control-label">Dataset Report</div>
+            <div class="control-label" id="report-title">Dataset Report</div>
             <div class="report-subtitle">
               <span data-report-field="report-dataset">—</span>
               <span>·</span>
@@ -131,14 +131,14 @@
         </div>
 
         <div class="report-grid compact-report-grid">
-          <div class="stat-row"><span class="stat-key">Source Points</span><span class="stat-val" data-report-field="sourcePointCount">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Source Points</span><span class="stat-val" data-report-field="sourcePointCount">—</span></div>
           <div class="stat-row"><span class="stat-key">Visible Points</span><span class="stat-val" data-report-field="visiblePointsEstimated">—</span></div>
-          <div class="stat-row"><span class="stat-key">Tileset Size</span><span class="stat-val" data-report-field="tilesSize">—</span></div>
-          <div class="stat-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
-          <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Tileset Size</span><span class="stat-val" data-report-field="tilesSize">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
           <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val" data-report-field="selectedTiles">—</span></div>
           <div class="stat-row"><span class="stat-key">Point Size</span><span class="stat-val" data-report-field="pointSizePx">—</span></div>
           <div class="stat-row"><span class="stat-key">Point Band</span><span class="stat-val" data-report-field="pointSizeBand">—</span></div>
+          <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
           <div class="stat-row"><span class="stat-key">Point Scale</span><span class="stat-val" data-report-field="pointSizeScale">—</span></div>
           <div class="stat-row"><span class="stat-key">Cam Range Ratio</span><span class="stat-val" data-report-field="cameraRangeRatio">—</span></div>
           <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val" data-report-field="networkMbLoaded">—</span></div>

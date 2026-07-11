@@ -1,14 +1,17 @@
-import { PRESETS, type PresetName } from './presets';
+import { PRESETS, type OverviewPointSizeBand, type PresetName } from './presets';
 
 export const ONE_LOD_TREE_TILESET_FILE = 'tileset-one-lod-tree.json';
 
 export const ONE_LOD_TREE_SSE: Readonly<Record<PresetName, number>> = {
   low: 256,
   medium: 124,
-  high: 96,
+  high: 64,
 };
 
 const SAFE_TILESET_FILE = /^[a-zA-Z0-9_-]+\.json$/;
+const ONE_LOD_TREE_BAND_NEAR_MEDIUM = 0.25;
+const ONE_LOD_TREE_BAND_MEDIUM_FAR = 2.5;
+const ONE_LOD_TREE_BAND_HYSTERESIS = 0.1;
 
 export function oneLodTreeDataset(logicalDataset: string): string {
   return `${logicalDataset}/${logicalDataset}-one-lod-tree`;
@@ -16,6 +19,48 @@ export function oneLodTreeDataset(logicalDataset: string): string {
 
 export function oneLodTreeSse(preset: PresetName): number {
   return ONE_LOD_TREE_SSE[preset];
+}
+
+export function oneLodTreeBandForRatio(
+  ratio: number,
+  currentBand: OverviewPointSizeBand | null
+): OverviewPointSizeBand {
+  if (currentBand === null) {
+    if (ratio <= ONE_LOD_TREE_BAND_NEAR_MEDIUM) return 'near';
+    if (ratio <= ONE_LOD_TREE_BAND_MEDIUM_FAR) return 'medium';
+    return 'far';
+  }
+  const upNearMedium = ONE_LOD_TREE_BAND_NEAR_MEDIUM * (1 + ONE_LOD_TREE_BAND_HYSTERESIS);
+  const downNearMedium = ONE_LOD_TREE_BAND_NEAR_MEDIUM * (1 - ONE_LOD_TREE_BAND_HYSTERESIS);
+  const upMediumFar = ONE_LOD_TREE_BAND_MEDIUM_FAR * (1 + ONE_LOD_TREE_BAND_HYSTERESIS);
+  const downMediumFar = ONE_LOD_TREE_BAND_MEDIUM_FAR * (1 - ONE_LOD_TREE_BAND_HYSTERESIS);
+  switch (currentBand) {
+    case 'near':
+      if (ratio > upMediumFar) return 'far';
+      if (ratio > upNearMedium) return 'medium';
+      return 'near';
+    case 'medium':
+      if (ratio < downNearMedium) return 'near';
+      if (ratio > upMediumFar) return 'far';
+      return 'medium';
+    case 'far':
+      if (ratio < downNearMedium) return 'near';
+      if (ratio < downMediumFar) return 'medium';
+      return 'far';
+  }
+}
+
+export function oneLodTreePresetForPointBand(
+  band: OverviewPointSizeBand
+): PresetName {
+  switch (band) {
+    case 'near':
+      return 'high';
+    case 'medium':
+      return 'medium';
+    case 'far':
+      return 'low';
+  }
 }
 
 export interface OneLodTreeCachePolicy {

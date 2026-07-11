@@ -32,6 +32,8 @@ import {
   setAreaDetectionStatus,
   setContextLayerAvailability,
   setPresetAvailability,
+  setPanelLodMode,
+  setReportVariant,
   setSelectedAreaOption,
   setUseCurrentViewAvailability,
 } from './ui';
@@ -69,6 +71,8 @@ import {
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
 setServerUrl(TILE_CONFIG.baseUrl || 'CloudFront not configured');
+setPanelLodMode(LOD_MODE);
+setReportVariant(LOD_MODE === 'one-lod-tree' ? 'runtime' : 'dataset');
 initDatasetReport();
 
 let areaManifest: AreaManifest | null = null;
@@ -107,12 +111,12 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
-    const isOverview = preset === 'low' && LOD_MODE !== 'one-lod-tree';
+    const pointSizeAvailable = LOD_MODE === 'one-lod-tree' || preset === 'low';
     setOverviewPointSizeAvailability(
-      isOverview,
-      isOverview ? '' : 'Available in Overview only'
+      pointSizeAvailable,
+      pointSizeAvailable ? '' : 'Available in Overview only'
     );
-    if (isOverview) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
+    if (pointSizeAvailable) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   },
   onBrowserMetric: (metric: BrowserMetricName, value: number | string) => {
     updateBrowserMetric(metric, value);
@@ -243,7 +247,7 @@ async function bootstrapOneLodTree(): Promise<void> {
   setAreaOptions([], null);
   setUseCurrentViewAvailability(false, 'Single-tree mode');
   setContextLayerAvailability(false, 'Single-tree mode');
-  setOverviewPointSizeAvailability(false, 'Single-tree mode');
+  setOverviewPointSizeAvailability(true, '');
   setPresetAvailability('low', true, `Single tree · SSE ${oneLodTreeSse('low')}`);
   setPresetAvailability('medium', true, `Single tree · SSE ${oneLodTreeSse('medium')}`);
   setPresetAvailability('high', true, `Single tree · SSE ${oneLodTreeSse('high')}`);
@@ -257,6 +261,7 @@ async function bootstrapOneLodTree(): Promise<void> {
   useRuntimeOnlyDatasetReport();
   setActivePreset('low');
   updateReportMode('low');
+  setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   updateStats({
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),
@@ -268,7 +273,7 @@ function applyOneLodTreePreset(preset: PresetName): void {
   viewer.setOneLodTreePreset(preset);
   setActivePreset(preset);
   updateReportMode(preset);
-  updateBrowserMetric('focusEffectiveSSE', oneLodTreeSse(preset));
+  updateBrowserMetric('focusEffectiveSSE', viewer.getSSE());
   updateStats({
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),

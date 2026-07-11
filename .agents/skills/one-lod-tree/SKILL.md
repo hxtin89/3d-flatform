@@ -95,12 +95,14 @@ Restart the tile server after generation when a previously missing sidecar still
 Keep One LOD Tree isolated from the normal multi-dataset loading path:
 
 - Resolve the dataset as `<logical>/<logical>-one-lod-tree` and load `tileset-one-lod-tree.json` once.
-- Switch Overview, Explore, and Detail by changing only the active tileset render budget; never swap datasets.
-- Use SSE `256` for Overview, `124` for Explore, and `96` for Detail.
+- Keep the composed tree loaded as one Cesium tileset. If re-enabling a visible quality/preset control, switch Overview, Explore, and Detail by changing only the active tileset render budget; never swap datasets.
+- The helper SSE map remains `256` for Overview, `124` for Explore, and `96` for Detail. The current `?lod=one-lod-tree` UI does not expose a visible quality/SSE control; instead, the One LOD Tree runtime camera band drives the render budget automatically: `far -> low/256`, `medium -> medium/124`, `near -> high/96`. This runtime band intentionally differs from the Overview point-size band: keep `far/medium` at `2.5`, but delay `near/Detail` until `cameraRangeRatio <= 0.35` so high-altitude views around `0.47` stay in Explore SSE `124`. Initial load starts on Overview SSE `256` and may immediately retune after the first camera-range band is measured.
 - Reuse cache sizes from `PRESETS`. Trim finer cached tiles only after returning from Explore/Detail to Overview and after the new Overview selection has rendered.
-- Disable area selection, current-view detection, Context, Detail SSE override, Overview point-size controls, and progressive Overview SSE in this mode.
+- Hide the Mode, Area, and manual Rendering rows in this mode. The visible Settings section currently exposes only Point Size.
+- Disable area selection, current-view detection, Context, Detail SSE override, and progressive Overview SSE in this mode.
+- Keep One LOD Tree point-size tuning separate from progressive Overview SSE: the Point Size slider is enabled and updates Cesium style plus runtime point-size report metrics, without activating `OverviewSseController`.
 - Keep manual mode behavior unchanged.
-- Use runtime report metrics because the composed sidecar dataset has no standalone dataset report.
+- Use runtime report metrics because the composed sidecar dataset has no standalone dataset report. In runtime report mode, hide pipeline-only fields such as Source Points, Tileset Size, and Tile Count. Show Runtime SSE next to Point Band so the automatic `far/medium/near` SSE retune is visible.
 - Permit close zoom for the One LOD Tree without restoring any Auto LOD runtime or API.
 - Validate dataset paths and entry filenames before constructing a URL.
 
@@ -127,9 +129,10 @@ In the browser, verify:
 
 1. The first JSON request is the generated entry sidecar, not the legacy `<logical>-one-lod-tree/tileset.json`.
 2. External requests progress Overview -> Explore -> Detail as the camera approaches the area.
-3. Preset buttons change SSE/cache behavior without changing the active dataset URL.
-4. Returning to Overview trims finer cached tiles without blanking the scene.
-5. Manual mode still loads and switches datasets normally.
+3. The One LOD Tree panel hides Mode, Area, manual Rendering rows, and pipeline-only report fields; Settings shows Point Size only; Runtime Report shows Point Band next to Runtime SSE.
+4. The Point Size slider is enabled, visibly changes point size, and updates point-size report fields without enabling progressive Overview SSE.
+5. If a visible quality/preset control is reintroduced, preset changes must update SSE/cache behavior without changing the active dataset URL, and returning to Overview must trim finer cached tiles without blanking the scene.
+6. Manual mode still loads and switches datasets normally.
 
 ## Diagnostics
 
@@ -139,7 +142,7 @@ In the browser, verify:
 - BBox mismatch: inspect source chunk alignment and tolerances. Do not silence the check with a large tolerance unless the data relationship is verified.
 - External JSON has children: move those children into the referenced document and keep the referencing tile a leaf.
 - Refinement never advances: inspect generated `viewerRequestVolume`, relative URI resolution, geometric errors, and browser network 404s.
-- Sparse or over-detailed view: confirm runtime SSE is `256/124/96` before tuning request ratios or source tiles.
+- Sparse or over-detailed view: One LOD Tree auto-retunes SSE from its one-tree camera band, not the generic Overview point-size band. Inspect `cameraRangeRatio`, `pointSizeBand`, Runtime SSE, `oneLodTreeBandForRatio`, `oneLodTreeSse`, `setOneLodTreePreset`, generated request volumes, and source tiles before tuning ratios.
 - Source files changed after a build: treat this as a generator bug; the pipeline is sidecar-only.
 - A stale legacy `tileset.json` loads: check `ONE_LOD_TREE_TILESET_FILE`, dataset resolution, and the browser URL.
 
@@ -161,6 +164,7 @@ Consider work complete only when:
 - All requested areas produce a reachable four-stage sidecar chain.
 - Generated JSON leaves, transforms, URIs, request volumes, and geometric errors satisfy the invariants.
 - Failure paths write no partial output and source hashes remain unchanged.
-- The viewer loads one entry and changes presets without swapping datasets.
-- SSE/cache/trim behavior matches the viewer contract.
+- The viewer loads one entry. Internal or future visible preset changes must not swap datasets.
+- Current UI hides One LOD Tree preset/SSE controls, keeps Settings to Point Size, shows Runtime SSE in the runtime report, and keeps report fields truthful.
+- SSE/cache/trim behavior matches the viewer contract when internal or future visible preset changes are exercised.
 - Pipeline tests, viewer tests, production build, and diff checks pass.

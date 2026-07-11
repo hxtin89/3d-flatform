@@ -19,6 +19,7 @@ const brandBadge = document.getElementById('brand-badge');
 const statSSE = document.getElementById('stat-sse')!;
 const statMemory = document.getElementById('stat-memory')!;
 const statTiles = document.getElementById('stat-tiles')!;
+const statSseLabel = document.getElementById('stat-sse-label');
 
 // ── Preset buttons ───────────────────────────────────────────────
 const presetButtons = document.querySelectorAll<HTMLButtonElement>('.preset-btn');
@@ -41,6 +42,8 @@ const controlsPanel = document.getElementById('controls-panel');
 const controlsPanelToggle = document.getElementById(
   'controls-panel-toggle'
 ) as HTMLButtonElement | null;
+const renderingLabel = document.getElementById('rendering-label');
+const reportTitle = document.getElementById('report-title');
 
 export function setStatus(state: ViewerState, message?: string): void {
   const titleMap: Record<ViewerState, string> = {
@@ -114,13 +117,32 @@ export function setPresetAvailability(
   enabled: boolean,
   label: string
 ): void {
-  const btn = document.querySelector<HTMLButtonElement>(`.preset-btn[data-preset="${preset}"]`);
-  if (btn) {
+  const buttons = document.querySelectorAll<HTMLButtonElement>(
+    `.preset-btn[data-preset="${preset}"]`
+  );
+  buttons.forEach((btn) => {
     btn.disabled = !enabled;
     btn.title = enabled ? '' : label;
-  }
+  });
   const status = document.getElementById(`mode-status-${preset}`);
   if (status) status.textContent = label;
+}
+
+export function setPanelLodMode(mode: 'manual' | 'one-lod-tree'): void {
+  document.body.dataset.lodMode = mode;
+  if (renderingLabel) {
+    renderingLabel.textContent = mode === 'one-lod-tree' ? 'Settings' : 'Rendering';
+  }
+  if (statSseLabel) {
+    statSseLabel.textContent = mode === 'one-lod-tree' ? 'Runtime SSE' : 'SSE';
+  }
+}
+
+export function setReportVariant(variant: 'dataset' | 'runtime'): void {
+  document.body.dataset.reportVariant = variant;
+  if (reportTitle) {
+    reportTitle.textContent = variant === 'runtime' ? 'Runtime Report' : 'Dataset Report';
+  }
 }
 
 export function initAreaSelect(onChange: (areaId: string) => void): void {

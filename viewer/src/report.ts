@@ -1,5 +1,6 @@
 import { DATASET, TILE_CONFIG } from './viewer';
 import { PRESETS, type PresetName } from './presets';
+import { ONE_LOD_TREE_TILESET_FILE } from './one-lod-tree';
 
 type SizeMetric = { bytes: number; human: string } | null;
 
@@ -172,6 +173,7 @@ let measuredNetworkBytes = 0;
 let measuringNetwork = false;
 let cloudFrontMetrics: CloudFrontMetrics = emptyCloudFrontMetrics();
 let overviewSseValidation: Record<string, unknown> | null = null;
+let runtimeOnlyDatasetReport = false;
 
 export function setOverviewSseValidation(
   validation: Record<string, unknown> | null
@@ -253,6 +255,7 @@ export function setReportDatasetContext(context: {
 
 /** Use Cesium runtime metrics when a composed tileset has no dataset report. */
 export function useRuntimeOnlyDatasetReport(): void {
+  runtimeOnlyDatasetReport = true;
   datasetReport = null;
   contextReport = null;
   resetPipelineFields();
@@ -466,6 +469,7 @@ function updateNetworkMetrics(): void {
 function activeNetworkFragments(): string[] {
   const fragments = new Set<string>();
   fragments.add(resolvedDataset);
+  if (runtimeOnlyDatasetReport) fragments.add(logicalDataset);
   if (contextDataset) fragments.add(contextDataset);
 
   const focusSourceRoot = sourceDatasetRoot(resolvedDataset, datasetReport);
@@ -540,10 +544,14 @@ function emptyCloudFrontMetrics(): CloudFrontMetrics {
 function buildCloudFrontMetrics(entries: PerformanceEntry[], bytesTransferred: number): CloudFrontMetrics {
   return {
     pntsRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('.pnts')).length,
-    tilesetRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('/tileset.json')).length,
+    tilesetRequests: entries.filter((entry) => isTilesetJsonPath(resourcePath(entry.name))).length,
     bytesTransferred,
     cacheHitRatio: cloudFrontMetrics.cacheHitRatio,
   };
+}
+
+function isTilesetJsonPath(path: string): boolean {
+  return path.endsWith('/tileset.json') || path.endsWith(`/${ONE_LOD_TREE_TILESET_FILE}`);
 }
 
 function resourcePath(url: string): string {

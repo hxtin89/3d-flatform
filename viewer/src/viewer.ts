@@ -19,7 +19,9 @@ import {
 import { type BrowserMetricName } from './report';
 import {
   ONE_LOD_TREE_TILESET_FILE,
+  oneLodTreeBandForRatio,
   oneLodTreeCachePolicy,
+  oneLodTreePresetForPointBand,
   oneLodTreeSse,
   shouldTrimOneLodTree,
   tilesetEntryUrl,
@@ -257,6 +259,7 @@ export class PointCloudViewer {
   private overviewPointSizeScale = OVERVIEW_POINT_SIZE_SCALE_DEFAULT;
   private overviewPointSizePx = 0;
   private overviewCameraRangeRatio = 0;
+  private oneLodTreePointSizeActive = false;
   private lastOverviewReportKey = '';
   private lastOverviewDebugLogAt = 0;
   private lastOverviewDebugKey = '';
@@ -388,6 +391,7 @@ export class PointCloudViewer {
       this.configureCameraLimits(tileset, null, true, false);
       this.installPointCloudControls(tileset, null);
       this.setOneLodTreePreset('low');
+      this.enterOneLodTreePointSizeRuntime();
       this.minCameraDistance = 0.05;
       this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 0.05;
 
@@ -420,6 +424,9 @@ export class PointCloudViewer {
         if (loaded > 0 && !this.firstVisibleReported) {
           this.firstVisibleReported = true;
           this.callbacks.onBrowserMetric('firstVisibleTime', performance.now() - this.loadStartTime);
+        }
+        if (this.oneLodTreePointSizeActive) {
+          this.updateOverviewPointSize();
         }
       });
       this.installTileFailureLogging(tileset);
@@ -1572,7 +1579,7 @@ export class PointCloudViewer {
     const clamped = clampOverviewPointSizeScale(scale);
     if (Math.abs(clamped - this.overviewPointSizeScale) < 1e-9) return;
     this.overviewPointSizeScale = clamped;
-    if (this.overviewRuntimeActive) {
+    if (this.pointSizeRuntimeActive()) {
       this.updateOverviewPointSize();
     }
   }
@@ -1610,6 +1617,21 @@ export class PointCloudViewer {
     this.registerFirstVisibleListener();
     this.reportOverviewTuning();
     this.logOverviewDiagnostics(true);
+  }
+
+  private enterOneLodTreePointSizeRuntime(): void {
+    if (!this.primaryTileset) return;
+    this.oneLodTreePointSizeActive = true;
+    this.overviewPointSizeBand = null;
+    this.updateOverviewCameraRangeRatio();
+    const band = oneLodTreeBandForRatio(this.overviewCameraRangeRatio, null);
+    const px = this.pointSizePxForOverviewBand(band);
+    this.overviewPointSizeBand = band;
+    this.overviewPointSizePx = px;
+    this.lastOverviewReportKey = '';
+    this.primaryTileset.style = createOverviewPointSizeStyle(px);
+    this.syncOneLodTreePresetForPointBand(band);
+    this.reportOverviewTuning();
   }
 
   private registerFirstVisibleListener(): void {
@@ -1665,16 +1687,25 @@ export class PointCloudViewer {
   }
 
   private updateOverviewPointSize(): void {
-    if (!this.overviewRuntimeActive || !this.primaryTileset) return;
+    if (!this.pointSizeRuntimeActive() || !this.primaryTileset) return;
     this.updateOverviewCameraRangeRatio();
-    const nextBand = overviewBandForRatio(
-      this.overviewCameraRangeRatio,
-      this.overviewPointSizeBand
-    );
+    const nextBand = this.oneLodTreePointSizeActive
+      ? oneLodTreeBandForRatio(
+          this.overviewCameraRangeRatio,
+          this.overviewPointSizeBand
+        )
+      : overviewBandForRatio(
+          this.overviewCameraRangeRatio,
+          this.overviewPointSizeBand
+        );
     const nextPx = this.pointSizePxForOverviewBand(nextBand);
+    const bandChanged = nextBand !== this.overviewPointSizeBand;
     const pxChanged = nextPx !== this.overviewPointSizePx;
     this.overviewPointSizeBand = nextBand;
     this.overviewPointSizePx = nextPx;
+    if (this.oneLodTreePointSizeActive && bandChanged) {
+      this.syncOneLodTreePresetForPointBand(nextBand);
+    }
     if (pxChanged) {
       this.primaryTileset.style = createOverviewPointSizeStyle(nextPx);
     }
@@ -1689,6 +1720,13 @@ export class PointCloudViewer {
     return this.globeControlsActive
       ? Math.max(px, OVERVIEW_GLOBE_POINT_SIZE_PX_MIN)
       : px;
+  }
+
+  private syncOneLodTreePresetForPointBand(band: OverviewPointSizeBand): void {
+    if (!this.oneLodTreePointSizeActive || !this.primaryTileset) return;
+    const nextPreset = oneLodTreePresetForPointBand(band);
+    if (nextPreset === this.currentPreset) return;
+    this.setOneLodTreePreset(nextPreset);
   }
 
   private logOverviewDiagnostics(force = false): void {
@@ -1769,14 +1807,15 @@ export class PointCloudViewer {
   }
 
   private reportOverviewTuning(): void {
-    const px: number | string = this.overviewRuntimeActive ? this.overviewPointSizePx : '—';
-    const band: string = this.overviewRuntimeActive
+    const runtimeActive = this.pointSizeRuntimeActive();
+    const px: number | string = runtimeActive ? this.overviewPointSizePx : '—';
+    const band: string = runtimeActive
       ? (this.overviewPointSizeBand ?? '—')
       : '—';
-    const scale: number | string = this.overviewRuntimeActive
+    const scale: number | string = runtimeActive
       ? this.overviewPointSizeScale
       : '—';
-    const ratio: number | string = this.overviewRuntimeActive
+    const ratio: number | string = runtimeActive
       ? Number(this.overviewCameraRangeRatio.toFixed(2))
       : '—';
     const key = `${px}|${band}|${scale}|${ratio}`;
@@ -1786,6 +1825,10 @@ export class PointCloudViewer {
     this.callbacks.onBrowserMetric('pointSizeBand', band);
     this.callbacks.onBrowserMetric('pointSizeScale', scale);
     this.callbacks.onBrowserMetric('cameraRangeRatio', ratio);
+  }
+
+  private pointSizeRuntimeActive(): boolean {
+    return this.overviewRuntimeActive || this.oneLodTreePointSizeActive;
   }
 
   getCurrentPreset(): PresetName {
@@ -1905,6 +1948,7 @@ export class PointCloudViewer {
     this.activeTilesLoaded = 0;
     this.lastLayerRuntimeKey = '';
     this.overviewRuntimeActive = false;
+    this.oneLodTreePointSizeActive = false;
     this.overviewPointSizeBand = null;
     this.overviewPointSizePx = 0;
     this.overviewCameraRangeRatio = 0;
