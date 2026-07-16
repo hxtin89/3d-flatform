@@ -3,16 +3,32 @@ import { MeshStandardNodeMaterial } from 'three/webgpu'
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js'
 import { EXPERIENCE_CONFIG } from './config'
-import type { PerformanceTier } from './environment-layer'
+import type { DaylightPhase, PerformanceTier } from './environment-layer'
 
 export interface FieldModelLayer {
   update(now: number): void
   setPerformanceTier(tier: PerformanceTier): void
+  setDaylightPhase(phase: DaylightPhase): void
+  getEditTargets(): FieldModelEditTargets
   dispose(): void
+}
+
+export interface EditableFieldModel {
+  positionNode: THREE.Group
+  transformNode: THREE.Group
+  modelRotationRad: readonly [number, number, number]
+}
+
+export interface FieldModelEditTargets {
+  originEnu: THREE.Vector3
+  tower: EditableFieldModel
+  boat: EditableFieldModel
+  towerHeightUnits: number
 }
 
 interface FieldModelLayerOptions {
   scene: THREE.Scene
+  camera: THREE.PerspectiveCamera
   enuFrame: THREE.Matrix4
   zOffset: number
   originEnu: THREE.Vector3
@@ -71,21 +87,29 @@ function countForTier(tier: PerformanceTier): number {
   return EXPERIENCE_CONFIG.parrots.constrainedCount
 }
 
-function applyTransform(
+function createEditableTransform(
+  parent: THREE.Group,
   object: THREE.Object3D,
   origin: THREE.Vector3,
   position: readonly [number, number, number],
   rotation: readonly [number, number, number],
   scale: number,
-): void {
-  object.position.set(origin.x + position[0], origin.y + position[1], origin.z + position[2])
-  object.rotation.set(rotation[0], rotation[1], rotation[2])
-  object.scale.setScalar(scale)
+): EditableFieldModel {
+  const positionNode = new THREE.Group()
+  const transformNode = new THREE.Group()
+  positionNode.position.set(origin.x + position[0], origin.y + position[1], origin.z + position[2])
+  transformNode.rotation.z = rotation[2]
+  transformNode.scale.setScalar(scale)
+  object.rotation.set(rotation[0], rotation[1], 0)
+  transformNode.add(object)
+  positionNode.add(transformNode)
+  parent.add(positionNode)
+  return { positionNode, transformNode, modelRotationRad: rotation }
 }
 
 export async function createFieldModelLayer(options: FieldModelLayerOptions): Promise<FieldModelLayer> {
   const {
-    scene, enuFrame, zOffset, originEnu, performanceTier, reducedMotion, onStatus,
+    scene, camera, enuFrame, zOffset, originEnu, performanceTier, reducedMotion, onStatus,
   } = options
   const gltfLoader = new GLTFLoader()
   const textureLoader = new THREE.TextureLoader()
@@ -117,6 +141,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const parrotBodyMaterial = createBakedMaterial(parrotBody, true, 0.62)
   const parrotWingsMaterial = createBakedMaterial(parrotWings, true, 0.62)
   const parrotTailMaterial = createBakedMaterial(parrotTail, true, 0.62)
+  const parrotMaterials = [parrotBodyMaterial, parrotWingsMaterial, parrotTailMaterial]
   const materials: THREE.Material[] = [
     towerBottomMaterial, towerTopMaterial, boatMaterial,
     parrotBodyMaterial, parrotWingsMaterial, parrotTailMaterial,
@@ -125,6 +150,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const geometries = new Set<THREE.BufferGeometry>()
 
   const tower = towerGltf.scene
+  const towerHeightUnits = new THREE.Box3().setFromObject(tower).getSize(new THREE.Vector3()).y
   tower.name = 'river-observation-tower'
   tower.traverse((object) => {
     const mesh = object as THREE.Mesh
@@ -136,14 +162,14 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     mesh.castShadow = false
     mesh.receiveShadow = false
   })
-  applyTransform(
+  const towerEditTarget = createEditableTransform(
+    root,
     tower,
     originEnu,
     EXPERIENCE_CONFIG.tower.positionM,
     EXPERIENCE_CONFIG.tower.rotationRad,
     EXPERIENCE_CONFIG.tower.scale,
   )
-  root.add(tower)
 
   const boat = boatGltf.scene
   boat.name = 'static-river-boat'
@@ -157,14 +183,14 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     mesh.castShadow = false
     mesh.receiveShadow = false
   })
-  applyTransform(
+  const boatEditTarget = createEditableTransform(
+    root,
     boat,
     originEnu,
     EXPERIENCE_CONFIG.boat.positionM,
     EXPERIENCE_CONFIG.boat.rotationRad,
     EXPERIENCE_CONFIG.boat.scale,
   )
-  root.add(boat)
 
   parrotGltf.scene.traverse((object) => {
     const mesh = object as THREE.Mesh
@@ -182,7 +208,6 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const birds: BirdRecord[] = []
   const flock = new THREE.Group()
   flock.name = 'scarlet-macaw-flock'
-  flock.up.set(0, 0, 1)
   root.add(flock)
 
   const spread = EXPERIENCE_CONFIG.parrots.spreadM
@@ -204,12 +229,11 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
       mesh.receiveShadow = false
     })
     const pivot = new THREE.Group()
-    const side = index % 2 === 0 ? -1 : 1
-    const rank = Math.floor(index / 2) + 1
+    const horizontalIndex = index - (birdLimit - 1) * 0.5
     pivot.position.set(
-      -rank * spread[0] * 0.17,
-      side * rank * spread[1] * 0.14,
-      Math.sin(index * 2.4) * spread[2] * 0.35,
+      horizontalIndex * spread[0],
+      Math.sin(index * 2.4) * spread[2],
+      Math.cos(index * 1.7) * spread[1],
     )
     pivot.add(clone)
     flock.add(pivot)
@@ -233,20 +257,76 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     birds.push({ pivot, mixer, root: clone, flight, glide })
   }
 
-  const curve = new THREE.CatmullRomCurve3(
-    EXPERIENCE_CONFIG.parrots.pathM.map(([x, y, z]) => new THREE.Vector3(
-      originEnu.x + x,
-      originEnu.y + y,
-      originEnu.z + z,
-    )),
-    false,
-    'catmullrom',
-    0.42,
-  )
-  const curvePosition = new THREE.Vector3()
-  const curveLook = new THREE.Vector3()
-  const cycleStartedAt = performance.now()
-  let lastNow = cycleStartedAt
+  const passStart = new THREE.Vector3()
+  const passEnd = new THREE.Vector3()
+  const passForward = new THREE.Vector3()
+  const passRight = new THREE.Vector3()
+  const passUp = new THREE.Vector3()
+  const passOrientation = new THREE.Matrix4()
+  const fieldWorldPosition = new THREE.Vector3()
+  const localUp = new THREE.Vector3(0, 0, 1)
+  const cameraForward = new THREE.Vector3()
+  const cameraRight = new THREE.Vector3()
+  const cameraScreenUp = new THREE.Vector3()
+  const localFromWorld = new THREE.Matrix4()
+  let lastNow = performance.now()
+  let passStartedAt = lastNow
+  let nextPassAt = lastNow
+  let flying = false
+  let daylightPhase: DaylightPhase = 'day'
+  let flockOpacity = 1
+
+  function randomBetween(minimum: number, maximum: number): number {
+    return minimum + Math.random() * (maximum - minimum)
+  }
+
+  function scheduleNextPass(startedAt: number): void {
+    const jitter = randomBetween(
+      -EXPERIENCE_CONFIG.parrots.passIntervalJitterMs,
+      EXPERIENCE_CONFIG.parrots.passIntervalJitterMs,
+    )
+    nextPassAt = startedAt + EXPERIENCE_CONFIG.parrots.passIntervalMs + jitter
+  }
+
+  function buildCameraPass(): void {
+    camera.getWorldDirection(cameraForward).normalize()
+    cameraRight.crossVectors(cameraForward, camera.up).normalize()
+    cameraScreenUp.crossVectors(cameraRight, cameraForward).normalize()
+    const [minimumDepth, maximumDepth] = EXPERIENCE_CONFIG.parrots.cameraDepthM
+    const distanceToField = camera.position.distanceTo(root.getWorldPosition(fieldWorldPosition))
+    const depth = THREE.MathUtils.clamp(distanceToField * randomBetween(0.34, 0.58), minimumDepth, maximumDepth)
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * depth
+    const halfWidth = halfHeight * camera.aspect
+    const side = Math.random() < 0.5 ? -1 : 1
+    const vertical = randomBetween(...EXPERIENCE_CONFIG.parrots.screenHeightRange)
+    const edge = halfWidth * EXPERIENCE_CONFIG.parrots.edgeOverscan
+    const centre = camera.position.clone().addScaledVector(cameraForward, depth)
+    passStart.copy(centre)
+      .addScaledVector(cameraRight, side * edge)
+      .addScaledVector(cameraScreenUp, vertical * halfHeight)
+    passEnd.copy(centre)
+      .addScaledVector(cameraRight, -side * edge)
+      .addScaledVector(cameraScreenUp, vertical * halfHeight)
+    root.updateMatrixWorld(true)
+    localFromWorld.copy(root.matrixWorld).invert()
+    passStart.applyMatrix4(localFromWorld)
+    passEnd.applyMatrix4(localFromWorld)
+
+    // Set one stable orientation for the complete straight pass.
+    passForward.subVectors(passEnd, passStart).normalize()
+    passRight.crossVectors(localUp, passForward).normalize()
+    passUp.crossVectors(passForward, passRight).normalize()
+    passOrientation.makeBasis(passRight, passUp, passForward)
+    flock.quaternion.setFromRotationMatrix(passOrientation)
+  }
+
+  function beginPass(now: number): void {
+    buildCameraPass()
+    passStartedAt = now
+    flying = true
+    flock.visible = true
+    scheduleNextPass(now)
+  }
 
   function syncBirdCount(): void {
     const count = Math.min(birds.length, countForTier(activeTier))
@@ -262,19 +342,36 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
         lastNow = now
         return
       }
-      const elapsedSeconds = Math.min(0.05, Math.max(0, now - lastNow) / 1000)
+      const elapsedMs = Math.min(50, Math.max(0, now - lastNow))
+      const elapsedSeconds = elapsedMs / 1000
       lastNow = now
-      const flightDuration = EXPERIENCE_CONFIG.parrots.flightDurationMs
-      const cycleDuration = flightDuration + EXPERIENCE_CONFIG.parrots.pauseDurationMs
-      const cycleTime = (now - cycleStartedAt) % cycleDuration
-      const flying = cycleTime < flightDuration
-      flock.visible = flying
+      const targetOpacity = daylightPhase === 'night' ? 0 : 1
+      flockOpacity = THREE.MathUtils.clamp(
+        flockOpacity + Math.sign(targetOpacity - flockOpacity)
+          * Math.min(Math.abs(targetOpacity - flockOpacity), elapsedMs / EXPERIENCE_CONFIG.parrots.nightFadeMs),
+        0,
+        1,
+      )
+      for (const material of parrotMaterials) material.opacity = flockOpacity
+
+      if (daylightPhase !== 'night' && !flying && now >= nextPassAt) beginPass(now)
       if (!flying) return
-      const progress = THREE.MathUtils.clamp(cycleTime / flightDuration, 0, 1)
-      curve.getPointAt(progress, curvePosition)
-      curve.getPointAt(Math.min(1, progress + 0.008), curveLook)
-      flock.position.copy(curvePosition)
-      flock.lookAt(curveLook)
+      if (daylightPhase === 'night' && flockOpacity <= 0.001) {
+        flying = false
+        flock.visible = false
+        return
+      }
+      const progress = THREE.MathUtils.clamp(
+        (now - passStartedAt) / EXPERIENCE_CONFIG.parrots.flightDurationMs,
+        0,
+        1,
+      )
+      if (progress >= 1) {
+        flying = false
+        flock.visible = false
+        return
+      }
+      flock.position.lerpVectors(passStart, passEnd, progress)
       const glideWeight = 0.12 + smoothstep(0.2, 0.72, Math.sin(progress * Math.PI) ** 2) * 0.34
       for (const bird of birds) {
         if (!bird.pivot.visible) continue
@@ -286,6 +383,17 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     setPerformanceTier(nextTier) {
       activeTier = nextTier
       syncBirdCount()
+    },
+    setDaylightPhase(nextPhase) {
+      daylightPhase = nextPhase
+    },
+    getEditTargets() {
+      return {
+        originEnu: originEnu.clone(),
+        tower: towerEditTarget,
+        boat: boatEditTarget,
+        towerHeightUnits,
+      }
     },
     dispose() {
       for (const bird of birds) {

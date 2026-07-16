@@ -43,6 +43,8 @@ interface MarkerRecord {
   labelOffsetY?: number
   labelWidth: number
   labelHeight: number
+  opacity: number
+  opacityMaterials: Array<{ material: MeshBasicNodeMaterial; baseOpacity: number }>
 }
 
 export interface MarkerActionTarget {
@@ -52,9 +54,17 @@ export interface MarkerActionTarget {
 }
 
 export interface MarkerLayer {
-  update(now: number, camera: THREE.PerspectiveCamera, cameraGroundRange: number): void
+  update(
+    now: number,
+    camera: THREE.PerspectiveCamera,
+    cameraGroundRange: number,
+    maskCenter: THREE.Vector2,
+    maskRadius: number,
+    maskActive: boolean,
+  ): void
   pickCenteredAction(camera: THREE.PerspectiveCamera, tolerancePx: number): MarkerActionTarget | null
   setFocusedAction(id: string | null): void
+  setTowerSensorTransform(positionM: readonly [number, number, number], sensorHeightM: number): void
   dispose(): void
 }
 
@@ -132,7 +142,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   root.matrixWorldNeedsUpdate = true
   scene.add(root)
 
-  // Every temperature pin shares these GPU resources.
+  // Every marker shares geometry; material clones keep one shader program but
+  // allow independent opacity at the moving point-cloud mask edge.
   const stemGeometry = new THREE.CylinderGeometry(0.35, 1.45, 17, 8)
   stemGeometry.rotateX(Math.PI / 2)
   const headGeometry = new THREE.SphereGeometry(3.4, 12, 8)
@@ -152,6 +163,19 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     mediaRingMaterial,
   ]
 
+  function markerMaterial(source: MeshBasicNodeMaterial): {
+    material: MeshBasicNodeMaterial
+    baseOpacity: number
+  } {
+    const material = source.clone()
+    // Per-marker opacity needs a transparent pipeline, but all clones still
+    // share the same shader program and every marker keeps shared geometry.
+    material.transparent = true
+    material.depthWrite = false
+    materials.push(material)
+    return { material, baseOpacity: source.opacity }
+  }
+
   const markers: MarkerRecord[] = []
 
   for (let index = 0; index < 4; index++) {
@@ -165,11 +189,14 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       minZ + 48 + random() * 18,
     )
 
-    const stem = new THREE.Mesh(stemGeometry, temperatureMaterial)
+    const stemOpacity = markerMaterial(temperatureMaterial)
+    const headOpacity = markerMaterial(temperatureHeadMaterial)
+    const ringOpacity = markerMaterial(temperatureRingMaterial)
+    const stem = new THREE.Mesh(stemGeometry, stemOpacity.material)
     stem.position.z = 8.5
-    const head = new THREE.Mesh(headGeometry, temperatureHeadMaterial)
+    const head = new THREE.Mesh(headGeometry, headOpacity.material)
     head.position.z = 19.5
-    const ring = new THREE.Mesh(ringGeometry, temperatureRingMaterial)
+    const ring = new THREE.Mesh(ringGeometry, ringOpacity.material)
     ring.position.z = 0.4
     ring.renderOrder = 3
     const anchor = new THREE.Object3D()
@@ -193,6 +220,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       labelOffsetY: -Math.sin(angle) * 24,
       labelWidth: 0,
       labelHeight: 0,
+      opacity: 1,
+      opacityMaterials: [stemOpacity, headOpacity, ringOpacity],
     })
   }
 
@@ -204,7 +233,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     centreY + EXPERIENCE_CONFIG.tower.positionM[1],
     minZ + EXPERIENCE_CONFIG.tower.positionM[2] + EXPERIENCE_CONFIG.tower.sensorHeightM,
   )
-  const towerRing = new THREE.Mesh(ringGeometry, temperatureRingMaterial)
+  const towerRingOpacity = markerMaterial(temperatureRingMaterial)
+  const towerRing = new THREE.Mesh(ringGeometry, towerRingOpacity.material)
   towerRing.renderOrder = 3
   const towerAnchor = new THREE.Object3D()
   towerAnchor.position.z = 12
@@ -226,16 +256,21 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     labelOffsetY: -12,
     labelWidth: 0,
     labelHeight: 0,
+    opacity: 1,
+    opacityMaterials: [towerRingOpacity],
   })
 
   // The media hotspot is deliberately offset from the four sensor stations.
   const mediaGroup = new THREE.Group()
   mediaGroup.position.set(centreX + width * 0.1, centreY - depth * 0.06, minZ + 58)
-  const mediaStem = new THREE.Mesh(stemGeometry, mediaMaterial)
+  const mediaStemOpacity = markerMaterial(mediaMaterial)
+  const mediaHeadOpacity = markerMaterial(mediaMaterial)
+  const mediaRingOpacity = markerMaterial(mediaRingMaterial)
+  const mediaStem = new THREE.Mesh(stemGeometry, mediaStemOpacity.material)
   mediaStem.position.z = 8.5
-  const mediaHead = new THREE.Mesh(mediaHeadGeometry, mediaMaterial)
+  const mediaHead = new THREE.Mesh(mediaHeadGeometry, mediaHeadOpacity.material)
   mediaHead.position.z = 20
-  const mediaRing = new THREE.Mesh(ringGeometry, mediaRingMaterial)
+  const mediaRing = new THREE.Mesh(ringGeometry, mediaRingOpacity.material)
   mediaRing.position.z = 0.5
   mediaRing.renderOrder = 3
   const mediaAnchor = new THREE.Object3D()
@@ -259,6 +294,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     phase: random() * Math.PI * 2,
     labelWidth: 0,
     labelHeight: 0,
+    opacity: 1,
+    opacityMaterials: [mediaStemOpacity, mediaHeadOpacity, mediaRingOpacity],
   })
 
   root.updateMatrixWorld(true)
@@ -337,12 +374,28 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   }
 
   return {
-    update(now, camera, cameraGroundRange) {
+    update(now, camera, cameraGroundRange, maskCenter, maskRadius, maskActive) {
       const markerScale = THREE.MathUtils.clamp(cameraGroundRange / 1500, 0.72, 4)
       const updateTemperatures = now - lastTemperatureUpdate >= 1000
       if (updateTemperatures) lastTemperatureUpdate = now
 
       for (const marker of markers) {
+        const distanceToMask = Math.hypot(
+          marker.group.position.x - maskCenter.x,
+          marker.group.position.y - maskCenter.y,
+        )
+        const edgeFade = EXPERIENCE_CONFIG.markers.maskEdgeFadeM
+        const outsideBlend = maskActive
+          ? THREE.MathUtils.smoothstep(distanceToMask, maskRadius - edgeFade, maskRadius + edgeFade)
+          : 0
+        marker.opacity = THREE.MathUtils.lerp(
+          1,
+          EXPERIENCE_CONFIG.markers.outsideMaskOpacity,
+          outsideBlend,
+        )
+        for (const entry of marker.opacityMaterials) {
+          entry.material.opacity = entry.baseOpacity * marker.opacity
+        }
         marker.group.scale.setScalar(markerScale)
         const pulse = reducedMotion ? 1.25 : 1.05 + (Math.sin(now * 0.003 + marker.phase) * 0.5 + 0.5) * 1.25
         marker.ring.scale.setScalar(pulse)
@@ -376,7 +429,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
         : 1
       const acceptedBoxes: ScreenBox[] = []
       for (const marker of markers) {
-        const box = updateLabel(marker, camera, labelOpacity)
+        const box = updateLabel(marker, camera, labelOpacity * marker.opacity)
         if (!box) continue
         // Temperature stations have priority. The media action is deliberately
         // last, so it disappears before obscuring live environmental data.
@@ -405,7 +458,15 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       focusedActionId = id
       const focused = id === mediaAction.id
       mediaButton.classList.toggle('is-aimed', focused)
-      mediaRingMaterial.color.setHex(focused ? 0xd9f99d : 0xffd19a)
+      mediaRingOpacity.material.color.setHex(focused ? 0xd9f99d : 0xffd19a)
+    },
+    setTowerSensorTransform(positionM, sensorHeightM) {
+      towerSensorGroup.position.set(
+        centreX + positionM[0],
+        centreY + positionM[1],
+        minZ + positionM[2] + sensorHeightM,
+      )
+      root.updateMatrixWorld(true)
     },
     dispose() {
       mediaButton.removeEventListener('click', onOpenVideo)

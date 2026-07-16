@@ -9,11 +9,13 @@ import type { CloudUniforms } from './point-cloud'
 
 export type CloudMode = 'off' | 'soft' | 'volume'
 export type PerformanceTier = 'constrained' | 'balanced' | 'strong'
+export type DaylightPhase = 'night' | 'sunrise' | 'day' | 'sunset'
 
 export interface DaylightState {
   peruMinutes: number
   timeLabel: string
   live: boolean
+  phase: DaylightPhase
   sunElevationRad: number
   sunDirectionEnu: THREE.Vector3
   skyColor: THREE.Color
@@ -90,7 +92,7 @@ function calculateSunDirection(
   longitudeDeg: number,
   latitudeDeg: number,
   target: THREE.Vector3,
-): { direction: THREE.Vector3; elevation: number } {
+): { direction: THREE.Vector3; elevation: number; hourAngle: number } {
   const hour = minutes / 60
   const gamma = TWO_PI / 365 * (dayOfYear(date) - 1 + (hour - 12) / 24)
   const equationOfTime = 229.18 * (
@@ -118,7 +120,7 @@ function calculateSunDirection(
     Math.cos(azimuth) * Math.cos(elevation),
     Math.sin(elevation),
   ).normalize()
-  return { direction: target, elevation }
+  return { direction: target, elevation, hourAngle }
 }
 
 function classifyTier(isWebGPU: boolean): PerformanceTier {
@@ -212,6 +214,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     peruMinutes: 720,
     timeLabel: '12:00',
     live: true,
+    phase: 'day',
     sunElevationRad: Math.PI / 3,
     sunDirectionEnu: new THREE.Vector3(0.3, -0.4, 0.85).normalize(),
     skyColor: new THREE.Color(EXPERIENCE_CONFIG.environment.daySky),
@@ -371,6 +374,11 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     state.peruMinutes = minutes
     state.timeLabel = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
     state.live = manualMinutes === null
+    state.phase = solar.elevation < THREE.MathUtils.degToRad(-6)
+      ? 'night'
+      : solar.elevation < THREE.MathUtils.degToRad(6)
+        ? solar.hourAngle < 0 ? 'sunrise' : 'sunset'
+        : 'day'
     state.sunElevationRad = solar.elevation
     state.skyColor.copy(nightSky).lerp(dawnSky, twilight).lerp(daySky, daylight * 0.82)
     state.fogColor.copy(nightFog).lerp(dayFog, daylight)

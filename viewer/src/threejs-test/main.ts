@@ -21,6 +21,8 @@ import {
   type PerformanceTier,
 } from './environment-layer'
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
+import { createAudioLayer, type AudioLayer } from './audio-layer'
+import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -32,6 +34,7 @@ const MAPTILER_KEY = (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim()
 const dataset = params.get('dataset') ?? 'peru-b2-globe'
 const forceWebGL = params.has('webgl')
 const groundSnap = !params.has('nosnap')
+const modelEditorEnabled = params.get('modelEditor') === '1'
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
@@ -186,6 +189,8 @@ let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
 let environmentLayer: EnvironmentLayer | null = null
 let fieldModelLayer: FieldModelLayer | null = null
+let audioLayer: AudioLayer | null = null
+let modelTransformEditor: ModelTransformEditor | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
 let cameraGroundRange = Infinity
@@ -206,6 +211,8 @@ const timeSliderEl = $<HTMLInputElement>('#peruTimeSlider')
 const timeValueEl = $('#peruTimeValue')
 const timeModeEl = $('#peruTimeMode')
 const timeNowEl = $<HTMLButtonElement>('#peruTimeNow')
+const soundToggleEl = $<HTMLButtonElement>('#soundToggle')
+const audioStatusEl = $('#audioStatus')
 const RAIN_DRY_DURATION = EXPERIENCE_CONFIG.rain.dryDurationMs
 const RAIN_ACTIVE_DURATION = EXPERIENCE_CONFIG.rain.activeDurationMs
 const RAIN_CYCLE_DURATION = RAIN_DRY_DURATION + RAIN_ACTIVE_DURATION
@@ -257,9 +264,19 @@ function updateTimeControls(state: DaylightState): void {
   timeModeEl.textContent = state.live ? 'LIVE · PET' : 'MANUAL · PET'
   timeModeEl.classList.toggle('is-live', state.live)
   timeNowEl.hidden = state.live
+  timeDockEl.dataset.phase = state.phase
   const hour = Math.floor(state.peruMinutes / 60)
   const minute = state.peruMinutes % 60
-  timeSliderEl.setAttribute('aria-valuetext', `${hour}:${String(minute).padStart(2, '0')} Uhr, Peru`)
+  const phaseLabel = state.phase === 'night'
+    ? 'Nacht'
+    : state.phase === 'sunrise'
+      ? 'Sonnenaufgang'
+      : state.phase === 'sunset'
+        ? 'Sonnenuntergang'
+        : 'Tageslicht'
+  const accessibleTime = `${hour}:${String(minute).padStart(2, '0')} Uhr, Peru, ${phaseLabel}`
+  timeSliderEl.setAttribute('aria-valuetext', accessibleTime)
+  timeDockToggleEl.setAttribute('aria-label', `${state.live ? 'Livezeit' : 'Manuelle Zeit'}: ${accessibleTime}`)
 }
 
 const onCloudToggle = () => {
@@ -281,6 +298,7 @@ const onTimeNow = () => {
   if (environmentLayer) updateTimeControls(environmentLayer.getDaylightState())
 }
 cloudToggleEl.disabled = true
+soundToggleEl.disabled = true
 cloudToggleEl.addEventListener('click', onCloudToggle)
 timeDockToggleEl.addEventListener('click', onTimeDockToggle)
 timeSliderEl.addEventListener('input', onTimeInput)
@@ -539,9 +557,6 @@ function setMaskMode(mode: number): void {
   document.body.classList.toggle('mask-vignette', mode === 2)
   document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button) =>
     button.classList.toggle('on', Number(button.dataset.mask) === mode))
-  $('#hint').textContent = mode > 0
-    ? 'Mask follows the view centre · Drag = rotate globe'
-    : 'Drag = rotate globe · Wheel/pinch = zoom'
 }
 
 function smooth01(edge0: number, edge1: number, value: number): number {
@@ -817,14 +832,24 @@ function loop(now: number): void {
     fps.fps,
     !bootLoading && !flight && videoModalEl.hidden,
   )
-  if (daylightState) updateTimeControls(daylightState)
+  if (daylightState) {
+    updateTimeControls(daylightState)
+    fieldModelLayer?.setDaylightPhase(daylightState.phase)
+  }
   const nextFieldTier = environmentLayer?.getCloudState().tier ?? null
   if (nextFieldTier && nextFieldTier !== lastFieldTier) {
     lastFieldTier = nextFieldTier
     fieldModelLayer?.setPerformanceTier(nextFieldTier)
   }
   fieldModelLayer?.update(now)
-  markerLayer?.update(now, camera, cameraGroundRange)
+  markerLayer?.update(
+    now,
+    camera,
+    cameraGroundRange,
+    uniforms.maskCenter.value,
+    uniforms.maskRadius.value,
+    uniforms.maskMode.value === 2 && uniforms.vignetteStrength.value > 0.01,
+  )
   updateAimTarget()
   updateRainCycle(now)
   const nextRainActive = rainLayer?.update(now, camera, cameraGroundRange) ?? false
@@ -832,6 +857,7 @@ function loop(now: number): void {
     rainVisualActive = nextRainActive
     updateRainToggle()
   }
+  if (daylightState) audioLayer?.update(daylightState, nextRainActive)
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
@@ -934,6 +960,9 @@ async function main(): Promise<void> {
   })
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
+  audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
+  soundToggleEl.disabled = false
+  audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
@@ -973,6 +1002,7 @@ async function main(): Promise<void> {
   )
   void createFieldModelLayer({
     scene,
+    camera,
     enuFrame,
     zOffset,
     originEnu: fieldOrigin,
@@ -984,6 +1014,19 @@ async function main(): Promise<void> {
     else {
       fieldModelLayer = layer
       if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
+      layer.setDaylightPhase(environmentLayer?.getDaylightState().phase ?? 'day')
+      if (modelEditorEnabled) {
+        modelTransformEditor = createModelTransformEditor({
+          scene,
+          camera,
+          domElement: renderer.domElement,
+          globeControls: globe!.controls,
+          targets: layer.getEditTargets(),
+          onTowerTransform: (positionM, sensorHeightM) => {
+            markerLayer?.setTowerSensorTransform(positionM, sensorHeightM)
+          },
+        })
+      }
     }
   }).catch((error) => console.warn('[field-models] optional layer failed', error))
 
@@ -1013,8 +1056,10 @@ function dispose(): void {
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
   rainLayer?.dispose()
+  audioLayer?.dispose()
   keyboardNavigation?.dispose()
   markerLayer?.dispose()
+  modelTransformEditor?.dispose()
   fieldModelLayer?.dispose()
   environmentLayer?.dispose()
   stream?.dispose()

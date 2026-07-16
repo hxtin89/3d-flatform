@@ -2,10 +2,11 @@
 export const EXPERIENCE_CONFIG = {
   flight: {
     // ENU offsets are relative to the full point-cloud centre.
-    destinationOffsetM: [0, -2_200, 1_500],
+    // The final approach passes just left and above the configured tower.
+    destinationOffsetM: [120, -1_400, 320],
     overviewOffsetM: [0, -132_000, 92_000],
     overviewControl1OffsetM: [-8_000, -116_000, 19_000],
-    overviewControl2OffsetM: [14_000, -34_000, 8_500],
+    overviewControl2OffsetM: [-700, -10_000, 1_600],
     autoDurationMs: 6_200,
     manualDurationMs: 5_200,
     reducedMotionDurationMs: 900,
@@ -41,6 +42,8 @@ export const EXPERIENCE_CONFIG = {
     minimumSpreadM: 240,
     radialBase: 0.38,
     radialJitter: 0.08,
+    outsideMaskOpacity: 0.5,
+    maskEdgeFadeM: 90,
   },
   environment: {
     // Peru has no daylight-saving change; the slider still uses the IANA zone.
@@ -77,34 +80,48 @@ export const EXPERIENCE_CONFIG = {
   },
   tower: {
     // Field asset offsets are relative to the shifted hotspot centre.
-    positionM: [80, -1_260, 4],
-    rotationRad: [Math.PI / 2, 0, 0.25],
+    positionM: [291.878, -1_988.147, 4],
+    rotationRad: [Math.PI / 2, 0, -1.039],
     scale: 24,
-    sensorHeightM: 112,
+    sensorHeightM: 112.138,
   },
   boat: {
-    positionM: [780, -1_450, 5],
-    rotationRad: [Math.PI / 2, 0, -0.12],
-    scale: 5.5,
+    positionM: [644.068, -1_961.281, 5],
+    rotationRad: [Math.PI / 2, 0, 0.039],
+    scale: 7.046,
   },
   parrots: {
-    // The curve is relative to the shifted hotspot centre and uses Z-up ENU.
-    pathM: [
-      [-1_100, -1_000, 290],
-      [-520, -640, 360],
-      [140, -260, 330],
-      [790, 160, 410],
-      [1_280, 620, 350],
-    ],
-    modelRotationRad: [Math.PI / 2, 0, 0],
-    modelScale: 0.14,
+    // Each pass is sampled from the camera once, then remains fixed in world space.
+    cameraDepthM: [650, 2_800],
+    screenHeightRange: [-0.28, 0.34],
+    edgeOverscan: 0.68,
+    // The GLTF already uses +Z as forward and +Y as up.
+    modelRotationRad: [0, 0, 0],
+    modelScale: 0.28,
     strongCount: 12,
     balancedCount: 8,
     constrainedCount: 4,
-    spreadM: [120, 75, 46],
-    flightDurationMs: 16_500,
-    pauseDurationMs: 8_000,
-    animationSpeed: 0.72,
+    // Horizontal spacing, depth variation and minimal height variation.
+    spreadM: [64, 38, 8],
+    flightDurationMs: 18_000,
+    passIntervalMs: 22_000,
+    passIntervalJitterMs: 5_000,
+    animationSpeed: 0.48,
+    nightFadeMs: 1_200,
+  },
+  audio: {
+    // Browser-ready loops are generated from source-assets via npm run audio:prepare.
+    dayFile: 'sounds/ambient-day.m4a',
+    nightFile: 'sounds/night-ambient.m4a',
+    rainFile: 'sounds/rain.m4a',
+    masterVolume: 0.72,
+    ambientVolume: 0.52,
+    rainVolume: 0.38,
+    toggleFadeSeconds: 0.9,
+    weatherFadeSeconds: 1.5,
+    daylightFadeSeconds: 2.8,
+    nightBlendStartDeg: 2,
+    nightBlendEndDeg: -8,
   },
   atmosphere: {
     // Bring humid tropical and boreal haze into the mid-distance.

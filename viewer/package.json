@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host",
     "dev:https": "VITE_HTTPS=1 vite --host",
+    "audio:prepare": "node scripts/prepare-sounds.mjs",
     "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
     "preview": "vite preview --base=/livingdashboard/"
   },

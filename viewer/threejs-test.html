@@ -267,8 +267,6 @@
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
 
-      #hint { bottom: calc(72px + var(--safe-b)); left: 50%; transform: translateX(-50%); text-align: center;
-              opacity: .75; font-size: 12px; padding: 7px 12px; z-index: 10; }
       #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
       #attribution a { color: inherit; }
 
@@ -277,19 +275,49 @@
       #peruTimeDock { position: fixed; left: 50%; bottom: calc(12px + var(--safe-b)); z-index: 16;
                       width: min(430px, calc(100vw - 24px)); transform: translateX(-50%); color: var(--forest-deep);
                       font-variant-numeric: tabular-nums; pointer-events: none; }
-      .peru-time-shell { overflow: hidden; width: 194px; margin: 0 auto;
+      .peru-time-shell { overflow: hidden; width: 246px; margin: 0 auto;
                          background: linear-gradient(145deg, rgba(246,242,229,.96), rgba(226,231,215,.92));
                          border: 1px solid rgba(0,68,50,.26); border-radius: 8px 18px 18px 18px;
                          box-shadow: 0 18px 46px rgba(0,31,23,.28), inset 0 1px rgba(255,255,255,.74);
                          backdrop-filter: blur(13px); -webkit-backdrop-filter: blur(13px); pointer-events: auto;
                          transition: width .36s cubic-bezier(.22,1,.36,1), border-radius .36s ease; }
       #peruTimeDock.is-open .peru-time-shell { width: 100%; border-radius: 8px 22px 22px 22px; }
+      .field-bottom-primary { display: grid; grid-template-columns: 1fr 48px; align-items: stretch; }
       #peruTimeDockToggle { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px;
                             width: 100%; min-height: 46px; padding: 7px 10px; color: inherit; background: transparent;
                             border: 0; cursor: pointer; text-align: left; }
-      .peru-time-sun { width: 27px; height: 27px; border-radius: 50%;
-                       background: radial-gradient(circle at 36% 34%, #fff7c1 0 18%, #efb85d 46%, #c6752e 100%);
-                       box-shadow: 0 0 0 5px rgba(239,184,93,.13); }
+      .peru-time-celestial { position: relative; width: 30px; height: 30px; overflow: hidden; border-radius: 50%;
+                             background: linear-gradient(#b9dfed, #e8d59c); box-shadow: 0 0 0 5px rgba(239,184,93,.12);
+                             transition: background .7s ease, box-shadow .7s ease; }
+      .celestial-disc { position: absolute; left: 6px; top: 6px; width: 18px; height: 18px; border-radius: 50%;
+                        background: radial-gradient(circle at 36% 34%, #fffbd7 0 18%, #efb85d 52%, #c6752e 100%);
+                        box-shadow: 0 0 8px rgba(239,184,93,.58); transition: transform .75s cubic-bezier(.22,1,.36,1),
+                        background .7s ease, box-shadow .7s ease; }
+      .celestial-disc::after { content: ""; position: absolute; inset: 0; border-radius: inherit; opacity: 0;
+                               background: #17384b; transform: translate(7px,-4px); transition: opacity .55s ease; }
+      .celestial-horizon { position: absolute; left: 3px; right: 3px; bottom: 6px; height: 1px; opacity: 0;
+                           background: rgba(0,68,50,.56); box-shadow: 0 3px 0 rgba(0,68,50,.11);
+                           transition: opacity .6s ease, transform .75s cubic-bezier(.22,1,.36,1); }
+      #peruTimeDock[data-phase="sunrise"] .peru-time-celestial { background: linear-gradient(#829eb5, #f0c17a); }
+      #peruTimeDock[data-phase="sunset"] .peru-time-celestial { background: linear-gradient(#8a7897, #ee9c64); }
+      #peruTimeDock[data-phase="sunrise"] .celestial-disc,
+      #peruTimeDock[data-phase="sunset"] .celestial-disc { transform: translateY(7px) scale(.84); }
+      #peruTimeDock[data-phase="sunrise"] .celestial-horizon,
+      #peruTimeDock[data-phase="sunset"] .celestial-horizon { opacity: 1; }
+      #peruTimeDock[data-phase="night"] .peru-time-celestial { background: linear-gradient(#102f43, #31546b);
+                                                               box-shadow: 0 0 0 5px rgba(49,84,107,.12); }
+      #peruTimeDock[data-phase="night"] .celestial-disc { transform: scale(.9); background: #edf3df; box-shadow: 0 0 8px rgba(237,243,223,.28); }
+      #peruTimeDock[data-phase="night"] .celestial-disc::after { opacity: 1; }
+      #soundToggle { position: relative; display: grid; place-items: center; min-width: 48px; min-height: 46px; padding: 0;
+                     color: rgba(0,45,34,.52); background: rgba(0,68,50,.035); border: 0; border-left: 1px solid rgba(0,68,50,.14);
+                     cursor: pointer; transition: color .25s ease, background .25s ease; }
+      #soundToggle svg { width: 22px; height: 22px; overflow: visible; }
+      #soundToggle .sound-wave { opacity: .18; transition: opacity .25s ease; }
+      #soundToggle .sound-slash { opacity: 1; transition: opacity .25s ease; }
+      #soundToggle.is-on { color: var(--forest); background: rgba(81,168,111,.11); }
+      #soundToggle.is-on .sound-wave { opacity: 1; }
+      #soundToggle.is-on .sound-slash { opacity: 0; }
+      #soundToggle:disabled { opacity: .42; cursor: not-allowed; }
       .peru-time-copy { display: grid; gap: 2px; }
       #peruTimeMode { color: rgba(0,45,34,.58); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .14em; text-transform: uppercase; }
@@ -314,12 +342,34 @@
                          color: rgba(0,45,34,.42); font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; }
       #peruTimeDock :focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 
-      /* ---------- mobile: panel becomes a bottom sheet, hint disappears ---------- */
+      #modelTransformEditor { position: fixed; top: calc(12px + var(--safe-t)); left: 50%; z-index: 60;
+                              width: min(440px, calc(100vw - 24px)); padding: 10px; transform: translateX(-50%);
+                              color: var(--paper); background: rgba(5,16,19,.9); border: 1px solid rgba(217,249,157,.3);
+                              border-radius: 14px; box-shadow: 0 18px 52px rgba(0,0,0,.38); backdrop-filter: blur(14px);
+                              -webkit-backdrop-filter: blur(14px); }
+      .model-editor-head { display: flex; justify-content: space-between; gap: 12px; margin: 0 2px 8px;
+                           color: var(--lime); font: 800 8px/1.2 ui-monospace, SFMono-Regular, monospace;
+                           letter-spacing: .12em; }
+      .model-editor-head span { color: rgba(240,237,227,.48); letter-spacing: .03em; }
+      .model-editor-segment { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; margin-top: 4px; }
+      .model-editor-segment button { min-height: 34px; color: rgba(240,237,227,.64); background: rgba(255,255,255,.035);
+                                     border: 1px solid rgba(240,237,227,.13); border-radius: 8px; cursor: pointer;
+                                     font: 700 10px/1 ui-monospace, SFMono-Regular, monospace; }
+      .model-editor-segment button.is-active { color: #062d23; background: var(--lime); border-color: var(--lime); }
+      #modelEditorReadout { display: block; margin: 8px 2px 5px; color: #fff;
+                            font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace; }
+      #modelEditorOutput { width: 100%; height: 70px; resize: vertical; padding: 7px; color: rgba(240,237,227,.72);
+                           background: rgba(0,0,0,.22); border: 1px solid rgba(240,237,227,.1); border-radius: 7px;
+                           font: 9px/1.3 ui-monospace, SFMono-Regular, monospace; user-select: text; -webkit-user-select: text; }
+      #modelEditorStatus { min-height: 1em; margin: 5px 2px 0; color: rgba(217,249,157,.62);
+                           font: 700 8px/1 ui-monospace, SFMono-Regular, monospace; text-transform: uppercase; letter-spacing: .08em; }
+      #modelTransformEditor.is-dragging { border-color: rgba(217,249,157,.72); }
+
+      /* ---------- mobile: panel becomes a bottom sheet ---------- */
       @media (max-width: 700px) {
         #hud { left: 10px; right: 10px; min-width: 0; }
         #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
-        #hint { display: none !important; }
         #attribution { left: 10px; right: auto; bottom: calc(70px + var(--safe-b)); }
         .loader-kicker { left: 18px; right: 18px; }
         .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
@@ -336,7 +386,8 @@
 
       @media (prefers-reduced-motion: reduce) {
         #loader, .loader-eagle-fill, .map-marker-label, #keyboardGuide, .keycap, #aimReticle,
-        .peru-time-shell, .peru-time-panel, .peru-time-chevron { transition-duration: .01ms !important; }
+        .peru-time-shell, .peru-time-panel, .peru-time-chevron, .celestial-disc,
+        .celestial-horizon, .peru-time-celestial { transition-duration: .01ms !important; }
       }
     </style>
   </head>
@@ -439,13 +490,22 @@
       </div>
     </div>
 
-    <section id="peruTimeDock" aria-label="Peru daylight controls">
+    <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">
       <div class="peru-time-shell">
-        <button id="peruTimeDockToggle" type="button" aria-expanded="false" aria-controls="peruTimePanel">
-          <span class="peru-time-sun" aria-hidden="true"></span>
-          <span class="peru-time-copy"><span id="peruTimeMode" class="is-live">LIVE · PET</span><strong id="peruTimeValue">12:00</strong></span>
-          <span class="peru-time-chevron" aria-hidden="true">⌃</span>
-        </button>
+        <div class="field-bottom-primary">
+          <button id="peruTimeDockToggle" type="button" aria-expanded="false" aria-controls="peruTimePanel">
+            <span class="peru-time-celestial" aria-hidden="true"><span class="celestial-disc"></span><span class="celestial-horizon"></span></span>
+            <span class="peru-time-copy"><span id="peruTimeMode" class="is-live">LIVE · PET</span><strong id="peruTimeValue">12:00</strong></span>
+            <span class="peru-time-chevron" aria-hidden="true">⌃</span>
+          </button>
+          <button id="soundToggle" type="button" aria-pressed="false" aria-label="Naturklänge einschalten">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 10v4h3l4 3V7l-4 3H4Z" />
+              <path class="sound-wave" d="M14.5 9.2a4 4 0 0 1 0 5.6M17 6.8a7.2 7.2 0 0 1 0 10.4" />
+              <path class="sound-slash" d="m5 5 14 14" />
+            </svg>
+          </button>
+        </div>
         <div id="peruTimePanel" class="peru-time-panel">
           <div class="peru-time-panel-inner">
             <div class="peru-time-control">
@@ -459,7 +519,7 @@
       </div>
     </section>
 
-    <div id="hint" class="card">Drag = rotate globe · Wheel/pinch = zoom</div>
+    <span id="audioStatus" class="sr-only" role="status" aria-live="polite"></span>
     <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
 
     <div id="videoModal" class="video-modal" role="dialog" aria-modal="true" aria-labelledby="videoTitle" hidden>
