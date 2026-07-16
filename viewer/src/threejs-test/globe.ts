@@ -10,6 +10,7 @@ import { texture } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import { maskDimNode, type CloudUniforms } from './point-cloud'
+import { EXPERIENCE_CONFIG } from './config'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -18,7 +19,7 @@ export interface Globe {
   tiles: TilesRenderer
   controls: GlobeControls
   ellipsoid: any
-  update(): void
+  update(constrainCamera?: () => void): void
   setResolution(): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
@@ -29,10 +30,12 @@ export function createGlobe(opts: {
   camera: THREE.PerspectiveCamera
   scene: THREE.Scene
   maptilerKey: string
+  /** Minimum height above the globe, derived from the point-cloud height. */
+  cameraClearance: number
   /** shared mask uniforms — the vignette fades the imagery to black with the cloud */
   uniforms: CloudUniforms
 }): Globe {
-  const { renderer, camera, scene, maptilerKey, uniforms } = opts
+  const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms } = opts
 
   const tiles = new TilesRenderer()
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
@@ -78,13 +81,24 @@ export function createGlobe(opts: {
       mat.map = map // keep the texture discoverable for the tile disposal path
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
-      mat.colorNode = texture(map).mul(maskDimNode(uniforms, 0.50))
+      mat.colorNode = texture(map)
+        .mul(uniforms.daylightColor)
+        .mul(uniforms.daylightIntensity)
+        .mul(maskDimNode(uniforms, 0.50))
       o.material.dispose()
       o.material = mat
     })
   })
 
   const controls = new GlobeControls(scene, camera, renderer.domElement, tiles)
+  // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
+  // hard clearance from the globe, while minDistance prevents a zoom pivot
+  // from pulling the camera through the surface. A 72° orbit ceiling keeps the
+  // view downward instead of allowing it to roll under the data.
+  controls.cameraRadius = cameraClearance
+  controls.minDistance = Math.max(EXPERIENCE_CONFIG.navigation.minimumZoomDistanceM, cameraClearance * 1.1)
+  controls.minAltitude = 0
+  controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true
 
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
@@ -94,8 +108,9 @@ export function createGlobe(opts: {
     tiles,
     controls,
     ellipsoid: (tiles as any).ellipsoid,
-    update() {
+    update(constrainCamera) {
       controls.update()
+      constrainCamera?.()
       // EnvironmentControls adds a decorative GLSL ShaderMaterial pivot marker
       // during mouse drags. WebGPURenderer only accepts node materials, including
       // when it uses its WebGL2 backend. The marker is not part of navigation, so

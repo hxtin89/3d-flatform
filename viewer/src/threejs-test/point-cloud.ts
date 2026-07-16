@@ -16,6 +16,9 @@ export interface CloudUniforms {
   pointSize: any
   /** world/ECEF to local ENU. */
   enuInverse: any
+  /** Shared daylight grade for point and map imagery. */
+  daylightColor: any
+  daylightIntensity: any
 }
 
 export function createUniforms(): CloudUniforms {
@@ -26,6 +29,8 @@ export function createUniforms(): CloudUniforms {
     vignetteStrength: uniform(0),
     pointSize: uniform(2),
     enuInverse: uniform(new THREE.Matrix4()),
+    daylightColor: uniform(new THREE.Color(0xffffff)),
+    daylightIntensity: uniform(1),
   }
 }
 
@@ -56,7 +61,11 @@ export function createCloudMaterial(u: CloudUniforms): PointsNodeMaterial {
       .and(distance.greaterThan(u.maskRadius)), () => Discard())
 
     // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    return (attribute('color', 'vec3') as any).pow(2.2).mul(maskDimNode(u, 0.30))
+    return (attribute('color', 'vec3') as any)
+      .pow(2.2)
+      .mul(u.daylightColor)
+      .mul(u.daylightIntensity)
+      .mul(maskDimNode(u, 0.30))
   })()
 
   return material

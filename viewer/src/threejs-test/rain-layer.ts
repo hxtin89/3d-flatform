@@ -13,10 +13,9 @@ import {
   vec3,
   vec4,
 } from 'three/tsl'
+import { EXPERIENCE_CONFIG } from './config'
 
 const DROP_COUNT = 260
-const RAIN_MAX_RANGE = 2_800
-const RAIN_FADE_DISTANCE = 350
 
 export interface RainLayer {
   setEnabled(enabled: boolean): void
@@ -96,16 +95,30 @@ export function createRainLayer(scene: THREE.Scene): RainLayer {
   scene.add(root)
 
   let enabled = false
+  let intensity = 0
+  let lastUpdate = performance.now()
 
   return {
     setEnabled(nextEnabled) {
       enabled = nextEnabled
-      if (!enabled) root.visible = false
     },
     update(now, camera, cameraGroundRange) {
-      const opacity = enabled
-        ? THREE.MathUtils.clamp((RAIN_MAX_RANGE - cameraGroundRange) / RAIN_FADE_DISTANCE, 0, 1)
-        : 0
+      const elapsed = Math.min(64, Math.max(0, now - lastUpdate))
+      lastUpdate = now
+      const targetIntensity = enabled ? 1 : 0
+      const fadeTime = enabled
+        ? EXPERIENCE_CONFIG.rain.fadeInMs
+        : EXPERIENCE_CONFIG.rain.fadeOutMs
+      intensity += (targetIntensity - intensity) * (1 - Math.exp(-elapsed / fadeTime))
+      if (Math.abs(targetIntensity - intensity) < 0.002) intensity = targetIntensity
+
+      const rangeOpacity = THREE.MathUtils.clamp(
+        (EXPERIENCE_CONFIG.rain.maximumRangeM - cameraGroundRange)
+          / EXPERIENCE_CONFIG.rain.rangeFadeM,
+        0,
+        1,
+      )
+      const opacity = rangeOpacity * intensity
       const active = opacity > 0.01
       root.visible = active
       if (!active) return false

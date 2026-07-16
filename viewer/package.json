@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite --host",
     "dev:https": "VITE_HTTPS=1 vite --host",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
+    "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
+    "preview": "vite preview --base=/livingdashboard/"
   },
   "dependencies": {
     "3d-tiles-renderer": "^0.4.28",

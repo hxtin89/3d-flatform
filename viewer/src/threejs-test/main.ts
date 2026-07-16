@@ -8,9 +8,19 @@ import { createGlobe, type Globe } from './globe'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController } from './adaptive-quality'
-import { createMarkerLayer, type MarkerLayer } from './marker-layer'
+import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
+import { EXPERIENCE_CONFIG } from './config'
+import { createKeyboardNavigation, type KeyboardNavigation } from './keyboard-navigation'
+import {
+  createEnvironmentLayer,
+  type CloudState,
+  type DaylightState,
+  type EnvironmentLayer,
+  type PerformanceTier,
+} from './environment-layer'
+import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -42,6 +52,7 @@ let loaderDisplayed = 0
 let loaderLastTick = performance.now()
 let loaderLastAdvance = loaderLastTick
 let loaderFinishAt = 0
+let loaderFlightStarted = false
 let loaderStalled = false
 let loaderFailed = false
 
@@ -94,9 +105,22 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
   paintLoaderProgress(loaderDisplayed)
 
   if (ready && loaderDisplayed >= 0.999 && loaderFinishAt === 0) {
-    loaderFinishAt = now + (reducedMotion ? 20 : 650)
+    // Start the deliberately slow opening of the camera curve under the
+    // translucent loader. By the time the overlay is gone, the flight already
+    // has gentle momentum instead of beginning on a hard visual cut.
+    loaderFinishAt = now + (reducedMotion ? 20 : 1200)
     loaderEl.classList.add('finishing')
     loaderEl.setAttribute('aria-busy', 'false')
+    rainCycleStartedAt = now
+    if (!loaderFlightStarted) {
+      loaderFlightStarted = true
+      flyToCloud(
+        reducedMotion
+          ? EXPERIENCE_CONFIG.flight.reducedMotionDurationMs
+          : EXPERIENCE_CONFIG.flight.autoDurationMs,
+        true,
+      )
+    }
   }
 
   if (loaderFinishAt > 0 && now >= loaderFinishAt) {
@@ -104,7 +128,6 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
     bootLoading = false
     window.clearInterval(loaderStallTimer)
     setStatus('Adaptive streaming · ready')
-    flyToCloud(reducedMotion ? 900 : 6200, true)
   }
 }
 
@@ -140,9 +163,18 @@ const DAYLIGHT_SKY = 0x8bc9ec
 renderer.setClearColor(DAYLIGHT_SKY, 1)
 
 const scene = new THREE.Scene()
-const distanceFog = new THREE.Fog(DAYLIGHT_SKY, 360_000, 600_000)
+const distanceFog = new THREE.Fog(
+  DAYLIGHT_SKY,
+  EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,
+  EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogFarFactor,
+)
 scene.fog = distanceFog
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 10, 650_000)
+const camera = new THREE.PerspectiveCamera(
+  60,
+  window.innerWidth / window.innerHeight,
+  10,
+  EXPERIENCE_CONFIG.atmosphere.maximumFarM,
+)
 const uniforms = createUniforms()
 const adaptiveQuality = new AdaptiveQualityController()
 const fps = new Fps()
@@ -151,6 +183,9 @@ let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
 let rainLayer: RainLayer | null = null
+let keyboardNavigation: KeyboardNavigation | null = null
+let environmentLayer: EnvironmentLayer | null = null
+let fieldModelLayer: FieldModelLayer | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
 let cameraGroundRange = Infinity
@@ -158,29 +193,107 @@ let graphicsFailed = false
 let cinematicFlightProgress = 1
 let atmosphereFar = camera.far
 let lastAtmosphereUpdate = -Infinity
+let lastFieldTier: PerformanceTier | null = null
+let disposed = false
 
 const rainToggleEl = $<HTMLButtonElement>('#rainToggle')
+const rainNoteEl = $('#rainNote')
+const cloudToggleEl = $<HTMLButtonElement>('#cloudToggle')
+const cloudNoteEl = $('#cloudNote')
+const timeDockEl = $('#peruTimeDock')
+const timeDockToggleEl = $<HTMLButtonElement>('#peruTimeDockToggle')
+const timeSliderEl = $<HTMLInputElement>('#peruTimeSlider')
+const timeValueEl = $('#peruTimeValue')
+const timeModeEl = $('#peruTimeMode')
+const timeNowEl = $<HTMLButtonElement>('#peruTimeNow')
+const RAIN_DRY_DURATION = EXPERIENCE_CONFIG.rain.dryDurationMs
+const RAIN_ACTIVE_DURATION = EXPERIENCE_CONFIG.rain.activeDurationMs
+const RAIN_CYCLE_DURATION = RAIN_DRY_DURATION + RAIN_ACTIVE_DURATION
+let rainCycleEnabled = true
+let rainCycleStartedAt = performance.now()
 let rainRequested = false
 let rainVisualActive = false
 
 function updateRainToggle(): void {
-  rainToggleEl.classList.toggle('on', rainRequested)
-  rainToggleEl.setAttribute('aria-pressed', String(rainRequested))
-  rainToggleEl.textContent = !rainRequested
-    ? '☂ Rain · Off'
-    : rainVisualActive
-      ? '☂ Rain · Active'
-      : '☂ Rain · Near view'
+  rainToggleEl.classList.toggle('on', rainCycleEnabled)
+  rainToggleEl.setAttribute('aria-pressed', String(rainCycleEnabled))
+  rainToggleEl.textContent = !rainCycleEnabled
+    ? '☂ Rain cycle · Off'
+    : !rainRequested
+      ? '☂ Rain cycle · Dry'
+      : rainVisualActive
+        ? '☂ Rain · Active'
+        : '☂ Rain · Near view'
 }
 
 const onRainToggle = () => {
-  rainRequested = !rainRequested
-  rainLayer?.setEnabled(rainRequested)
-  if (!rainRequested) rainVisualActive = false
+  rainCycleEnabled = !rainCycleEnabled
+  rainCycleStartedAt = performance.now()
+  rainRequested = false
+  rainLayer?.setEnabled(false)
+  if (!rainCycleEnabled) rainVisualActive = false
   updateRainToggle()
 }
 rainToggleEl.addEventListener('click', onRainToggle)
+rainNoteEl.textContent = `Auto · ${RAIN_DRY_DURATION / 1000} sec dry / ${RAIN_ACTIVE_DURATION / 1000} sec rain · below ${EXPERIENCE_CONFIG.rain.maximumRangeM / 1000} km`
 updateRainToggle()
+
+function updateCloudControls(state: CloudState): void {
+  const active = state.mode !== 'off'
+  cloudToggleEl.disabled = false
+  cloudToggleEl.classList.toggle('on', active)
+  cloudToggleEl.classList.toggle('is-protected', !active && /protect/i.test(state.reason))
+  cloudToggleEl.setAttribute('aria-pressed', String(active))
+  const modeLabel = state.mode === 'volume' ? 'Volumetric' : state.mode === 'soft' ? 'Soft volumes' : 'Off'
+  cloudToggleEl.textContent = `☁ Clouds · ${modeLabel}`
+  cloudNoteEl.textContent = `${state.tier} · ${state.reason}`
+}
+
+function updateTimeControls(state: DaylightState): void {
+  if (timeValueEl.textContent !== state.timeLabel) {
+    timeValueEl.textContent = state.timeLabel
+    timeSliderEl.value = String(state.peruMinutes)
+  }
+  timeModeEl.textContent = state.live ? 'LIVE · PET' : 'MANUAL · PET'
+  timeModeEl.classList.toggle('is-live', state.live)
+  timeNowEl.hidden = state.live
+  const hour = Math.floor(state.peruMinutes / 60)
+  const minute = state.peruMinutes % 60
+  timeSliderEl.setAttribute('aria-valuetext', `${hour}:${String(minute).padStart(2, '0')} Uhr, Peru`)
+}
+
+const onCloudToggle = () => {
+  if (!environmentLayer) return
+  const state = environmentLayer.getCloudState()
+  environmentLayer.setCloudIntent(state.mode === 'off')
+}
+const onTimeDockToggle = () => {
+  const open = !timeDockEl.classList.contains('is-open')
+  timeDockEl.classList.toggle('is-open', open)
+  timeDockToggleEl.setAttribute('aria-expanded', String(open))
+}
+const onTimeInput = () => {
+  environmentLayer?.setPeruMinutes(Number(timeSliderEl.value))
+  if (environmentLayer) updateTimeControls(environmentLayer.getDaylightState())
+}
+const onTimeNow = () => {
+  environmentLayer?.setPeruMinutes(null)
+  if (environmentLayer) updateTimeControls(environmentLayer.getDaylightState())
+}
+cloudToggleEl.disabled = true
+cloudToggleEl.addEventListener('click', onCloudToggle)
+timeDockToggleEl.addEventListener('click', onTimeDockToggle)
+timeSliderEl.addEventListener('input', onTimeInput)
+timeNowEl.addEventListener('click', onTimeNow)
+
+function updateRainCycle(now: number): void {
+  const phase = (now - rainCycleStartedAt) % RAIN_CYCLE_DURATION
+  const nextRequested = rainCycleEnabled && phase >= RAIN_DRY_DURATION
+  if (nextRequested === rainRequested) return
+  rainRequested = nextRequested
+  rainLayer?.setEnabled(rainRequested)
+  updateRainToggle()
+}
 
 // ENU -> ECEF frame of the survey.
 const enuFrame = new THREE.Matrix4()
@@ -205,12 +318,80 @@ const videoModalEl = $<HTMLDivElement>('#videoModal')
 const fieldVideoEl = $<HTMLVideoElement>('#fieldVideo')
 const videoStatusEl = $('#videoStatus')
 const videoCloseEl = $<HTMLButtonElement>('#videoClose')
+const aimReticleEl = $('#aimReticle')
+const aimReticleLabelEl = $('#aimReticleLabel')
+const interactionStatusEl = $('#interactionStatus')
+const modalBackgroundElements = Array.from(document.body.children)
+  .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== videoModalEl && element.tagName !== 'SCRIPT')
 let videoReturnFocus: HTMLElement | null = null
+let aimMode = false
+let aimTarget: MarkerActionTarget | null = null
+
+function announceInteraction(message: string): void {
+  interactionStatusEl.textContent = ''
+  window.setTimeout(() => { interactionStatusEl.textContent = message }, 20)
+}
+
+function setAimMode(active: boolean, announce = true): void {
+  if (aimMode === active) return
+  aimMode = active
+  document.body.classList.toggle('aim-mode', active)
+  keyboardNavigation?.setAimActive(active)
+  if (!active) {
+    interactionStatusEl.textContent = ''
+    aimTarget = null
+    markerLayer?.setFocusedAction(null)
+    aimReticleEl.classList.remove('has-target')
+    aimReticleLabelEl.textContent = 'Ziel suchen'
+  }
+  if (announce) {
+    announceInteraction(active
+      ? 'Fokusmodus aktiviert. Bewege die Kamera, bis ein Ziel einrastet. Mit Enter öffnen, mit C oder Escape beenden.'
+      : 'Fokusmodus beendet.')
+  }
+}
+
+function toggleAimMode(): void {
+  if (bootLoading || flight || !videoModalEl.hidden) return
+  setAimMode(!aimMode)
+}
+
+function activateAimTarget(): boolean {
+  if (!aimMode || !videoModalEl.hidden) return false
+  if (!aimTarget) {
+    announceInteraction('Kein interaktives Ziel im Fadenkreuz.')
+    return true
+  }
+  const target = aimTarget
+  setAimMode(false, false)
+  target.activate()
+  return true
+}
+
+function dismissAimMode(): boolean {
+  if (!aimMode) return false
+  setAimMode(false)
+  return true
+}
+
+function updateAimTarget(): void {
+  const nextTarget = aimMode
+    ? markerLayer?.pickCenteredAction(camera, EXPERIENCE_CONFIG.accessibility.aimTolerancePx) ?? null
+    : null
+  if (nextTarget?.id === aimTarget?.id) return
+  aimTarget = nextTarget
+  markerLayer?.setFocusedAction(nextTarget?.id ?? null)
+  aimReticleEl.classList.toggle('has-target', Boolean(nextTarget))
+  aimReticleLabelEl.textContent = nextTarget ? `${nextTarget.label} · Enter` : 'Ziel suchen'
+  if (nextTarget) announceInteraction(`${nextTarget.label} im Fokus. Mit Enter öffnen.`)
+}
 
 function openFieldVideo(): void {
   if (!videoModalEl.hidden) return
+  setAimMode(false, false)
   videoReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   videoModalEl.hidden = false
+  for (const element of modalBackgroundElements) element.inert = true
   videoModalEl.classList.remove('is-ready', 'is-playing')
   videoStatusEl.textContent = 'Video wird geladen …'
   if (globe) globe.controls.enabled = false
@@ -233,6 +414,7 @@ function closeFieldVideo(resumeRenderer = true): void {
   fieldVideoEl.load()
   videoModalEl.classList.remove('is-ready', 'is-playing')
   videoModalEl.hidden = true
+  for (const element of modalBackgroundElements) element.inert = false
   if (globe) globe.controls.enabled = !flight
   if (resumeRenderer && wasOpen && !graphicsFailed) renderer.setAnimationLoop(loop)
   if (wasOpen) videoReturnFocus?.focus()
@@ -263,6 +445,11 @@ const onVideoBackdrop = (event: MouseEvent) => {
 }
 const onDocumentKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && !videoModalEl.hidden) closeFieldVideo()
+  else if (event.key === 'Escape' && timeDockEl.classList.contains('is-open')) {
+    timeDockEl.classList.remove('is-open')
+    timeDockToggleEl.setAttribute('aria-expanded', 'false')
+    timeDockToggleEl.focus()
+  }
 }
 const onVisibilityChange = () => {
   if (document.hidden && !videoModalEl.hidden) fieldVideoEl.pause()
@@ -318,7 +505,30 @@ const maskSphereWorld = new THREE.Vector3()
 let maskWorldActive = false
 let maskWorldRadius = 0
 let areaMinZ = 0
+let navigationClearance: number = EXPERIENCE_CONFIG.navigation.minimumClearanceM
+let navigationFloorZ = navigationClearance
+let navigationBoundsRadius = 2500
 const vignetteEl = $<HTMLDivElement>('#vignette')
+const navigationCameraEnu = new THREE.Vector3()
+const navigationCameraWorld = new THREE.Vector3()
+
+/** Final local guard against touch inertia crossing the point-cloud floor. */
+function enforceNavigationBounds(): void {
+  if (!globe) return
+
+  worldToEnu(camera.position, navigationCameraEnu)
+  const dx = navigationCameraEnu.x - cloudCenterEnu.x
+  const dy = navigationCameraEnu.y - cloudCenterEnu.y
+  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) return
+  if (navigationCameraEnu.z >= navigationFloorZ) return
+
+  navigationCameraEnu.z = navigationFloorZ
+  camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
+  camera.updateMatrixWorld()
+  // Cancel residual pinch/orbit inertia at the boundary so it cannot fight the
+  // clamp on subsequent frames and produce visible vibration.
+  globe.controls.resetState()
+}
 
 function setMaskMode(mode: number): void {
   uniforms.maskMode.value = mode
@@ -382,17 +592,27 @@ function updateMaskFollow(): void {
  * churn while still following zoom and the cinematic flight smoothly.
  */
 function updateAtmosphere(now: number): void {
-  if (now - lastAtmosphereUpdate < 125) return
+  if (now - lastAtmosphereUpdate < EXPERIENCE_CONFIG.atmosphere.updateIntervalMs) return
   lastAtmosphereUpdate = now
 
-  const range = Number.isFinite(cameraGroundRange) ? cameraGroundRange : 120_000
-  const targetFar = THREE.MathUtils.clamp(range * 5.5, 24_000, 650_000)
-  atmosphereFar = THREE.MathUtils.lerp(atmosphereFar, targetFar, 0.22)
+  const range = Number.isFinite(cameraGroundRange)
+    ? cameraGroundRange
+    : EXPERIENCE_CONFIG.atmosphere.fallbackRangeM
+  const targetFar = THREE.MathUtils.clamp(
+    range * EXPERIENCE_CONFIG.atmosphere.farRangeMultiplier,
+    EXPERIENCE_CONFIG.atmosphere.minimumFarM,
+    EXPERIENCE_CONFIG.atmosphere.maximumFarM,
+  )
+  atmosphereFar = THREE.MathUtils.lerp(
+    atmosphereFar,
+    targetFar,
+    EXPERIENCE_CONFIG.atmosphere.distanceSmoothing,
+  )
 
   camera.far = atmosphereFar
   camera.updateProjectionMatrix()
-  distanceFog.near = atmosphereFar * 0.52
-  distanceFog.far = atmosphereFar * 0.90
+  distanceFog.near = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogNearFactor
+  distanceFog.far = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogFarFactor
 }
 
 // ---------------------------------------------------------------- fly-to
@@ -414,6 +634,15 @@ const flightLookWorld = new THREE.Vector3()
 // Camera.lookAt() uses the camera's -Z forward axis. A plain Object3D would use
 // +Z here and make the interpolated orientation turn away from the terrain.
 const flightOrientation = new THREE.PerspectiveCamera()
+type EnuOffset = readonly [number, number, number]
+
+function cloudOffsetPoint(offset: EnuOffset): THREE.Vector3 {
+  return new THREE.Vector3(
+    cloudCenterEnu.x + offset[0],
+    cloudCenterEnu.y + offset[1],
+    cloudCenterEnu.z + offset[2],
+  )
+}
 
 function sampleFlightPath(activeFlight: CameraFlight, progress: number, target: THREE.Vector3): THREE.Vector3 {
   const rawT = THREE.MathUtils.clamp(progress, 0, 1)
@@ -437,16 +666,17 @@ function sampleFlightPath(activeFlight: CameraFlight, progress: number, target: 
   )
 }
 
-function flyToCloud(duration = 5200, startFromOverview = false): void {
-  const end = new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y - 2200, cloudCenterEnu.z + 1500)
+function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false): void {
+  setAimMode(false, false)
+  const end = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)
   let start: THREE.Vector3
   let control1: THREE.Vector3
   let control2: THREE.Vector3
 
   if (startFromOverview) {
-    start = new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y - 132_000, cloudCenterEnu.z + 92_000)
-    control1 = new THREE.Vector3(cloudCenterEnu.x - 8_000, cloudCenterEnu.y - 116_000, cloudCenterEnu.z + 19_000)
-    control2 = new THREE.Vector3(cloudCenterEnu.x + 14_000, cloudCenterEnu.y - 34_000, cloudCenterEnu.z + 8_500)
+    start = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewOffsetM)
+    control1 = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewControl1OffsetM)
+    control2 = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewControl2OffsetM)
   } else {
     start = worldToEnu(camera.position)
     const range = start.distanceTo(end)
@@ -503,7 +733,11 @@ sizeEl.addEventListener('input', () => {
   uniforms.pointSize.value = Number(sizeEl.value)
   $('#sizev').textContent = sizeEl.value
 })
-$('#flyTo').addEventListener('click', () => flyToCloud(reducedMotion ? 700 : 5200))
+$('#flyTo').addEventListener('click', () => flyToCloud(
+  reducedMotion
+    ? EXPERIENCE_CONFIG.flight.reducedMotionManualDurationMs
+    : EXPERIENCE_CONFIG.flight.manualDurationMs,
+))
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
@@ -571,11 +805,28 @@ function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
   updateFlight(now)
-  globe?.update()
+  keyboardNavigation?.update(now, cameraGroundRange, !bootLoading && !flight && videoModalEl.hidden)
+  globe?.update(enforceNavigationBounds)
   updateMaskFollow()
   updateAtmosphere(now)
   const stats = updateStreaming(now)
+  const daylightState = environmentLayer?.update(
+    now,
+    camera,
+    cameraGroundRange,
+    fps.fps,
+    !bootLoading && !flight && videoModalEl.hidden,
+  )
+  if (daylightState) updateTimeControls(daylightState)
+  const nextFieldTier = environmentLayer?.getCloudState().tier ?? null
+  if (nextFieldTier && nextFieldTier !== lastFieldTier) {
+    lastFieldTier = nextFieldTier
+    fieldModelLayer?.setPerformanceTier(nextFieldTier)
+  }
+  fieldModelLayer?.update(now)
   markerLayer?.update(now, camera, cameraGroundRange)
+  updateAimTarget()
+  updateRainCycle(now)
   const nextRainActive = rainLayer?.update(now, camera, cameraGroundRange) ?? false
   if (nextRainActive !== rainVisualActive) {
     rainVisualActive = nextRainActive
@@ -612,17 +863,52 @@ async function main(): Promise<void> {
   enuUp.setFromMatrixColumn(enuFrame, 2).normalize()
 
   if (manifest.areaBbox) {
-    const [minX, minY, minZ, maxX, maxY] = manifest.areaBbox
+    const [, , minZ] = manifest.areaBbox
     zOffset = groundSnap ? -minZ : 0
     areaMinZ = minZ
-    cloudCenterEnu.set((minX + maxX) / 2, (minY + maxY) / 2, minZ + 40)
+    // The ENU AABB is tilted and therefore overstates vertical height. The
+    // source Z span reflects the actual cloud thickness (about 74 m for Peru).
+    navigationClearance = Math.max(
+      EXPERIENCE_CONFIG.navigation.minimumClearanceM,
+      (manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM)
+        + EXPERIENCE_CONFIG.navigation.extraCloudClearanceM,
+    )
+    navigationFloorZ = minZ + navigationClearance
+  }
+
+  const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
+  if (surveyBbox) {
+    const [minX, minY, , maxX, maxY] = surveyBbox
+    cloudCenterEnu.set((minX + maxX) / 2, (minY + maxY) / 2, areaMinZ + 40)
+    navigationBoundsRadius = Math.max(
+      EXPERIENCE_CONFIG.navigation.minimumBoundsRadiusM,
+      Math.hypot(maxX - minX, maxY - minY) * EXPERIENCE_CONFIG.navigation.surveyBoundsScale,
+    )
   }
   enuToWorld(cloudCenterEnu, cloudCenterEcef)
   uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
   const planePoint = enuToWorld(new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40))
   groundPlane.setFromNormalAndCoplanarPoint(enuUp, planePoint)
 
-  globe = createGlobe({ renderer: renderer as any, camera, scene, maptilerKey: MAPTILER_KEY, uniforms })
+  globe = createGlobe({
+    renderer: renderer as any,
+    camera,
+    scene,
+    maptilerKey: MAPTILER_KEY,
+    cameraClearance: navigationClearance,
+    uniforms,
+  })
+  keyboardNavigation = createKeyboardNavigation({
+    camera,
+    controls: globe.controls,
+    guide: $('#keyboardGuide'),
+    guideToggle: $<HTMLButtonElement>('#keyboardGuideToggle'),
+    guideClose: $<HTMLButtonElement>('#keyboardGuideClose'),
+    aimToggle: $<HTMLButtonElement>('#aimModeButton'),
+    onToggleAim: toggleAimMode,
+    onActivateAim: activateAimTarget,
+    onDismissAim: dismissAimMode,
+  })
   stream = createStreamingCloud({
     tilesetUrl: `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`,
     camera,
@@ -633,6 +919,22 @@ async function main(): Promise<void> {
   })
   stream.group.position.copy(enuUp).multiplyScalar(zOffset)
 
+  environmentLayer = createEnvironmentLayer({
+    scene,
+    renderer,
+    fog: distanceFog,
+    uniforms,
+    enuFrame,
+    zOffset,
+    surveyCentreEnu: cloudCenterEnu,
+    originLonLat: manifest.enuOriginLonLat,
+    isWebGPU,
+    reducedMotion,
+    onCloudStateChange: updateCloudControls,
+  })
+  updateCloudControls(environmentLayer.getCloudState())
+  updateTimeControls(environmentLayer.getDaylightState())
+
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
       scene,
@@ -640,6 +942,10 @@ async function main(): Promise<void> {
       enuFrame,
       zOffset,
       areaBbox: manifest.areaBbox as [number, number, number, number, number, number],
+      centre: [
+        cloudCenterEnu.x + EXPERIENCE_CONFIG.markers.centreOffsetM[0],
+        cloudCenterEnu.y + EXPERIENCE_CONFIG.markers.centreOffsetM[1],
+      ],
       dataset,
       reducedMotion,
       onOpenVideo: openFieldVideo,
@@ -652,11 +958,7 @@ async function main(): Promise<void> {
   // Bootstrap close enough to request real point tiles. The fullscreen loader
   // conceals this staging position; once both data layers are visible we jump
   // to the overview and begin the user-facing flight.
-  camera.position.copy(enuToWorld(new THREE.Vector3(
-    cloudCenterEnu.x,
-    cloudCenterEnu.y - 2200,
-    cloudCenterEnu.z + 1500,
-  )))
+  camera.position.copy(enuToWorld(cloudOffsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)))
   camera.up.copy(enuUp)
   camera.lookAt(cloudCenterEcef)
 
@@ -664,7 +966,31 @@ async function main(): Promise<void> {
   setStatus('Adaptive streaming · loading tiles…')
   renderer.setAnimationLoop(loop)
 
-  ;(window as any).__three = { renderer, scene, camera, uniforms, globe, stream, markerLayer, rainLayer, loop }
+  const fieldOrigin = new THREE.Vector3(
+    cloudCenterEnu.x + EXPERIENCE_CONFIG.markers.centreOffsetM[0],
+    cloudCenterEnu.y + EXPERIENCE_CONFIG.markers.centreOffsetM[1],
+    areaMinZ,
+  )
+  void createFieldModelLayer({
+    scene,
+    enuFrame,
+    zOffset,
+    originEnu: fieldOrigin,
+    performanceTier: environmentLayer.getCloudState().tier,
+    reducedMotion,
+    onStatus: (message) => console.info(`[field-models] ${message}`),
+  }).then((layer) => {
+    if (disposed) layer.dispose()
+    else {
+      fieldModelLayer = layer
+      if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
+    }
+  }).catch((error) => console.warn('[field-models] optional layer failed', error))
+
+  ;(window as any).__three = {
+    renderer, scene, camera, uniforms, globe, stream, markerLayer,
+    rainLayer, environmentLayer, fieldModelLayer, loop,
+  }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
     for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
@@ -681,14 +1007,23 @@ async function main(): Promise<void> {
 }
 
 function dispose(): void {
+  disposed = true
   renderer.setAnimationLoop(null)
+  setAimMode(false, false)
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
   rainLayer?.dispose()
+  keyboardNavigation?.dispose()
   markerLayer?.dispose()
+  fieldModelLayer?.dispose()
+  environmentLayer?.dispose()
   stream?.dispose()
   globe?.dispose()
   rainToggleEl.removeEventListener('click', onRainToggle)
+  cloudToggleEl.removeEventListener('click', onCloudToggle)
+  timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
+  timeSliderEl.removeEventListener('input', onTimeInput)
+  timeNowEl.removeEventListener('click', onTimeNow)
   loaderRetryEl.removeEventListener('click', onLoaderRetry)
   videoCloseEl.removeEventListener('click', onVideoClose)
   videoModalEl.removeEventListener('click', onVideoBackdrop)

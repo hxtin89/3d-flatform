@@ -26,7 +26,9 @@
          filling from the ground up. The map renders underneath while this layer owns input. */
       #loader { --loader-progress: 0%; position: fixed; inset: 0; z-index: 120; display: grid; overflow: hidden;
                 place-items: center; padding: calc(28px + var(--safe-t)) 24px calc(24px + var(--safe-b));
-                color: var(--forest); background: var(--paper); transition: opacity .6s ease, transform .6s ease;
+                color: var(--forest); background: var(--paper);
+                transition: opacity 1.2s cubic-bezier(.22,1,.36,1), transform 1.2s cubic-bezier(.22,1,.36,1);
+                will-change: opacity, transform;
                 isolation: isolate; }
       #loader[hidden] { display: none; }
       #loader::before { content: ""; position: absolute; inset: -30%; z-index: -2; opacity: .42;
@@ -37,7 +39,7 @@
       #loader::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: .22;
                        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
                        mix-blend-mode: multiply; }
-      #loader.finishing { opacity: 0; transform: translateY(-1.5%); pointer-events: none; }
+      #loader.finishing { opacity: 0; transform: translateY(-1%) scale(1.012); pointer-events: none; }
       .loader-kicker { position: absolute; top: calc(25px + var(--safe-t)); left: 28px; right: 28px;
                        display: flex; justify-content: space-between; gap: 20px; padding-bottom: 11px;
                        border-bottom: 1px solid rgba(0,68,50,.25); font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
@@ -90,6 +92,11 @@
                             color: #20150c; background: rgba(255,240,219,.92); box-shadow: 0 10px 34px rgba(0,15,10,.28);
                             backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); cursor: pointer; }
       .media-marker-label:active { filter: brightness(.92); }
+      .media-marker-label:focus-visible, .video-close:focus-visible, #keyboardGuideToggle:focus-visible,
+      .keyboard-guide-close:focus-visible, #aimModeButton:focus-visible {
+        outline: 3px solid var(--lime); outline-offset: 3px;
+      }
+      .media-marker-label.is-aimed { border-color: var(--lime); box-shadow: 0 0 0 4px rgba(217,249,157,.18), 0 12px 38px rgba(0,15,10,.34); }
       .media-marker-icon { display: grid; place-items: center; width: 28px; height: 28px; padding-left: 2px;
                            border-radius: 50%; color: #fff; background: #9e4d16; font-size: 10px; }
       .media-marker-label b, .media-marker-label small { display: block; text-align: left; }
@@ -134,6 +141,93 @@
       #chipFps { font-variant-numeric: tabular-nums; }
       #chipFps.good { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
 
+      .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+                 overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+      /* Physical-keyboard field guide. JS reveals it after capability or input detection. */
+      #keyboardGuideToggle { position: fixed; left: 12px; bottom: calc(46px + var(--safe-b)); z-index: 18;
+                             display: none; align-items: center; gap: 7px; padding: 7px 10px;
+                             color: rgba(240,237,227,.78); background: rgba(0,35,26,.8);
+                             border: 1px solid rgba(217,249,157,.3); border-radius: 999px;
+                             box-shadow: 0 8px 28px rgba(0,15,10,.25); backdrop-filter: blur(8px);
+                             -webkit-backdrop-filter: blur(8px); cursor: pointer;
+                             font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .11em; text-transform: uppercase; }
+      #keyboardGuideToggle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--lime); }
+      body.has-physical-keyboard #keyboardGuideToggle { display: inline-flex; }
+      #keyboardGuide { position: fixed; left: 12px; bottom: calc(84px + var(--safe-b)); z-index: 18;
+                       display: none; grid-template-columns: auto 1fr; gap: 10px 14px; align-items: end;
+                       width: max-content; max-width: calc(100vw - 24px); padding: 10px 12px 11px;
+                       color: var(--paper); background: linear-gradient(145deg, rgba(0,45,34,.88), rgba(0,28,21,.78));
+                       border: 1px solid rgba(217,249,157,.28); border-radius: 5px 14px 14px 14px;
+                       box-shadow: 0 14px 42px rgba(0,15,10,.28); backdrop-filter: blur(10px);
+                       -webkit-backdrop-filter: blur(10px); pointer-events: auto; opacity: .82;
+                       transition: opacity .2s ease, border-color .2s ease, transform .2s ease; }
+      body.has-physical-keyboard #keyboardGuide.is-open { display: grid; }
+      #keyboardGuide.is-engaged { opacity: 1; border-color: rgba(217,249,157,.62); transform: translateY(-2px); }
+      #keyboardGuide.is-complete { opacity: 0; transform: translateY(5px) scale(.98); }
+      .keyboard-guide-head { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+                             padding-bottom: 7px; border-bottom: 1px solid rgba(217,249,157,.18);
+                             font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .16em; text-transform: uppercase; }
+      .keyboard-guide-head::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                                     background: var(--lime); box-shadow: 0 0 0 4px rgba(217,249,157,.1); }
+      .keyboard-guide-context { margin-left: auto; opacity: .46; letter-spacing: .09em; }
+      .keyboard-guide-close { display: grid; place-items: center; width: 21px; height: 21px; padding: 0;
+                              color: rgba(240,237,227,.62); background: transparent;
+                              border: 1px solid rgba(240,237,227,.18); border-radius: 50%; cursor: pointer; }
+      .wasd-pad { display: grid; grid-template-columns: repeat(3, 25px); grid-template-rows: repeat(2, 25px); gap: 3px; }
+      .wasd-pad [data-key="KeyW"] { grid-column: 2; }
+      .wasd-pad [data-key="KeyA"] { grid-column: 1; grid-row: 2; }
+      .wasd-pad [data-key="KeyS"] { grid-column: 2; grid-row: 2; }
+      .wasd-pad [data-key="KeyD"] { grid-column: 3; grid-row: 2; }
+      .keycap { display: inline-grid; place-items: center; min-width: 25px; height: 25px; padding: 0 6px;
+                border: 1px solid rgba(240,237,227,.54); border-bottom-width: 2px; border-radius: 5px;
+                color: #17362d; background: rgba(240,237,227,.92); box-shadow: inset 0 -1px rgba(0,68,50,.14);
+                font: 800 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .04em;
+                transition: color .12s ease, background .12s ease, transform .12s ease, box-shadow .12s ease; }
+      .keycap.is-active { color: #002d22; background: var(--lime); transform: translateY(1px);
+                          box-shadow: 0 0 0 3px rgba(217,249,157,.14); }
+      .keycap.is-latched { color: #002d22; background: var(--lime); border-color: var(--lime); }
+      .keycap.is-tried, .keyboard-action.is-tried .keycap { border-color: rgba(217,249,157,.85); }
+      .keyboard-zoom { display: grid; gap: 5px; }
+      .keyboard-action { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 7px;
+                         color: rgba(240,237,227,.62); font: 800 7px/1 ui-monospace, SFMono-Regular, monospace;
+                         letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
+      .keyboard-combo { display: flex; align-items: center; gap: 3px; }
+      .keyboard-combo .keycap { min-width: 48px; }
+      .keyboard-combo .keycap[data-key="Shift"] { min-width: 38px; }
+      .keyboard-plus { opacity: .42; }
+      .keyboard-access { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+                         padding-top: 8px; border-top: 1px solid rgba(217,249,157,.18); }
+      #aimModeButton { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 5px;
+                       color: rgba(240,237,227,.74); background: rgba(255,255,255,.04);
+                       border: 1px solid rgba(240,237,227,.16); border-radius: 7px; cursor: pointer;
+                       font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      #aimModeButton.is-on { color: var(--lime); border-color: rgba(217,249,157,.62); background: rgba(217,249,157,.08); }
+      .keyboard-enter-hint { display: flex; align-items: center; gap: 6px; color: rgba(240,237,227,.5);
+                             font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+
+      /* Optical survey reticle: a large hit radius, but only one lightweight DOM overlay. */
+      #aimReticle { position: fixed; left: 50%; top: 50%; z-index: 17; display: none; place-items: center;
+                    width: 192px; height: 192px; transform: translate(-50%,-50%); pointer-events: none;
+                    color: rgba(240,237,227,.72); border: 1px dashed rgba(240,237,227,.28); border-radius: 50%;
+                    background: radial-gradient(circle, transparent 0 32px, rgba(0,45,34,.05) 33px 100%);
+                    transition: color .18s ease, border-color .18s ease, background .18s ease, transform .18s ease; }
+      body.aim-mode { cursor: crosshair; }
+      body.aim-mode #aimReticle { display: grid; }
+      #aimReticle::before, #aimReticle::after { content: ""; position: absolute; background: currentColor; opacity: .8; }
+      #aimReticle::before { width: 36px; height: 1px; }
+      #aimReticle::after { width: 1px; height: 36px; }
+      .aim-reticle-core { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%;
+                          box-shadow: 0 0 0 8px rgba(240,237,227,.06); }
+      #aimReticleLabel { position: absolute; top: calc(50% + 27px); padding: 5px 8px; border-radius: 999px;
+                         color: inherit; background: rgba(0,28,21,.78); border: 1px solid currentColor;
+                         font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .1em; text-transform: uppercase; }
+      #aimReticle.has-target { color: var(--lime); border-style: solid; border-color: rgba(217,249,157,.58);
+                               background: radial-gradient(circle, rgba(217,249,157,.13) 0 34px, transparent 35px 100%);
+                               transform: translate(-50%,-50%) scale(.94); }
+
       .card .close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #8b949e;
                      font-size: 17px; line-height: 1; cursor: pointer; padding: 4px; }
 
@@ -164,16 +258,61 @@
                    padding: 9px; font: inherit; cursor: pointer; }
       button.act.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
       #rainToggle.on { background: #176c8d; border-color: #56b6d9; color: #effbff; }
+      #cloudToggle.on { color: #092f29; background: linear-gradient(135deg, #dceceb, #a8d0d5);
+                        border-color: rgba(203,239,242,.88); box-shadow: inset 0 1px rgba(255,255,255,.7); }
+      #cloudToggle.is-protected { color: #f0c674; border-color: rgba(240,198,116,.42); }
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
       button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
 
-      #hint { bottom: calc(10px + var(--safe-b)); left: 50%; transform: translateX(-50%); text-align: center;
+      #hint { bottom: calc(72px + var(--safe-b)); left: 50%; transform: translateX(-50%); text-align: center;
               opacity: .75; font-size: 12px; padding: 7px 12px; z-index: 10; }
       #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
       #attribution a { color: inherit; }
+
+      /* Peru daylight instrument: a compact field readout expands into a
+         tactile map timeline without covering the survey. */
+      #peruTimeDock { position: fixed; left: 50%; bottom: calc(12px + var(--safe-b)); z-index: 16;
+                      width: min(430px, calc(100vw - 24px)); transform: translateX(-50%); color: var(--forest-deep);
+                      font-variant-numeric: tabular-nums; pointer-events: none; }
+      .peru-time-shell { overflow: hidden; width: 194px; margin: 0 auto;
+                         background: linear-gradient(145deg, rgba(246,242,229,.96), rgba(226,231,215,.92));
+                         border: 1px solid rgba(0,68,50,.26); border-radius: 8px 18px 18px 18px;
+                         box-shadow: 0 18px 46px rgba(0,31,23,.28), inset 0 1px rgba(255,255,255,.74);
+                         backdrop-filter: blur(13px); -webkit-backdrop-filter: blur(13px); pointer-events: auto;
+                         transition: width .36s cubic-bezier(.22,1,.36,1), border-radius .36s ease; }
+      #peruTimeDock.is-open .peru-time-shell { width: 100%; border-radius: 8px 22px 22px 22px; }
+      #peruTimeDockToggle { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px;
+                            width: 100%; min-height: 46px; padding: 7px 10px; color: inherit; background: transparent;
+                            border: 0; cursor: pointer; text-align: left; }
+      .peru-time-sun { width: 27px; height: 27px; border-radius: 50%;
+                       background: radial-gradient(circle at 36% 34%, #fff7c1 0 18%, #efb85d 46%, #c6752e 100%);
+                       box-shadow: 0 0 0 5px rgba(239,184,93,.13); }
+      .peru-time-copy { display: grid; gap: 2px; }
+      #peruTimeMode { color: rgba(0,45,34,.58); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .14em; text-transform: uppercase; }
+      #peruTimeMode.is-live::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
+                                      border-radius: 50%; background: #51a86f; box-shadow: 0 0 0 3px rgba(81,168,111,.14); }
+      #peruTimeValue { font: 500 20px/.95 "Iowan Old Style", Baskerville, Georgia, serif; letter-spacing: .01em; }
+      .peru-time-chevron { color: rgba(0,45,34,.52); font-size: 16px; transition: transform .3s ease; }
+      #peruTimeDock.is-open .peru-time-chevron { transform: rotate(180deg); }
+      .peru-time-panel { display: grid; grid-template-rows: 0fr; opacity: 0;
+                         transition: grid-template-rows .36s cubic-bezier(.22,1,.36,1), opacity .2s ease; }
+      .peru-time-panel-inner { min-height: 0; overflow: hidden; }
+      #peruTimeDock.is-open .peru-time-panel { grid-template-rows: 1fr; opacity: 1; }
+      .peru-time-control { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center;
+                           padding: 0 14px 13px; border-top: 1px solid rgba(0,68,50,.14); }
+      .peru-time-label { padding-top: 10px; color: rgba(0,45,34,.58); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                         letter-spacing: .13em; text-transform: uppercase; }
+      #peruTimeNow { align-self: end; padding: 5px 9px; color: var(--forest); background: rgba(0,68,50,.06);
+                     border: 1px solid rgba(0,68,50,.24); border-radius: 999px; cursor: pointer;
+                     font: 800 8px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .09em; text-transform: uppercase; }
+      #peruTimeSlider { grid-column: 1 / -1; width: 100%; height: 24px; margin: 0; accent-color: var(--forest); cursor: ew-resize; }
+      .peru-time-ticks { grid-column: 1 / -1; display: flex; justify-content: space-between; margin-top: -5px;
+                         color: rgba(0,45,34,.42); font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; }
+      #peruTimeDock :focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 
       /* ---------- mobile: panel becomes a bottom sheet, hint disappears ---------- */
       @media (max-width: 700px) {
@@ -181,23 +320,35 @@
         #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
         #hint { display: none !important; }
-        #attribution { left: 10px; right: auto; }
+        #attribution { left: 10px; right: auto; bottom: calc(70px + var(--safe-b)); }
         .loader-kicker { left: 18px; right: 18px; }
         .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
         .temperature-value { font-size: 18px; }
         .video-modal { padding-left: 10px; padding-right: 10px; }
         .video-card { border-radius: 15px; }
+        #keyboardGuideToggle { left: 10px; bottom: calc(112px + var(--safe-b)); }
+        #keyboardGuide { left: 10px; bottom: calc(150px + var(--safe-b)); transform: scale(.9);
+                         transform-origin: left bottom; }
+        #keyboardGuide.is-engaged { transform: translateY(-2px) scale(.9); }
+        #peruTimeDock { bottom: calc(10px + var(--safe-b)); }
+        #peruTimeDock.is-open { width: calc(100vw - 20px); }
       }
 
       @media (prefers-reduced-motion: reduce) {
-        #loader, .loader-eagle-fill, .map-marker-label { transition-duration: .01ms !important; }
+        #loader, .loader-eagle-fill, .map-marker-label, #keyboardGuide, .keycap, #aimReticle,
+        .peru-time-shell, .peru-time-panel, .peru-time-chevron { transition-duration: .01ms !important; }
       }
     </style>
   </head>
   <body class="mask-vignette">
     <canvas id="view"></canvas>
     <div id="vignette"></div>
-    <div id="markerOverlay" aria-live="polite"></div>
+    <div id="markerOverlay"></div>
+    <div id="interactionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="aimReticle" aria-hidden="true">
+      <span class="aim-reticle-core"></span>
+      <span id="aimReticleLabel">Ziel suchen</span>
+    </div>
 
     <div id="loader" role="progressbar" aria-label="Point Cloud wird geladen" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
       <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
@@ -215,6 +366,35 @@
 
     <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>
     <button class="chip" id="panelChip" aria-label="Settings">⚙</button>
+
+    <button id="keyboardGuideToggle" type="button" aria-controls="keyboardGuide" aria-expanded="false">⌨ Field keys</button>
+    <aside id="keyboardGuide" role="region" aria-labelledby="keyboardGuideTitle" aria-hidden="true">
+      <div class="keyboard-guide-head">
+        <span id="keyboardGuideTitle">Field navigation</span>
+        <span class="keyboard-guide-context">Physical keyboard</span>
+        <button id="keyboardGuideClose" class="keyboard-guide-close" type="button" aria-label="Field Navigation ausblenden">×</button>
+      </div>
+      <div class="wasd-pad" aria-label="W A S D for directional movement">
+        <kbd class="keycap" data-key="KeyW" data-nav-task="KeyW">W</kbd>
+        <kbd class="keycap" data-key="KeyA" data-nav-task="KeyA">A</kbd>
+        <kbd class="keycap" data-key="KeyS" data-nav-task="KeyS">S</kbd>
+        <kbd class="keycap" data-key="KeyD" data-nav-task="KeyD">D</kbd>
+      </div>
+      <div class="keyboard-zoom">
+        <div class="keyboard-action" data-nav-task="zoom-in">
+          <span class="keyboard-combo"><kbd class="keycap" data-key="Space">Space</kbd></span><span>Zoom in</span>
+        </div>
+        <div class="keyboard-action" data-nav-task="zoom-out">
+          <span class="keyboard-combo"><kbd class="keycap" data-key="Shift">Shift</kbd><span class="keyboard-plus">+</span><kbd class="keycap" data-key="Space">Space</kbd></span><span>Zoom out</span>
+        </div>
+      </div>
+      <div class="keyboard-access">
+        <button id="aimModeButton" type="button" aria-pressed="false" aria-keyshortcuts="C">
+          <kbd class="keycap" data-key="KeyC">C</kbd><span>Focus target</span>
+        </button>
+        <span class="keyboard-enter-hint"><kbd class="keycap" data-key="Enter">Enter</kbd><span>Open</span></span>
+      </div>
+    </aside>
 
     <div id="hud" class="card">
       <button class="close" data-close="hud">×</button>
@@ -249,10 +429,35 @@
       </div>
       <div class="row">
         <label class="h" for="rainToggle">Weather shader</label>
-        <button class="act" id="rainToggle" type="button" aria-pressed="false" aria-describedby="rainNote">☂ Rain · Off</button>
-        <span class="weather-note" id="rainNote">GPU rain · visible below 2.8 km</span>
+        <button class="act" id="rainToggle" type="button" aria-pressed="true" aria-describedby="rainNote">☂ Rain cycle · Dry</button>
+        <span class="weather-note" id="rainNote">Automatic nearby weather cycle</span>
+      </div>
+      <div class="row">
+        <label class="h" for="cloudToggle">Cloud layer</label>
+        <button class="act" id="cloudToggle" type="button" aria-pressed="false" aria-describedby="cloudNote">☁ Clouds · Detecting…</button>
+        <span class="weather-note" id="cloudNote" aria-live="polite">Checking device headroom</span>
       </div>
     </div>
+
+    <section id="peruTimeDock" aria-label="Peru daylight controls">
+      <div class="peru-time-shell">
+        <button id="peruTimeDockToggle" type="button" aria-expanded="false" aria-controls="peruTimePanel">
+          <span class="peru-time-sun" aria-hidden="true"></span>
+          <span class="peru-time-copy"><span id="peruTimeMode" class="is-live">LIVE · PET</span><strong id="peruTimeValue">12:00</strong></span>
+          <span class="peru-time-chevron" aria-hidden="true">⌃</span>
+        </button>
+        <div id="peruTimePanel" class="peru-time-panel">
+          <div class="peru-time-panel-inner">
+            <div class="peru-time-control">
+              <label class="peru-time-label" for="peruTimeSlider">Field light · Peru time</label>
+              <button id="peruTimeNow" type="button" hidden>Jetzt</button>
+              <input id="peruTimeSlider" type="range" min="0" max="1439" step="5" value="720" aria-label="Tageszeit in Peru" aria-valuetext="12:00 Uhr, Peru" />
+              <div class="peru-time-ticks" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div id="hint" class="card">Drag = rotate globe · Wheel/pinch = zoom</div>
     <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>

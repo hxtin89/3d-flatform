@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
+import { EXPERIENCE_CONFIG } from './config'
 
 const MIN_TEMPERATURE = 28.6
 const MAX_TEMPERATURE = 34.2
@@ -22,6 +23,7 @@ interface MarkerLayerOptions {
   enuFrame: THREE.Matrix4
   zOffset: number
   areaBbox: [number, number, number, number, number, number]
+  centre: readonly [number, number]
   dataset: string
   reducedMotion: boolean
   onOpenVideo(): void
@@ -43,8 +45,16 @@ interface MarkerRecord {
   labelHeight: number
 }
 
+export interface MarkerActionTarget {
+  id: string
+  label: string
+  activate(): void
+}
+
 export interface MarkerLayer {
   update(now: number, camera: THREE.PerspectiveCamera, cameraGroundRange: number): void
+  pickCenteredAction(camera: THREE.PerspectiveCamera, tolerancePx: number): MarkerActionTarget | null
+  setFocusedAction(id: string | null): void
   dispose(): void
 }
 
@@ -77,7 +87,7 @@ function createMaterial(color: number, opacity = 1): MeshBasicNodeMaterial {
   return material
 }
 
-function createTemperatureLabel(index: number): { label: HTMLDivElement; value: HTMLSpanElement } {
+function createTemperatureLabel(index: number, stationName = `CANOPY 0${index + 1}`): { label: HTMLDivElement; value: HTMLSpanElement } {
   const label = document.createElement('div')
   label.className = 'map-marker-label temperature-marker-label'
   label.setAttribute('aria-hidden', 'true')
@@ -88,7 +98,7 @@ function createTemperatureLabel(index: number): { label: HTMLDivElement; value: 
 
   const station = document.createElement('span')
   station.className = 'temperature-station'
-  station.textContent = `CANOPY 0${index + 1}`
+  station.textContent = stationName
 
   const value = document.createElement('span')
   value.className = 'temperature-value'
@@ -104,15 +114,15 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     enuFrame,
     zOffset,
     areaBbox,
+    centre,
     dataset,
     reducedMotion,
     onOpenVideo,
   } = options
   const [minX, minY, minZ, maxX, maxY] = areaBbox
-  const centreX = (minX + maxX) / 2
-  const centreY = (minY + maxY) / 2
-  const width = Math.max(maxX - minX, 240)
-  const depth = Math.max(maxY - minY, 240)
+  const [centreX, centreY] = centre
+  const width = Math.max(maxX - minX, EXPERIENCE_CONFIG.markers.minimumSpreadM)
+  const depth = Math.max(maxY - minY, EXPERIENCE_CONFIG.markers.minimumSpreadM)
   const random = createRandom(hashString(dataset))
 
   const root = new THREE.Group()
@@ -146,7 +156,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
 
   for (let index = 0; index < 4; index++) {
     const angle = index * Math.PI * 0.5 + (random() - 0.5) * 0.5
-    const radial = 0.38 + random() * 0.08
+    const radial = EXPERIENCE_CONFIG.markers.radialBase
+      + random() * EXPERIENCE_CONFIG.markers.radialJitter
     const group = new THREE.Group()
     group.position.set(
       centreX + Math.cos(angle) * width * radial,
@@ -185,6 +196,38 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     })
   }
 
+  // The observation tower is the fifth sensor: only its pulse and label are
+  // rendered here, while FieldModelLayer supplies the physical tower mesh.
+  const towerSensorGroup = new THREE.Group()
+  towerSensorGroup.position.set(
+    centreX + EXPERIENCE_CONFIG.tower.positionM[0],
+    centreY + EXPERIENCE_CONFIG.tower.positionM[1],
+    minZ + EXPERIENCE_CONFIG.tower.positionM[2] + EXPERIENCE_CONFIG.tower.sensorHeightM,
+  )
+  const towerRing = new THREE.Mesh(ringGeometry, temperatureRingMaterial)
+  towerRing.renderOrder = 3
+  const towerAnchor = new THREE.Object3D()
+  towerAnchor.position.z = 12
+  towerSensorGroup.add(towerRing, towerAnchor)
+  root.add(towerSensorGroup)
+  const towerTemperature = createTemperatureLabel(4, 'RIVER 05')
+  overlay.append(towerTemperature.label)
+  markers.push({
+    group: towerSensorGroup,
+    ring: towerRing,
+    anchor: towerAnchor,
+    label: towerTemperature.label,
+    valueElement: towerTemperature.value,
+    phase: random() * Math.PI * 2,
+    baseTemperature: MIN_TEMPERATURE + 0.35 + random() * (MAX_TEMPERATURE - MIN_TEMPERATURE - 0.7),
+    temperatureAmplitude: 0.14 + random() * 0.16,
+    temperaturePeriod: 15_000 + random() * 7_000,
+    labelOffsetX: 12,
+    labelOffsetY: -12,
+    labelWidth: 0,
+    labelHeight: 0,
+  })
+
   // The media hotspot is deliberately offset from the four sensor stations.
   const mediaGroup = new THREE.Group()
   mediaGroup.position.set(centreX + width * 0.1, centreY - depth * 0.06, minZ + 58)
@@ -204,6 +247,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   mediaButton.type = 'button'
   mediaButton.className = 'map-marker-label media-marker-label'
   mediaButton.setAttribute('aria-label', 'Wilderness-Imagefilm ansehen')
+  mediaButton.setAttribute('aria-keyshortcuts', 'Enter')
   mediaButton.innerHTML = '<span class="media-marker-icon" aria-hidden="true">▶</span><span><b>FIELD FILM</b><small>15 SEC · PLAY</small></span>'
   mediaButton.addEventListener('click', onOpenVideo)
   overlay.append(mediaButton)
@@ -222,6 +266,15 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   const worldPosition = new THREE.Vector3()
   const viewPosition = new THREE.Vector3()
   const projected = new THREE.Vector3()
+  const mediaAction: MarkerActionTarget = {
+    id: 'field-film',
+    label: 'Field Film',
+    activate: () => {
+      mediaButton.focus({ preventScroll: true })
+      onOpenVideo()
+    },
+  }
+  let focusedActionId: string | null = null
   let lastTemperatureUpdate = -Infinity
   let labelMode: LabelMode | null = null
   let measuredViewportWidth = -1
@@ -303,6 +356,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
           marker.valueElement.textContent = `${value.toFixed(1).replace('.', ',')} °C`
         }
       }
+      mediaHead.scale.setScalar(focusedActionId === mediaAction.id ? 1.45 : 1)
 
       const nextMode: LabelMode = cameraGroundRange < FULL_LABEL_MAX_RANGE
         ? 'full'
@@ -332,6 +386,26 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
         }
         acceptedBoxes.push(box)
       }
+    },
+    pickCenteredAction(camera, tolerancePx) {
+      mediaAnchor.getWorldPosition(worldPosition)
+      viewPosition.copy(worldPosition).applyMatrix4(camera.matrixWorldInverse)
+      if (viewPosition.z >= 0) return null
+      projected.copy(worldPosition).project(camera)
+      if (projected.z <= -1 || projected.z >= 1) return null
+
+      const offsetX = projected.x * window.innerWidth * 0.5
+      const offsetY = projected.y * window.innerHeight * 0.5
+      return offsetX * offsetX + offsetY * offsetY <= tolerancePx * tolerancePx
+        ? mediaAction
+        : null
+    },
+    setFocusedAction(id) {
+      if (focusedActionId === id) return
+      focusedActionId = id
+      const focused = id === mediaAction.id
+      mediaButton.classList.toggle('is-aimed', focused)
+      mediaRingMaterial.color.setHex(focused ? 0xd9f99d : 0xffd19a)
     },
     dispose() {
       mediaButton.removeEventListener('click', onOpenVideo)
