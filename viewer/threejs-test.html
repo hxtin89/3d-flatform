@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Three.js + WebGPU — MapTiler Globe + Point Cloud</title>
+    <title>Adaptive Globe Point Cloud</title>
     <style>
       :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px); }
       * { box-sizing: border-box; }
@@ -74,10 +74,6 @@
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
 
-      /* row visibility per mode */
-      .stream-only { display: none !important; }
-      body.stream-mode .flat-only { display: none !important; }
-      body.stream-mode .stream-only { display: flex !important; }
       .mask-circle-only { display: none !important; }
       body.mask-circle .mask-circle-only { display: flex !important; }
 
@@ -96,7 +92,7 @@
       }
     </style>
   </head>
-  <body class="stream-mode mask-circle mask-vignette">
+  <body class="mask-vignette">
     <canvas id="view"></canvas>
     <div id="vignette"></div>
     <div id="loader"><div class="bar"></div></div>
@@ -106,14 +102,16 @@
 
     <div id="hud" class="card">
       <button class="close" data-close="hud">×</button>
-      <h1>Three.js · WebGPU · Globe</h1>
+      <h1>Adaptive Point Cloud</h1>
       <span id="backend" class="badge">…</span>
       <div id="status">Initializing…</div>
       <div class="stats">
-        <span class="k">Loaded</span><span class="v" id="loaded">0</span>
-        <span class="k">Displayed</span><span class="v" id="displayed">—</span>
-        <span class="k">Visible</span><span class="v" id="visible">0</span>
-        <span class="k">Blocks/Tiles</span><span class="v" id="blocks">0</span>
+        <span class="k">Density</span><span class="v" id="loaded">—</span>
+        <span class="k">Adaptive LOD</span><span class="v" id="displayed">—</span>
+        <span class="k">Visible points</span><span class="v" id="visible">0</span>
+        <span class="k">Point tiles</span><span class="v" id="blocks">0</span>
+        <span class="k">Map tiles</span><span class="v" id="mapTiles">0</span>
+        <span class="k">Cache CPU · GPU</span><span class="v" id="cache">0 MB · 0 MB</span>
         <span class="k">FPS</span><span class="v" id="fpsv">—</span>
         <span class="k">ms/frame</span><span class="v" id="msv">—</span>
       </div>
@@ -123,24 +121,8 @@
       <button class="close" data-close="panel">×</button>
       <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
       <div class="row">
-        <label class="h">Point Cloud Mode</label>
-        <div class="seg" id="mode">
-          <button data-mode="stream" class="on">Streaming</button>
-          <button data-mode="rgb">F32·RGB</button>
-          <button data-mode="height">F16·Height</button>
-        </div>
-      </div>
-      <div class="row flat-only">
-        <label class="h">Point Budget · <span class="val" id="budgetv">1.5M</span></label>
-        <input type="range" id="budget" min="100000" max="3000000" step="100000" value="1500000" />
-      </div>
-      <div class="row">
         <label class="h">Point Size · <span class="val" id="sizev">2</span>px</label>
         <input type="range" id="size" min="1" max="8" step="0.5" value="2" />
-      </div>
-      <div class="row stream-only">
-        <label class="h">SSE (LOD) · <span class="val" id="ssev">16</span>px</label>
-        <input type="range" id="sse" min="2" max="64" step="1" value="16" />
       </div>
       <div class="row">
         <label class="h">Mask</label>

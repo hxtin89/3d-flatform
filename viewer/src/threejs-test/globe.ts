@@ -8,7 +8,7 @@ import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { texture } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
-import { XYZTilesPlugin, UpdateOnChangePlugin } from '3d-tiles-renderer/plugins'
+import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import { maskDimNode, type CloudUniforms } from './point-cloud'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
@@ -20,6 +20,7 @@ export interface Globe {
   ellipsoid: any
   update(): void
   setResolution(): void
+  stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
 
@@ -34,6 +35,17 @@ export function createGlobe(opts: {
   const { renderer, camera, scene, maptilerKey, uniforms } = opts
 
   const tiles = new TilesRenderer()
+  // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
+  // cache exists in addition to point-cloud geometry and was the largest
+  // unbounded allocation in the mobile path.
+  tiles.lruCache.minSize = 24
+  tiles.lruCache.maxSize = 96
+  tiles.lruCache.minBytesSize = 24 * 1024 * 1024
+  tiles.lruCache.maxBytesSize = 48 * 1024 * 1024
+  tiles.downloadQueue.maxJobs = 4
+  tiles.parseQueue.maxJobs = 2
+  tiles.processNodeQueue.maxJobs = 4
+  tiles.maxTilesProcessed = 80
   tiles.registerPlugin(new XYZTilesPlugin({
     shape: 'ellipsoid',
     useRecommendedSettings: true,
@@ -42,6 +54,8 @@ export function createGlobe(opts: {
     url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
   tiles.registerPlugin(new UpdateOnChangePlugin())
+  const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 32 * 1024 * 1024 })
+  tiles.registerPlugin(unloadPlugin as any)
   tiles.setCamera(camera)
   scene.add(tiles.group)
 
@@ -80,10 +94,22 @@ export function createGlobe(opts: {
     ellipsoid: (tiles as any).ellipsoid,
     update() {
       controls.update()
+      // EnvironmentControls adds a decorative GLSL ShaderMaterial pivot marker
+      // during mouse drags. WebGPURenderer only accepts node materials, including
+      // when it uses its WebGL2 backend. The marker is not part of navigation, so
+      // remove it before rendering; touch controls already hide it themselves.
+      ;(controls as any).pivotMesh?.removeFromParent()
       camera.updateMatrixWorld()
       tiles.update()
     },
     setResolution,
+    stats() {
+      return {
+        visible: tiles.visibleTiles.size,
+        cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
+        gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
+      }
+    },
     dispose() {
       controls.dispose()
       tiles.dispose()

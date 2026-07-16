@@ -1,8 +1,6 @@
-// Minimal area-manifest reader — just the three things the map view needs:
+// Minimal area-manifest reader — just the placement and One LOD entry the map needs:
 //   rootTransform    ENU→ECEF matrix (column-major 16) that places local-ENU point
 //                    coordinates onto the WGS84 globe (same one Cesium uses)
-//   overview dataset streamed in "Streaming" mode (full-area LOD octree)
-//   explore dataset  loaded flat in the F16/F32 single-buffer modes
 // Full manifest schema lives in the Cesium viewer's src/manifest.ts.
 
 export interface GlobeManifest {
@@ -10,18 +8,19 @@ export interface GlobeManifest {
   rootTransform: number[]
   /** [lon, lat, heightM] of the ENU origin */
   enuOriginLonLat: [number, number, number]
-  /** dataset path for streaming LOD (overview, whole survey) */
-  overviewDataset: string
-  /** dataset path for the flat single-buffer modes (densest bounded area) */
-  exploreDataset: string
-  /** full-density dataset of the first area (streaming detail tier), if built */
-  detailDataset: string | null
-  /** ENU-frame bbox of the explore area: [minX,minY,minZ,maxX,maxY,maxZ] */
+  /** One external Overview -> Explore -> Detail tree covering all manifest areas. */
+  oneLodTreeDataset: string
+  oneLodTreeTilesetFile: 'tileset-one-lod-tree.json'
+  /** ENU-frame bbox used for the initial camera target. */
   areaBbox: number[] | null
 }
 
 export async function fetchGlobeManifest(baseUrl: string, dataset: string): Promise<GlobeManifest> {
-  const res = await fetch(`${baseUrl}/${dataset}/area-manifest.json`, { cache: 'no-store' })
+  const cleanDataset = dataset.replace(/^\/+|\/+$/g, '')
+  if (!cleanDataset || cleanDataset.split('/').some((part) => !part || part === '.' || part === '..')) {
+    throw new Error(`invalid logical dataset: ${dataset}`)
+  }
+  const res = await fetch(`${baseUrl}/${cleanDataset}/area-manifest.json`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`area-manifest HTTP ${res.status}`)
   const m = await res.json()
 
@@ -30,15 +29,14 @@ export async function fetchGlobeManifest(baseUrl: string, dataset: string): Prom
     throw new Error('manifest has no usable rootTransform (globe dataset required)')
   }
 
-  const area = m.areas?.[0] ?? null
-  const explore = area?.datasets?.explore
-  const detail = area?.datasets?.detail
+  const defaultArea = m.areas?.find((area: any) => area.areaId === m.defaultAreaId)
+    ?? m.areas?.[0]
+    ?? null
   return {
     rootTransform,
     enuOriginLonLat: m.enuOriginLonLat,
-    overviewDataset: m.datasets.overview.dataset,
-    exploreDataset: explore?.dataset ?? m.datasets.overview.dataset, // fall back to overview
-    detailDataset: detail?.status === 'ready' ? detail.dataset : null,
-    areaBbox: Array.isArray(area?.bbox) && area.bbox.length === 6 ? area.bbox : null,
+    oneLodTreeDataset: `${cleanDataset}/${cleanDataset}-one-lod-tree`,
+    oneLodTreeTilesetFile: 'tileset-one-lod-tree.json',
+    areaBbox: Array.isArray(defaultArea?.bbox) && defaultArea.bbox.length === 6 ? defaultArea.bbox : null,
   }
 }
