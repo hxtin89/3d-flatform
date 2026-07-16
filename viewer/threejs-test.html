@@ -5,27 +5,113 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Adaptive Globe Point Cloud</title>
     <style>
-      :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px); }
+      :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+              --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: #02040a; overflow: hidden;
-                   font: 13px/1.45 system-ui, sans-serif; color: #e8eaed; -webkit-user-select: none; user-select: none; }
+                   font: 13px/1.45 "Avenir Next", "Helvetica Neue", sans-serif; color: #e8eaed;
+                   -webkit-user-select: none; user-select: none; }
       #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 
       /* vignette look: pure screen-space overlay (the point data is hard-clipped at a
          world radius derived from the viewport — this gradient hides the cut edge).
          CSS only → adapts to every viewport/resize for free, zero render cost. */
       #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; opacity: 0;
-                  background: radial-gradient(ellipse at center,
-                    rgba(2,4,10,0) 0%, rgba(2,4,10,0) 46%, rgba(2,4,10,0.4) 66%, rgba(2,4,10,0.72) 88%); }
+                  background:
+                    radial-gradient(ellipse at center,
+                      transparent 0%, transparent 45%, rgba(218,249,157,.12) 49%, transparent 50.5%),
+                    radial-gradient(ellipse at center,
+                      rgba(0,15,11,0) 0%, rgba(0,15,11,.04) 48%, rgba(0,20,14,.22) 69%, rgba(0,24,17,.42) 100%); }
       body.mask-vignette #vignette { display: block; }
 
-      /* preloader: hairline progress bar along the top edge */
-      #loader { position: fixed; top: var(--safe-t); left: 0; right: 0; height: 2px; z-index: 40; pointer-events: none; }
-      #loader .bar { height: 100%; transform-origin: 0 50%; transform: scaleX(0);
-                     background: linear-gradient(90deg, #1f6feb, #58a6ff, #6ee787);
-                     box-shadow: 0 0 8px rgba(31,111,235,.75), 0 0 2px rgba(110,231,135,.6);
-                     transition: transform .25s ease; }
-      #loader.done { opacity: 0; transition: opacity .45s ease .2s; }
+      /* Fullscreen boot sequence: field-station typography + the Wilderness eagle
+         filling from the ground up. The map renders underneath while this layer owns input. */
+      #loader { --loader-progress: 0%; position: fixed; inset: 0; z-index: 120; display: grid; overflow: hidden;
+                place-items: center; padding: calc(28px + var(--safe-t)) 24px calc(24px + var(--safe-b));
+                color: var(--forest); background: var(--paper); transition: opacity .6s ease, transform .6s ease;
+                isolation: isolate; }
+      #loader[hidden] { display: none; }
+      #loader::before { content: ""; position: absolute; inset: -30%; z-index: -2; opacity: .42;
+                        background:
+                          repeating-radial-gradient(ellipse at 28% 62%, transparent 0 28px, rgba(0,68,50,.09) 29px 30px),
+                          repeating-radial-gradient(ellipse at 72% 28%, transparent 0 44px, rgba(0,68,50,.055) 45px 46px);
+                        transform: rotate(-8deg) scale(1.08); }
+      #loader::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: .22;
+                       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+                       mix-blend-mode: multiply; }
+      #loader.finishing { opacity: 0; transform: translateY(-1.5%); pointer-events: none; }
+      .loader-kicker { position: absolute; top: calc(25px + var(--safe-t)); left: 28px; right: 28px;
+                       display: flex; justify-content: space-between; gap: 20px; padding-bottom: 11px;
+                       border-bottom: 1px solid rgba(0,68,50,.25); font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .16em; text-transform: uppercase; }
+      .loader-kicker span:last-child { opacity: .52; text-align: right; }
+      .loader-content { width: min(560px, 100%); display: grid; justify-items: center; text-align: center; }
+      .loader-eagle-frame { position: relative; width: min(74vw, 360px); aspect-ratio: 82 / 49; margin-bottom: clamp(28px, 6vh, 52px); }
+      .loader-eagle { position: absolute; inset: 0; background: var(--forest);
+                      -webkit-mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat;
+                      mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat; }
+      .loader-eagle-ghost { opacity: .12; transform: scale(1.012); }
+      .loader-eagle-fill { clip-path: inset(calc(100% - var(--loader-progress)) 0 0 0);
+                           filter: drop-shadow(0 -8px 18px rgba(0,68,50,.2));
+                           transition: clip-path .28s cubic-bezier(.2,.75,.25,1); }
+      .loader-system { margin: 0 0 7px; font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .2em; text-transform: uppercase; opacity: .58; }
+      #loaderStatus { min-height: 1.5em; margin: 0; font: 500 clamp(17px, 4vw, 22px)/1.25 "Iowan Old Style", Baskerville, serif; }
+      .loader-meter { display: flex; align-items: baseline; margin-top: 18px; font-variant-numeric: tabular-nums; letter-spacing: -.06em; }
+      #loaderPercent { font: 500 clamp(64px, 18vw, 116px)/.86 "Iowan Old Style", Baskerville, serif; }
+      .loader-meter small { margin-left: 8px; font: 700 13px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .04em; }
+      .loader-retry { margin-top: 22px; border: 1px solid var(--forest); border-radius: 999px; padding: 10px 17px;
+                      color: var(--forest); background: transparent; font: 700 11px/1 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+      .loader-retry[hidden] { display: none; }
+
+      /* DOM labels projected from real Three.js markers. */
+      #markerOverlay { position: fixed; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
+      .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
+                          will-change: transform, opacity; transition: opacity .18s ease; }
+      .map-marker-label[hidden] { display: none; }
+      .temperature-marker-label { display: grid; grid-template-columns: auto auto; align-items: center; gap: 2px 8px;
+                                  min-width: 126px; padding: 7px 9px 8px; margin-top: -10px; color: #f5f2e8;
+                                  background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
+                                  border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
+                                  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+      .temperature-live { grid-row: 1; width: max-content; color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                          letter-spacing: .12em; }
+      .temperature-live::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
+                                  border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 3px rgba(217,249,157,.14); }
+      .temperature-station { grid-row: 1; text-align: right; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .09em; }
+      .temperature-value { grid-column: 1 / -1; font: 600 20px/1.05 "Iowan Old Style", Baskerville, serif; }
+      .media-marker-label { pointer-events: auto; display: flex; align-items: center; gap: 8px; margin-top: -12px;
+                            padding: 7px 11px 7px 7px; border: 1px solid rgba(255,209,154,.65); border-radius: 999px;
+                            color: #20150c; background: rgba(255,240,219,.92); box-shadow: 0 10px 34px rgba(0,15,10,.28);
+                            backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); cursor: pointer; }
+      .media-marker-label:active { filter: brightness(.92); }
+      .media-marker-icon { display: grid; place-items: center; width: 28px; height: 28px; padding-left: 2px;
+                           border-radius: 50%; color: #fff; background: #9e4d16; font-size: 10px; }
+      .media-marker-label b, .media-marker-label small { display: block; text-align: left; }
+      .media-marker-label b { font: 800 9px/1.1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
+      .media-marker-label small { margin-top: 3px; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
+
+      /* Video lives in the DOM, never in a GPU texture. */
+      .video-modal { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center;
+                     padding: calc(22px + var(--safe-t)) 18px calc(22px + var(--safe-b));
+                     background: rgba(0,24,17,.74); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+      .video-modal[hidden] { display: none; }
+      .video-card { width: min(980px, 100%); overflow: hidden; border: 1px solid rgba(239,235,222,.35); border-radius: 20px;
+                    color: var(--paper); background: #001e17; box-shadow: 0 30px 100px rgba(0,0,0,.45); }
+      .video-card-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 16px; }
+      .video-eyebrow { margin: 0 0 4px; color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .15em; text-transform: uppercase; }
+      .video-card h2 { margin: 0; font: 500 clamp(18px, 4vw, 28px)/1.1 "Iowan Old Style", Baskerville, serif; }
+      .video-close { flex: none; width: 38px; height: 38px; border: 1px solid rgba(240,237,227,.28); border-radius: 50%;
+                     color: var(--paper); background: rgba(255,255,255,.06); font: 300 24px/1 sans-serif; cursor: pointer; }
+      .video-frame { position: relative; aspect-ratio: 16 / 9; background: #00110d; }
+      .video-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #00110d; }
+      #videoStatus { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); margin: 0;
+                     font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace; letter-spacing: .12em;
+                     text-transform: uppercase; color: rgba(240,237,227,.72); pointer-events: none; }
+      .video-modal.is-playing #videoStatus { display: none; }
 
       .card { position: fixed; background: rgba(14,17,22,0.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
               border: 1px solid #262b32; border-radius: 12px; padding: 12px 14px; z-index: 20; }
@@ -89,13 +175,36 @@
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
         #hint { display: none !important; }
         #attribution { left: 10px; right: auto; }
+        .loader-kicker { left: 18px; right: 18px; }
+        .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
+        .temperature-value { font-size: 18px; }
+        .video-modal { padding-left: 10px; padding-right: 10px; }
+        .video-card { border-radius: 15px; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #loader, .loader-eagle-fill, .map-marker-label { transition-duration: .01ms !important; }
       }
     </style>
   </head>
   <body class="mask-vignette">
     <canvas id="view"></canvas>
     <div id="vignette"></div>
-    <div id="loader"><div class="bar"></div></div>
+    <div id="markerOverlay" aria-live="polite"></div>
+
+    <div id="loader" role="progressbar" aria-label="Point Cloud wird geladen" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
+      <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
+      <div class="loader-content">
+        <div class="loader-eagle-frame" aria-hidden="true">
+          <div class="loader-eagle loader-eagle-ghost"></div>
+          <div class="loader-eagle loader-eagle-fill"></div>
+        </div>
+        <p class="loader-system">Flight preparation / point cloud</p>
+        <p id="loaderStatus" aria-live="polite">Initialisiere Feldsystem …</p>
+        <div class="loader-meter"><span id="loaderPercent">00</span><small>%</small></div>
+        <button class="loader-retry" id="loaderRetry" type="button" hidden>Erneut versuchen</button>
+      </div>
+    </div>
 
     <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>
     <button class="chip" id="panelChip" aria-label="Settings">⚙</button>
@@ -140,6 +249,22 @@
 
     <div id="hint" class="card">Drag = rotate globe · Wheel/pinch = zoom</div>
     <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
+
+    <div id="videoModal" class="video-modal" role="dialog" aria-modal="true" aria-labelledby="videoTitle" hidden>
+      <section class="video-card">
+        <header class="video-card-header">
+          <div>
+            <p class="video-eyebrow">Wilderness International · Field Film</p>
+            <h2 id="videoTitle">Der Wald ist unser stärkster Verbündeter.</h2>
+          </div>
+          <button id="videoClose" class="video-close" type="button" aria-label="Video schließen">×</button>
+        </header>
+        <div class="video-frame">
+          <video id="fieldVideo" controls playsinline preload="none" aria-label="Wilderness International Imagefilm"></video>
+          <p id="videoStatus">Video wird geladen …</p>
+        </div>
+      </section>
+    </div>
 
     <script type="module" src="/src/threejs-test/main.ts"></script>
   </body>

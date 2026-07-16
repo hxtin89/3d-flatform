@@ -58,7 +58,7 @@ export function createCloudMaterial(u: CloudUniforms): PointsNodeMaterial {
       .and(distance.greaterThan(u.maskRadius)), () => Discard())
 
     // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    return (attribute('color', 'vec3') as any).pow(2.2).mul(maskDimNode(u, 0.25))
+    return (attribute('color', 'vec3') as any).pow(2.2).mul(maskDimNode(u, 0.30))
   })()
 
   return material

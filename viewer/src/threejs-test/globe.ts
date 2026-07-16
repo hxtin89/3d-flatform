@@ -76,7 +76,9 @@ export function createGlobe(opts: {
       map.flipY = false
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
-      mat.colorNode = texture(map).mul(maskDimNode(uniforms, 0.25))
+      // Keep enough satellite context outside the cloud spotlight to read paths
+      // and terrain while the CSS vignette still provides a strong focal frame.
+      mat.colorNode = texture(map).mul(maskDimNode(uniforms, 0.50))
       o.material.dispose()
       o.material = mat
     })
