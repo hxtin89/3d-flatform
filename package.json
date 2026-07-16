@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Local self-hosted point cloud pipeline: LAZ → PDAL → COPC → 3D Tiles → CesiumJS",
   "scripts": {
+    "dev": "npm run viewer:dev",
     "pipeline:download": "bash pipeline/download.sh",
     "pipeline:inspect": "bash pipeline/inspect.sh",
     "pipeline:prepare": "bash pipeline/prepare.sh",

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Three.js + WebGPU — MapTiler Globe + Point Cloud</title>
+    <style>
+      :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px); }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #02040a; overflow: hidden;
+                   font: 13px/1.45 system-ui, sans-serif; color: #e8eaed; -webkit-user-select: none; user-select: none; }
+      #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+      /* vignette look: pure screen-space overlay (the point data is hard-clipped at a
+         world radius derived from the viewport — this gradient hides the cut edge).
+         CSS only → adapts to every viewport/resize for free, zero render cost. */
+      #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; opacity: 0;
+                  background: radial-gradient(ellipse at center,
+                    rgba(2,4,10,0) 0%, rgba(2,4,10,0) 46%, rgba(2,4,10,0.4) 66%, rgba(2,4,10,0.72) 88%); }
+      body.mask-vignette #vignette { display: block; }
+
+      /* preloader: hairline progress bar along the top edge */
+      #loader { position: fixed; top: var(--safe-t); left: 0; right: 0; height: 2px; z-index: 40; pointer-events: none; }
+      #loader .bar { height: 100%; transform-origin: 0 50%; transform: scaleX(0);
+                     background: linear-gradient(90deg, #1f6feb, #58a6ff, #6ee787);
+                     box-shadow: 0 0 8px rgba(31,111,235,.75), 0 0 2px rgba(110,231,135,.6);
+                     transition: transform .25s ease; }
+      #loader.done { opacity: 0; transition: opacity .45s ease .2s; }
+
+      .card { position: fixed; background: rgba(14,17,22,0.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+              border: 1px solid #262b32; border-radius: 12px; padding: 12px 14px; z-index: 20; }
+
+      /* toggle chips — always visible, opposite corners, never overlapping */
+      .chip { position: fixed; z-index: 30; display: flex; align-items: center; gap: 6px;
+              background: rgba(14,17,22,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+              border: 1px solid #2d333b; border-radius: 999px; padding: 8px 13px; cursor: pointer;
+              font: 600 13px/1 system-ui, sans-serif; color: #e8eaed; }
+      .chip:active { transform: scale(0.96); }
+      #hudChip { top: calc(10px + var(--safe-t)); left: 10px; }
+      #panelChip { top: calc(10px + var(--safe-t)); right: 10px; }
+      #chipFps { font-variant-numeric: tabular-nums; }
+      #chipFps.good { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
+
+      .card .close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #8b949e;
+                     font-size: 17px; line-height: 1; cursor: pointer; padding: 4px; }
+
+      /* HUD (stats) */
+      #hud { top: calc(52px + var(--safe-t)); left: 10px; min-width: 210px; display: none; }
+      body.hud-open #hud { display: block; }
+      #hud h1 { margin: 0 14px 6px 0; font-size: 14px; font-weight: 600; }
+      .badge { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+               padding: 2px 7px; border-radius: 5px; background: #1f6feb33; color: #79b8ff; border: 1px solid #1f6feb55; }
+      .badge.webgl { background: #b5842033; color: #f0c674; border-color: #b5842055; }
+      #status { margin: 8px 0 0; opacity: .8; font-size: 12px; }
+      .stats { margin-top: 8px; display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+      .stats .k { opacity: .55; }
+      .stats .v { text-align: right; font-weight: 600; }
+      #fpsv.good { color: #6ee787; } #fpsv.warn { color: #f0c674; } #fpsv.bad { color: #ff7b72; }
+
+      /* control panel */
+      #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px; }
+      body.panel-open #panel { display: flex; }
+      .row { display: flex; flex-direction: column; gap: 5px; }
+      .row > label.h { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .55; }
+      .seg { display: flex; border: 1px solid #2d333b; border-radius: 8px; overflow: hidden; }
+      .seg button { flex: 1; background: transparent; color: #b9c0c8; border: 0; padding: 8px 3px; font: inherit; font-size: 12px; cursor: pointer; }
+      .seg button.on { background: #1f6feb; color: #fff; }
+      input[type=range] { width: 100%; accent-color: #1f6feb; height: 28px; }
+      .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+      button.act { background: #21262d; color: #e8eaed; border: 1px solid #2d333b; border-radius: 8px;
+                   padding: 9px; font: inherit; cursor: pointer; }
+      button.act.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button.act:active { transform: translateY(1px); }
+      button:disabled { opacity: .45; pointer-events: none; }
+
+      /* row visibility per mode */
+      .stream-only { display: none !important; }
+      body.stream-mode .flat-only { display: none !important; }
+      body.stream-mode .stream-only { display: flex !important; }
+      .mask-circle-only { display: none !important; }
+      body.mask-circle .mask-circle-only { display: flex !important; }
+
+      #hint { bottom: calc(10px + var(--safe-b)); left: 50%; transform: translateX(-50%); text-align: center;
+              opacity: .75; font-size: 12px; padding: 7px 12px; z-index: 10; }
+      #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
+      #attribution a { color: inherit; }
+
+      /* ---------- mobile: panel becomes a bottom sheet, hint disappears ---------- */
+      @media (max-width: 700px) {
+        #hud { left: 10px; right: 10px; min-width: 0; }
+        #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
+                 border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
+        #hint { display: none !important; }
+        #attribution { left: 10px; right: auto; }
+      }
+    </style>
+  </head>
+  <body class="stream-mode mask-circle mask-vignette">
+    <canvas id="view"></canvas>
+    <div id="vignette"></div>
+    <div id="loader"><div class="bar"></div></div>
+
+    <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>
+    <button class="chip" id="panelChip" aria-label="Settings">⚙</button>
+
+    <div id="hud" class="card">
+      <button class="close" data-close="hud">×</button>
+      <h1>Three.js · WebGPU · Globe</h1>
+      <span id="backend" class="badge">…</span>
+      <div id="status">Initializing…</div>
+      <div class="stats">
+        <span class="k">Loaded</span><span class="v" id="loaded">0</span>
+        <span class="k">Displayed</span><span class="v" id="displayed">—</span>
+        <span class="k">Visible</span><span class="v" id="visible">0</span>
+        <span class="k">Blocks/Tiles</span><span class="v" id="blocks">0</span>
+        <span class="k">FPS</span><span class="v" id="fpsv">—</span>
+        <span class="k">ms/frame</span><span class="v" id="msv">—</span>
+      </div>
+    </div>
+
+    <div id="panel" class="card">
+      <button class="close" data-close="panel">×</button>
+      <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
+      <div class="row">
+        <label class="h">Point Cloud Mode</label>
+        <div class="seg" id="mode">
+          <button data-mode="stream" class="on">Streaming</button>
+          <button data-mode="rgb">F32·RGB</button>
+          <button data-mode="height">F16·Height</button>
+        </div>
+      </div>
+      <div class="row flat-only">
+        <label class="h">Point Budget · <span class="val" id="budgetv">1.5M</span></label>
+        <input type="range" id="budget" min="100000" max="3000000" step="100000" value="1500000" />
+      </div>
+      <div class="row">
+        <label class="h">Point Size · <span class="val" id="sizev">2</span>px</label>
+        <input type="range" id="size" min="1" max="8" step="0.5" value="2" />
+      </div>
+      <div class="row stream-only">
+        <label class="h">SSE (LOD) · <span class="val" id="ssev">16</span>px</label>
+        <input type="range" id="sse" min="2" max="64" step="1" value="16" />
+      </div>
+      <div class="row">
+        <label class="h">Mask</label>
+        <div class="seg" id="maskSeg">
+          <button data-mask="0">Off</button>
+          <button data-mask="1">Circle</button>
+          <button data-mask="2" class="on">Vignette</button>
+        </div>
+      </div>
+      <div class="row mask-circle-only">
+        <label class="h">Mask Radius · <span class="val" id="radiusv">120</span>m</label>
+        <input type="range" id="radius" min="10" max="600" step="5" value="120" />
+      </div>
+    </div>
+
+    <div id="hint" class="card">Drag = rotate globe · Wheel/pinch = zoom</div>
+    <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
+
+    <script type="module" src="/src/threejs-test/main.ts"></script>
+  </body>
+</html>
