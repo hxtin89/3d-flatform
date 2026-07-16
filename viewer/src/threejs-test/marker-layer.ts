@@ -3,7 +3,18 @@ import { MeshBasicNodeMaterial } from 'three/webgpu'
 
 const MIN_TEMPERATURE = 28.6
 const MAX_TEMPERATURE = 34.2
-const LABEL_MAX_RANGE = 12_000
+const FULL_LABEL_MAX_RANGE = 1_800
+const COMPACT_LABEL_MAX_RANGE = 6_800
+const LABEL_COLLISION_GAP = 7
+
+type LabelMode = 'full' | 'compact' | 'pins'
+
+interface ScreenBox {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
 
 interface MarkerLayerOptions {
   scene: THREE.Scene
@@ -28,6 +39,8 @@ interface MarkerRecord {
   valueElement?: HTMLElement
   labelOffsetX?: number
   labelOffsetY?: number
+  labelWidth: number
+  labelHeight: number
 }
 
 export interface MarkerLayer {
@@ -167,6 +180,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       temperaturePeriod: 12_000 + random() * 9_000,
       labelOffsetX: Math.cos(angle) * 36,
       labelOffsetY: -Math.sin(angle) * 24,
+      labelWidth: 0,
+      labelHeight: 0,
     })
   }
 
@@ -198,6 +213,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     anchor: mediaAnchor,
     label: mediaButton,
     phase: random() * Math.PI * 2,
+    labelWidth: 0,
+    labelHeight: 0,
   })
 
   root.updateMatrixWorld(true)
@@ -206,8 +223,33 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   const viewPosition = new THREE.Vector3()
   const projected = new THREE.Vector3()
   let lastTemperatureUpdate = -Infinity
+  let labelMode: LabelMode | null = null
+  let measuredViewportWidth = -1
 
-  function updateLabel(marker: MarkerRecord, camera: THREE.PerspectiveCamera, opacity: number): void {
+  function syncLabelMode(nextMode: LabelMode): void {
+    const compact = nextMode === 'compact'
+    for (const marker of markers) {
+      marker.label.classList.toggle('is-compact', compact)
+      marker.label.hidden = false
+    }
+    // Measurements happen only when the LOD or responsive breakpoint changes,
+    // never in the hot render path.
+    for (const marker of markers) {
+      marker.labelWidth = marker.label.offsetWidth
+      marker.labelHeight = marker.label.offsetHeight
+    }
+    labelMode = nextMode
+    measuredViewportWidth = window.innerWidth
+  }
+
+  function overlaps(left: ScreenBox, right: ScreenBox): boolean {
+    return left.left < right.right + LABEL_COLLISION_GAP
+      && left.right > right.left - LABEL_COLLISION_GAP
+      && left.top < right.bottom + LABEL_COLLISION_GAP
+      && left.bottom > right.top - LABEL_COLLISION_GAP
+  }
+
+  function updateLabel(marker: MarkerRecord, camera: THREE.PerspectiveCamera, opacity: number): ScreenBox | null {
     marker.anchor.getWorldPosition(worldPosition)
     viewPosition.copy(worldPosition).applyMatrix4(camera.matrixWorldInverse)
     projected.copy(worldPosition).project(camera)
@@ -218,9 +260,9 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       && Math.abs(projected.y) < 1.08
 
     marker.label.hidden = !visible
-    if (!visible) return
-    const halfWidth = marker.label.offsetWidth * 0.5
-    const labelHeight = marker.label.offsetHeight
+    if (!visible) return null
+    const halfWidth = marker.labelWidth * 0.5
+    const labelHeight = marker.labelHeight
     const x = THREE.MathUtils.clamp(
       (projected.x * 0.5 + 0.5) * window.innerWidth + (marker.labelOffsetX ?? 0),
       halfWidth + 7,
@@ -233,13 +275,17 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     )
     marker.label.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%)`
     marker.label.style.opacity = opacity.toFixed(3)
+    return {
+      left: x - halfWidth,
+      right: x + halfWidth,
+      top: y - labelHeight,
+      bottom: y,
+    }
   }
 
   return {
     update(now, camera, cameraGroundRange) {
-      root.updateMatrixWorld(true)
       const markerScale = THREE.MathUtils.clamp(cameraGroundRange / 1500, 0.72, 4)
-      const labelOpacity = THREE.MathUtils.clamp((LABEL_MAX_RANGE - cameraGroundRange) / 3500, 0, 1)
       const updateTemperatures = now - lastTemperatureUpdate >= 1000
       if (updateTemperatures) lastTemperatureUpdate = now
 
@@ -256,7 +302,35 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
           )
           marker.valueElement.textContent = `${value.toFixed(1).replace('.', ',')} °C`
         }
-        updateLabel(marker, camera, labelOpacity)
+      }
+
+      const nextMode: LabelMode = cameraGroundRange < FULL_LABEL_MAX_RANGE
+        ? 'full'
+        : cameraGroundRange < COMPACT_LABEL_MAX_RANGE
+          ? 'compact'
+          : 'pins'
+      if (labelMode !== nextMode || measuredViewportWidth !== window.innerWidth) syncLabelMode(nextMode)
+
+      root.updateMatrixWorld(true)
+      if (nextMode === 'pins') {
+        for (const marker of markers) marker.label.hidden = true
+        return
+      }
+
+      const labelOpacity = nextMode === 'compact'
+        ? THREE.MathUtils.clamp((COMPACT_LABEL_MAX_RANGE - cameraGroundRange) / 1000, 0, 1)
+        : 1
+      const acceptedBoxes: ScreenBox[] = []
+      for (const marker of markers) {
+        const box = updateLabel(marker, camera, labelOpacity)
+        if (!box) continue
+        // Temperature stations have priority. The media action is deliberately
+        // last, so it disappears before obscuring live environmental data.
+        if (acceptedBoxes.some((accepted) => overlaps(box, accepted))) {
+          marker.label.hidden = true
+          continue
+        }
+        acceptedBoxes.push(box)
       }
     },
     dispose() {

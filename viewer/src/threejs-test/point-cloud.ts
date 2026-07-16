@@ -10,7 +10,7 @@ import {
 export interface CloudUniforms {
   maskCenter: any
   maskRadius: any
-  /** 0 = off, 1 = world circle, 2 = viewport vignette. */
+  /** 0 = off, 2 = viewport vignette. */
   maskMode: any
   vignetteStrength: any
   pointSize: any
@@ -52,8 +52,6 @@ export function createCloudMaterial(u: CloudUniforms): PointsNodeMaterial {
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
     const distance = length(enu.xy.sub(u.maskCenter))
 
-    If(u.maskMode.greaterThan(0.5).and(u.maskMode.lessThan(1.5))
-      .and(distance.greaterThan(u.maskRadius)), () => Discard())
     If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
       .and(distance.greaterThan(u.maskRadius)), () => Discard())
 

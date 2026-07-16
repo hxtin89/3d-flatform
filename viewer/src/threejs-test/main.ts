@@ -9,6 +9,7 @@ import { createStreamingCloud, type StreamingCloud, type StreamingStats } from '
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController } from './adaptive-quality'
 import { createMarkerLayer, type MarkerLayer } from './marker-layer'
+import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 
 // ---------------------------------------------------------------- config
@@ -103,7 +104,7 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
     bootLoading = false
     window.clearInterval(loaderStallTimer)
     setStatus('Adaptive streaming · ready')
-    flyToCloud(3000, true)
+    flyToCloud(reducedMotion ? 900 : 6200, true)
   }
 }
 
@@ -133,10 +134,15 @@ const renderer = new WebGPURenderer({ canvas, antialias: false, forceWebGL } as 
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
-renderer.setClearColor(0x02040a, 1)
+// Daylight sky above the globe horizon. The matching distance fog hides the
+// finite map edge without another mesh, texture sample or post-process pass.
+const DAYLIGHT_SKY = 0x8bc9ec
+renderer.setClearColor(DAYLIGHT_SKY, 1)
 
 const scene = new THREE.Scene()
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 10, 1e8)
+const distanceFog = new THREE.Fog(DAYLIGHT_SKY, 360_000, 600_000)
+scene.fog = distanceFog
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 10, 650_000)
 const uniforms = createUniforms()
 const adaptiveQuality = new AdaptiveQualityController()
 const fps = new Fps()
@@ -144,10 +150,37 @@ const fps = new Fps()
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
+let rainLayer: RainLayer | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
 let cameraGroundRange = Infinity
 let graphicsFailed = false
+let cinematicFlightProgress = 1
+let atmosphereFar = camera.far
+let lastAtmosphereUpdate = -Infinity
+
+const rainToggleEl = $<HTMLButtonElement>('#rainToggle')
+let rainRequested = false
+let rainVisualActive = false
+
+function updateRainToggle(): void {
+  rainToggleEl.classList.toggle('on', rainRequested)
+  rainToggleEl.setAttribute('aria-pressed', String(rainRequested))
+  rainToggleEl.textContent = !rainRequested
+    ? '☂ Rain · Off'
+    : rainVisualActive
+      ? '☂ Rain · Active'
+      : '☂ Rain · Near view'
+}
+
+const onRainToggle = () => {
+  rainRequested = !rainRequested
+  rainLayer?.setEnabled(rainRequested)
+  if (!rainRequested) rainVisualActive = false
+  updateRainToggle()
+}
+rainToggleEl.addEventListener('click', onRainToggle)
+updateRainToggle()
 
 // ENU -> ECEF frame of the survey.
 const enuFrame = new THREE.Matrix4()
@@ -159,6 +192,12 @@ let zOffset = 0
 
 function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
   return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrame)
+}
+
+function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
+  target.copy(value).applyMatrix4(enuInverse)
+  target.z -= zOffset
+  return target
 }
 
 // ---------------------------------------------------------------- on-demand field film
@@ -287,7 +326,6 @@ function setMaskMode(mode: number): void {
     uniforms.vignetteStrength.value = 0
     vignetteEl.style.opacity = '0'
   }
-  document.body.classList.toggle('mask-circle', mode === 1)
   document.body.classList.toggle('mask-vignette', mode === 2)
   document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button) =>
     button.classList.toggle('on', Number(button.dataset.mask) === mode))
@@ -324,50 +362,132 @@ function updateMaskFollow(): void {
     return
   }
 
-  let cullActive = true
-  if (mode === 1) {
-    uniforms.maskRadius.value = Number(radiusEl.value)
-  } else {
-    const radius = THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000)
-    const strength = 1 - smooth01(4, 20, cameraGroundRange / radius)
-    uniforms.maskRadius.value = radius
-    uniforms.vignetteStrength.value = strength
-    vignetteEl.style.opacity = String(strength)
-    cullActive = strength > 0.9
-  }
+  const radius = THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000)
+  const strength = 1 - smooth01(4, 20, cameraGroundRange / radius)
+  const flightBlend = smooth01(0.68, 1, cinematicFlightProgress)
+  const visibleStrength = strength * flightBlend
+  uniforms.maskRadius.value = radius
+  uniforms.vignetteStrength.value = visibleStrength
+  vignetteEl.style.opacity = String(visibleStrength)
 
   maskWorldRadius = uniforms.maskRadius.value + 80
   maskSphereEnu.set(followEnu.x, followEnu.y, areaMinZ + 50)
   enuToWorld(maskSphereEnu, maskSphereWorld)
-  maskWorldActive = cullActive
+  maskWorldActive = visibleStrength > 0.9
+}
+
+/**
+ * Blend the finite globe into the sky and keep the camera frustum proportional
+ * to the current viewing height. Updating at 8 Hz avoids projection-matrix
+ * churn while still following zoom and the cinematic flight smoothly.
+ */
+function updateAtmosphere(now: number): void {
+  if (now - lastAtmosphereUpdate < 125) return
+  lastAtmosphereUpdate = now
+
+  const range = Number.isFinite(cameraGroundRange) ? cameraGroundRange : 120_000
+  const targetFar = THREE.MathUtils.clamp(range * 5.5, 24_000, 650_000)
+  atmosphereFar = THREE.MathUtils.lerp(atmosphereFar, targetFar, 0.22)
+
+  camera.far = atmosphereFar
+  camera.updateProjectionMatrix()
+  distanceFog.near = atmosphereFar * 0.52
+  distanceFog.far = atmosphereFar * 0.90
 }
 
 // ---------------------------------------------------------------- fly-to
-let flight: { from: THREE.Vector3; to: THREE.Vector3; look: THREE.Vector3; t0: number; duration: number } | null = null
+interface CameraFlight {
+  start: THREE.Vector3
+  control1: THREE.Vector3
+  control2: THREE.Vector3
+  end: THREE.Vector3
+  t0: number
+  duration: number
+  lastUpdate: number
+}
 
-function flyToCloud(duration = 2500, startFromOverview = false): void {
-  const to = enuToWorld(new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y - 2200, cloudCenterEnu.z + 1500))
+let flight: CameraFlight | null = null
+const flightPositionEnu = new THREE.Vector3()
+const flightLookEnu = new THREE.Vector3()
+const flightPositionWorld = new THREE.Vector3()
+const flightLookWorld = new THREE.Vector3()
+// Camera.lookAt() uses the camera's -Z forward axis. A plain Object3D would use
+// +Z here and make the interpolated orientation turn away from the terrain.
+const flightOrientation = new THREE.PerspectiveCamera()
+
+function sampleFlightPath(activeFlight: CameraFlight, progress: number, target: THREE.Vector3): THREE.Vector3 {
+  const rawT = THREE.MathUtils.clamp(progress, 0, 1)
+  // One continuous curve: global smootherstep only eases the endpoints, never
+  // introduces the zero-velocity seam that the former two-stage path had.
+  const t = rawT * rawT * rawT * (rawT * (rawT * 6 - 15) + 10)
+  const inverse = 1 - t
+  return target.set(
+    inverse * inverse * inverse * activeFlight.start.x
+      + 3 * inverse * inverse * t * activeFlight.control1.x
+      + 3 * inverse * t * t * activeFlight.control2.x
+      + t * t * t * activeFlight.end.x,
+    inverse * inverse * inverse * activeFlight.start.y
+      + 3 * inverse * inverse * t * activeFlight.control1.y
+      + 3 * inverse * t * t * activeFlight.control2.y
+      + t * t * t * activeFlight.end.y,
+    inverse * inverse * inverse * activeFlight.start.z
+      + 3 * inverse * inverse * t * activeFlight.control1.z
+      + 3 * inverse * t * t * activeFlight.control2.z
+      + t * t * t * activeFlight.end.z,
+  )
+}
+
+function flyToCloud(duration = 5200, startFromOverview = false): void {
+  const end = new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y - 2200, cloudCenterEnu.z + 1500)
+  let start: THREE.Vector3
+  let control1: THREE.Vector3
+  let control2: THREE.Vector3
+
   if (startFromOverview) {
-    camera.position.copy(enuToWorld(new THREE.Vector3(
-      cloudCenterEnu.x,
-      cloudCenterEnu.y - 130_000,
-      cloudCenterEnu.z + 90_000,
-    )))
-    camera.up.copy(enuUp)
-    camera.lookAt(cloudCenterEcef)
+    start = new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y - 132_000, cloudCenterEnu.z + 92_000)
+    control1 = new THREE.Vector3(cloudCenterEnu.x - 8_000, cloudCenterEnu.y - 116_000, cloudCenterEnu.z + 19_000)
+    control2 = new THREE.Vector3(cloudCenterEnu.x + 14_000, cloudCenterEnu.y - 34_000, cloudCenterEnu.z + 8_500)
+  } else {
+    start = worldToEnu(camera.position)
+    const range = start.distanceTo(end)
+    control1 = start.clone().lerp(end, 0.28)
+    control1.x -= Math.min(10_000, range * 0.07)
+    control1.z = Math.max(control1.z, end.z + Math.min(16_000, range * 0.16))
+    control2 = start.clone().lerp(end, 0.72)
+    control2.x += Math.min(8_000, range * 0.055)
+    control2.z = Math.max(control2.z, end.z + Math.min(8_000, range * 0.075))
   }
-  flight = { from: camera.position.clone(), to, look: cloudCenterEcef.clone(), t0: performance.now(), duration }
+
+  const started = performance.now()
+  flight = { start, control1, control2, end, t0: started, duration, lastUpdate: started }
+  cinematicFlightProgress = 0
+  camera.position.copy(enuToWorld(start, flightPositionWorld))
+  sampleFlightPath(flight, 0.025, flightLookEnu)
+  camera.up.copy(enuUp)
+  camera.lookAt(enuToWorld(flightLookEnu, flightLookWorld))
   if (globe) globe.controls.enabled = false
 }
 
 function updateFlight(now: number): void {
   if (!flight) return
-  const t = Math.min(1, (now - flight.t0) / flight.duration)
-  const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
-  camera.position.lerpVectors(flight.from, flight.to, eased)
+  const activeFlight = flight
+  const t = Math.min(1, (now - activeFlight.t0) / activeFlight.duration)
+  const elapsed = Math.min(48, Math.max(0, now - activeFlight.lastUpdate))
+  activeFlight.lastUpdate = now
+  cinematicFlightProgress = t
+  sampleFlightPath(activeFlight, t, flightPositionEnu)
+  sampleFlightPath(activeFlight, Math.min(1, t + 0.022), flightLookEnu)
+  flightLookEnu.lerp(cloudCenterEnu, smooth01(0.56, 1, t))
+
+  camera.position.copy(enuToWorld(flightPositionEnu, flightPositionWorld))
   camera.up.copy(enuUp)
-  camera.lookAt(flight.look)
+  enuToWorld(flightLookEnu, flightLookWorld)
+  flightOrientation.position.copy(camera.position)
+  flightOrientation.up.copy(enuUp)
+  flightOrientation.lookAt(flightLookWorld)
+  camera.quaternion.slerp(flightOrientation.quaternion, 1 - Math.exp(-elapsed / 85))
   if (t >= 1) {
+    camera.quaternion.copy(flightOrientation.quaternion)
     flight = null
     if (globe) globe.controls.enabled = true
   }
@@ -375,7 +495,6 @@ function updateFlight(now: number): void {
 
 // ---------------------------------------------------------------- UI wiring
 const sizeEl = $<HTMLInputElement>('#size')
-const radiusEl = $<HTMLInputElement>('#radius')
 
 document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button) => {
   button.addEventListener('click', () => setMaskMode(Number(button.dataset.mask)))
@@ -384,11 +503,7 @@ sizeEl.addEventListener('input', () => {
   uniforms.pointSize.value = Number(sizeEl.value)
   $('#sizev').textContent = sizeEl.value
 })
-radiusEl.addEventListener('input', () => {
-  uniforms.maskRadius.value = Number(radiusEl.value)
-  $('#radiusv').textContent = radiusEl.value
-})
-$('#flyTo').addEventListener('click', () => flyToCloud())
+$('#flyTo').addEventListener('click', () => flyToCloud(reducedMotion ? 700 : 5200))
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
@@ -408,11 +523,15 @@ function updateStreaming(now: number): StreamingStats | null {
     visiblePoints: lastStreamStats?.points ?? 0,
     cameraGroundRange,
   })
-  if (Math.abs(quality.sse - sseAuto) > 0.25) {
-    sseAuto = quality.sse
+  // Hold a coarse refinement floor while the cinematic camera is moving. The
+  // near tiles were already warmed behind the loader, so this prevents flight-
+  // time decode/upload spikes without changing the final visual quality.
+  const flightSse = flight ? Math.max(quality.sse, 256) : quality.sse
+  if (Math.abs(flightSse - sseAuto) > 0.25) {
+    sseAuto = flightSse
     stream.setErrorTarget(sseAuto)
   }
-  stream.setQualityPressure(quality.pressure)
+  stream.setQualityPressure(flight ? Math.max(quality.pressure, 1.6) : quality.pressure)
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.update()
@@ -454,8 +573,14 @@ function loop(now: number): void {
   updateFlight(now)
   globe?.update()
   updateMaskFollow()
+  updateAtmosphere(now)
   const stats = updateStreaming(now)
   markerLayer?.update(now, camera, cameraGroundRange)
+  const nextRainActive = rainLayer?.update(now, camera, cameraGroundRange) ?? false
+  if (nextRainActive !== rainVisualActive) {
+    rainVisualActive = nextRainActive
+    updateRainToggle()
+  }
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
@@ -520,6 +645,8 @@ async function main(): Promise<void> {
       onOpenVideo: openFieldVideo,
     })
   }
+  rainLayer = createRainLayer(scene)
+  rainLayer.setEnabled(rainRequested)
   setLoadProgress(0.35, 'Lade erste Kronendach-Punktwolken …')
 
   // Bootstrap close enough to request real point tiles. The fullscreen loader
@@ -537,7 +664,7 @@ async function main(): Promise<void> {
   setStatus('Adaptive streaming · loading tiles…')
   renderer.setAnimationLoop(loop)
 
-  ;(window as any).__three = { renderer, scene, camera, uniforms, globe, stream, markerLayer, loop }
+  ;(window as any).__three = { renderer, scene, camera, uniforms, globe, stream, markerLayer, rainLayer, loop }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
     for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
@@ -557,9 +684,11 @@ function dispose(): void {
   renderer.setAnimationLoop(null)
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
+  rainLayer?.dispose()
   markerLayer?.dispose()
   stream?.dispose()
   globe?.dispose()
+  rainToggleEl.removeEventListener('click', onRainToggle)
   loaderRetryEl.removeEventListener('click', onLoaderRetry)
   videoCloseEl.removeEventListener('click', onVideoClose)
   videoModalEl.removeEventListener('click', onVideoBackdrop)

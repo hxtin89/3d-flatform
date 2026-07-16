@@ -8,7 +8,7 @@
       :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
               --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f; }
       * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: #02040a; overflow: hidden;
+      html, body { margin: 0; height: 100%; background: #8bc9ec; overflow: hidden;
                    font: 13px/1.45 "Avenir Next", "Helvetica Neue", sans-serif; color: #e8eaed;
                    -webkit-user-select: none; user-select: none; }
       #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
@@ -17,11 +17,9 @@
          world radius derived from the viewport — this gradient hides the cut edge).
          CSS only → adapts to every viewport/resize for free, zero render cost. */
       #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; opacity: 0;
-                  background:
-                    radial-gradient(ellipse at center,
-                      transparent 0%, transparent 45%, rgba(218,249,157,.12) 49%, transparent 50.5%),
-                    radial-gradient(ellipse at center,
-                      rgba(0,15,11,0) 0%, rgba(0,15,11,.04) 48%, rgba(0,20,14,.22) 69%, rgba(0,24,17,.42) 100%); }
+                  background: radial-gradient(ellipse at center,
+                    rgba(2,4,10,0) 0%, rgba(2,4,10,0) 46%, rgba(2,4,10,.38) 66%,
+                    rgba(2,4,10,.72) 88%, rgba(2,4,10,.90) 100%); }
       body.mask-vignette #vignette { display: block; }
 
       /* Fullscreen boot sequence: field-station typography + the Wilderness eagle
@@ -82,6 +80,11 @@
       .temperature-station { grid-row: 1; text-align: right; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace;
                              letter-spacing: .09em; }
       .temperature-value { grid-column: 1 / -1; font: 600 20px/1.05 "Iowan Old Style", Baskerville, serif; }
+      .temperature-marker-label.is-compact { display: flex; min-width: 0; width: 74px; justify-content: center;
+                                             padding: 5px 7px 6px; margin-top: -7px; border-radius: 999px; }
+      .temperature-marker-label.is-compact .temperature-live,
+      .temperature-marker-label.is-compact .temperature-station { display: none; }
+      .temperature-marker-label.is-compact .temperature-value { display: block; font-size: 15px; line-height: 1; white-space: nowrap; }
       .media-marker-label { pointer-events: auto; display: flex; align-items: center; gap: 8px; margin-top: -12px;
                             padding: 7px 11px 7px 7px; border: 1px solid rgba(255,209,154,.65); border-radius: 999px;
                             color: #20150c; background: rgba(255,240,219,.92); box-shadow: 0 10px 34px rgba(0,15,10,.28);
@@ -92,6 +95,10 @@
       .media-marker-label b, .media-marker-label small { display: block; text-align: left; }
       .media-marker-label b { font: 800 9px/1.1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
       .media-marker-label small { margin-top: 3px; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
+      .media-marker-label.is-compact { width: 36px; height: 36px; justify-content: center; gap: 0; padding: 4px;
+                                       margin-top: -7px; border-radius: 50%; }
+      .media-marker-label.is-compact > span:last-child { display: none; }
+      .media-marker-label.is-compact .media-marker-icon { width: 26px; height: 26px; }
 
       /* Video lives in the DOM, never in a GPU texture. */
       .video-modal { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center;
@@ -156,12 +163,12 @@
       button.act { background: #21262d; color: #e8eaed; border: 1px solid #2d333b; border-radius: 8px;
                    padding: 9px; font: inherit; cursor: pointer; }
       button.act.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      #rainToggle.on { background: #176c8d; border-color: #56b6d9; color: #effbff; }
+      .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .05em; }
       button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
-
-      .mask-circle-only { display: none !important; }
-      body.mask-circle .mask-circle-only { display: flex !important; }
 
       #hint { bottom: calc(10px + var(--safe-b)); left: 50%; transform: translateX(-50%); text-align: center;
               opacity: .75; font-size: 12px; padding: 7px 12px; z-index: 10; }
@@ -237,13 +244,13 @@
         <label class="h">Mask</label>
         <div class="seg" id="maskSeg">
           <button data-mask="0">Off</button>
-          <button data-mask="1">Circle</button>
           <button data-mask="2" class="on">Vignette</button>
         </div>
       </div>
-      <div class="row mask-circle-only">
-        <label class="h">Mask Radius · <span class="val" id="radiusv">120</span>m</label>
-        <input type="range" id="radius" min="10" max="600" step="5" value="120" />
+      <div class="row">
+        <label class="h" for="rainToggle">Weather shader</label>
+        <button class="act" id="rainToggle" type="button" aria-pressed="false" aria-describedby="rainNote">☂ Rain · Off</button>
+        <span class="weather-note" id="rainNote">GPU rain · visible below 2.8 km</span>
       </div>
     </div>
 
