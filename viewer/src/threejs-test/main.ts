@@ -3,7 +3,8 @@
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
-import { createUniforms } from './point-cloud'
+import { createUniforms, setCloudShadowTexture } from './point-cloud'
+import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
@@ -14,6 +15,7 @@ import { Fps } from './stats'
 import { EXPERIENCE_CONFIG } from './config'
 import { createKeyboardNavigation, type KeyboardNavigation } from './keyboard-navigation'
 import {
+  classifyTier,
   createEnvironmentLayer,
   type CloudState,
   type DaylightState,
@@ -22,6 +24,7 @@ import {
 } from './environment-layer'
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 import { createAudioLayer, type AudioLayer } from './audio-layer'
+import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-bench'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 
 // ---------------------------------------------------------------- config
@@ -49,7 +52,16 @@ const loaderEl = $<HTMLDivElement>('#loader')
 const loaderPercentEl = $('#loaderPercent')
 const loaderStatusEl = $('#loaderStatus')
 const loaderRetryEl = $<HTMLButtonElement>('#loaderRetry')
+const loaderActionsEl = $<HTMLDivElement>('#loaderActions')
+const loaderStartEl = $<HTMLButtonElement>('#loaderStart')
+const loaderSoundOptEl = $<HTMLButtonElement>('#loaderSoundOpt')
+const loaderSoundOptLabelEl = $('#loaderSoundOptLabel')
+const loaderEagleCanvasEl = $<HTMLCanvasElement>('#loaderEagleCanvas')
+const loaderEagleFillEl = $<HTMLDivElement>('#loaderEagleFill')
+let eagleBench: EagleBench | null = null
 let bootLoading = true
+let loaderReadyShown = false
+let startWithSound = true
 let loaderTarget = 0
 let loaderDisplayed = 0
 let loaderLastTick = performance.now()
@@ -64,7 +76,20 @@ function paintLoaderProgress(progress: number): void {
   loaderEl.style.setProperty('--loader-progress', `${(progress * 100).toFixed(2)}%`)
   loaderEl.setAttribute('aria-valuenow', String(percentage))
   loaderPercentEl.textContent = String(percentage).padStart(2, '0')
+  eagleBench?.setProgress(progress)
 }
+
+// The eagle is a real point cloud whose density follows the load progress —
+// the loading animation quietly benchmarks the device's point pipeline.
+void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
+  if (!bootLoading) { bench.dispose(); return }
+  eagleBench = bench
+  loaderEagleCanvasEl.hidden = false
+  loaderEagleFillEl.hidden = true
+  bench.setProgress(loaderDisplayed)
+}).catch((error) => {
+  console.warn('[eagle-bench] unavailable — falling back to CSS eagle + heuristic tier', error)
+})
 
 function setLoadProgress(progress: number, status?: string): void {
   const next = THREE.MathUtils.clamp(progress, 0, 1)
@@ -95,9 +120,13 @@ function showLoadError(message: string): void {
 function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMapTiles: number): void {
   if (!bootLoading) return
 
-  if (stats) setLoadProgress(0.35 + 0.6 * stats.progress, 'Lade erste Kronendach-Punktwolken …')
+  // After the ready hand-off the status line must not flip back to "loading":
+  // streaming keeps refining in the background and its progress oscillates.
+  if (stats) {
+    setLoadProgress(0.35 + 0.6 * stats.progress, loaderReadyShown ? undefined : 'Lade erste Kronendach-Punktwolken …')
+  }
   const ready = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999 && visibleMapTiles > 0)
-  if (ready) setLoadProgress(1, 'Feldsystem bereit. Flug wird freigegeben.')
+  if (ready && !loaderReadyShown) setLoadProgress(1, 'Feldsystem bereit.')
 
   const elapsed = Math.min(64, Math.max(0, now - loaderLastTick))
   loaderLastTick = now
@@ -107,23 +136,15 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
 
   paintLoaderProgress(loaderDisplayed)
 
-  if (ready && loaderDisplayed >= 0.999 && loaderFinishAt === 0) {
-    // Start the deliberately slow opening of the camera curve under the
-    // translucent loader. By the time the overlay is gone, the flight already
-    // has gentle momentum instead of beginning on a hard visual cut.
-    loaderFinishAt = now + (reducedMotion ? 20 : 1200)
-    loaderEl.classList.add('finishing')
+  if (ready && loaderDisplayed >= 0.999 && loaderFinishAt === 0 && !loaderReadyShown) {
+    // Everything is streamed in. Instead of departing on our own, hand the
+    // moment to the visitor: the meter recedes and the Start button rises.
+    // The click is also the user gesture that legally unlocks ambient audio.
+    loaderReadyShown = true
+    loaderEl.classList.add('is-ready')
     loaderEl.setAttribute('aria-busy', 'false')
-    rainCycleStartedAt = now
-    if (!loaderFlightStarted) {
-      loaderFlightStarted = true
-      flyToCloud(
-        reducedMotion
-          ? EXPERIENCE_CONFIG.flight.reducedMotionDurationMs
-          : EXPERIENCE_CONFIG.flight.autoDurationMs,
-        true,
-      )
-    }
+    loaderActionsEl.hidden = false
+    loaderStartEl.focus({ preventScroll: true })
   }
 
   if (loaderFinishAt > 0 && now >= loaderFinishAt) {
@@ -136,8 +157,79 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
 
 const onLoaderRetry = () => location.reload()
 loaderRetryEl.addEventListener('click', onLoaderRetry)
+const onLoaderSoundOpt = () => {
+  startWithSound = !startWithSound
+  loaderSoundOptEl.setAttribute('aria-pressed', String(startWithSound))
+  loaderSoundOptLabelEl.textContent = startWithSound ? 'Mit Naturklängen' : 'Ohne Naturklänge'
+}
+loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
+/** Turn the loader benchmark into start settings: strong devices skip the
+ * vignette trick and render full quality; weak ones start conservative so the
+ * experience never dips below the target frame rate. Runtime guards remain. */
+function applyBenchPreset(): void {
+  const measured = eagleBench?.result() ?? null
+  const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
+  const preset: BenchPreset = measured?.preset
+    ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
+  console.info(
+    `[eagle-bench] ${measured && measured.preset
+      ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
+      : 'no measurement (heuristic fallback)'} → preset ${preset}`,
+  )
+  if (preset === 'strong') {
+    setMaskMode(0)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
+    adaptiveQuality.setPressureFloor(1)
+    environmentLayer?.applyMeasuredTier('strong')
+    // Generous residency: the default budgets sit below one full scene and
+    // cause visible unload/refetch holes after every camera move.
+    stream?.setMemoryBudget(256 * 1024 * 1024, 192 * 1024 * 1024)
+    globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+  } else if (preset === 'medium') {
+    setMaskMode(2)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.1))
+    adaptiveQuality.setPressureFloor(1.4)
+    environmentLayer?.applyMeasuredTier('balanced')
+    stream?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+    globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
+  } else {
+    setMaskMode(2)
+    renderer.setPixelRatio(1)
+    adaptiveQuality.setPressureFloor(2)
+    environmentLayer?.applyMeasuredTier('constrained')
+    // Slightly larger points hide the coarser refinement level.
+    uniforms.pointSize.value = 3
+    sizeEl.value = '3'
+    $('#sizev').textContent = '3'
+  }
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  globe?.setResolution()
+  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+}
+
+const onLoaderStart = () => {
+  if (!loaderReadyShown || loaderFinishAt > 0 || loaderFlightStarted) return
+  applyBenchPreset()
+  eagleBench?.dispose()
+  eagleBench = null
+  // User gesture: resuming the AudioContext is permitted right here.
+  if (startWithSound) void audioLayer?.setEnabled(true)
+  const now = performance.now()
+  loaderFinishAt = now + (reducedMotion ? 20 : 1200)
+  loaderEl.classList.add('finishing')
+  rainCycleStartedAt = now
+  loaderFlightStarted = true
+  flyToCloud(
+    reducedMotion
+      ? EXPERIENCE_CONFIG.flight.reducedMotionDurationMs
+      : EXPERIENCE_CONFIG.flight.autoDurationMs,
+    true,
+  )
+}
+loaderStartEl.addEventListener('click', onLoaderStart)
 const loaderStallTimer = window.setInterval(() => {
-  if (!bootLoading || loaderFailed || loaderFinishAt > 0 || performance.now() - loaderLastAdvance < 20_000) return
+  if (!bootLoading || loaderFailed || loaderReadyShown || loaderFinishAt > 0
+    || performance.now() - loaderLastAdvance < 20_000) return
   loaderStalled = true
   loaderStatusEl.textContent = 'Die Datenverbindung antwortet ungewöhnlich langsam.'
   loaderRetryEl.hidden = false
@@ -191,6 +283,7 @@ let environmentLayer: EnvironmentLayer | null = null
 let fieldModelLayer: FieldModelLayer | null = null
 let audioLayer: AudioLayer | null = null
 let modelTransformEditor: ModelTransformEditor | null = null
+let cloudNoiseTexture: THREE.Data3DTexture | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
 let cameraGroundRange = Infinity
@@ -530,6 +623,22 @@ const vignetteEl = $<HTMLDivElement>('#vignette')
 const navigationCameraEnu = new THREE.Vector3()
 const navigationCameraWorld = new THREE.Vector3()
 
+const zoomProbeEnu = new THREE.Vector3()
+const zoomProbeDirection = new THREE.Vector3()
+
+/** True when the camera sits on the navigation floor inside the survey bounds
+ * and is not looking clearly upward — keyboard zoom-in would only glide
+ * forward there instead of getting closer, so it is stopped. */
+function isZoomInBlocked(): boolean {
+  worldToEnu(camera.position, zoomProbeEnu)
+  if (zoomProbeEnu.z > navigationFloorZ + 2) return false
+  const dx = zoomProbeEnu.x - cloudCenterEnu.x
+  const dy = zoomProbeEnu.y - cloudCenterEnu.y
+  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) return false
+  camera.getWorldDirection(zoomProbeDirection)
+  return zoomProbeDirection.dot(enuUp) < 0.2
+}
+
 /** Final local guard against touch inertia crossing the point-cloud floor. */
 function enforceNavigationBounds(): void {
   if (!globe) return
@@ -632,10 +741,15 @@ function updateAtmosphere(now: number): void {
 
 // ---------------------------------------------------------------- fly-to
 interface CameraFlight {
+  /** 'arc' sweeps along a Bézier and steers the gaze; 'dolly' zooms straight
+   * toward the target without ever changing the camera angle. */
+  mode: 'arc' | 'dolly'
   start: THREE.Vector3
   control1: THREE.Vector3
   control2: THREE.Vector3
   end: THREE.Vector3
+  /** ENU point the camera settles its gaze on during the final approach. */
+  lookTarget: THREE.Vector3
   t0: number
   duration: number
   lastUpdate: number
@@ -704,12 +818,49 @@ function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs
   }
 
   const started = performance.now()
-  flight = { start, control1, control2, end, t0: started, duration, lastUpdate: started }
+  flight = {
+    mode: 'arc',
+    start, control1, control2, end,
+    lookTarget: cloudCenterEnu.clone(),
+    t0: started, duration, lastUpdate: started,
+  }
   cinematicFlightProgress = 0
   camera.position.copy(enuToWorld(start, flightPositionWorld))
   sampleFlightPath(flight, 0.025, flightLookEnu)
   camera.up.copy(enuUp)
   camera.lookAt(enuToWorld(flightLookEnu, flightLookWorld))
+  if (globe) globe.controls.enabled = false
+}
+
+/** Straight dolly zoom toward an ENU point: double-clicks and marker clicks.
+ * The camera angle never changes — it simply travels along the sight line and
+ * stops endDistanceM short of the target (or at the navigation floor). */
+function flyToPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void {
+  setAimMode(false, false)
+  const start = worldToEnu(camera.position)
+  const direction = targetEnu.clone().sub(start)
+  const distance = direction.length()
+  if (distance <= endDistanceM + 1) return
+  direction.divideScalar(distance)
+  let travel = distance - endDistanceM
+  // Cap travel along the ray so the end stays above the navigation floor —
+  // solving on the ray keeps the path perfectly straight (no z-clamp kink).
+  if (direction.z < -1e-6) {
+    travel = Math.min(travel, (navigationFloorZ - start.z) / direction.z)
+  }
+  if (travel <= 1) return
+  const end = start.clone().addScaledVector(direction, travel)
+  const started = performance.now()
+  flight = {
+    mode: 'dolly',
+    start,
+    control1: start.clone().lerp(end, 0.3),
+    control2: start.clone().lerp(end, 0.75),
+    end,
+    lookTarget: targetEnu.clone(),
+    t0: started, duration: durationMs, lastUpdate: started,
+  }
+  cinematicFlightProgress = 0
   if (globe) globe.controls.enabled = false
 }
 
@@ -721,18 +872,22 @@ function updateFlight(now: number): void {
   activeFlight.lastUpdate = now
   cinematicFlightProgress = t
   sampleFlightPath(activeFlight, t, flightPositionEnu)
-  sampleFlightPath(activeFlight, Math.min(1, t + 0.022), flightLookEnu)
-  flightLookEnu.lerp(cloudCenterEnu, smooth01(0.56, 1, t))
-
   camera.position.copy(enuToWorld(flightPositionEnu, flightPositionWorld))
-  camera.up.copy(enuUp)
-  enuToWorld(flightLookEnu, flightLookWorld)
-  flightOrientation.position.copy(camera.position)
-  flightOrientation.up.copy(enuUp)
-  flightOrientation.lookAt(flightLookWorld)
-  camera.quaternion.slerp(flightOrientation.quaternion, 1 - Math.exp(-elapsed / 85))
+
+  if (activeFlight.mode === 'arc') {
+    sampleFlightPath(activeFlight, Math.min(1, t + 0.022), flightLookEnu)
+    flightLookEnu.lerp(activeFlight.lookTarget, smooth01(0.56, 1, t))
+    camera.up.copy(enuUp)
+    enuToWorld(flightLookEnu, flightLookWorld)
+    flightOrientation.position.copy(camera.position)
+    flightOrientation.up.copy(enuUp)
+    flightOrientation.lookAt(flightLookWorld)
+    camera.quaternion.slerp(flightOrientation.quaternion, 1 - Math.exp(-elapsed / 85))
+    if (t >= 1) camera.quaternion.copy(flightOrientation.quaternion)
+  }
+  // Dolly flights never touch the orientation — that is their whole point.
+
   if (t >= 1) {
-    camera.quaternion.copy(flightOrientation.quaternion)
     flight = null
     if (globe) globe.controls.enabled = true
   }
@@ -753,6 +908,31 @@ $('#flyTo').addEventListener('click', () => flyToCloud(
     ? EXPERIENCE_CONFIG.flight.reducedMotionManualDurationMs
     : EXPERIENCE_CONFIG.flight.manualDurationMs,
 ))
+
+// Double-click anywhere on the terrain pans/zooms there. Attached to the canvas
+// only — every UI overlay sits above it, so label clicks can never misfire.
+const dblClickNdc = new THREE.Vector2()
+const onCanvasDblClick = (event: MouseEvent) => {
+  if (bootLoading || flight || aimMode || !videoModalEl.hidden || !globe) return
+  dblClickNdc.set(
+    (event.clientX / window.innerWidth) * 2 - 1,
+    -(event.clientY / window.innerHeight) * 2 + 1,
+  )
+  ray.setFromCamera(dblClickNdc, camera)
+  if (!ray.ray.intersectPlane(groundPlane, hitEcef)) return
+  const targetEnu = worldToEnu(hitEcef)
+  const endDistance = THREE.MathUtils.clamp(
+    cameraGroundRange * 0.38,
+    EXPERIENCE_CONFIG.flight.dblClickMinRangeM,
+    Math.max(cameraGroundRange, EXPERIENCE_CONFIG.flight.dblClickMinRangeM),
+  )
+  flyToPoint(
+    targetEnu,
+    endDistance,
+    reducedMotion ? 500 : EXPERIENCE_CONFIG.flight.dblClickDurationMs,
+  )
+}
+canvas.addEventListener('dblclick', onCanvasDblClick)
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
@@ -820,7 +1000,12 @@ function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
   updateFlight(now)
-  keyboardNavigation?.update(now, cameraGroundRange, !bootLoading && !flight && videoModalEl.hidden)
+  keyboardNavigation?.update(
+    now,
+    cameraGroundRange,
+    !bootLoading && !flight && videoModalEl.hidden,
+    isZoomInBlocked(),
+  )
   globe?.update(enforceNavigationBounds)
   updateMaskFollow()
   updateAtmosphere(now)
@@ -879,6 +1064,16 @@ async function main(): Promise<void> {
   badge.classList.toggle('webgl', !isWebGPU)
   installGraphicsRecovery(backend)
 
+  // One shared density volume drives both the volumetric clouds and the drifting
+  // canopy shadows in the point-cloud material. It must be registered before the
+  // first streamed tile compiles its material.
+  cloudNoiseTexture = createCloudNoiseTexture(
+    classifyTier(isWebGPU) === 'strong'
+      ? EXPERIENCE_CONFIG.clouds.textureSizeStrong
+      : EXPERIENCE_CONFIG.clouds.textureSize,
+  )
+  setCloudShadowTexture(cloudNoiseTexture)
+
   setStatus('Loading adaptive point-cloud tree…')
   setLoadProgress(0.22, 'Lade Fluggebiet und Koordinaten …')
   const manifest = await fetchGlobeManifest(baseUrl, dataset)
@@ -900,6 +1095,12 @@ async function main(): Promise<void> {
         + EXPERIENCE_CONFIG.navigation.extraCloudClearanceM,
     )
     navigationFloorZ = minZ + navigationClearance
+    // The shader's ENU frame still carries zOffset, so ground-relative heights
+    // for the golden rim and the virtual cloud deck must add it back.
+    const span = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
+    uniforms.canopyBaseZ.value = minZ + zOffset + 8
+    uniforms.canopyTopZ.value = minZ + zOffset + span
+    uniforms.cloudDeckHeight.value = minZ + zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
   }
 
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
@@ -944,6 +1145,8 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
   })
   stream.group.position.copy(enuUp).multiplyScalar(zOffset)
+  // Debug handle for streaming diagnosis in the console.
+  ;(window as any).__wild = { stream, camera, get flight() { return flight }, get sse() { return sseAuto } }
 
   environmentLayer = createEnvironmentLayer({
     scene,
@@ -953,7 +1156,9 @@ async function main(): Promise<void> {
     enuFrame,
     zOffset,
     surveyCentreEnu: cloudCenterEnu,
+    surveyRadiusM: navigationBoundsRadius,
     originLonLat: manifest.enuOriginLonLat,
+    cloudNoiseTexture: cloudNoiseTexture!,
     isWebGPU,
     reducedMotion,
     onCloudStateChange: updateCloudControls,
@@ -978,6 +1183,11 @@ async function main(): Promise<void> {
       dataset,
       reducedMotion,
       onOpenVideo: openFieldVideo,
+      onFlyToMarker: (targetEnu) => flyToPoint(
+        targetEnu,
+        EXPERIENCE_CONFIG.flight.markerApproachDistanceM,
+        reducedMotion ? 500 : EXPERIENCE_CONFIG.flight.markerFlightDurationMs,
+      ),
     })
   }
   rainLayer = createRainLayer(scene)
@@ -1064,12 +1274,19 @@ function dispose(): void {
   environmentLayer?.dispose()
   stream?.dispose()
   globe?.dispose()
+  cloudNoiseTexture?.dispose()
+  cloudNoiseTexture = null
+  eagleBench?.dispose()
+  eagleBench = null
   rainToggleEl.removeEventListener('click', onRainToggle)
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
   timeSliderEl.removeEventListener('input', onTimeInput)
   timeNowEl.removeEventListener('click', onTimeNow)
   loaderRetryEl.removeEventListener('click', onLoaderRetry)
+  loaderSoundOptEl.removeEventListener('click', onLoaderSoundOpt)
+  loaderStartEl.removeEventListener('click', onLoaderStart)
+  canvas.removeEventListener('dblclick', onCanvasDblClick)
   videoCloseEl.removeEventListener('click', onVideoClose)
   videoModalEl.removeEventListener('click', onVideoBackdrop)
   fieldVideoEl.removeEventListener('canplay', onVideoCanPlay)

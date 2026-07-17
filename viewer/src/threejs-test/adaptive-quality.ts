@@ -34,8 +34,16 @@ export function baseSseForRange(range: number): number {
  */
 export class AdaptiveQualityController {
   private pressure = 1
+  private pressureFloor = 1
   private lastUpdate = 0
   private sse = 256
+
+  /** Measured-device bias (loader benchmark): weak hardware starts and stays
+   * at a coarser refinement level instead of discovering it through jank. */
+  setPressureFloor(floor: number): void {
+    this.pressureFloor = Math.min(4, Math.max(1, floor))
+    this.pressure = Math.max(this.pressure, this.pressureFloor)
+  }
 
   update(sample: AdaptiveQualitySample): AdaptiveQualityState {
     const baseSse = baseSseForRange(sample.cameraGroundRange)
@@ -47,7 +55,7 @@ export class AdaptiveQualityController {
       } else if (sample.visiblePoints > TARGET_POINTS || (sample.fps > 0 && sample.fps < TARGET_FPS - 3)) {
         this.pressure = Math.min(4, this.pressure * 1.25)
       } else if (sample.visiblePoints < RECOVERY_POINTS && sample.fps >= TARGET_FPS) {
-        this.pressure = Math.max(1, this.pressure * 0.85)
+        this.pressure = Math.max(this.pressureFloor, this.pressure * 0.85)
       }
     }
 

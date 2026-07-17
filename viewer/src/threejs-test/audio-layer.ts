@@ -4,6 +4,8 @@ import type { DaylightState } from './environment-layer'
 
 export interface AudioLayer {
   update(daylight: DaylightState, rainActive: boolean): void
+  /** Programmatic toggle; must be called from a user gesture to unlock playback. */
+  setEnabled(enabled: boolean): Promise<void>
   dispose(): void
 }
 
@@ -32,9 +34,18 @@ function createTrack(path: string): Track {
   const element = new Audio()
   element.preload = 'none'
   element.loop = true
-  const supportsAac = element.canPlayType('audio/mp4; codecs="mp4a.40.2"') !== ''
-  const compatiblePath = supportsAac ? path : path.replace(/\.m4a$/i, '.webm')
-  element.src = assetUrl(compatiblePath)
+  element.hidden = true
+  element.setAttribute('aria-hidden', 'true')
+  element.setAttribute('playsinline', '')
+  const opusSource = document.createElement('source')
+  opusSource.src = assetUrl(path.replace(/\.m4a$/i, '.webm'))
+  opusSource.type = 'audio/webm; codecs="opus"'
+  const aacSource = document.createElement('source')
+  aacSource.src = assetUrl(path)
+  aacSource.type = 'audio/mp4; codecs="mp4a.40.2"'
+  // Chromium/Firefox select Opus; Safari skips it and falls back to AAC.
+  element.append(opusSource, aacSource)
+  document.body.append(element)
   return { element, gain: null, lastTarget: -1 }
 }
 
@@ -125,7 +136,8 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
         console.warn('[ambient-audio] playback unlock failed', error)
         enabled = false
         for (const track of tracks) track.element.pause()
-        paintButton('Tippe erneut, um Naturklänge zu starten.')
+        const reason = error instanceof DOMException ? error.name : 'PlaybackError'
+        paintButton(`Naturklänge konnten nicht starten (${reason}).`)
       }
       return
     }
@@ -152,6 +164,7 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
       currentRainActive = rainActive
       if (enabled) applyMix()
     },
+    setEnabled,
     dispose() {
       disposed = true
       window.clearTimeout(pauseTimer)
@@ -159,7 +172,9 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
       for (const track of tracks) {
         track.element.pause()
         track.element.removeAttribute('src')
+        track.element.replaceChildren()
         track.element.load()
+        track.element.remove()
         track.gain?.disconnect()
       }
       master?.disconnect()

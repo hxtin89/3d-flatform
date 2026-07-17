@@ -23,6 +23,10 @@ export interface StreamingCloud {
   update(): void
   setErrorTarget(v: number): void
   setQualityPressure(v: number): void
+  /** Scale CPU cache and GPU residency to the measured device tier. Small
+   * budgets on strong hardware cause unload thrashing: every camera move
+   * evicts tiles that immediately have to be re-fetched. */
+  setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   stats(): StreamingStats
@@ -145,6 +149,12 @@ export function createStreamingCloud(opts: {
     },
     setQualityPressure(value: number) {
       requestVolumePlugin.setPressure(value)
+    },
+    setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
+      tiles.lruCache.maxBytesSize = cacheMaxBytes
+      tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)
+      tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (600 * 1024)))
+      ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (!centerWorld || !(radius > 0)) {

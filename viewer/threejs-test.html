@@ -50,10 +50,19 @@
       .loader-eagle { position: absolute; inset: 0; background: var(--forest);
                       -webkit-mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat;
                       mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat; }
-      .loader-eagle-ghost { opacity: .12; transform: scale(1.012); }
+      /* Original logo directly beneath the point bird — a soft drop shadow.
+         The point cloud lands congruently on top of it. */
+      .loader-eagle-ghost { opacity: .12; transform: scale(.92) translate(1.5%, 4%); filter: blur(1.5px); }
       .loader-eagle-fill { clip-path: inset(calc(100% - var(--loader-progress)) 0 0 0);
                            filter: drop-shadow(0 -8px 18px rgba(0,68,50,.2));
                            transition: clip-path .28s cubic-bezier(.2,.75,.25,1); }
+      .loader-eagle-fill[hidden] { display: none; }
+      /* Point-cloud eagle: the loading animation doubles as a GPU benchmark.
+         The canvas spans the whole loader so arriving dust is never clipped by
+         a visible box; it floats above the text (clicks pass through). */
+      #loaderEagleCanvas { position: absolute; inset: 0; width: 100%; height: 100%;
+                           z-index: 5; pointer-events: none; }
+      #loaderEagleCanvas[hidden] { display: none; }
       .loader-system { margin: 0 0 7px; font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
                        letter-spacing: .2em; text-transform: uppercase; opacity: .58; }
       #loaderStatus { min-height: 1.5em; margin: 0; font: 500 clamp(17px, 4vw, 22px)/1.25 "Iowan Old Style", Baskerville, serif; }
@@ -65,6 +74,59 @@
                       letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
       .loader-retry[hidden] { display: none; }
 
+      /* Ready state: the meter recedes, the Start button rises. The click doubles
+         as the browser gesture that unlocks ambient audio (opt-out beforehand). */
+      .loader-actions { display: grid; justify-items: center; gap: 13px; margin-top: 22px; }
+      .loader-actions[hidden] { display: none; }
+      #loaderSoundOpt { display: inline-flex; align-items: center; gap: 9px; padding: 9px 14px; cursor: pointer;
+                        color: var(--forest); background: rgba(0,68,50,.06); border: 1px solid rgba(0,68,50,.24);
+                        border-radius: 999px; font: 800 9px/1 ui-monospace, SFMono-Regular, monospace;
+                        letter-spacing: .1em; text-transform: uppercase;
+                        transition: opacity .2s ease, background .2s ease; }
+      /* Live mini equalizer: dancing bars = sound will play. Opting out collapses
+         every bar into a flat mute dot, so the state reads without any words. */
+      .loader-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; }
+      .loader-eq i { width: 3px; height: 100%; border-radius: 2px; background: var(--forest);
+                     transform-origin: bottom; animation: loader-eq-dance 1.05s ease-in-out infinite;
+                     transition: transform .25s ease, border-radius .25s ease, background .25s ease; }
+      .loader-eq i:nth-child(1) { animation-delay: -.15s; }
+      .loader-eq i:nth-child(2) { animation-delay: -.45s; }
+      .loader-eq i:nth-child(3) { animation-delay: -.78s; }
+      .loader-eq i:nth-child(4) { animation-delay: -.3s; }
+      .loader-eq i:nth-child(5) { animation-delay: -.6s; }
+      @keyframes loader-eq-dance {
+        0%, 100% { transform: scaleY(.28); }
+        35% { transform: scaleY(1); }
+        70% { transform: scaleY(.5); }
+      }
+      #loaderSoundOpt[aria-pressed="false"] { opacity: .62; }
+      #loaderSoundOpt[aria-pressed="false"] .loader-eq i { animation: none; transform: scaleY(.23);
+                                                           border-radius: 50%; background: rgba(0,68,50,.42); }
+      /* Primary CTA: deep forest with white type — unmistakably the first click. */
+      #loaderStart { display: grid; gap: 4px; min-width: 244px; padding: 14px 28px 16px; cursor: pointer;
+                     color: #f6f2e5; text-align: center;
+                     background: linear-gradient(145deg, #01553f, var(--forest-deep));
+                     border: 1px solid rgba(0,45,34,.9); border-radius: 8px 18px 18px 18px;
+                     box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14);
+                     transition: transform .2s ease, box-shadow .2s ease, filter .2s ease; }
+      #loaderStart:hover { transform: translateY(-1px); filter: brightness(1.08);
+                           box-shadow: 0 22px 52px rgba(0,31,23,.42), inset 0 1px rgba(255,255,255,.14); }
+      #loaderStart:active { transform: translateY(0) scale(.985); }
+      .loader-start-kicker { color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .16em; text-transform: uppercase; }
+      #loaderStart strong { font: 500 21px/1.1 "Iowan Old Style", Baskerville, serif; color: #fff; }
+      #loaderStart:focus-visible, #loaderSoundOpt:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
+      .loader-meter, #loaderStatus { transition: opacity .5s ease, transform .5s ease; }
+      #loader.is-ready .loader-meter { opacity: .26; transform: scale(.92); }
+      #loader.is-ready .loader-actions { animation: loader-rise .55s cubic-bezier(.22,1,.36,1) both; }
+      #loader.is-ready #loaderStart { animation: loader-rise .55s cubic-bezier(.22,1,.36,1) both,
+                                                 loader-pulse 2.6s ease .75s 2; }
+      @keyframes loader-rise { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+      @keyframes loader-pulse {
+        0%, 100% { box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14), 0 0 0 0 rgba(217,249,157,0); }
+        45% { box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14), 0 0 0 8px rgba(217,249,157,.38); }
+      }
+
       /* DOM labels projected from real Three.js markers. */
       #markerOverlay { position: fixed; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
       .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
@@ -74,7 +136,13 @@
                                   min-width: 126px; padding: 7px 9px 8px; margin-top: -10px; color: #f5f2e8;
                                   background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
                                   border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
-                                  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+                                  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+                                  /* Stations are buttons: clicking flies the camera to the sensor. */
+                                  pointer-events: auto; cursor: pointer; touch-action: manipulation;
+                                  font: inherit; text-align: left; }
+      .temperature-marker-label:hover { border-color: rgba(217,249,157,.8); }
+      .temperature-marker-label:active { filter: brightness(.92); }
+      .temperature-marker-label:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
       .temperature-live { grid-row: 1; width: max-content; color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
                           letter-spacing: .12em; }
       .temperature-live::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
@@ -387,7 +455,13 @@
       @media (prefers-reduced-motion: reduce) {
         #loader, .loader-eagle-fill, .map-marker-label, #keyboardGuide, .keycap, #aimReticle,
         .peru-time-shell, .peru-time-panel, .peru-time-chevron, .celestial-disc,
-        .celestial-horizon, .peru-time-celestial { transition-duration: .01ms !important; }
+        .celestial-horizon, .peru-time-celestial, .loader-meter, #loaderStatus,
+        #loaderStart, #loaderSoundOpt { transition-duration: .01ms !important; }
+        .loader-actions, #loaderStart { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+        /* Static staggered bars still read as an equalizer without motion. */
+        .loader-eq i { animation: none !important; }
+        #loaderSoundOpt[aria-pressed="true"] .loader-eq i:nth-child(odd) { transform: scaleY(.85); }
+        #loaderSoundOpt[aria-pressed="true"] .loader-eq i:nth-child(even) { transform: scaleY(.45); }
       }
     </style>
   </head>
@@ -406,13 +480,24 @@
       <div class="loader-content">
         <div class="loader-eagle-frame" aria-hidden="true">
           <div class="loader-eagle loader-eagle-ghost"></div>
-          <div class="loader-eagle loader-eagle-fill"></div>
+          <div class="loader-eagle loader-eagle-fill" id="loaderEagleFill"></div>
         </div>
         <p class="loader-system">Flight preparation / point cloud</p>
         <p id="loaderStatus" aria-live="polite">Initialisiere Feldsystem …</p>
         <div class="loader-meter"><span id="loaderPercent">00</span><small>%</small></div>
+        <div class="loader-actions" id="loaderActions" hidden>
+          <button id="loaderSoundOpt" type="button" aria-pressed="true">
+            <span class="loader-eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            <span id="loaderSoundOptLabel">Mit Naturklängen</span>
+          </button>
+          <button id="loaderStart" type="button">
+            <span class="loader-start-kicker">Feldsystem bereit</span>
+            <strong>Expedition starten</strong>
+          </button>
+        </div>
         <button class="loader-retry" id="loaderRetry" type="button" hidden>Erneut versuchen</button>
       </div>
+      <canvas id="loaderEagleCanvas" aria-hidden="true" hidden></canvas>
     </div>
 
     <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>

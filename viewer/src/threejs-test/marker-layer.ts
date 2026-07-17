@@ -27,6 +27,7 @@ interface MarkerLayerOptions {
   dataset: string
   reducedMotion: boolean
   onOpenVideo(): void
+  onFlyToMarker?(targetEnu: THREE.Vector3, stationName: string): void
 }
 
 interface MarkerRecord {
@@ -97,10 +98,12 @@ function createMaterial(color: number, opacity = 1): MeshBasicNodeMaterial {
   return material
 }
 
-function createTemperatureLabel(index: number, stationName = `CANOPY 0${index + 1}`): { label: HTMLDivElement; value: HTMLSpanElement } {
-  const label = document.createElement('div')
+function createTemperatureLabel(index: number, stationName = `CANOPY 0${index + 1}`): { label: HTMLButtonElement; value: HTMLSpanElement } {
+  // A real button: clicking a station flies the camera to it.
+  const label = document.createElement('button')
+  label.type = 'button'
   label.className = 'map-marker-label temperature-marker-label'
-  label.setAttribute('aria-hidden', 'true')
+  label.setAttribute('aria-label', `Messstation ${stationName} anfliegen`)
 
   const live = document.createElement('span')
   live.className = 'temperature-live'
@@ -128,6 +131,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     dataset,
     reducedMotion,
     onOpenVideo,
+    onFlyToMarker,
   } = options
   const [minX, minY, minZ, maxX, maxY] = areaBbox
   const [centreX, centreY] = centre
@@ -177,6 +181,14 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   }
 
   const markers: MarkerRecord[] = []
+  const flyToListeners: Array<{ element: HTMLElement; listener: () => void }> = []
+
+  function wireFlyTo(label: HTMLElement, group: THREE.Group, stationName: string): void {
+    if (!onFlyToMarker) return
+    const listener = () => onFlyToMarker(group.position.clone(), stationName)
+    label.addEventListener('click', listener)
+    flyToListeners.push({ element: label, listener })
+  }
 
   for (let index = 0; index < 4; index++) {
     const angle = index * Math.PI * 0.5 + (random() - 0.5) * 0.5
@@ -206,6 +218,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
 
     const { label, value } = createTemperatureLabel(index)
     overlay.append(label)
+    wireFlyTo(label, group, `CANOPY 0${index + 1}`)
     markers.push({
       group,
       ring,
@@ -242,6 +255,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   root.add(towerSensorGroup)
   const towerTemperature = createTemperatureLabel(4, 'RIVER 05')
   overlay.append(towerTemperature.label)
+  wireFlyTo(towerTemperature.label, towerSensorGroup, 'RIVER 05')
   markers.push({
     group: towerSensorGroup,
     ring: towerRing,
@@ -470,6 +484,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     },
     dispose() {
       mediaButton.removeEventListener('click', onOpenVideo)
+      for (const { element, listener } of flyToListeners) element.removeEventListener('click', listener)
       for (const marker of markers) marker.label.remove()
       scene.remove(root)
       for (const geometry of geometries) geometry.dispose()

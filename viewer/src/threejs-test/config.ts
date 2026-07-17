@@ -11,6 +11,11 @@ export const EXPERIENCE_CONFIG = {
     manualDurationMs: 5_200,
     reducedMotionDurationMs: 900,
     reducedMotionManualDurationMs: 700,
+    // Double-click and marker approaches reuse the same Bézier flight machinery.
+    dblClickDurationMs: 2_200,
+    dblClickMinRangeM: 420,
+    markerApproachDistanceM: 320,
+    markerFlightDurationMs: 2_600,
   },
   navigation: {
     // Clearance grows with the dataset's measured vertical span.
@@ -51,7 +56,7 @@ export const EXPERIENCE_CONFIG = {
     utcOffsetHours: -5,
     updateIntervalMs: 250,
     liveRefreshMs: 30_000,
-    minimumSceneLight: 0.38,
+    minimumSceneLight: 0.30,
     nightSky: 0x09243a,
     dawnSky: 0x769ab2,
     daySky: 0x8bc9ec,
@@ -66,9 +71,36 @@ export const EXPERIENCE_CONFIG = {
       { offsetM: [2_200, -12_000, 4_200], sizeM: [9_500, 5_800, 2_100] },
     ],
     textureSize: 64,
+    textureSizeStrong: 96,
     raymarchSteps: 36,
+    raymarchStepsStrong: 52,
+    // Sun light-march inside the volume: taps toward the sun per density sample.
+    lightSteps: 4,
+    lightStepBoxFraction: 0.055,
+    extinction: 22,
+    hgG: 0.55,
+    sunBoost: 2.0,
+    ambientAmount: 0.85,
+    stepAlpha: 0.16,
+    coverage: [0.38, 0.62],
     softPuffsPerField: 14,
     windMps: [7.5, 2.2],
+    // Sparse, slow, ephemeral clouds hovering directly over the survey so the
+    // close zoom levels are not empty. They live only inside the survey radius
+    // (outside, distance fog owns the mood) and stay above the flight floor.
+    near: {
+      count: 5,
+      altitudeM: [420, 780],
+      sizeXyM: [380, 780],
+      sizeZM: [140, 220],
+      radiusFraction: 0.8,
+      driftMps: 1.5,
+      fadeSeconds: 28,
+      visibleSeconds: [120, 240],
+      gapSeconds: [50, 140],
+      maxOpacity: 0.7,
+      raymarchSteps: 30,
+    },
     closeFadeStartM: 8_000,
     closeFadeEndM: 2_200,
     fadeMs: 720,
@@ -101,13 +133,37 @@ export const EXPERIENCE_CONFIG = {
     strongCount: 12,
     balancedCount: 8,
     constrainedCount: 4,
-    // Horizontal spacing, depth variation and minimal height variation.
-    spreadM: [64, 38, 8],
+    // Along-track spacing, lateral variation and minimal height variation.
+    spreadM: [64, 16, 4],
     flightDurationMs: 18_000,
     passIntervalMs: 22_000,
     passIntervalJitterMs: 5_000,
     animationSpeed: 0.48,
     nightFadeMs: 1_200,
+  },
+  eagleBench: {
+    // Loader eagle doubles as a point-rendering benchmark: density follows the
+    // load progress, frame times are sampled, and the result picks the start
+    // preset so the device never drops below the target frame rate.
+    maxPoints: 2_500_000,
+    maxPointsMobile: 900_000,
+    targetFps: 60,
+    // Highest density bucket that still holds ~target fps, as a fraction of
+    // maxPoints: above strongFraction → strong, above mediumFraction → medium.
+    strongFraction: 0.95,
+    mediumFraction: 0.4,
+    minSamples: 60,
+    pointSizePx: 2,
+  },
+  pointLighting: {
+    // Directional daylight cues for the (normal-less) point cloud.
+    cloudShadowStrength: 0.34,
+    cloudShadowScaleM: 9_000,
+    cloudDeckHeightM: 3_600,
+    goldenRimStrength: 0.5,
+    warmRim: 0xffb268,
+    nightGrade: 0x5f7ea6,
+    goldenGradeBoost: 0.45,
   },
   audio: {
     // Browser-ready loops are generated from source-assets via npm run audio:prepare.
@@ -131,8 +187,10 @@ export const EXPERIENCE_CONFIG = {
     farRangeMultiplier: 5.5,
     fogNearFactor: 0.06,
     fogFarFactor: 0.52,
-    updateIntervalMs: 125,
-    distanceSmoothing: 0.22,
+    // Per-frame with gentle smoothing: the former 8 Hz far-plane steps made
+    // the globe's horizon edge flicker against the sky like z-fighting.
+    updateIntervalMs: 0,
+    distanceSmoothing: 0.06,
   },
   rain: {
     dryDurationMs: 10_000,

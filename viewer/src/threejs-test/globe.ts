@@ -21,6 +21,7 @@ export interface Globe {
   ellipsoid: any
   update(constrainCamera?: () => void): void
   setResolution(): void
+  setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
@@ -104,10 +105,17 @@ export function createGlobe(opts: {
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
   setResolution()
 
+  const setMemoryBudget = (cacheMaxBytes: number, gpuBytesTarget: number) => {
+    tiles.lruCache.maxBytesSize = cacheMaxBytes
+    tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (400 * 1024)))
+    ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
+  }
+
   return {
     tiles,
     controls,
     ellipsoid: (tiles as any).ellipsoid,
+    setMemoryBudget,
     update(constrainCamera) {
       controls.update()
       constrainCamera?.()

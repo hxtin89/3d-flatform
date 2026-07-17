@@ -54,11 +54,12 @@ function loadGltf(loader: GLTFLoader, path: string): Promise<GLTF> {
   return loader.loadAsync(assetUrl(path))
 }
 
-async function loadColorTexture(loader: THREE.TextureLoader, path: string): Promise<THREE.Texture> {
+async function loadColorTexture(loader: THREE.TextureLoader, path: string, uvChannel = 0): Promise<THREE.Texture> {
   const texture = await loader.loadAsync(assetUrl(path))
   texture.flipY = false
   texture.colorSpace = THREE.SRGBColorSpace
   texture.anisotropy = 2
+  texture.channel = uvChannel
   texture.needsUpdate = true
   return texture
 }
@@ -120,7 +121,8 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     loadColorTexture(textureLoader, 'assets/models/tower/tower-bottom.webp'),
     loadColorTexture(textureLoader, 'assets/models/tower/tower-top.webp'),
     loadGltf(gltfLoader, 'assets/models/boat/boat.gltf'),
-    loadColorTexture(textureLoader, 'assets/models/boat/MergedBake_Bake1_CyclesBake_COMBINED.webp'),
+    // The Cycles merged bake was authored against the boat's second UV set (TEXCOORD_1).
+    loadColorTexture(textureLoader, 'assets/models/boat/MergedBake_Bake1_CyclesBake_COMBINED.webp', 1),
     loadGltf(gltfLoader, 'assets/models/parrot/Scarlet_macaw-limit-animations.gltf'),
     loadColorTexture(textureLoader, 'assets/models/parrot/Scarlet_Macaw_difuse.webp'),
     loadColorTexture(textureLoader, 'assets/models/parrot/Scarlet_macaw_wings_difuse-Scarlet_macaw_wings_alpha.webp'),
@@ -211,6 +213,22 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   root.add(flock)
 
   const spread = EXPERIENCE_CONFIG.parrots.spreadM
+  // Loose natural flock: birds travel in small clusters of one to three flying
+  // abreast, staggered along the travel direction — not one strung-out line.
+  const clusterPattern = [2, 3, 1, 2, 1, 3]
+  const clusterOf: number[] = []
+  const memberOf: number[] = []
+  const clusterSizes: number[] = []
+  for (let assigned = 0; assigned < birdLimit;) {
+    const size = Math.min(clusterPattern[clusterSizes.length % clusterPattern.length], birdLimit - assigned)
+    for (let member = 0; member < size; member++) {
+      clusterOf.push(clusterSizes.length)
+      memberOf.push(member)
+    }
+    clusterSizes.push(size)
+    assigned += size
+  }
+  const clusterCount = clusterSizes.length
   for (let index = 0; index < birdLimit; index++) {
     const clone = cloneSkeleton(parrotGltf.scene)
     clone.name = `scarlet-macaw-${index + 1}`
@@ -229,11 +247,18 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
       mesh.receiveShadow = false
     })
     const pivot = new THREE.Group()
-    const horizontalIndex = index - (birdLimit - 1) * 0.5
+    const cluster = clusterOf[index]
+    const size = clusterSizes[cluster]
+    // Wing-to-wing offset inside the cluster, cluster gaps along the track,
+    // plus deterministic jitter so no two groups look mirrored.
+    const lateral = (memberOf[index] - (size - 1) * 0.5) * spread[1] * 1.6
+      + Math.sin(index * 2.9) * spread[1] * 0.25
+    const along = (cluster - (clusterCount - 1) * 0.5) * spread[0] * 1.5
+      + Math.sin(index * 3.7) * spread[0] * 0.18
     pivot.position.set(
-      horizontalIndex * spread[0],
+      lateral,
       Math.sin(index * 2.4) * spread[2],
-      Math.cos(index * 1.7) * spread[1],
+      along,
     )
     pivot.add(clone)
     flock.add(pivot)
