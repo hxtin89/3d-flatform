@@ -25,6 +25,7 @@ import {
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 import { createAudioLayer, type AudioLayer } from './audio-layer'
 import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-bench'
+import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 
 // ---------------------------------------------------------------- config
@@ -58,14 +59,22 @@ const loaderSoundOptEl = $<HTMLButtonElement>('#loaderSoundOpt')
 const loaderSoundOptLabelEl = $('#loaderSoundOptLabel')
 const loaderEagleCanvasEl = $<HTMLCanvasElement>('#loaderEagleCanvas')
 const loaderEagleFillEl = $<HTMLDivElement>('#loaderEagleFill')
+const debugProgressRaw = import.meta.env.DEV ? params.get('eagleProgress') : null
+const debugProgressParsed = debugProgressRaw === null ? Number.NaN : Number(debugProgressRaw)
+const loaderDebugProgress = Number.isFinite(debugProgressParsed)
+  ? THREE.MathUtils.clamp(debugProgressParsed, 0, 1)
+  : null
 let eagleBench: EagleBench | null = null
 let bootLoading = true
 let loaderReadyShown = false
+let loaderDataReady = false
 let startWithSound = true
 let loaderTarget = 0
 let loaderDisplayed = 0
 let loaderLastTick = performance.now()
 let loaderLastAdvance = loaderLastTick
+let loaderProgressRaf = 0
+let lastBenchDebugProgress: number | null = null
 let loaderFinishAt = 0
 let loaderFlightStarted = false
 let loaderStalled = false
@@ -77,6 +86,14 @@ function paintLoaderProgress(progress: number): void {
   loaderEl.setAttribute('aria-valuenow', String(percentage))
   loaderPercentEl.textContent = String(percentage).padStart(2, '0')
   eagleBench?.setProgress(progress)
+  exposeBenchDebugState()
+}
+
+function exposeBenchDebugState(): void {
+  if (!import.meta.env.DEV || loaderDebugProgress === null || !eagleBench
+    || lastBenchDebugProgress === loaderDisplayed) return
+  loaderEagleCanvasEl.dataset.benchState = JSON.stringify(eagleBench.debugState())
+  lastBenchDebugProgress = loaderDisplayed
 }
 
 // The eagle is a real point cloud whose density follows the load progress —
@@ -85,9 +102,13 @@ void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
-  loaderEagleFillEl.hidden = true
   bench.setProgress(loaderDisplayed)
+  if (import.meta.env.DEV) (window as any).__eagleBenchDebug = () => bench.debugState()
+  exposeBenchDebugState()
 }).catch((error) => {
+  loaderEagleFillEl.hidden = false
+  const fallbackGhost = document.querySelector<HTMLElement>('.loader-eagle-ghost')
+  if (fallbackGhost) fallbackGhost.style.opacity = '0.12'
   console.warn('[eagle-bench] unavailable — falling back to CSS eagle + heuristic tier', error)
 })
 
@@ -101,14 +122,36 @@ function setLoadProgress(progress: number, status?: string): void {
       loaderRetryEl.hidden = true
     }
   }
-  // Before the render loop starts, paint the manifest and scene milestones
-  // immediately. Streaming progress remains smoothly interpolated per frame.
-  if (!stream && next > loaderDisplayed) {
-    loaderDisplayed = next
-    paintLoaderProgress(loaderDisplayed)
-  }
   if (status) loaderStatusEl.textContent = status
 }
+
+function showLoaderReadyIfComplete(): void {
+  if (!loaderDataReady || loaderDisplayed < 0.999 || loaderFinishAt > 0 || loaderReadyShown) return
+  loaderDisplayed = 1
+  paintLoaderProgress(loaderDisplayed)
+  loaderReadyShown = true
+  loaderEl.classList.add('is-ready')
+  loaderEl.setAttribute('aria-busy', 'false')
+  loaderActionsEl.hidden = false
+  loaderStartEl.focus({ preventScroll: true })
+}
+
+function tickLoaderProgress(now: number): void {
+  if (!bootLoading) return
+  const elapsed = Math.min(64, Math.max(0, now - loaderLastTick))
+  loaderLastTick = now
+  if (loaderDebugProgress !== null) {
+    loaderDisplayed = loaderDebugProgress
+  } else if (loaderDisplayed < loaderTarget) {
+    const maximumStep = elapsed / (EAGLE_MIN_ASSEMBLY_SECONDS * 1000)
+    loaderDisplayed = Math.min(loaderTarget, loaderDisplayed + maximumStep)
+  }
+  paintLoaderProgress(loaderDisplayed)
+  showLoaderReadyIfComplete()
+  loaderProgressRaf = requestAnimationFrame(tickLoaderProgress)
+}
+
+loaderProgressRaf = requestAnimationFrame(tickLoaderProgress)
 
 function showLoadError(message: string): void {
   loaderFailed = true
@@ -123,33 +166,19 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
   // After the ready hand-off the status line must not flip back to "loading":
   // streaming keeps refining in the background and its progress oscillates.
   if (stats) {
-    setLoadProgress(0.35 + 0.6 * stats.progress, loaderReadyShown ? undefined : 'Lade erste Kronendach-Punktwolken …')
+    setLoadProgress(0.35 + 0.6 * stats.progress, loaderDataReady ? undefined : 'Lade erste Kronendach-Punktwolken …')
   }
   const ready = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999 && visibleMapTiles > 0)
-  if (ready && !loaderReadyShown) setLoadProgress(1, 'Feldsystem bereit.')
-
-  const elapsed = Math.min(64, Math.max(0, now - loaderLastTick))
-  loaderLastTick = now
-  const smoothing = 1 - Math.exp(-elapsed / 180)
-  loaderDisplayed += (loaderTarget - loaderDisplayed) * smoothing
-  if (loaderTarget - loaderDisplayed < 0.0015) loaderDisplayed = loaderTarget
-
-  paintLoaderProgress(loaderDisplayed)
-
-  if (ready && loaderDisplayed >= 0.999 && loaderFinishAt === 0 && !loaderReadyShown) {
-    // Everything is streamed in. Instead of departing on our own, hand the
-    // moment to the visitor: the meter recedes and the Start button rises.
-    // The click is also the user gesture that legally unlocks ambient audio.
-    loaderReadyShown = true
-    loaderEl.classList.add('is-ready')
-    loaderEl.setAttribute('aria-busy', 'false')
-    loaderActionsEl.hidden = false
-    loaderStartEl.focus({ preventScroll: true })
+  if (ready && !loaderDataReady) {
+    loaderDataReady = true
+    setLoadProgress(1, 'Feldsystem bereit.')
   }
 
   if (loaderFinishAt > 0 && now >= loaderFinishAt) {
     loaderEl.hidden = true
     bootLoading = false
+    cancelAnimationFrame(loaderProgressRaf)
+    loaderProgressRaf = 0
     window.clearInterval(loaderStallTimer)
     setStatus('Adaptive streaming · ready')
   }
@@ -212,6 +241,8 @@ const onLoaderStart = () => {
   applyBenchPreset()
   eagleBench?.dispose()
   eagleBench = null
+  if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
+  delete loaderEagleCanvasEl.dataset.benchState
   // User gesture: resuming the AudioContext is permitted right here.
   if (startWithSound) void audioLayer?.setEnabled(true)
   const now = performance.now()
@@ -228,7 +259,7 @@ const onLoaderStart = () => {
 }
 loaderStartEl.addEventListener('click', onLoaderStart)
 const loaderStallTimer = window.setInterval(() => {
-  if (!bootLoading || loaderFailed || loaderReadyShown || loaderFinishAt > 0
+  if (!bootLoading || loaderFailed || loaderDataReady || loaderReadyShown || loaderFinishAt > 0
     || performance.now() - loaderLastAdvance < 20_000) return
   loaderStalled = true
   loaderStatusEl.textContent = 'Die Datenverbindung antwortet ungewöhnlich langsam.'
@@ -1263,6 +1294,8 @@ function dispose(): void {
   disposed = true
   renderer.setAnimationLoop(null)
   setAimMode(false, false)
+  cancelAnimationFrame(loaderProgressRaf)
+  loaderProgressRaf = 0
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
   rainLayer?.dispose()
@@ -1278,6 +1311,8 @@ function dispose(): void {
   cloudNoiseTexture = null
   eagleBench?.dispose()
   eagleBench = null
+  if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
+  delete loaderEagleCanvasEl.dataset.benchState
   rainToggleEl.removeEventListener('click', onRainToggle)
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)

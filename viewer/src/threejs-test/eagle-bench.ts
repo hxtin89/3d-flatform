@@ -4,10 +4,10 @@
 // top colour gradient, visible point structure. The bird's outline is exact:
 // points are sampled on the actual SVG vector geometry (SVGLoader shapes +
 // MeshSurfaceSampler), not on a raster, so feather tips match the logo.
-// Every dot flies in from scattered dust with a cubic ease-out the moment the
-// (time-paced) progress reaches its slot: at 50% exactly 50% of the final
-// mass has arrived. The assembly always takes a minimum time to run its
-// course, even when the payload comes straight from cache.
+// Every dot flies on one straight, cubic-eased segment from a deterministic
+// spawn field. A late assembly curve deliberately keeps the silhouette vague:
+// the former 25% visual state is reached at 80% loader progress. There is no
+// second animation clock in this module.
 //
 // Measurement: the pretty eagle alone would be too small to stress a GPU, so
 // the same renderer additionally pushes a growing mass of clipped-away
@@ -18,10 +18,22 @@ import { WebGPURenderer, PointsNodeMaterial } from 'three/webgpu'
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js'
 import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js'
 import {
-  Discard, Fn, If, clamp, cos, float, hash, instanceIndex, instancedBufferAttribute,
-  mix, sin, smoothstep, sqrt, uniform, uv, vec2, vec3,
+  Discard, Fn, If, clamp, float, instancedBufferAttribute, max, mix,
+  smoothstep, uniform, uv, vec2, vec3,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
+import {
+  EAGLE_FADE_FLIGHT_FRACTION,
+  EAGLE_FLIGHT_PROGRESS_SPAN,
+  EAGLE_RANDOM_SEED,
+  arrivalProgress,
+  assemblyProgressForLoad,
+  checksumFloat32Arrays,
+  completedPointCount,
+  createSeededRandom,
+  pointFlightState,
+  spawnPointFromSamples,
+} from './eagle-bench-motion'
 
 export type BenchPreset = 'strong' | 'medium' | 'constrained'
 
@@ -33,19 +45,32 @@ export interface EagleBenchResult {
   preset: BenchPreset | null
 }
 
+export interface EagleBenchDebugState {
+  /** Alias of loadProgress retained for compact diagnostics. */
+  progress: number
+  loadProgress: number
+  assemblyProgress: number
+  visualPoints: number
+  waitingPoints: number
+  flyingPoints: number
+  settledPoints: number
+  stressPoints: number
+  maxStressPoints: number
+  seed: number
+  checksum: string
+  rotation: [number, number, number]
+}
+
 export interface EagleBench {
   setProgress(progress: number): void
   result(): EagleBenchResult
+  debugState(): EagleBenchDebugState
   dispose(): void
 }
 
 const EAGLE_SVG_URL = '/assets/svg/wilderness-eagle.svg'
 const DENSITY_BUCKETS = 12
 const MAX_THICKNESS = 0.2
-/** A point finishes its fly-in after this much additional progress. */
-const ARRIVAL_SPAN = 0.07
-/** The assembly never plays faster than this, cache hit or not. */
-const MIN_ASSEMBLY_SECONDS = 3.2
 const EAGLE_SCALE = 0.78
 /** Visible dots forming the bird. Deliberately low: the finished bird must
  * still read as individual 2px dots, never as a filled surface — only then
@@ -121,18 +146,25 @@ export async function createEagleBench(
   options: { forceWebGL: boolean },
 ): Promise<EagleBench> {
   const cfg = EXPERIENCE_CONFIG.eagleBench
-  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const coarse = isCoarseDevice()
   const visualPoints = coarse ? VISUAL_POINTS_MOBILE : VISUAL_POINTS
   const maxPoints = coarse ? cfg.maxPointsMobile : cfg.maxPoints
   const shape = await loadEagleShape()
 
   // Uniform area sampling over the real vector surface: thin feathers get
-  // exactly their share of dots and keep the logo's precise contour.
+  // exactly their share of dots and keep the logo's precise contour. Separate
+  // seeded streams keep sampling stable if spawn tuning changes later.
   const samplerMesh = new THREE.Mesh(shape.geometry)
   const sampler = new MeshSurfaceSampler(samplerMesh).build()
+  const surfaceRandom = createSeededRandom(EAGLE_RANDOM_SEED)
+  ;(sampler as unknown as { setRandomGenerator(random: () => number): MeshSurfaceSampler })
+    .setRandomGenerator(surfaceRandom)
+  const volumeRandom = createSeededRandom(EAGLE_RANDOM_SEED ^ 0x564f4c55)
+  const spawnRandom = createSeededRandom(EAGLE_RANDOM_SEED ^ 0x5350574e)
   const sampled = new THREE.Vector3()
   const positions = new Float32Array(visualPoints * 3)
+  const spawnPositions = new Float32Array(visualPoints * 3)
+  const arrivals = new Float32Array(visualPoints)
   for (let index = 0; index < visualPoints; index++) {
     sampler.sample(sampled)
     const u = THREE.MathUtils.clamp((sampled.x / shape.aspect) * 0.5 + 0.5, 0, 1)
@@ -140,22 +172,28 @@ export async function createEagleBench(
     const pixel = (((v * (shape.interiorHeight - 1)) | 0) * shape.interiorWidth
       + ((u * (shape.interiorWidth - 1)) | 0)) * 4 + 3
     const thickness = (shape.interior[pixel] / 255) ** 0.75 * MAX_THICKNESS
-    const depth = Math.sign(Math.random() - 0.5) * (1 - Math.random() ** 2)
+    const depth = (volumeRandom() < 0.5 ? -1 : 1) * (1 - volumeRandom() ** 2)
+    const spawn = spawnPointFromSamples(shape.aspect, spawnRandom(), spawnRandom(), spawnRandom())
     positions[index * 3] = sampled.x
     positions[index * 3 + 1] = sampled.y
     positions[index * 3 + 2] = depth * thickness
+    spawnPositions[index * 3] = spawn[0]
+    spawnPositions[index * 3 + 1] = spawn[1]
+    spawnPositions[index * 3 + 2] = spawn[2]
+    arrivals[index] = arrivalProgress(index, visualPoints)
   }
+  const deterministicChecksum = checksumFloat32Arrays(positions, spawnPositions, arrivals)
   shape.geometry.dispose()
 
   // WebGPU renders THREE.Points strictly at 1 pixel, so the visible bird uses
   // instanced sprites instead: one tiny camera-facing quad per dot — sizable,
   // round (UV discard) and driven by the same node graph.
   const targetAttribute = new THREE.InstancedBufferAttribute(positions, 3)
+  const spawnAttribute = new THREE.InstancedBufferAttribute(spawnPositions, 3)
+  const arrivalAttribute = new THREE.InstancedBufferAttribute(arrivals, 1)
   const targetPosition = instancedBufferAttribute(targetAttribute) as any
-  // Arrival slot straight from the instance id — dots assemble evenly across
-  // the load because targets were sampled in random spatial order. Slots span
-  // [0, 1-ARRIVAL_SPAN] so the last dot has settled exactly at 100%.
-  const seed = float(instanceIndex).add(0.5).div(visualPoints).mul(1 - ARRIVAL_SPAN) as any
+  const spawnPosition = instancedBufferAttribute(spawnAttribute) as any
+  const arrival = instancedBufferAttribute(arrivalAttribute) as any
 
   const material = new PointsNodeMaterial()
   material.transparent = true
@@ -164,26 +202,13 @@ export async function createEagleBench(
   material.sizeNode = float(cfg.pointSizePx)
 
   const progressUniform = uniform(0)
-  // How far (in eagle-local units) the spawn dust scatters — set after the
-  // camera mapping is known so the dust covers the whole viewport.
-  const spawnSpread = uniform(2.9)
-
-  // Fly-in: each dot spawns at its OWN random screen position and travels a
-  // single straight line to its target with one cubic ease-out. The spawn
-  // hash must be fully decorrelated between neighbouring indices — dots that
-  // start at the same moment (adjacent slots) would otherwise share a spawn
-  // area and briefly form little eagle copies mid-flight.
-  const flight = clamp(progressUniform.sub(seed).div(ARRIVAL_SPAN), 0, 1)
+  // The finish slot, not the start slot, is the assembly invariant. Therefore
+  // floor(assemblyProgress * pointCount) dots are settled at every exact step.
+  // Early dots use a shorter flight so the very first frame can remain empty.
+  const flightStart = max(arrival.sub(EAGLE_FLIGHT_PROGRESS_SPAN), float(0))
+  const flightDuration = max(arrival.sub(flightStart), float(1e-6))
+  const flight = clamp(progressUniform.sub(flightStart).div(flightDuration), 0, 1)
   const easedFlight = float(1).sub(float(1).sub(flight).pow(3))
-  const indexFloat = float(instanceIndex)
-  const scatter = (salt: number) => hash(indexFloat.mul(salt).add(salt * 0.618))
-  const spawnAngle = scatter(12.9898).mul(Math.PI * 2)
-  const spawnRadius = sqrt(scatter(78.233)).mul(spawnSpread)
-  const spawnPosition = vec3(
-    cos(spawnAngle).mul(spawnRadius),
-    sin(spawnAngle).mul(spawnRadius).mul(0.72),
-    scatter(37.719).sub(0.5).mul(1.8),
-  )
   material.positionNode = mix(spawnPosition, targetPosition, easedFlight)
 
   // One coherent bottom-to-top gradient across the bird (deep forest → leaf
@@ -197,26 +222,25 @@ export async function createEagleBench(
     vec3(lime.r, lime.g, lime.b),
     smoothstep(float(0.62), float(1), heightMix),
   )
-  const twinkle = hash(float(instanceIndex).mul(517.77)).mul(0.24).add(0.88)
   const edgeDistance = (uv() as any).sub(vec2(0.5)).length()
   material.colorNode = Fn(() => {
     If(edgeDistance.greaterThan(0.5), () => Discard())
-    // Arriving dust is pale and translucent until it settles.
-    return gradient.mul(twinkle).mul(easedFlight.mul(0.55).add(0.45))
+    return gradient
   })()
-  // Soft round edge: hard-discarded circles shimmer on subpixel motion; a
-  // small alpha falloff keeps every dot rock-steady while the pivot sways.
-  material.opacityNode = easedFlight.mul(0.5).add(0.5)
+  // Waiting points are submitted for a deterministic baseline but remain
+  // fully transparent. They fade only in the first third of their own flight.
+  const fade = smoothstep(float(0), float(EAGLE_FADE_FLIGHT_FRACTION), flight)
+  material.opacityNode = fade
     .mul(smoothstep(float(0.5), float(0.34), edgeDistance))
 
   const sprite = new THREE.Sprite(material as any)
-  sprite.count = 0
+  sprite.count = visualPoints
   sprite.frustumCulled = false
   const pivot = new THREE.Group()
   pivot.add(sprite)
   const scene = new THREE.Scene()
   scene.add(pivot)
-  // Perspective + slow sway give the parallax that makes the depth visible.
+  // Perspective reveals the deterministic depth while the pivot stays fixed.
   const camera = new THREE.PerspectiveCamera(32, shape.aspect, 0.1, 12)
   camera.position.z = 3.6
 
@@ -257,10 +281,6 @@ export async function createEagleBench(
   // layout shift that frame during loading, so the anchor is re-measured every
   // frame instead of once at startup (also covers window resizes).
   const frameElement = document.querySelector<HTMLElement>('.loader-eagle-frame')
-  // The original logo stays invisible while loading — the eagle only exists
-  // once its points have assembled; afterwards it fades in as a soft shadow.
-  const ghostElement = document.querySelector<HTMLElement>('.loader-eagle-ghost')
-  if (ghostElement) ghostElement.style.opacity = '0'
   let layoutWidth = 0
   let layoutHeight = 0
   function syncLayout(): void {
@@ -287,50 +307,26 @@ export async function createEagleBench(
       )
     }
     pivot.scale.setScalar(eagleScale)
-    spawnSpread.value = (hostWidth * worldPerPx) / (2 * eagleScale)
   }
   syncLayout()
 
   // Frame-time buckets per density decile: median per bucket is robust
   // against tile-download hitches happening on the main thread.
   const buckets: number[][] = Array.from({ length: DENSITY_BUCKETS + 1 }, () => [])
-  let targetProgress = 0
-  let pacedProgress = 0
+  let currentLoadProgress = 0
+  let currentAssemblyProgress = 0
   let stressCount = 0
   let lastFrameAt = 0
   let rafId = 0
   let disposed = false
   let totalSamples = 0
-  const startedAt = performance.now()
 
   const tick = (now: number) => {
     if (disposed) return
     rafId = requestAnimationFrame(tick)
-    const seconds = (now - startedAt) * 0.001
-    const delta = lastFrameAt > 0 ? Math.min(0.25, (now - lastFrameAt) * 0.001) : 0
-
-    // Time pacing: even a cache-fast load assembles over MIN_ASSEMBLY_SECONDS
-    // so the animation can be enjoyed — and every density level gets sampled.
-    pacedProgress = Math.min(targetProgress, pacedProgress + delta / MIN_ASSEMBLY_SECONDS)
-    progressUniform.value = pacedProgress
-    // A dot must become visible the moment its straight flight STARTS (slot
-    // reached), never mid-flight or already landed — that reads as popping.
-    sprite.count = Math.round(Math.min(1, pacedProgress / (1 - ARRIVAL_SPAN)) * visualPoints)
-    stressCount = Math.round(pacedProgress * maxPoints)
+    stressCount = Math.round(currentLoadProgress * maxPoints)
 
     syncLayout()
-    // The sway only starts once the bird is fully assembled: rotating the
-    // pivot while dust is still far out swings those dots around like atoms.
-    const settled = THREE.MathUtils.smoothstep(pacedProgress, 0.985, 1)
-    if (ghostElement) ghostElement.style.opacity = (0.12 * settled).toFixed(3)
-    if (reducedMotion) {
-      pivot.rotation.set(-0.08, 0.22, 0)
-    } else {
-      // One calm, barely-there drift — anything faster makes the fine dots
-      // shimmer against the pixel grid.
-      pivot.rotation.y = Math.sin(seconds * 0.16) * 0.07 * settled
-      pivot.rotation.x = (-0.04 + Math.sin(seconds * 0.11) * 0.02) * settled
-    }
     stressGeometry.setDrawRange(0, stressCount)
     void renderer.renderAsync(scene, camera)
     if (document.visibilityState === 'visible' && lastFrameAt > 0 && stressCount > 0) {
@@ -353,8 +349,9 @@ export async function createEagleBench(
 
   return {
     setProgress(progress) {
-      // 50% loaded = 50% of the final point mass, arriving dots included.
-      targetProgress = THREE.MathUtils.clamp(progress, 0, 1)
+      currentLoadProgress = THREE.MathUtils.clamp(progress, 0, 1)
+      currentAssemblyProgress = assemblyProgressForLoad(currentLoadProgress)
+      progressUniform.value = currentAssemblyProgress
     },
     result() {
       const targetDelta = 1000 / cfg.targetFps * 1.06 // small tolerance around 60 fps
@@ -373,6 +370,30 @@ export async function createEagleBench(
           : fraction >= cfg.mediumFraction ? 'medium' : 'constrained'
       }
       return { pointsAtTarget, maxPoints, samples: totalSamples, preset }
+    },
+    debugState() {
+      const settledPoints = completedPointCount(currentAssemblyProgress, visualPoints)
+      let waitingPoints = 0
+      let flyingPoints = 0
+      for (let index = settledPoints; index < visualPoints; index++) {
+        const state = pointFlightState(index, visualPoints, currentAssemblyProgress)
+        if (state.linear <= 0) waitingPoints++
+        else flyingPoints++
+      }
+      return {
+        progress: currentLoadProgress,
+        loadProgress: currentLoadProgress,
+        assemblyProgress: currentAssemblyProgress,
+        visualPoints,
+        waitingPoints,
+        flyingPoints,
+        settledPoints,
+        stressPoints: Math.round(currentLoadProgress * maxPoints),
+        maxStressPoints: maxPoints,
+        seed: EAGLE_RANDOM_SEED,
+        checksum: deterministicChecksum,
+        rotation: [pivot.rotation.x, pivot.rotation.y, pivot.rotation.z],
+      }
     },
     dispose() {
       disposed = true

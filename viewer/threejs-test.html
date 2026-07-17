@@ -50,9 +50,9 @@
       .loader-eagle { position: absolute; inset: 0; background: var(--forest);
                       -webkit-mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat;
                       mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat; }
-      /* Original logo directly beneath the point bird — a soft drop shadow.
-         The point cloud lands congruently on top of it. */
-      .loader-eagle-ghost { opacity: .12; transform: scale(.92) translate(1.5%, 4%); filter: blur(1.5px); }
+      /* SVG layers stay invisible unless the point renderer fails. This avoids
+         a solid eagle flashing before the deterministic point cloud is ready. */
+      .loader-eagle-ghost { opacity: 0; transform: scale(.92) translate(1.5%, 4%); filter: blur(1.5px); }
       .loader-eagle-fill { clip-path: inset(calc(100% - var(--loader-progress)) 0 0 0);
                            filter: drop-shadow(0 -8px 18px rgba(0,68,50,.2));
                            transition: clip-path .28s cubic-bezier(.2,.75,.25,1); }
@@ -480,7 +480,7 @@
       <div class="loader-content">
         <div class="loader-eagle-frame" aria-hidden="true">
           <div class="loader-eagle loader-eagle-ghost"></div>
-          <div class="loader-eagle loader-eagle-fill" id="loaderEagleFill"></div>
+          <div class="loader-eagle loader-eagle-fill" id="loaderEagleFill" hidden></div>
         </div>
         <p class="loader-system">Flight preparation / point cloud</p>
         <p id="loaderStatus" aria-live="polite">Initialisiere Feldsystem …</p>

@@ -7,6 +7,7 @@
     "dev": "vite --host",
     "dev:https": "VITE_HTTPS=1 vite --host",
     "audio:prepare": "node scripts/prepare-sounds.mjs",
+    "bench:verify": "node --experimental-strip-types --test src/threejs-test/eagle-bench-motion.test.ts",
     "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
     "preview": "vite preview --base=/livingdashboard/"
   },
