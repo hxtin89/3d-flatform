@@ -180,13 +180,39 @@ Load one logical Spatial LOD tileset:
 http://localhost:5173/?dataset=peru-b2-globe&lod=spatial-lod
 ```
 
-Preset behavior should mostly change SSE/cache, not dataset identity:
+Spatial LOD uses one adaptive runtime over one dataset identity. The
+Overview/Explore/Detail preset buttons do not switch Spatial LOD behavior;
+`main.ts` intentionally ignores preset changes while `lod=spatial-lod` is
+active. The UI may keep `low` selected for report compatibility, but that is
+not a fixed Overview traversal mode.
+
+Area selection is metadata and camera navigation only. It must never reload a
+different density dataset or replace the active Spatial LOD tileset.
+
+The initial camera range seeds SSE once:
 
 ```text
-Overview: SSE around 1024
-Explore:  SSE around 256
-Detail:   SSE around 64/128
+range <= 250m:  SSE 64
+range <= 500m:  SSE 128
+range <= 1000m: SSE 256
+range <= 2000m: SSE 512
+farther/global: SSE 1024
 ```
+
+After bootstrap, `SpatialLodBudgetController` owns runtime refinement:
+
+- SSE ladder: `64, 96, 128, 196, 256, 384, 512, 768, 1024, 1536, 2048`.
+- Point target: viewport-derived, clamped to 5M-12M selected points.
+- Hard selected-point limit: 15M.
+- Cache budget: 1024 MiB plus 512 MiB maximum overflow.
+- Soft pressure: frame-time EMA above 50 ms or memory above 1024 MiB.
+- Hard pressure: selected points above 15M, frame-time EMA above 60 ms, or memory above 1536 MiB.
+- Use streaming traversal while moving/loading. Switch to standard traversal
+  only after 2.5 s of continuous eligibility. Eligibility requires settled
+  queues and z4 availability, plus either stable budgets or pressure that has
+  already coarsened SSE to the end of the ladder.
+- Under stable headroom, refine one SSE step at a time; under pressure, coarsen
+  one step at a time. Cache trimming is rate-limited.
 
 Expected spatial refinement:
 
@@ -220,29 +246,49 @@ print(r["perLevel"])
 '
 ```
 
-Run builder tests:
+Run pipeline tests:
 
 ```bash
 /Volumes/WD_BLACK/conda/envs/pointcloud-pipeline/bin/python \
   -m unittest pipeline.tests.test_build_spatial_lod_tree -v
+
+/Volumes/WD_BLACK/conda/envs/pointcloud-pipeline/bin/python \
+  -m unittest pipeline.tests.test_upgrade_spatial_lod_p001 -v
 ```
 
-Run viewer tests and build:
+Run the viewer build and whitespace validation:
 
 ```bash
 cd viewer
-./node_modules/.bin/vitest run src/spatial-lod.test.ts
 npm run build
 cd ..
 git diff --check
 ```
+
+`viewer/src/spatial-lod.test.ts` contains the adaptive-budget contract tests,
+but the current viewer package does not declare or install Vitest. Run them
+only when the binary is available, and do not report them as passed when it is
+missing:
+
+```bash
+cd viewer
+if [ -x ./node_modules/.bin/vitest ]; then
+  ./node_modules/.bin/vitest run src/spatial-lod.test.ts
+else
+  echo "Vitest unavailable; viewer build is the executable validation"
+fi
+```
+
+Adding Vitest changes project dependencies; do that only when dependency
+changes are within the requested scope.
 
 Use `--full-validate` on the upgrade script only when explicitly needing every PNTS header checked. Default fast validation is preferred for large outputs.
 
 ## Diagnostics
 
 - Initial visible points jump to about 20M or the UI flickers 20M -> 0: confirm the canonical report starts with `z0 p001`, not old `z0 p02`; restart `pipeline:serve`; hard reload.
-- Initial whole-scene load is still heavy: inspect `z0.points`, z0 byte size, viewer SSE, cache size, and whether the browser is loading stale backup paths.
+- Initial whole-scene load is still heavy: inspect `z0.points`, z0 byte size, `spatialLodTargetPoints`, effective SSE, selected points, frame-time EMA, memory, traversal policy, and whether the browser is loading stale backup paths.
+- Overview/Explore/Detail buttons do not change Spatial LOD: this is expected. Spatial LOD uses one adaptive runtime; diagnose the budget controller and runtime metrics instead of preset switching.
 - One side of the screen is dense and another sparse: verify LOD is fixed grid z/x/y, not Area dataset switching; inspect `viewer/src/spatial-lod.ts` dataset resolution.
 - `Unexpected duplicate z1 p02 tile while splitting old z0`: duplicate split fragments are valid at old z0 boundaries; merge fragments per z1 tile instead of failing.
 - `rewriting tileset tree...` appears slow: it should only rewrite metadata and validate. Add progress logs, use fast validation by default, and avoid reading every PNTS header unless `--full-validate` was requested.
@@ -251,7 +297,7 @@ Use `--full-validate` on the upgrade script only when explicitly needing every P
 - Missing or stale p001 upgrade state: if `.spatial-lod-p001-upgrade-state.json` is absent, `--resume` cannot skip COPC streaming.
 - Missing z4 `viewerRequestVolume`: inspect tree rewrite logic; z4 leaves should preserve or synthesize lightweight request volumes.
 - Parent bbox containment failure: inspect tile index math, old-to-new level mapping, z-range union, and relative URI rebasing before relaxing validation.
-- No detail appears when zooming close: check z4 request volumes, SSE, Cesium network 404s, and geometric-error monotonicity.
+- No detail appears when zooming close: check z4 request volumes, effective SSE, controller state, selected-point/frame/memory pressure, queue settlement, Cesium network 404s, and geometric-error monotonicity.
 
 ## Safe Change Workflow
 
@@ -280,4 +326,6 @@ Consider Spatial LOD work complete only when:
 - Parent boxes contain child boxes.
 - Initial viewer load uses z0 p001 and does not request p100 too early.
 - Zooming anywhere refines spatially around the camera, not by area.
+- Preset clicks do not replace the Spatial LOD dataset or bypass the adaptive budget controller.
+- Runtime metrics stay within the intended point/memory/frame budgets or visibly coarsen SSE under pressure.
 - Relevant tests/builds pass or skipped checks are explicitly justified.

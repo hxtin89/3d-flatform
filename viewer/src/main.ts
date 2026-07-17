@@ -32,6 +32,8 @@ import {
   setAreaDetectionStatus,
   setContextLayerAvailability,
   setPresetAvailability,
+  setPanelLodMode,
+  setReportVariant,
   setSelectedAreaOption,
   setUseCurrentViewAvailability,
 } from './ui';
@@ -69,13 +71,14 @@ import {
 import {
   SPATIAL_LOD_TILESET_FILE,
   spatialLodDataset,
-  spatialLodSse,
   type SpatialLodLevelStats,
 } from './spatial-lod';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
 setServerUrl(TILE_CONFIG.baseUrl || 'CloudFront not configured');
+setPanelLodMode(LOD_MODE);
+setReportVariant(LOD_MODE === 'one-lod-tree' || LOD_MODE === 'spatial-lod' ? 'runtime' : 'dataset');
 initDatasetReport();
 
 let areaManifest: AreaManifest | null = null;
@@ -128,12 +131,15 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
-    const isOverview = preset === 'low' && LOD_MODE === 'manual';
+    const pointSizeAvailable = LOD_MODE === 'one-lod-tree' || (LOD_MODE === 'manual' && preset === 'low');
+    const pointSizeDisabledLabel = LOD_MODE === 'spatial-lod'
+      ? 'Spatial LOD mode'
+      : 'Available in Overview only';
     setOverviewPointSizeAvailability(
-      isOverview,
-      isOverview ? '' : 'Available in Overview only'
+      pointSizeAvailable,
+      pointSizeAvailable ? '' : pointSizeDisabledLabel
     );
-    if (isOverview) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
+    if (pointSizeAvailable) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   },
   onBrowserMetric: (metric: BrowserMetricName, value: number | string) => {
     updateBrowserMetric(metric, value);
@@ -160,7 +166,6 @@ initPresetButtons((preset: PresetName) => {
     return;
   }
   if (LOD_MODE === 'spatial-lod') {
-    applySpatialLodPreset(preset);
     return;
   }
   applyMode(preset, { detectCurrentViewForDetail: preset === 'high' }).catch((err) => {
@@ -279,7 +284,7 @@ async function bootstrapOneLodTree(): Promise<void> {
   setAreaOptions([], null);
   setUseCurrentViewAvailability(false, 'Single-tree mode');
   setContextLayerAvailability(false, 'Single-tree mode');
-  setOverviewPointSizeAvailability(false, 'Single-tree mode');
+  setOverviewPointSizeAvailability(true, '');
   setPresetAvailability('low', true, `Single tree · SSE ${oneLodTreeSse('low')}`);
   setPresetAvailability('medium', true, `Single tree · SSE ${oneLodTreeSse('medium')}`);
   setPresetAvailability('high', true, `Single tree · SSE ${oneLodTreeSse('high')}`);
@@ -293,6 +298,7 @@ async function bootstrapOneLodTree(): Promise<void> {
   useRuntimeOnlyDatasetReport();
   setActivePreset('low');
   updateReportMode('low');
+  setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   updateStats({
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),
@@ -304,7 +310,7 @@ function applyOneLodTreePreset(preset: PresetName): void {
   viewer.setOneLodTreePreset(preset);
   setActivePreset(preset);
   updateReportMode(preset);
-  updateBrowserMetric('focusEffectiveSSE', oneLodTreeSse(preset));
+  updateBrowserMetric('focusEffectiveSSE', viewer.getSSE());
   updateStats({
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),
@@ -357,15 +363,12 @@ async function bootstrapSpatialLod(): Promise<void> {
     setUseCurrentViewAvailability(false, 'Area manifest is not ready yet.');
   }
 
-  // Spatial LOD: presets only change SSE/cache, never the dataset.
+  // Spatial LOD is one adaptive runtime: z0/p001 bootstraps; z1-z4 refine by budget.
   setContextLayerAvailability(false, 'Spatial LOD mode');
   setOverviewPointSizeAvailability(false, 'Spatial LOD mode');
-  setPresetAvailability('low', true, `Spatial · SSE ${spatialLodSse('low')}`);
-  setPresetAvailability('medium', true, `Spatial · SSE ${spatialLodSse('medium')}`);
-  setPresetAvailability('high', true, `Spatial · SSE ${spatialLodSse('high')}`);
   const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
   if (detailSseSelect) detailSseSelect.disabled = true;
-  setAreaDetectionStatus('Spatial LOD: camera-driven uniform refinement');
+  setAreaDetectionStatus('Spatial LOD: adaptive point-budget refinement');
 
   resetBrowserMetrics();
   updateBrowserMetric('framingMode', 'flyTo');
@@ -373,23 +376,11 @@ async function bootstrapSpatialLod(): Promise<void> {
   useRuntimeOnlyDatasetReport();
   setActivePreset('low');
   updateReportMode('low');
-  updateBrowserMetric('focusEffectiveSSE', spatialLodSse('low'));
+  updateBrowserMetric('focusEffectiveSSE', viewer.getSSE());
   updateStats({
     sse: viewer.getSSE(),
     memory: viewer.getCacheMB(),
     tiles: 0,
-  });
-  renderSpatialLodStatus();
-}
-
-function applySpatialLodPreset(preset: PresetName): void {
-  viewer.setSpatialLodPreset(preset);
-  setActivePreset(preset);
-  updateReportMode(preset);
-  updateBrowserMetric('focusEffectiveSSE', spatialLodSse(preset));
-  updateStats({
-    sse: viewer.getSSE(),
-    memory: viewer.getCacheMB(),
   });
   renderSpatialLodStatus();
 }

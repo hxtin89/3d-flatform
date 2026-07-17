@@ -19,7 +19,9 @@ import {
 import { type BrowserMetricName } from './report';
 import {
   ONE_LOD_TREE_TILESET_FILE,
+  oneLodTreeBandForRatio,
   oneLodTreeCachePolicy,
+  oneLodTreePresetForPointBand,
   oneLodTreeSse,
   shouldTrimOneLodTree,
   tilesetEntryUrl,
@@ -27,19 +29,20 @@ import {
 import {
   SPATIAL_LOD_TILESET_FILE,
   SPATIAL_LOD_STREAMING_OPTIONS,
+  SPATIAL_LOD_CACHE_BYTES,
+  SPATIAL_LOD_CACHE_OVERFLOW_BYTES,
+  SpatialLodBudgetController,
   classifySpatialLodTileUri,
   emptySpatialLodLevelStats,
   extractTileContentUri,
   formatSpatialLodActiveTileSamples,
   formatSpatialLodLevelStats,
   parseSpatialLodTileId,
-  shouldTrimSpatialLod,
-  spatialLodCachePolicy,
   spatialLodEntryUrl,
-  spatialLodOverviewRuntimePolicy,
+  spatialLodInitialSse,
   spatialLodPanScaleMetersPerPixel,
-  spatialLodSse,
   type SpatialLodActiveTileSample,
+  type SpatialLodBudgetDecision,
   type SpatialLodLevelStats,
 } from './spatial-lod';
 
@@ -48,12 +51,19 @@ Cesium.Ion.defaultAccessToken = '';
 
 type TileSource = 'local' | 'cloudfront';
 
-const LOCAL_TILE_SERVER_BASE = 'http://localhost:8081';
+/**
+ * Keep local tile requests same-origin. This works for both localhost and
+ * 127.0.0.1 viewer URLs; Vite forwards /tiles to the IPv6-local tile server.
+ */
+const LOCAL_TILE_SERVER_BASE = '/tiles';
 const LOCAL_DEFAULT_DATASET = 'autzen';
 const CLOUDFRONT_DEFAULT_DATASET = 'wi-1-copc';
 const DATASET_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 const searchParams = new URLSearchParams(window.location.search);
+const SPATIAL_LOD_BENCHMARK_CAMERA = parseSpatialLodBenchmarkCamera(
+  searchParams.get('spatialBenchmarkCamera')
+);
 const requestedSource = searchParams.get('source');
 export const TILE_SOURCE: TileSource = requestedSource === 'cloudfront'
   ? 'cloudfront'
@@ -258,9 +268,12 @@ type RuntimeTileset = {
   isSkippingLevelOfDetail?: boolean;
   hasMixedContent?: boolean;
   preferLeaves?: boolean;
+  foveatedScreenSpaceError?: boolean;
   foveatedConeSize?: number;
   foveatedMinimumScreenSpaceErrorRelaxation?: number;
   foveatedTimeDelay?: number;
+  memoryAdjustedScreenSpaceError?: number;
+  totalMemoryUsageInBytes?: number;
   asset?: {
     extras?: {
       coordinateMode?: string;
@@ -315,6 +328,7 @@ export class PointCloudViewer {
   private overviewPointSizeScale = OVERVIEW_POINT_SIZE_SCALE_DEFAULT;
   private overviewPointSizePx = 0;
   private overviewCameraRangeRatio = 0;
+  private oneLodTreePointSizeActive = false;
   private lastOverviewReportKey = '';
   private lastOverviewDebugLogAt = 0;
   private lastOverviewDebugKey = '';
@@ -322,8 +336,12 @@ export class PointCloudViewer {
   private overviewFirstVisibleFired = false;
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
   private oneLodTreeTrimGeneration = 0;
-  private spatialLodTrimGeneration = 0;
   private spatialLodActive = false;
+  private spatialLodBudgetController: SpatialLodBudgetController | null = null;
+  private spatialLodLastDecision: SpatialLodBudgetDecision | null = null;
+  private spatialLodFrameTimeEmaMs: number | null = null;
+  private spatialLodLastFrameAt = 0;
+  private spatialLodLastLevelStats: SpatialLodLevelStats | null = null;
   private spatialLodCameraMoveStartUnsubscribe: Cesium.Event.RemoveCallback | null = null;
   private spatialLodCameraMoveEndUnsubscribe: Cesium.Event.RemoveCallback | null = null;
   private spatialLodCameraMoving = false;
@@ -335,7 +353,6 @@ export class PointCloudViewer {
   private spatialLodZ4RequestTimeline: Array<{ elapsedMs: number; count: number }> = [];
   private spatialLodZ4TimelineMilestoneIndex = 0;
   private lastSpatialLodRefinementReportKey = '';
-
   constructor(containerId: string, callbacks: ViewerCallbacks) {
     this.callbacks = callbacks;
     this.viewer = this.createViewer(containerId);
@@ -459,10 +476,16 @@ export class PointCloudViewer {
       this.configureCameraLimits(tileset, null, true, false);
       this.installPointCloudControls(tileset, null);
       this.setOneLodTreePreset('low');
+      this.enterOneLodTreePointSizeRuntime();
       this.minCameraDistance = 0.05;
       this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = 0.05;
 
-      this.callbacks.onBrowserMetric('flyToTime', this.flyToTileset());
+      const flyToTime = this.flyToTileset();
+      if (SPATIAL_LOD_BENCHMARK_CAMERA) {
+        this.restoreCameraSnapshot(SPATIAL_LOD_BENCHMARK_CAMERA);
+        this.viewer.scene.requestRender();
+      }
+      this.callbacks.onBrowserMetric('flyToTime', flyToTime);
       this.reportEffectiveSse();
       this.callbacks.onStateChange('ready', `Streaming one-lod tree: ${url}`);
 
@@ -480,7 +503,7 @@ export class PointCloudViewer {
 
       this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
         if (!this.primaryTileset) return;
-        this.syncSpatialLodOverviewSse();
+        this.updateSpatialLodBudgetRuntime();
         const loaded = this.loadedTileCount();
         const active = this.activeTileCount();
         if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
@@ -492,6 +515,9 @@ export class PointCloudViewer {
         if (loaded > 0 && !this.firstVisibleReported) {
           this.firstVisibleReported = true;
           this.callbacks.onBrowserMetric('firstVisibleTime', performance.now() - this.loadStartTime);
+        }
+        if (this.oneLodTreePointSizeActive) {
+          this.updateOverviewPointSize();
         }
       });
       this.installTileFailureLogging(tileset);
@@ -603,17 +629,15 @@ export class PointCloudViewer {
       this.emitSpatialLodLevelStats();
 
       const tilesetStart = performance.now();
-      const documentPromise = MAPTILER_BASEMAP_ENABLED
-        ? fetch(url).then(async (response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            return response.json() as Promise<TilesetDocument>;
-          })
-        : Promise.resolve(null);
+      const documentPromise = fetch(url).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        return response.json() as Promise<TilesetDocument>;
+      });
       const [tileset, document] = await Promise.all([
         Cesium.Cesium3DTileset.fromUrl(url, {
-          maximumScreenSpaceError: spatialLodSse('low'),
-          cacheBytes: PRESETS.low.cacheBytes,
-          maximumCacheOverflowBytes: PRESETS.low.maximumCacheOverflowBytes,
+          maximumScreenSpaceError: spatialLodInitialSse(Number.POSITIVE_INFINITY),
+          cacheBytes: SPATIAL_LOD_CACHE_BYTES,
+          maximumCacheOverflowBytes: SPATIAL_LOD_CACHE_OVERFLOW_BYTES,
           ...SPATIAL_LOD_STREAMING_OPTIONS,
         }),
         documentPromise,
@@ -635,7 +659,7 @@ export class PointCloudViewer {
       this.startSpatialLodRefinementTelemetry();
       this.configureCameraLimits(tileset, null, true, true);
       this.installPointCloudControls(tileset, null);
-      this.setSpatialLodPreset('low');
+      this.initializeSpatialLodBudgetRuntime();
       if (this.globeControlsActive) {
         this.minCameraDistance = Math.max(
           tileset.boundingSphere.radius * SPATIAL_LOD_GLOBE_MIN_CAMERA_DISTANCE_RATIO,
@@ -664,7 +688,7 @@ export class PointCloudViewer {
 
       this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
         if (!this.primaryTileset) return;
-        this.syncSpatialLodOverviewSse();
+        this.updateSpatialLodBudgetRuntime();
         const loaded = this.loadedTileCount();
         const active = this.activeTileCount();
         if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
@@ -702,75 +726,125 @@ export class PointCloudViewer {
     }
   }
 
-  setSpatialLodPreset(preset: PresetName): void {
-    const previousPreset = this.currentPreset;
-    this.currentPreset = preset;
-    this.spatialLodTrimGeneration += 1;
-    if (this.primaryTileset) {
-      const tileset = this.primaryTileset;
-      const cachePolicy = spatialLodCachePolicy(preset);
-      applyPreset(
-        tileset,
-        preset,
-        { maximumScreenSpaceError: spatialLodSse(preset) },
-        { variant: this.presetVariantForTileset(tileset) }
-      );
-      tileset.cacheBytes = cachePolicy.cacheBytes;
-      tileset.maximumCacheOverflowBytes = cachePolicy.maximumCacheOverflowBytes;
-      if (shouldTrimSpatialLod(previousPreset, preset)) {
-        this.scheduleSpatialLodOverviewTrim(tileset, this.spatialLodTrimGeneration);
-      }
-      this.reportEffectiveSse();
-    }
-    this.callbacks.onPresetChange(preset);
-  }
-
-  private syncSpatialLodOverviewSse(): void {
-    if (!this.spatialLodActive || this.currentPreset !== 'low' || !this.primaryTileset) {
-      return;
-    }
-    const range = this.currentOverviewCameraRange();
-    const nextBand = spatialLodOverviewRuntimePolicy(range);
+  private initializeSpatialLodBudgetRuntime(): void {
+    if (!this.primaryTileset) return;
     const tileset = this.primaryTileset;
-    const sseChanged = tileset.maximumScreenSpaceError !== nextBand.sse;
-    const cacheChanged = (
-      tileset.cacheBytes !== nextBand.cacheBytes ||
-      tileset.maximumCacheOverflowBytes !== nextBand.maximumCacheOverflowBytes
+    this.spatialLodBudgetController = new SpatialLodBudgetController(
+      this.currentOverviewCameraRange()
     );
-    if (!sseChanged && !cacheChanged) return;
-    tileset.maximumScreenSpaceError = nextBand.sse;
-    tileset.cacheBytes = nextBand.cacheBytes;
-    tileset.maximumCacheOverflowBytes = nextBand.maximumCacheOverflowBytes;
-    this.reportEffectiveSse();
-    this.callbacks.onBrowserMetric('cacheBytesRuntime', nextBand.cacheBytes);
-    this.viewer.scene.requestRender();
+    this.spatialLodLastDecision = null;
+    this.spatialLodFrameTimeEmaMs = null;
+    this.spatialLodLastFrameAt = performance.now();
+    this.spatialLodLastLevelStats = null;
+    tileset.cacheBytes = SPATIAL_LOD_CACHE_BYTES;
+    tileset.maximumCacheOverflowBytes = SPATIAL_LOD_CACHE_OVERFLOW_BYTES;
+    this.applySpatialLodPointRendering(false);
+    this.updateSpatialLodBudgetRuntime();
   }
 
-  private scheduleSpatialLodOverviewTrim(
-    tileset: Cesium.Cesium3DTileset,
-    generation: number
-  ): void {
-    let renderedFrames = 0;
-    const remove = this.viewer.scene.postRender.addEventListener(() => {
-      if (
-        generation !== this.spatialLodTrimGeneration ||
-        this.currentPreset !== 'low' ||
-        this.primaryTileset !== tileset ||
-        tileset.isDestroyed()
-      ) {
-        remove();
-        return;
-      }
-      renderedFrames += 1;
-      if (renderedFrames < 2) {
-        this.viewer.scene.requestRender();
-        return;
-      }
-      remove();
-      tileset.trimLoadedTiles();
-      this.viewer.scene.requestRender();
+  private updateSpatialLodBudgetRuntime(): void {
+    if (!this.spatialLodActive || !this.primaryTileset || !this.spatialLodBudgetController) return;
+    const now = performance.now();
+    this.updateSpatialLodFrameTime(now);
+    const tileset = this.primaryTileset;
+    const runtime = tileset as unknown as RuntimeTileset;
+    const selected = selectedPointCount(runtime);
+    const decision = this.spatialLodBudgetController.update({
+      now,
+      drawingBufferWidth: this.viewer.scene.drawingBufferWidth,
+      drawingBufferHeight: this.viewer.scene.drawingBufferHeight,
+      selectedPoints: typeof selected === 'number' ? selected : null,
+      frameTimeEmaMs: this.spatialLodFrameTimeEmaMs,
+      memoryBytes: typeof tileset.totalMemoryUsageInBytes === 'number'
+        ? tileset.totalMemoryUsageInBytes
+        : null,
+      queuesSettled: this.spatialLodQueuesSettled(runtime),
+      z4Eligible: this.currentOverviewCameraRange() <= 250 || Boolean(
+        this.spatialLodLastLevelStats &&
+        (this.spatialLodLastLevelStats.z3 > 0 || this.spatialLodLastLevelStats.z4 > 0)
+      ),
     });
-    this.viewer.scene.requestRender();
+    this.spatialLodLastDecision = decision;
+    const changed = (
+      tileset.maximumScreenSpaceError !== decision.effectiveSse ||
+      runtime.skipLevelOfDetail !== decision.skipLevelOfDetail ||
+      runtime.preferLeaves !== decision.preferLeaves ||
+      runtime.foveatedScreenSpaceError !== decision.foveatedScreenSpaceError ||
+      runtime.foveatedMinimumScreenSpaceErrorRelaxation !==
+        decision.foveatedMinimumScreenSpaceErrorRelaxation
+    );
+    tileset.maximumScreenSpaceError = decision.effectiveSse;
+    tileset.cacheBytes = SPATIAL_LOD_CACHE_BYTES;
+    tileset.maximumCacheOverflowBytes = SPATIAL_LOD_CACHE_OVERFLOW_BYTES;
+    tileset.skipLevelOfDetail = decision.skipLevelOfDetail;
+    runtime.preferLeaves = decision.preferLeaves;
+    tileset.foveatedScreenSpaceError = decision.foveatedScreenSpaceError;
+    tileset.foveatedMinimumScreenSpaceErrorRelaxation =
+      decision.foveatedMinimumScreenSpaceErrorRelaxation;
+    this.applySpatialLodPointRendering(decision.eyeDomeLighting);
+    if (decision.trimCache) tileset.trimLoadedTiles();
+    this.emitSpatialLodBudgetStats(selected, decision);
+    if (changed || decision.trimCache) {
+      this.reportEffectiveSse();
+      this.viewer.scene.requestRender();
+    }
+  }
+
+  private updateSpatialLodFrameTime(now: number): void {
+    const previous = this.spatialLodLastFrameAt;
+    this.spatialLodLastFrameAt = now;
+    if (previous <= 0) return;
+    const elapsed = now - previous;
+    if (!Number.isFinite(elapsed) || elapsed <= 0 || elapsed > 250) return;
+    this.spatialLodFrameTimeEmaMs = this.spatialLodFrameTimeEmaMs === null
+      ? elapsed
+      : this.spatialLodFrameTimeEmaMs * 0.8 + elapsed * 0.2;
+  }
+
+  private spatialLodQueuesSettled(runtime: RuntimeTileset): boolean {
+    const values = [
+      runtime.statistics?.numberOfPendingRequests,
+      runtime.statistics?.numberOfTilesProcessing,
+      runtime._requestedTiles?.length,
+      runtime._requestedTilesInFlight?.length,
+      runtime._processingQueue?.length,
+    ].filter((value): value is number => typeof value === 'number');
+    return values.length > 0 && values.every((value) => value === 0);
+  }
+
+  private applySpatialLodPointRendering(eyeDomeLighting: boolean): void {
+    if (!this.primaryTileset) return;
+    const tileset = this.primaryTileset;
+    const shading = tileset.pointCloudShading ?? new Cesium.PointCloudShading({});
+    shading.attenuation = true;
+    shading.geometricErrorScale = 1;
+    shading.maximumAttenuation = 2.5;
+    shading.eyeDomeLighting = eyeDomeLighting;
+    shading.eyeDomeLightingStrength = 1;
+    shading.eyeDomeLightingRadius = 1;
+    tileset.pointCloudShading = shading;
+  }
+
+  private emitSpatialLodBudgetStats(
+    selectedPoints: number | string,
+    decision: SpatialLodBudgetDecision
+  ): void {
+    const memoryAdjusted = (this.primaryTileset as unknown as RuntimeTileset | null)
+      ?.memoryAdjustedScreenSpaceError ?? 'unsupported';
+    this.callbacks.onBrowserMetric('spatialLodRuntimeState', decision.state);
+    this.callbacks.onBrowserMetric('spatialLodTraversalPolicy', decision.traversalPolicy);
+    this.callbacks.onBrowserMetric('spatialLodSeedSSE', decision.seedSse);
+    this.callbacks.onBrowserMetric('spatialLodEffectiveSSE', decision.effectiveSse);
+    this.callbacks.onBrowserMetric('spatialLodMemoryAdjustedSSE', memoryAdjusted);
+    this.callbacks.onBrowserMetric('spatialLodTargetPoints', decision.targetPoints);
+    this.callbacks.onBrowserMetric('spatialLodSelectedPoints', selectedPoints);
+    this.callbacks.onBrowserMetric(
+      'spatialLodFrameTimeEmaMs',
+      this.spatialLodFrameTimeEmaMs === null ? '—' : Number(this.spatialLodFrameTimeEmaMs.toFixed(1))
+    );
+    this.callbacks.onBrowserMetric('spatialLodSkipLodLatchMs', decision.skipLodLatchRemainingMs);
+    this.callbacks.onBrowserMetric('spatialLodEyeDomeLighting', String(decision.eyeDomeLighting));
+    this.callbacks.onBrowserMetric('cacheBytesRuntime', SPATIAL_LOD_CACHE_BYTES);
   }
 
   private startSpatialLodRefinementTelemetry(): void {
@@ -783,14 +857,18 @@ export class PointCloudViewer {
       if (!this.spatialLodActive) return;
       this.spatialLodCameraMoving = true;
       this.spatialLodCameraMoveStarts += 1;
+      this.spatialLodBudgetController?.onCameraMoveStart(performance.now());
       this.resetSpatialLodRefinementWindow(performance.now());
+      this.updateSpatialLodBudgetRuntime();
       this.emitSpatialLodRefinementStats(true);
     });
     this.spatialLodCameraMoveEndUnsubscribe = this.viewer.camera.moveEnd.addEventListener(() => {
       if (!this.spatialLodActive) return;
       this.spatialLodCameraMoving = false;
       this.spatialLodCameraMoveEnds += 1;
+      this.spatialLodBudgetController?.onCameraMoveEnd();
       this.resetSpatialLodRefinementWindow(performance.now());
+      this.updateSpatialLodBudgetRuntime();
       this.emitSpatialLodRefinementStats(true);
     });
     this.emitSpatialLodRefinementStats(true);
@@ -811,6 +889,11 @@ export class PointCloudViewer {
     this.spatialLodZ4RequestTimeline = [];
     this.spatialLodZ4TimelineMilestoneIndex = 0;
     this.lastSpatialLodRefinementReportKey = '';
+    this.spatialLodBudgetController = null;
+    this.spatialLodLastDecision = null;
+    this.spatialLodFrameTimeEmaMs = null;
+    this.spatialLodLastFrameAt = 0;
+    this.spatialLodLastLevelStats = null;
     if (wasActive) this.resetSpatialLodRefinementReporting();
   }
 
@@ -866,11 +949,13 @@ export class PointCloudViewer {
       processingTiles,
       attemptedRequests,
     ].some((value) => typeof value === 'number' && value > 0);
-    const phase = this.spatialLodCameraMoving
-      ? 'moving'
-      : hasBacklog
-        ? 'refining'
-        : 'settled';
+    const phase = this.spatialLodLastDecision?.state ?? (
+      this.spatialLodCameraMoving
+        ? 'MOVING'
+        : hasBacklog
+          ? 'STREAMING'
+          : 'BOOTSTRAP'
+    );
     const timeline = this.spatialLodZ4RequestTimeline
       .map((sample) => `${sample.elapsedMs}ms:${sample.count}`)
       .join(' ');
@@ -999,6 +1084,19 @@ export class PointCloudViewer {
     this.callbacks.onBrowserMetric('spatialLodFoveatedConeSize', '—');
     this.callbacks.onBrowserMetric('spatialLodFoveatedRelaxation', '—');
     this.callbacks.onBrowserMetric('spatialLodFoveatedTimeDelay', '—');
+    this.callbacks.onBrowserMetric('spatialLodRuntimeState', '—');
+    this.callbacks.onBrowserMetric('spatialLodTraversalPolicy', '—');
+    this.callbacks.onBrowserMetric('spatialLodSeedSSE', '—');
+    this.callbacks.onBrowserMetric('spatialLodEffectiveSSE', '—');
+    this.callbacks.onBrowserMetric('spatialLodMemoryAdjustedSSE', '—');
+    this.callbacks.onBrowserMetric('spatialLodTargetPoints', '—');
+    this.callbacks.onBrowserMetric('spatialLodSelectedPoints', '—');
+    this.callbacks.onBrowserMetric('spatialLodSelectedPointsByLevel', '—');
+    this.callbacks.onBrowserMetric('spatialLodUnclassifiedSelectedPoints', '—');
+    this.callbacks.onBrowserMetric('spatialLodPointReconciliationDelta', '—');
+    this.callbacks.onBrowserMetric('spatialLodFrameTimeEmaMs', '—');
+    this.callbacks.onBrowserMetric('spatialLodSkipLodLatchMs', '—');
+    this.callbacks.onBrowserMetric('spatialLodEyeDomeLighting', '—');
   }
 
   /**
@@ -1008,19 +1106,27 @@ export class PointCloudViewer {
   private emitSpatialLodLevelStats(): void {
     if (!this.spatialLodActive || !this.primaryTileset) return;
     const stats = emptySpatialLodLevelStats();
+    const pointStats = emptySpatialLodLevelStats();
     const ts = this.primaryTileset as unknown as RuntimeTileset;
     const selected = Array.isArray(ts._selectedTiles)
       ? ts._selectedTiles
       : ts.selectedTiles;
     let classified = 0;
+    let classifiedPoints = 0;
+    let unclassifiedPoints = 0;
     const samples: SpatialLodActiveTileSample[] = [];
     if (Array.isArray(selected)) {
       for (const tile of selected) {
         const uri = extractTileContentUri(tile);
         const level = classifySpatialLodTileUri(uri ?? undefined);
+        const tilePoints = contentPointCount(tile.content);
         if (level) {
           stats[level] += 1;
+          pointStats[level] += tilePoints;
           classified += 1;
+          classifiedPoints += tilePoints;
+        } else {
+          unclassifiedPoints += tilePoints;
         }
         if (samples.length < 8) {
           samples.push(this.spatialLodActiveTileSample(tile, uri, level));
@@ -1029,8 +1135,19 @@ export class PointCloudViewer {
     }
     // When none classify (Cesium hides URLs), report null so UI shows "—".
     const payload = classified > 0 ? stats : null;
+    this.spatialLodLastLevelStats = payload;
+    const selectedPoints = selectedPointCount(ts);
+    const reconciliationDelta = typeof selectedPoints === 'number'
+      ? classifiedPoints + unclassifiedPoints - selectedPoints
+      : '—';
     const formattedSamples = formatSpatialLodActiveTileSamples(samples);
     this.callbacks.onBrowserMetric('activeSpatialLodLevels', formatSpatialLodLevelStats(payload));
+    this.callbacks.onBrowserMetric(
+      'spatialLodSelectedPointsByLevel',
+      payload ? formatSpatialLodLevelStats(pointStats) : '—'
+    );
+    this.callbacks.onBrowserMetric('spatialLodUnclassifiedSelectedPoints', unclassifiedPoints);
+    this.callbacks.onBrowserMetric('spatialLodPointReconciliationDelta', reconciliationDelta);
     this.callbacks.onBrowserMetric('activeSpatialLodTileSamples', formattedSamples);
     this.callbacks.onSpatialLodLevelStats?.(payload, this.activeTileCount());
     this.callbacks.onSpatialLodActiveTileSamples?.(samples, formattedSamples);
@@ -2317,7 +2434,7 @@ export class PointCloudViewer {
     const clamped = clampOverviewPointSizeScale(scale);
     if (Math.abs(clamped - this.overviewPointSizeScale) < 1e-9) return;
     this.overviewPointSizeScale = clamped;
-    if (this.overviewRuntimeActive) {
+    if (this.pointSizeRuntimeActive()) {
       this.updateOverviewPointSize();
     }
   }
@@ -2355,6 +2472,21 @@ export class PointCloudViewer {
     this.registerFirstVisibleListener();
     this.reportOverviewTuning();
     this.logOverviewDiagnostics(true);
+  }
+
+  private enterOneLodTreePointSizeRuntime(): void {
+    if (!this.primaryTileset) return;
+    this.oneLodTreePointSizeActive = true;
+    this.overviewPointSizeBand = null;
+    this.updateOverviewCameraRangeRatio();
+    const band = oneLodTreeBandForRatio(this.overviewCameraRangeRatio, null);
+    const px = this.pointSizePxForOverviewBand(band);
+    this.overviewPointSizeBand = band;
+    this.overviewPointSizePx = px;
+    this.lastOverviewReportKey = '';
+    this.primaryTileset.style = createOverviewPointSizeStyle(px);
+    this.syncOneLodTreePresetForPointBand(band);
+    this.reportOverviewTuning();
   }
 
   private registerFirstVisibleListener(): void {
@@ -2410,16 +2542,25 @@ export class PointCloudViewer {
   }
 
   private updateOverviewPointSize(): void {
-    if (!this.overviewRuntimeActive || !this.primaryTileset) return;
+    if (!this.pointSizeRuntimeActive() || !this.primaryTileset) return;
     this.updateOverviewCameraRangeRatio();
-    const nextBand = overviewBandForRatio(
-      this.overviewCameraRangeRatio,
-      this.overviewPointSizeBand
-    );
+    const nextBand = this.oneLodTreePointSizeActive
+      ? oneLodTreeBandForRatio(
+          this.overviewCameraRangeRatio,
+          this.overviewPointSizeBand
+        )
+      : overviewBandForRatio(
+          this.overviewCameraRangeRatio,
+          this.overviewPointSizeBand
+        );
     const nextPx = this.pointSizePxForOverviewBand(nextBand);
+    const bandChanged = nextBand !== this.overviewPointSizeBand;
     const pxChanged = nextPx !== this.overviewPointSizePx;
     this.overviewPointSizeBand = nextBand;
     this.overviewPointSizePx = nextPx;
+    if (this.oneLodTreePointSizeActive && bandChanged) {
+      this.syncOneLodTreePresetForPointBand(nextBand);
+    }
     if (pxChanged) {
       this.primaryTileset.style = createOverviewPointSizeStyle(nextPx);
     }
@@ -2434,6 +2575,13 @@ export class PointCloudViewer {
     return this.globeControlsActive
       ? Math.max(px, OVERVIEW_GLOBE_POINT_SIZE_PX_MIN)
       : px;
+  }
+
+  private syncOneLodTreePresetForPointBand(band: OverviewPointSizeBand): void {
+    if (!this.oneLodTreePointSizeActive || !this.primaryTileset) return;
+    const nextPreset = oneLodTreePresetForPointBand(band);
+    if (nextPreset === this.currentPreset) return;
+    this.setOneLodTreePreset(nextPreset);
   }
 
   private logOverviewDiagnostics(force = false): void {
@@ -2514,14 +2662,15 @@ export class PointCloudViewer {
   }
 
   private reportOverviewTuning(): void {
-    const px: number | string = this.overviewRuntimeActive ? this.overviewPointSizePx : '—';
-    const band: string = this.overviewRuntimeActive
+    const runtimeActive = this.pointSizeRuntimeActive();
+    const px: number | string = runtimeActive ? this.overviewPointSizePx : '—';
+    const band: string = runtimeActive
       ? (this.overviewPointSizeBand ?? '—')
       : '—';
-    const scale: number | string = this.overviewRuntimeActive
+    const scale: number | string = runtimeActive
       ? this.overviewPointSizeScale
       : '—';
-    const ratio: number | string = this.overviewRuntimeActive
+    const ratio: number | string = runtimeActive
       ? Number(this.overviewCameraRangeRatio.toFixed(2))
       : '—';
     const key = `${px}|${band}|${scale}|${ratio}`;
@@ -2531,6 +2680,10 @@ export class PointCloudViewer {
     this.callbacks.onBrowserMetric('pointSizeBand', band);
     this.callbacks.onBrowserMetric('pointSizeScale', scale);
     this.callbacks.onBrowserMetric('cameraRangeRatio', ratio);
+  }
+
+  private pointSizeRuntimeActive(): boolean {
+    return this.overviewRuntimeActive || this.oneLodTreePointSizeActive;
   }
 
   getCurrentPreset(): PresetName {
@@ -2652,6 +2805,7 @@ export class PointCloudViewer {
     this.lastLayerRuntimeKey = '';
     this.lastCameraRuntimeKey = '';
     this.overviewRuntimeActive = false;
+    this.oneLodTreePointSizeActive = false;
     this.overviewPointSizeBand = null;
     this.overviewPointSizePx = 0;
     this.overviewCameraRangeRatio = 0;
@@ -2758,6 +2912,7 @@ export class PointCloudViewer {
       this.lastCameraRuntimeKey = '—|—';
       this.callbacks.onBrowserMetric('cameraDistanceMeters', '—');
       this.callbacks.onBrowserMetric('cameraHeightMeters', '—');
+      this.callbacks.onBrowserMetric('spatialLodCameraSnapshot', '—');
       return;
     }
 
@@ -2772,12 +2927,15 @@ export class PointCloudViewer {
     const roundedHeight = typeof height === 'number' && Number.isFinite(height)
       ? Math.round(height)
       : null;
-    const runtimeKey = `${roundedDistance ?? '—'}|${roundedHeight ?? '—'}`;
+    const snapshot = this.spatialLodActive ? this.captureCameraSnapshot() : null;
+    const serializedSnapshot = snapshot ? JSON.stringify(snapshot) : '—';
+    const runtimeKey = `${roundedDistance ?? '—'}|${roundedHeight ?? '—'}|${serializedSnapshot}`;
     if (runtimeKey === this.lastCameraRuntimeKey) return;
     this.lastCameraRuntimeKey = runtimeKey;
 
     this.callbacks.onBrowserMetric('cameraDistanceMeters', roundedDistance ?? '—');
     this.callbacks.onBrowserMetric('cameraHeightMeters', roundedHeight ?? '—');
+    this.callbacks.onBrowserMetric('spatialLodCameraSnapshot', serializedSnapshot);
   }
 
   private layerRuntimeStats(tileset: Cesium.Cesium3DTileset | null): LayerRuntimeStats {
@@ -2877,6 +3035,39 @@ function cartesianToPoint(value: Cesium.Cartesian3): CurrentViewPoint {
 
 function pointToCartesian(value: CurrentViewPoint): Cesium.Cartesian3 {
   return new Cesium.Cartesian3(value.x, value.y, value.z);
+}
+
+function parseSpatialLodBenchmarkCamera(encoded: string | null): CameraSnapshot | null {
+  if (!encoded) return null;
+  try {
+    const padding = '='.repeat((4 - (encoded.length % 4)) % 4);
+    const value = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/') + padding)) as unknown;
+    return isCameraSnapshot(value) ? value : null;
+  } catch {
+    console.warn('[Viewer] Ignoring invalid spatialBenchmarkCamera parameter.');
+    return null;
+  }
+}
+
+function isCameraSnapshot(value: unknown): value is CameraSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const snapshot = value as Partial<CameraSnapshot>;
+  const isPoint = (point: unknown): point is CurrentViewPoint => {
+    if (!point || typeof point !== 'object') return false;
+    const candidate = point as Partial<CurrentViewPoint>;
+    return [candidate.x, candidate.y, candidate.z].every(
+      (coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate)
+    );
+  };
+  return isPoint(snapshot.orbitTarget) &&
+    isPoint(snapshot.position) &&
+    isPoint(snapshot.direction) &&
+    isPoint(snapshot.up) &&
+    typeof snapshot.orbitHeading === 'number' && Number.isFinite(snapshot.orbitHeading) &&
+    typeof snapshot.orbitPitch === 'number' && Number.isFinite(snapshot.orbitPitch) &&
+    typeof snapshot.orbitRange === 'number' && Number.isFinite(snapshot.orbitRange) &&
+    (snapshot.frustumNear === null || (typeof snapshot.frustumNear === 'number' && Number.isFinite(snapshot.frustumNear))) &&
+    (snapshot.frustumFar === null || (typeof snapshot.frustumFar === 'number' && Number.isFinite(snapshot.frustumFar)));
 }
 
 function buildMapTilerBaseLayer(): Cesium.ImageryLayer | null {

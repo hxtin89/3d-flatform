@@ -1,15 +1,50 @@
-import type { PresetName } from './presets';
-
 export const SPATIAL_LOD_TILESET_FILE = 'tileset.json';
-
-export const SPATIAL_LOD_SSE: Readonly<Record<PresetName, number>> = {
-  low: 1024,
-  medium: 256,
-  high: 128,
-};
 
 const MIB = 1024 * 1024;
 const SPATIAL_LOD_PAN_SCALE_FACTOR = 0.0012;
+
+export const SPATIAL_LOD_CACHE_BYTES = 1_024 * MIB;
+export const SPATIAL_LOD_CACHE_OVERFLOW_BYTES = 512 * MIB;
+export const SPATIAL_LOD_SOFT_MEMORY_BYTES = SPATIAL_LOD_CACHE_BYTES;
+export const SPATIAL_LOD_HARD_MEMORY_BYTES =
+  SPATIAL_LOD_CACHE_BYTES + SPATIAL_LOD_CACHE_OVERFLOW_BYTES;
+export const SPATIAL_LOD_HARD_POINT_LIMIT = 15_000_000;
+export const SPATIAL_LOD_SSE_LADDER = [
+  64, 96, 128, 196, 256, 384, 512, 768, 1_024, 1_536, 2_048,
+] as const;
+
+export type SpatialLodRuntimeState =
+  | 'BOOTSTRAP'
+  | 'MOVING'
+  | 'STREAMING'
+  | 'SETTLED'
+  | 'PRESSURE';
+
+export interface SpatialLodBudgetMetrics {
+  now: number;
+  drawingBufferWidth: number;
+  drawingBufferHeight: number;
+  selectedPoints: number | null;
+  frameTimeEmaMs: number | null;
+  memoryBytes: number | null;
+  queuesSettled: boolean;
+  z4Eligible: boolean;
+}
+
+export interface SpatialLodBudgetDecision {
+  state: SpatialLodRuntimeState;
+  traversalPolicy: 'streaming' | 'standard';
+  seedSse: number;
+  effectiveSse: number;
+  targetPoints: number;
+  skipLevelOfDetail: boolean;
+  preferLeaves: boolean;
+  foveatedScreenSpaceError: boolean;
+  skipLodLatchRemainingMs: number;
+  foveatedMinimumScreenSpaceErrorRelaxation: number;
+  eyeDomeLighting: boolean;
+  trimCache: boolean;
+}
 
 export const SPATIAL_LOD_STREAMING_OPTIONS = {
   skipLevelOfDetail: true,
@@ -20,83 +55,183 @@ export const SPATIAL_LOD_STREAMING_OPTIONS = {
   loadSiblings: false,
   preferLeaves: true,
   foveatedScreenSpaceError: true,
-  foveatedConeSize: 0.25,
+  foveatedConeSize: 0.2,
   foveatedMinimumScreenSpaceErrorRelaxation: 64,
   foveatedTimeDelay: 0.2,
   cullRequestsWhileMoving: true,
   cullRequestsWhileMovingMultiplier: 120,
 } as const;
 
-// Cache headroom mirrors PRESETS but is inlined so this module (and its tests)
-// do not pull the Cesium runtime dependency through presets.ts.
-const SPATIAL_CACHE_BYTES: Readonly<Record<PresetName, number>> = {
-  low: 256 * MIB,
-  medium: 512 * MIB,
-  high: 768 * MIB,
-};
-const SPATIAL_CACHE_OVERFLOW_BYTES: Readonly<Record<PresetName, number>> = {
-  low: 128 * MIB,
-  medium: 256 * MIB,
-  high: 512 * MIB,
-};
-
-export interface SpatialLodCachePolicy {
-  cacheBytes: number;
-  maximumCacheOverflowBytes: number;
-  trimOnEnter: boolean;
-}
-
-export interface SpatialLodOverviewRuntimePolicy {
-  level: keyof SpatialLodLevelStats;
-  maxRangeMeters: number;
-  sse: number;
-  cacheBytes: number;
-  maximumCacheOverflowBytes: number;
-}
-
-const SPATIAL_LOD_OVERVIEW_RUNTIME_LADDER: readonly SpatialLodOverviewRuntimePolicy[] = [
-  { level: 'z4', maxRangeMeters: 250, sse: 64, cacheBytes: 2_048 * MIB, maximumCacheOverflowBytes: 1_024 * MIB },
-  { level: 'z3', maxRangeMeters: 500, sse: 128, cacheBytes: 1_536 * MIB, maximumCacheOverflowBytes: 768 * MIB },
-  { level: 'z2', maxRangeMeters: 1_000, sse: 256, cacheBytes: 1_024 * MIB, maximumCacheOverflowBytes: 512 * MIB },
-  { level: 'z1', maxRangeMeters: 2_000, sse: 512, cacheBytes: 512 * MIB, maximumCacheOverflowBytes: 256 * MIB },
-  { level: 'z0', maxRangeMeters: Number.POSITIVE_INFINITY, sse: 1_024, cacheBytes: 256 * MIB, maximumCacheOverflowBytes: 128 * MIB },
-];
-
 export function spatialLodDataset(logicalDataset: string): string {
   return `${logicalDataset}/${logicalDataset}-spatial-lod`;
 }
 
-export function spatialLodSse(preset: PresetName): number {
-  return SPATIAL_LOD_SSE[preset];
-}
-
-/**
- * Spatial LOD keeps the same cache headroom as the normal presets. Overview
- * trims finer cached tiles so returning from Explore/Detail releases the
- * finer z3/z4 tiles.
- */
-export function spatialLodCachePolicy(preset: PresetName): SpatialLodCachePolicy {
-  return {
-    cacheBytes: SPATIAL_CACHE_BYTES[preset],
-    maximumCacheOverflowBytes: SPATIAL_CACHE_OVERFLOW_BYTES[preset],
-    trimOnEnter: preset === 'low',
-  };
-}
-
-export function shouldTrimSpatialLod(
-  previousPreset: PresetName,
-  nextPreset: PresetName
-): boolean {
-  return previousPreset !== 'low' && spatialLodCachePolicy(nextPreset).trimOnEnter;
-}
-
-export function spatialLodOverviewRuntimePolicy(rangeMeters: number): SpatialLodOverviewRuntimePolicy {
+/** Distance supplies only the initial SSE seed; it never drives frames directly. */
+export function spatialLodInitialSse(rangeMeters: number): number {
   const range = Number.isFinite(rangeMeters)
     ? Math.max(rangeMeters, 0)
     : Number.POSITIVE_INFINITY;
-  return SPATIAL_LOD_OVERVIEW_RUNTIME_LADDER.find(
-    (band) => range <= band.maxRangeMeters
-  ) ?? SPATIAL_LOD_OVERVIEW_RUNTIME_LADDER[SPATIAL_LOD_OVERVIEW_RUNTIME_LADDER.length - 1];
+  if (range <= 250) return 64;
+  if (range <= 500) return 128;
+  if (range <= 1_000) return 256;
+  if (range <= 2_000) return 512;
+  return 1_024;
+}
+
+export function spatialLodTargetPoints(
+  drawingBufferWidth: number,
+  drawingBufferHeight: number
+): number {
+  const pixels = Math.max(0, drawingBufferWidth) * Math.max(0, drawingBufferHeight);
+  return Math.round(Math.min(12_000_000, Math.max(5_000_000, pixels * 6)));
+}
+
+/**
+ * The controller deliberately has no Cesium dependency so its hysteresis and
+ * budget policy are deterministic in tests. Cesium traversal remains the
+ * source of selected tiles; this only supplies its runtime settings.
+ */
+export class SpatialLodBudgetController {
+  private readonly seedSse: number;
+  private effectiveSse: number;
+  private state: SpatialLodRuntimeState = 'BOOTSTRAP';
+  private stableSince: number | null = null;
+  private standardTraversalSince: number | null = null;
+  private standardTraversalLatched = false;
+  private lastSseAdjustmentAt = Number.NEGATIVE_INFINITY;
+  private skipLodLatchUntil = 0;
+  private lastTrimAt = Number.NEGATIVE_INFINITY;
+
+  constructor(initialRangeMeters: number) {
+    this.seedSse = spatialLodInitialSse(initialRangeMeters);
+    this.effectiveSse = this.seedSse;
+  }
+
+  onCameraMoveStart(now: number): void {
+    this.state = 'MOVING';
+    this.stableSince = null;
+    this.standardTraversalSince = null;
+    this.standardTraversalLatched = false;
+    this.skipLodLatchUntil = now;
+  }
+
+  onCameraMoveEnd(): void {
+    this.state = 'STREAMING';
+    this.stableSince = null;
+    this.standardTraversalSince = null;
+    this.standardTraversalLatched = false;
+  }
+
+  update(metrics: SpatialLodBudgetMetrics): SpatialLodBudgetDecision {
+    const targetPoints = spatialLodTargetPoints(
+      metrics.drawingBufferWidth,
+      metrics.drawingBufferHeight
+    );
+    const points = metrics.selectedPoints;
+    const frameTime = metrics.frameTimeEmaMs;
+    const memory = metrics.memoryBytes;
+    const hardPressure = (
+      (points !== null && points > SPATIAL_LOD_HARD_POINT_LIMIT) ||
+      (frameTime !== null && frameTime > 60) ||
+      (memory !== null && memory > SPATIAL_LOD_HARD_MEMORY_BYTES)
+    );
+    const softPressure = (
+      (frameTime !== null && frameTime > 50) ||
+      (memory !== null && memory > SPATIAL_LOD_SOFT_MEMORY_BYTES)
+    );
+
+    const trimCache = memory !== null &&
+      memory > SPATIAL_LOD_HARD_MEMORY_BYTES &&
+      metrics.now - this.lastTrimAt >= 10_000;
+    if (trimCache) this.lastTrimAt = metrics.now;
+
+    if (this.state === 'MOVING') {
+      return this.decision(metrics.now, targetPoints, false, trimCache, false);
+    }
+
+    if (hardPressure || softPressure) {
+      this.state = 'PRESSURE';
+      this.coarsen(metrics.now);
+    }
+
+    const stable = !hardPressure && !softPressure &&
+      metrics.queuesSettled &&
+      metrics.z4Eligible &&
+      points !== null && points <= targetPoints &&
+      frameTime !== null && frameTime <= 40 &&
+      memory !== null && memory <= SPATIAL_LOD_SOFT_MEMORY_BYTES;
+
+    const pressureTraversalEligible = (hardPressure || softPressure) &&
+      metrics.queuesSettled &&
+      metrics.z4Eligible &&
+      this.effectiveSse === SPATIAL_LOD_SSE_LADDER.at(-1);
+    const standardTraversalEligible = stable || pressureTraversalEligible;
+
+    if (!this.standardTraversalLatched) {
+      if (!standardTraversalEligible) {
+        this.standardTraversalSince = null;
+        this.stableSince = null;
+        if (!hardPressure && !softPressure) this.state = 'STREAMING';
+        return this.decision(metrics.now, targetPoints, false, trimCache, false);
+      }
+
+      this.standardTraversalSince ??= metrics.now;
+      if (metrics.now - this.standardTraversalSince < 2_500) {
+        this.state = hardPressure || softPressure ? 'PRESSURE' : 'STREAMING';
+        return this.decision(metrics.now, targetPoints, false, trimCache, false);
+      }
+
+      this.standardTraversalLatched = true;
+      this.skipLodLatchUntil = Math.max(this.skipLodLatchUntil, metrics.now + 3_000);
+    }
+
+    this.state = hardPressure || softPressure ? 'PRESSURE' : 'SETTLED';
+    if (stable && points !== null && frameTime !== null && points < targetPoints * 0.7 && frameTime < 32) {
+      this.refine(metrics.now);
+    }
+    return this.decision(metrics.now, targetPoints, false, trimCache, true);
+  }
+
+  private coarsen(now: number): void {
+    if (now - this.lastSseAdjustmentAt < 1_000) return;
+    const index = SPATIAL_LOD_SSE_LADDER.indexOf(
+      this.effectiveSse as typeof SPATIAL_LOD_SSE_LADDER[number]
+    );
+    this.effectiveSse = SPATIAL_LOD_SSE_LADDER[Math.min(index + 1, SPATIAL_LOD_SSE_LADDER.length - 1)];
+    this.lastSseAdjustmentAt = now;
+  }
+
+  private refine(now: number): void {
+    if (now - this.lastSseAdjustmentAt < 1_000) return;
+    const index = SPATIAL_LOD_SSE_LADDER.indexOf(
+      this.effectiveSse as typeof SPATIAL_LOD_SSE_LADDER[number]
+    );
+    this.effectiveSse = SPATIAL_LOD_SSE_LADDER[Math.max(index - 1, 0)];
+    this.lastSseAdjustmentAt = now;
+  }
+
+  private decision(
+    now: number,
+    targetPoints: number,
+    eyeDomeLighting: boolean,
+    trimCache: boolean,
+    standardTraversal: boolean
+  ): SpatialLodBudgetDecision {
+    return {
+      state: this.state,
+      traversalPolicy: standardTraversal ? 'standard' : 'streaming',
+      seedSse: this.seedSse,
+      effectiveSse: this.effectiveSse,
+      targetPoints,
+      skipLevelOfDetail: !standardTraversal,
+      preferLeaves: !standardTraversal,
+      foveatedScreenSpaceError: !standardTraversal,
+      skipLodLatchRemainingMs: Math.max(0, Math.round(this.skipLodLatchUntil - now)),
+      foveatedMinimumScreenSpaceErrorRelaxation: Math.min(64, this.effectiveSse),
+      eyeDomeLighting,
+      trimCache,
+    };
+  }
 }
 
 export function spatialLodPanScaleMetersPerPixel(rangeMeters: number): number {

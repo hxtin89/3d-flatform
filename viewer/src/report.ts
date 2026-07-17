@@ -1,7 +1,10 @@
-import { DATASET, TILE_CONFIG } from './viewer';
+import { DATASET, LOD_MODE, TILE_CONFIG } from './viewer';
 import { PRESETS, type PresetName } from './presets';
+import { ONE_LOD_TREE_TILESET_FILE } from './one-lod-tree';
 import {
+  classifySpatialLodTileUri,
   countSpatialLodPntsUrls,
+  emptySpatialLodLevelStats,
   formatSpatialLodLevelStats,
   type SpatialLodActiveTileSample,
 } from './spatial-lod';
@@ -77,6 +80,7 @@ export type BrowserMetricName =
   | 'cacheHitRate'
   | 'cameraDistanceMeters'
   | 'cameraHeightMeters'
+  | 'spatialLodCameraSnapshot'
   | 'pointSizePx'
   | 'pointSizeBand'
   | 'pointSizeScale'
@@ -85,6 +89,7 @@ export type BrowserMetricName =
   | 'activeSpatialLodLevels'
   | 'activeSpatialLodTileSamples'
   | 'requestedSpatialLodFiles'
+  | 'requestedSpatialLodBytes'
   | 'spatialLodRefinementPhase'
   | 'spatialLodCameraIdleMs'
   | 'spatialLodCameraMoveStarts'
@@ -107,6 +112,19 @@ export type BrowserMetricName =
   | 'spatialLodFoveatedConeSize'
   | 'spatialLodFoveatedRelaxation'
   | 'spatialLodFoveatedTimeDelay'
+  | 'spatialLodRuntimeState'
+  | 'spatialLodTraversalPolicy'
+  | 'spatialLodSeedSSE'
+  | 'spatialLodEffectiveSSE'
+  | 'spatialLodMemoryAdjustedSSE'
+  | 'spatialLodTargetPoints'
+  | 'spatialLodSelectedPoints'
+  | 'spatialLodSelectedPointsByLevel'
+  | 'spatialLodUnclassifiedSelectedPoints'
+  | 'spatialLodPointReconciliationDelta'
+  | 'spatialLodFrameTimeEmaMs'
+  | 'spatialLodSkipLodLatchMs'
+  | 'spatialLodEyeDomeLighting'
   | 'overviewSsePhase'
   | 'overviewSse'
   | 'overviewBootstrapRequests'
@@ -169,6 +187,7 @@ const browserMetrics: BrowserMetrics = {
   cacheHitRate: 'unknown',
   cameraDistanceMeters: '—',
   cameraHeightMeters: '—',
+  spatialLodCameraSnapshot: '—',
   pointSizePx: '—',
   pointSizeBand: '—',
   pointSizeScale: '—',
@@ -177,6 +196,7 @@ const browserMetrics: BrowserMetrics = {
   activeSpatialLodLevels: '—',
   activeSpatialLodTileSamples: '—',
   requestedSpatialLodFiles: '—',
+  requestedSpatialLodBytes: '—',
   spatialLodRefinementPhase: '—',
   spatialLodCameraIdleMs: '—',
   spatialLodCameraMoveStarts: 0,
@@ -199,6 +219,19 @@ const browserMetrics: BrowserMetrics = {
   spatialLodFoveatedConeSize: '—',
   spatialLodFoveatedRelaxation: '—',
   spatialLodFoveatedTimeDelay: '—',
+  spatialLodRuntimeState: '—',
+  spatialLodTraversalPolicy: '—',
+  spatialLodSeedSSE: '—',
+  spatialLodEffectiveSSE: '—',
+  spatialLodMemoryAdjustedSSE: '—',
+  spatialLodTargetPoints: '—',
+  spatialLodSelectedPoints: '—',
+  spatialLodSelectedPointsByLevel: '—',
+  spatialLodUnclassifiedSelectedPoints: '—',
+  spatialLodPointReconciliationDelta: '—',
+  spatialLodFrameTimeEmaMs: '—',
+  spatialLodSkipLodLatchMs: '—',
+  spatialLodEyeDomeLighting: '—',
   overviewSsePhase: '—',
   overviewSse: '—',
   overviewBootstrapRequests: 0,
@@ -232,6 +265,7 @@ let measuringNetwork = false;
 let cloudFrontMetrics: CloudFrontMetrics = emptyCloudFrontMetrics();
 let overviewSseValidation: Record<string, unknown> | null = null;
 let spatialLodActiveTileSamples: SpatialLodActiveTileSample[] = [];
+let runtimeOnlyDatasetReport = false;
 
 export function setOverviewSseValidation(
   validation: Record<string, unknown> | null
@@ -323,6 +357,7 @@ export function setReportDatasetContext(context: {
 
 /** Use Cesium runtime metrics when a composed tileset has no dataset report. */
 export function useRuntimeOnlyDatasetReport(): void {
+  runtimeOnlyDatasetReport = true;
   datasetReport = null;
   contextReport = null;
   resetPipelineFields();
@@ -372,6 +407,7 @@ export function resetBrowserMetrics(): void {
     cacheHitRate: 'unknown',
     cameraDistanceMeters: '—',
     cameraHeightMeters: '—',
+    spatialLodCameraSnapshot: '—',
     pointSizePx: '—',
     pointSizeBand: '—',
     pointSizeScale: '—',
@@ -380,6 +416,7 @@ export function resetBrowserMetrics(): void {
     activeSpatialLodLevels: '—',
     activeSpatialLodTileSamples: '—',
     requestedSpatialLodFiles: '—',
+    requestedSpatialLodBytes: '—',
     spatialLodRefinementPhase: '—',
     spatialLodCameraIdleMs: '—',
     spatialLodCameraMoveStarts: 0,
@@ -402,6 +439,19 @@ export function resetBrowserMetrics(): void {
     spatialLodFoveatedConeSize: '—',
     spatialLodFoveatedRelaxation: '—',
     spatialLodFoveatedTimeDelay: '—',
+    spatialLodRuntimeState: '—',
+    spatialLodTraversalPolicy: '—',
+    spatialLodSeedSSE: '—',
+    spatialLodEffectiveSSE: '—',
+    spatialLodMemoryAdjustedSSE: '—',
+    spatialLodTargetPoints: '—',
+    spatialLodSelectedPoints: '—',
+    spatialLodSelectedPointsByLevel: '—',
+    spatialLodUnclassifiedSelectedPoints: '—',
+    spatialLodPointReconciliationDelta: '—',
+    spatialLodFrameTimeEmaMs: '—',
+    spatialLodSkipLodLatchMs: '—',
+    spatialLodEyeDomeLighting: '—',
     overviewSsePhase: '—',
     overviewSse: '—',
     overviewBootstrapRequests: 0,
@@ -504,11 +554,12 @@ function renderDatasetReport(report: DatasetReport): void {
 
 function renderModeConfig(): void {
   const preset = PRESETS[currentPresetName];
+  const spatialLod = LOD_MODE === 'spatial-lod';
   const runtimeCacheBytes = typeof browserMetrics.cacheBytesRuntime === 'number'
     ? browserMetrics.cacheBytesRuntime
     : preset.cacheBytes;
-  setText('userMode', preset.userMode);
-  setText('dataDensity', preset.dataDensity);
+  setText('userMode', spatialLod ? 'Spatial LOD' : preset.userMode);
+  setText('dataDensity', spatialLod ? 'p001→p100 adaptive' : preset.dataDensity);
   setText('renderQuality', preset.renderQuality);
   setText('maximumScreenSpaceError', String(effectiveMaximumScreenSpaceError(preset)));
   setText('focusEffectiveSSE', String(browserMetrics.focusEffectiveSSE));
@@ -573,6 +624,7 @@ function updateNetworkMetrics(): void {
 function activeNetworkFragments(): string[] {
   const fragments = new Set<string>();
   fragments.add(resolvedDataset);
+  if (runtimeOnlyDatasetReport) fragments.add(logicalDataset);
   if (contextDataset) fragments.add(contextDataset);
 
   const focusSourceRoot = sourceDatasetRoot(resolvedDataset, datasetReport);
@@ -647,10 +699,14 @@ function emptyCloudFrontMetrics(): CloudFrontMetrics {
 function buildCloudFrontMetrics(entries: PerformanceEntry[], bytesTransferred: number): CloudFrontMetrics {
   return {
     pntsRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('.pnts')).length,
-    tilesetRequests: entries.filter((entry) => resourcePath(entry.name).endsWith('/tileset.json')).length,
+    tilesetRequests: entries.filter((entry) => isTilesetJsonPath(resourcePath(entry.name))).length,
     bytesTransferred,
     cacheHitRatio: cloudFrontMetrics.cacheHitRatio,
   };
+}
+
+function isTilesetJsonPath(path: string): boolean {
+  return path.endsWith('/tileset.json') || path.endsWith(`/${ONE_LOD_TREE_TILESET_FILE}`);
 }
 
 function resourcePath(url: string): string {
@@ -674,14 +730,26 @@ function renderCloudFrontMetrics(): void {
 }
 
 function renderSpatialLodResourceMetrics(entries: PerformanceEntry[]): void {
-  const pntsUrls = entries
-    .map((entry) => entry.name)
-    .filter((url) => resourcePath(url).endsWith('.pnts'));
+  const pntsEntries = entries.filter((entry) => resourcePath(entry.name).endsWith('.pnts'));
+  const pntsUrls = pntsEntries.map((entry) => entry.name);
   updateBrowserMetric(
     'requestedSpatialLodFiles',
     pntsUrls.length > 0
       ? formatSpatialLodLevelStats(countSpatialLodPntsUrls(pntsUrls))
       : '—'
+  );
+  const bytesByLevel = emptySpatialLodLevelStats();
+  let classified = 0;
+  for (const entry of pntsEntries) {
+    const level = classifySpatialLodTileUri(entry.name);
+    if (!level) continue;
+    const resource = entry as PerformanceResourceTiming;
+    bytesByLevel[level] += resource.transferSize || resource.encodedBodySize || resource.decodedBodySize || 0;
+    classified += 1;
+  }
+  updateBrowserMetric(
+    'requestedSpatialLodBytes',
+    classified > 0 ? formatSpatialLodLevelStats(bytesByLevel) : '—'
   );
 }
 
@@ -751,11 +819,13 @@ function sampleFps(onDone: (fps: number) => void, durationMs: number): () => voi
 
 async function copyReport(): Promise<void> {
   const preset = PRESETS[currentPresetName];
+  const spatialLod = LOD_MODE === 'spatial-lod';
   const runtimeCacheBytes = typeof browserMetrics.cacheBytesRuntime === 'number'
     ? browserMetrics.cacheBytesRuntime
     : preset.cacheBytes;
   const maximumScreenSpaceError = effectiveMaximumScreenSpaceError(preset);
-  const focusDensity = datasetReport?.densityTarget ?? preset.dataDensity;
+  const cameraSnapshot = parseSpatialLodCameraSnapshot(browserMetrics.spatialLodCameraSnapshot);
+  const focusDensity = spatialLod ? 'p001→p100 adaptive' : datasetReport?.densityTarget ?? preset.dataDensity;
   const contextDensity = contextReport?.densityTarget ?? null;
   const payload = {
     dataset: resolvedDataset,
@@ -789,8 +859,8 @@ async function copyReport(): Promise<void> {
       excludedSourceChunkId: contextExcludedSourceChunkId,
       report: contextReport,
     } : null,
-    userMode: preset.userMode,
-    dataDensity: preset.dataDensity,
+    userMode: spatialLod ? 'Spatial LOD' : preset.userMode,
+    dataDensity: spatialLod ? 'p001→p100 adaptive' : preset.dataDensity,
     renderQuality: preset.renderQuality,
     maximumScreenSpaceError,
     focusEffectiveSSE: browserMetrics.focusEffectiveSSE,
@@ -808,11 +878,19 @@ async function copyReport(): Promise<void> {
       distanceMeters: browserMetrics.cameraDistanceMeters,
       heightMeters: browserMetrics.cameraHeightMeters,
       rangeRatio: browserMetrics.cameraRangeRatio,
+      spatialLodSnapshot: cameraSnapshot,
     },
     spatialLod: {
       activeZLevels: browserMetrics.activeSpatialLodLevels,
       activeTileSamples: spatialLodActiveTileSamples,
       requestedZFiles: browserMetrics.requestedSpatialLodFiles,
+      requestedZBytes: browserMetrics.requestedSpatialLodBytes,
+      selectedPointsByLevel: browserMetrics.spatialLodSelectedPointsByLevel,
+      unclassifiedSelectedPoints: browserMetrics.spatialLodUnclassifiedSelectedPoints,
+      selectedPointReconciliationDelta: browserMetrics.spatialLodPointReconciliationDelta,
+      benchmarkUrl: spatialLod && cameraSnapshot
+        ? spatialLodBenchmarkUrl(cameraSnapshot)
+        : null,
       loadedTiles: browserMetrics.loadedTiles,
       activeLoadedTiles: browserMetrics.activeLoadedTiles,
       focusLoadedTiles: browserMetrics.focusLoadedTiles,
@@ -821,6 +899,18 @@ async function copyReport(): Promise<void> {
       tilesetRequests: cloudFrontMetrics.tilesetRequests,
       bytesTransferred: cloudFrontMetrics.bytesTransferred,
       tilesetMemoryBytes: browserMetrics.tilesetMemoryBytes,
+      budget: {
+        state: browserMetrics.spatialLodRuntimeState,
+        traversalPolicy: browserMetrics.spatialLodTraversalPolicy,
+        seedSSE: browserMetrics.spatialLodSeedSSE,
+        effectiveSSE: browserMetrics.spatialLodEffectiveSSE,
+        memoryAdjustedSSE: browserMetrics.spatialLodMemoryAdjustedSSE,
+        targetPoints: browserMetrics.spatialLodTargetPoints,
+        selectedPoints: browserMetrics.spatialLodSelectedPoints,
+        frameTimeEmaMs: browserMetrics.spatialLodFrameTimeEmaMs,
+        skipLodLatchMs: browserMetrics.spatialLodSkipLodLatchMs,
+        eyeDomeLighting: browserMetrics.spatialLodEyeDomeLighting,
+      },
       refinement: {
         phase: browserMetrics.spatialLodRefinementPhase,
         cameraIdleMs: browserMetrics.spatialLodCameraIdleMs,
@@ -915,6 +1005,24 @@ async function copyReport(): Promise<void> {
   window.setTimeout(() => setText('copy-status', ''), 1600);
 }
 
+function parseSpatialLodCameraSnapshot(value: string | number | boolean): Record<string, unknown> | null {
+  if (typeof value !== 'string' || value === '—') return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object'
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function spatialLodBenchmarkUrl(snapshot: Record<string, unknown>): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set('spatialBenchmarkCamera', btoa(JSON.stringify(snapshot)));
+  return url.toString();
+}
+
 function pageReloaded(): boolean {
   const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
   return nav?.type === 'reload';
@@ -934,6 +1042,11 @@ function formatBrowserMetric(metric: BrowserMetricName, value: string | number):
   if (metric === 'pointSizeScale') return `${value}×`;
   if (metric === 'cameraRangeRatio') return value.toFixed(2);
   if (metric === 'cacheBytesRuntime') return formatBytes(value);
+  if (metric === 'spatialLodFrameTimeEmaMs') return `${value.toFixed(1)} ms`;
+  if (metric === 'spatialLodSkipLodLatchMs') return `${Math.round(value)} ms`;
+  if (metric === 'spatialLodTargetPoints' || metric === 'spatialLodSelectedPoints') {
+    return formatNumber(value);
+  }
   if (metric === 'overviewSse') return String(value);
   if (metric === 'overviewTravelDistance') {
     return typeof value === 'number' && value > 0

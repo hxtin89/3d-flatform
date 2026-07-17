@@ -259,6 +259,17 @@ html, body {
   display: none !important;
 }
 
+body[data-lod-mode="one-lod-tree"] #mode-control,
+body[data-lod-mode="spatial-lod"] #mode-control,
+body[data-lod-mode="one-lod-tree"] #area-control,
+body[data-lod-mode="spatial-lod"] #area-control,
+body[data-lod-mode="one-lod-tree"] .manual-rendering-row,
+body[data-lod-mode="spatial-lod"] .manual-rendering-row,
+body:not([data-lod-mode="spatial-lod"]) .spatial-lod-report-row,
+body[data-report-variant="runtime"] .pipeline-report-row {
+  display: none !important;
+}
+
 .status-content {
   text-align: center;
   display: flex;

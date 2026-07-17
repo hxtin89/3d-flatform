@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   SPATIAL_LOD_TILESET_FILE,
   SPATIAL_LOD_STREAMING_OPTIONS,
+  SPATIAL_LOD_HARD_MEMORY_BYTES,
+  SpatialLodBudgetController,
   classifySpatialLodTileUri,
   countSpatialLodPntsUrls,
   emptySpatialLodLevelStats,
@@ -9,13 +11,11 @@ import {
   formatSpatialLodActiveTileSamples,
   formatSpatialLodLevelStats,
   parseSpatialLodTileId,
-  shouldTrimSpatialLod,
-  spatialLodCachePolicy,
   spatialLodDataset,
   spatialLodEntryUrl,
-  spatialLodOverviewRuntimePolicy,
+  spatialLodInitialSse,
   spatialLodPanScaleMetersPerPixel,
-  spatialLodSse,
+  spatialLodTargetPoints,
 } from './spatial-lod';
 
 describe('spatial-lod helpers', () => {
@@ -31,69 +31,90 @@ describe('spatial-lod helpers', () => {
       .toBe('http://localhost:8081/autzen/tileset.json');
   });
 
-  it('maps presets to spatial SSE 1024/256/128', () => {
-    expect(spatialLodSse('low')).toBe(1024);
-    expect(spatialLodSse('medium')).toBe(256);
-    expect(spatialLodSse('high')).toBe(128);
-  });
-
   it('streams desired z4 leaves progressively without loading siblings', () => {
     expect(SPATIAL_LOD_STREAMING_OPTIONS).toMatchObject({
       skipLevelOfDetail: true,
       immediatelyLoadDesiredLevelOfDetail: false,
       loadSiblings: false,
       preferLeaves: true,
-      foveatedConeSize: 0.25,
+      foveatedConeSize: 0.2,
       foveatedMinimumScreenSpaceErrorRelaxation: 64,
       foveatedTimeDelay: 0.2,
       cullRequestsWhileMovingMultiplier: 120,
     });
   });
 
-  it('keeps cache headroom and trims when returning to Overview', () => {
-    expect(spatialLodCachePolicy('low')).toEqual({
-      cacheBytes: 256 * 1024 * 1024,
-      maximumCacheOverflowBytes: 128 * 1024 * 1024,
-      trimOnEnter: true,
-    });
-    expect(spatialLodCachePolicy('medium')).toEqual({
-      cacheBytes: 512 * 1024 * 1024,
-      maximumCacheOverflowBytes: 256 * 1024 * 1024,
-      trimOnEnter: false,
-    });
-    expect(spatialLodCachePolicy('high')).toEqual({
-      cacheBytes: 768 * 1024 * 1024,
-      maximumCacheOverflowBytes: 512 * 1024 * 1024,
-      trimOnEnter: false,
-    });
+  it('uses distance only for an initial SSE seed', () => {
+    expect(spatialLodInitialSse(250)).toBe(64);
+    expect(spatialLodInitialSse(500)).toBe(128);
+    expect(spatialLodInitialSse(1_000)).toBe(256);
+    expect(spatialLodInitialSse(2_000)).toBe(512);
+    expect(spatialLodInitialSse(Number.POSITIVE_INFINITY)).toBe(1_024);
   });
 
-  it('trims only when returning from Explore or Detail to Overview', () => {
-    expect(shouldTrimSpatialLod('medium', 'low')).toBe(true);
-    expect(shouldTrimSpatialLod('high', 'low')).toBe(true);
-    expect(shouldTrimSpatialLod('low', 'low')).toBe(false);
-    expect(shouldTrimSpatialLod('low', 'medium')).toBe(false);
-    expect(shouldTrimSpatialLod('medium', 'high')).toBe(false);
+  it('derives the point target from drawing-buffer pixels within fixed bounds', () => {
+    expect(spatialLodTargetPoints(100, 100)).toBe(5_000_000);
+    expect(spatialLodTargetPoints(2_000, 1_000)).toBe(12_000_000);
+    expect(spatialLodTargetPoints(8_000, 8_000)).toBe(12_000_000);
   });
 
-  it('uses Detail SSE for the nearest Overview runtime band', () => {
-    expect(spatialLodOverviewRuntimePolicy(1)).toMatchObject({
-      level: 'z4',
-      sse: 64,
-      cacheBytes: 2_048 * 1024 * 1024,
-      maximumCacheOverflowBytes: 1_024 * 1024 * 1024,
+  it('uses point budget hysteresis, then switches settled pressure to standard traversal', () => {
+    const controller = new SpatialLodBudgetController(1_000);
+    controller.onCameraMoveEnd();
+    const metrics = {
+      drawingBufferWidth: 1_000,
+      drawingBufferHeight: 1_000,
+      selectedPoints: 4_000_000,
+      frameTimeEmaMs: 25,
+      memoryBytes: 512 * 1024 * 1024,
+      queuesSettled: true,
+      z4Eligible: true,
+    };
+    expect(controller.update({ ...metrics, now: 0 })).toMatchObject({
+      state: 'STREAMING', effectiveSse: 256, skipLevelOfDetail: true, eyeDomeLighting: false,
     });
-    expect(spatialLodOverviewRuntimePolicy(178).sse).toBe(64);
-    expect(spatialLodOverviewRuntimePolicy(300).sse).toBe(128);
-  });
+    expect(controller.update({ ...metrics, now: 2_500 })).toMatchObject({
+      state: 'SETTLED', effectiveSse: 196, skipLevelOfDetail: false,
+      preferLeaves: false, traversalPolicy: 'standard', eyeDomeLighting: false,
+    });
+    const pressureController = new SpatialLodBudgetController(1_000);
+    pressureController.onCameraMoveEnd();
+    const pressure = pressureController.update({
+      ...metrics,
+      now: 5_000,
+      selectedPoints: 16_000_000,
+      frameTimeEmaMs: 65,
+      memoryBytes: SPATIAL_LOD_HARD_MEMORY_BYTES + 1,
+    });
+    expect(pressure).toMatchObject({
+      state: 'PRESSURE', effectiveSse: 384, skipLevelOfDetail: true,
+      preferLeaves: true, traversalPolicy: 'streaming', eyeDomeLighting: false, trimCache: true,
+    });
 
-  it('maps Overview runtime policy by range after the nearest band', () => {
-    expect(spatialLodOverviewRuntimePolicy(300)).toMatchObject({ level: 'z3', sse: 128 });
-    expect(spatialLodOverviewRuntimePolicy(750)).toMatchObject({ level: 'z2', sse: 256 });
-    expect(spatialLodOverviewRuntimePolicy(1_500)).toMatchObject({ level: 'z1', sse: 512 });
-    expect(spatialLodOverviewRuntimePolicy(Number.POSITIVE_INFINITY)).toMatchObject({
-      level: 'z0',
-      sse: 1024,
+    for (const now of [6_000, 7_000, 8_000, 9_000, 10_000]) {
+      pressureController.update({
+        ...metrics,
+        now,
+        selectedPoints: 16_000_000,
+        frameTimeEmaMs: 65,
+        memoryBytes: SPATIAL_LOD_HARD_MEMORY_BYTES + 1,
+      });
+    }
+    expect(pressureController.update({
+      ...metrics,
+      now: 12_500,
+      selectedPoints: 16_000_000,
+      frameTimeEmaMs: 65,
+      memoryBytes: SPATIAL_LOD_HARD_MEMORY_BYTES + 1,
+    })).toMatchObject({
+      state: 'PRESSURE', effectiveSse: 2_048, skipLevelOfDetail: false,
+      preferLeaves: false, traversalPolicy: 'standard', eyeDomeLighting: false,
+    });
+
+    pressureController.onCameraMoveStart(12_600);
+    expect(pressureController.update({ ...metrics, now: 12_600 })).toMatchObject({
+      state: 'MOVING', skipLevelOfDetail: true,
+      preferLeaves: true, traversalPolicy: 'streaming', eyeDomeLighting: false,
     });
   });
 

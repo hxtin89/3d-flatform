@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   ONE_LOD_TREE_TILESET_FILE,
+  oneLodTreeBandForRatio,
   oneLodTreeCachePolicy,
   oneLodTreeDataset,
+  oneLodTreePresetForPointBand,
   oneLodTreeSse,
   shouldTrimOneLodTree,
   tilesetEntryUrl,
@@ -22,9 +24,21 @@ describe('one-lod-tree helpers', () => {
   });
 
   it('maps presets to progressively finer SSE without reloading', () => {
-    expect(oneLodTreeSse('low')).toBe(512);
-    expect(oneLodTreeSse('medium')).toBe(256);
-    expect(oneLodTreeSse('high')).toBe(128);
+    expect(oneLodTreeSse('low')).toBe(256);
+    expect(oneLodTreeSse('medium')).toBe(124);
+    expect(oneLodTreeSse('high')).toBe(64);
+  });
+
+  it('maps camera point-size bands to one-lod-tree presets', () => {
+    expect(oneLodTreePresetForPointBand('far')).toBe('low');
+    expect(oneLodTreePresetForPointBand('medium')).toBe('medium');
+    expect(oneLodTreePresetForPointBand('near')).toBe('high');
+  });
+
+  it('keeps one-lod-tree Detail SSE closer than the data request volume', () => {
+    expect(oneLodTreeBandForRatio(2.6, null)).toBe('far');
+    expect(oneLodTreeBandForRatio(0.47, null)).toBe('medium');
+    expect(oneLodTreeBandForRatio(0.25, null)).toBe('near');
   });
 
   it('keeps cache headroom and trims when returning from a finer preset', () => {
