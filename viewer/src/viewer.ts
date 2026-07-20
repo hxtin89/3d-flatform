@@ -45,6 +45,34 @@ import {
   type SpatialLodBudgetDecision,
   type SpatialLodLevelStats,
 } from './spatial-lod';
+import {
+  ADAPTIVE_POINT_HIERARCHY_CACHE_BYTES,
+  ADAPTIVE_POINT_HIERARCHY_CACHE_OVERFLOW_BYTES,
+  ADAPTIVE_POINT_HIERARCHY_MIN_CAMERA_DISTANCE_METERS,
+  ADAPTIVE_POINT_HIERARCHY_SIMPLE_SSE,
+  ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL,
+  ADAPTIVE_POINT_HIERARCHY_STREAMING_OPTIONS,
+  DEFAULT_ADAPTIVE_POINT_HIERARCHY_TUNING,
+  adaptivePointHierarchyEntryUrl,
+  adaptivePointHierarchyRenderSettings,
+  AdaptivePointHierarchyController,
+  resolveAdaptivePointHierarchyDiagnostics,
+  canonicalizeAdaptivePointHierarchyUri,
+  classifyAdaptivePointHierarchyUri,
+  emptyAdaptivePointHierarchyDepthStats,
+  formatAdaptivePointHierarchyDepthStats,
+  parseAdaptivePointHierarchyRenderProfile,
+  parseAdaptivePointHierarchyControllerMode,
+  parseAdaptivePointHierarchyPreviewZ0,
+  parseAdaptivePointHierarchyVrv,
+  normalizeAdaptivePointHierarchyTuning,
+  normalizeAdaptivePointHierarchySimpleSse,
+  type AdaptivePointHierarchyControllerMode,
+  type AdaptivePointHierarchyRenderSettings,
+  type AdaptivePointHierarchyDepthStats,
+  type AdaptivePointHierarchyTuning,
+  type AphNodeDiagnostics,
+} from './adaptive-point-hierarchy';
 
 // Disable Cesium ion — fully self-hosted setup
 Cesium.Ion.defaultAccessToken = '';
@@ -77,11 +105,47 @@ export const DATASET = requestedDataset?.match(DATASET_PATTERN)
 const DEBUG_TILES = searchParams.get('debugTiles') === '1';
 const DEBUG_OVERVIEW = searchParams.get('debugOverview') === '1';
 /** Viewer LOD mode controlled by `?lod=...`. */
-export const LOD_MODE: 'manual' | 'one-lod-tree' | 'spatial-lod' = searchParams.get('lod') === 'one-lod-tree'
+export const LOD_MODE: 'manual' | 'one-lod-tree' | 'spatial-lod' | 'adaptive-point-hierarchy' = searchParams.get('lod') === 'one-lod-tree'
   ? 'one-lod-tree'
   : searchParams.get('lod') === 'spatial-lod'
     ? 'spatial-lod'
-    : 'manual';
+    : searchParams.get('lod') === 'adaptive-point-hierarchy'
+      ? 'adaptive-point-hierarchy'
+      : 'manual';
+export const ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0 = parseAdaptivePointHierarchyPreviewZ0(
+  searchParams.get('aphPreviewZ0')
+);
+export const ADAPTIVE_POINT_HIERARCHY_VRV = parseAdaptivePointHierarchyVrv(
+  searchParams.get('aphVrv')
+);
+export const ADAPTIVE_POINT_HIERARCHY_CONTROLLER: AdaptivePointHierarchyControllerMode =
+  parseAdaptivePointHierarchyControllerMode(searchParams.get('aphController'));
+
+export interface AdaptivePointHierarchyPointSizeTuning {
+  /** Point size at and beyond farDistanceMeters. */
+  farPointSizePx: number;
+  /** Point size halfway between nearDistanceMeters and farDistanceMeters. */
+  midPointSizePx: number;
+  /** Point size at and within nearDistanceMeters. */
+  nearPointSizePx: number;
+  nearDistanceMeters: number;
+  farDistanceMeters: number;
+}
+
+const DEFAULT_ADAPTIVE_POINT_HIERARCHY_POINT_SIZE_TUNING: AdaptivePointHierarchyPointSizeTuning = {
+  farPointSizePx: 2,
+  midPointSizePx: 3,
+  nearPointSizePx: 4,
+  nearDistanceMeters: 100,
+  farDistanceMeters: 900,
+};
+
+const ADAPTIVE_POINT_HIERARCHY_RENDER_SETTINGS = adaptivePointHierarchyRenderSettings(
+  parseAdaptivePointHierarchyRenderProfile(searchParams.get('aphRender')),
+  searchParams.get('aphMaxAttenuation'),
+  searchParams.get('aphEdlStrength'),
+  searchParams.get('aphEdlRadius')
+);
 const REQUESTED_BASEMAP = searchParams.get('basemap');
 const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
@@ -203,6 +267,10 @@ export interface ViewerCallbacks {
     samples: SpatialLodActiveTileSample[],
     formatted: string
   ) => void;
+  onAdaptivePointHierarchyDepthStats?: (
+    stats: AdaptivePointHierarchyDepthStats,
+    active: number | string
+  ) => void;
 }
 
 interface LayerRuntimeStats {
@@ -232,7 +300,51 @@ type RuntimeTile = {
   _contentState?: unknown;
   contentReady?: boolean;
   contentAvailable?: boolean;
+  _contentResource?: { url?: unknown; getUrlComponent?: (() => string) | unknown };
+  _header?: { extras?: unknown };
 };
+
+type AphDepth = number | 'p001' | null;
+type AphCycleStatus = 'idle' | 'active' | 'complete' | 'aborted';
+type AphTargetStatus = 'pending' | 'reached' | 'timed-out';
+type AphCycleClosure = 'settled' | 'camera-move' | 'sse-change';
+
+interface AphContentLifecycle {
+  canonicalUri: string;
+  depth: AphDepth;
+  requestCount: number;
+  resourceRequestCount: number;
+  runtimeFallbackRequestCount: number;
+  firstRequestedAt: number | null;
+  lastRequestedAt: number | null;
+  inFlightNow: boolean;
+  processingNow: boolean;
+  requestedNow: boolean;
+  queuedLastFrame: boolean;
+  everInFlight: boolean;
+  everProcessing: boolean;
+  readyNow: boolean | null;
+  everReady: boolean;
+  firstReadyAt: number | null;
+  selectedThisFrame: boolean;
+  everSelectedInCycle: boolean;
+  selectedFrameCount: number;
+  firstSelectedAt: number | null;
+  lastSelectedAt: number | null;
+  runtimeTile: RuntimeTile | null;
+  bytes: number;
+  source: { runtime: boolean; resourceTiming: boolean };
+}
+
+interface AphClosedCycle {
+  cycleId: number;
+  status: 'complete' | 'aborted';
+  closure: AphCycleClosure;
+  wasteState: 'indeterminate';
+  readyNeverSelectedUriCount: number;
+  requestAttemptCount: number;
+  bytes: number;
+}
 
 type RuntimeViewerRequestVolume = {
   distanceToCamera?: (frameState: unknown) => number;
@@ -243,6 +355,7 @@ type TilesetDocument = {
     extras?: {
       coordinateMode?: string;
       local_only?: boolean;
+      aphMetadataIndexUri?: string;
     };
   };
   root?: {
@@ -272,6 +385,8 @@ type RuntimeTileset = {
   foveatedConeSize?: number;
   foveatedMinimumScreenSpaceErrorRelaxation?: number;
   foveatedTimeDelay?: number;
+  cullRequestsWhileMoving?: boolean;
+  immediatelyLoadDesiredLevelOfDetail?: boolean;
   memoryAdjustedScreenSpaceError?: number;
   totalMemoryUsageInBytes?: number;
   asset?: {
@@ -337,6 +452,43 @@ export class PointCloudViewer {
   private overviewFirstVisibleUnsubscribe: (() => void) | null = null;
   private oneLodTreeTrimGeneration = 0;
   private spatialLodActive = false;
+  private adaptivePointHierarchyActive = false;
+  private adaptivePointHierarchyFirstDetailRequestAt: number | null = null;
+  private adaptivePointHierarchyController: AdaptivePointHierarchyController | null = null;
+  private adaptivePointHierarchySimpleSse = ADAPTIVE_POINT_HIERARCHY_SIMPLE_SSE;
+  private adaptivePointHierarchyTuning = { ...DEFAULT_ADAPTIVE_POINT_HIERARCHY_TUNING };
+  private adaptivePointHierarchyPointSizeTuning = {
+    ...DEFAULT_ADAPTIVE_POINT_HIERARCHY_POINT_SIZE_TUNING,
+  };
+  private adaptivePointHierarchyAppliedPointSizePx: number | null = null;
+  private adaptivePointHierarchyFrameTimeEmaMs: number | null = null;
+  private adaptivePointHierarchyLastFrameAt = 0;
+  private adaptivePointHierarchyCameraMoveStartUnsubscribe: Cesium.Event.RemoveCallback | null = null;
+  private adaptivePointHierarchyCameraMoveEndUnsubscribe: Cesium.Event.RemoveCallback | null = null;
+  private adaptivePointHierarchyCameraMoving = false;
+  private adaptivePointHierarchyCameraStoppedAt = 0;
+  private adaptivePointHierarchyCycleStartedAt = 0;
+  private adaptivePointHierarchyRefinementCycleId = 0;
+  private adaptivePointHierarchyZeroSelectedFrames = 0;
+  private adaptivePointHierarchyMaxZeroSelectedFrames = 0;
+  private adaptivePointHierarchySawSelectedContent = false;
+  private adaptivePointHierarchyWarmupImmediateLoadSuppressed = false;
+  private adaptivePointHierarchyStableSince: number | null = null;
+  private adaptivePointHierarchyCycleStatus: AphCycleStatus = 'idle';
+  private adaptivePointHierarchyTargetStatus: AphTargetStatus = 'pending';
+  private adaptivePointHierarchyTargetReachedAt: number | null = null;
+  private adaptivePointHierarchyCompletedAt: number | null = null;
+  private adaptivePointHierarchyFirstD5ActiveAt: number | null = null;
+  private adaptivePointHierarchyFirstD6ActiveAt: number | null = null;
+  private adaptivePointHierarchyDetailRequestAfterStopAt: number | null = null;
+  private adaptivePointHierarchyLifecycle = new Map<string, AphContentLifecycle>();
+  private adaptivePointHierarchyResourceAttempts = new Set<string>();
+  private adaptivePointHierarchyLastClosedCycle: AphClosedCycle | null = null;
+  private adaptivePointHierarchyPointMeta = new Map<string, { level: number | 'p001' | null; pointsLength: number | null }>();
+  private adaptivePointHierarchyMetadataByCanonicalUri = new Map<string, AphNodeDiagnostics>();
+  private adaptivePointHierarchyMetadataSubtrees = new Map<string, string>();
+  private adaptivePointHierarchyMetadataLoads = new Map<string, Promise<void>>();
+  private adaptivePointHierarchyMetadataRootUrl: string | null = null;
   private spatialLodBudgetController: SpatialLodBudgetController | null = null;
   private spatialLodLastDecision: SpatialLodBudgetDecision | null = null;
   private spatialLodFrameTimeEmaMs: number | null = null;
@@ -446,9 +598,9 @@ export class PointCloudViewer {
       const tilesetStart = performance.now();
       const documentPromise = MAPTILER_BASEMAP_ENABLED
         ? fetch(url).then(async (response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            return response.json() as Promise<TilesetDocument>;
-          })
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          return response.json() as Promise<TilesetDocument>;
+        })
         : Promise.resolve(null);
       const [tileset, document] = await Promise.all([
         Cesium.Cesium3DTileset.fromUrl(url, {
@@ -460,7 +612,6 @@ export class PointCloudViewer {
         documentPromise,
       ]);
       this.callbacks.onBrowserMetric('tilesetLoadTime', performance.now() - tilesetStart);
-
       if (document && this.isGlobeDocument(document)) {
         this.alignTilesetBottomToEllipsoid(tileset, document);
       }
@@ -597,6 +748,776 @@ export class PointCloudViewer {
       this.viewer.scene.requestRender();
     });
     this.viewer.scene.requestRender();
+  }
+
+  /** Load a Task 3 Adaptive Point Hierarchy entry or one-z0 preview entry. */
+  async loadAdaptivePointHierarchy(dataset: string, tilesetFile: string): Promise<void> {
+    const url = adaptivePointHierarchyEntryUrl(TILE_CONFIG.baseUrl, dataset, tilesetFile);
+    this.callbacks.onStateChange('loading', 'Connecting to Adaptive Point Hierarchy...');
+
+    try {
+      await this.checkTileServer(url);
+      this.unloadTilesets();
+      this.activeDataset = dataset;
+      this.currentPreset = 'low';
+      this.adaptivePointHierarchyActive = true;
+      this.adaptivePointHierarchyFirstDetailRequestAt = null;
+      this.adaptivePointHierarchyFrameTimeEmaMs = null;
+      this.adaptivePointHierarchyLastFrameAt = performance.now();
+      this.callbacks.onStateChange('loading', `Fetching ${tilesetFile}...`);
+      this.loadStartTime = performance.now();
+      this.firstTileLoadedReported = false;
+      this.firstVisibleReported = false;
+      this.tilesLoaded = 0;
+      this.activeTilesLoaded = 0;
+      this.callbacks.onTileStats(0, 0);
+      this.reportLayerTileStats();
+
+      const tilesetStart = performance.now();
+      const useAdvancedController = ADAPTIVE_POINT_HIERARCHY_CONTROLLER === 'advanced';
+      const documentPromise = fetch(url).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        return response.json() as Promise<TilesetDocument>;
+      });
+      const [tileset, document] = await Promise.all([
+        Cesium.Cesium3DTileset.fromUrl(url, {
+          maximumScreenSpaceError: useAdvancedController
+            ? this.adaptivePointHierarchyTuning.farSse
+            : this.adaptivePointHierarchySimpleSse,
+          cacheBytes: ADAPTIVE_POINT_HIERARCHY_CACHE_BYTES,
+          maximumCacheOverflowBytes: ADAPTIVE_POINT_HIERARCHY_CACHE_OVERFLOW_BYTES,
+          ...(useAdvancedController ? ADAPTIVE_POINT_HIERARCHY_STREAMING_OPTIONS : {}),
+        }),
+        documentPromise,
+      ]);
+      this.callbacks.onBrowserMetric('tilesetLoadTime', performance.now() - tilesetStart);
+
+      this.resetAdaptivePointHierarchyMetadata(url);
+      void this.loadAdaptivePointHierarchyMetadataIndex(url, document);
+
+      if (this.isGlobeDocument(document)) {
+        this.alignTilesetBottomToEllipsoid(tileset, document);
+      }
+      if (DEBUG_TILES) {
+        tileset.debugShowBoundingVolume = true;
+        tileset.debugShowGeometricError = true;
+        tileset.debugShowRenderingStatistics = true;
+      }
+
+      this.viewer.scene.primitives.add(tileset);
+      this.primaryTileset = tileset;
+      this.contextTileset = null;
+      if (useAdvancedController) {
+        this.adaptivePointHierarchyController = new AdaptivePointHierarchyController(
+          this.currentOverviewCameraRange(),
+          ADAPTIVE_POINT_HIERARCHY_VRV,
+          this.adaptivePointHierarchyTuning
+        );
+      } else {
+        this.adaptivePointHierarchyController = null;
+        this.applyAdaptivePointHierarchySimpleTraversal(tileset);
+      }
+      this.startAdaptivePointHierarchyDiagnosticTelemetry();
+      this.applyAdaptivePointHierarchyPointRendering();
+      this.configureCameraLimits(tileset, null, true, true);
+      this.installPointCloudControls(tileset, null);
+      this.minCameraDistance = this.globeControlsActive
+        ? ADAPTIVE_POINT_HIERARCHY_MIN_CAMERA_DISTANCE_METERS
+        : 0.05;
+      this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = this.minCameraDistance;
+      this.callbacks.onBrowserMetric('cacheBytesRuntime', ADAPTIVE_POINT_HIERARCHY_CACHE_BYTES);
+      this.callbacks.onBrowserMetric(
+        'focusEffectiveSSE',
+        useAdvancedController ? this.adaptivePointHierarchyTuning.farSse : this.adaptivePointHierarchySimpleSse
+      );
+      this.callbacks.onBrowserMetric('flyToTime', this.flyToTileset());
+      this.reportEffectiveSse();
+      this.callbacks.onStateChange('ready', `Streaming Adaptive Point Hierarchy: ${url}`);
+
+      tileset.initialTilesLoaded.addEventListener(() => {
+        if (!this.firstTileLoadedReported) {
+          this.firstTileLoadedReported = true;
+          this.callbacks.onBrowserMetric('firstTileLoadedTime', performance.now() - this.loadStartTime);
+        }
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      });
+      tileset.allTilesLoaded.addEventListener(() => {
+        this.callbacks.onTileStats(this.tilesLoaded, this.activeTileCount());
+      });
+
+      this.postRenderUnsubscribe = this.viewer.scene.postRender.addEventListener(() => {
+        if (!this.primaryTileset || !this.adaptivePointHierarchyActive) return;
+        const loaded = this.loadedTileCount();
+        const active = this.activeTileCount();
+        if (loaded !== this.tilesLoaded || active !== this.activeTilesLoaded) {
+          this.tilesLoaded = loaded;
+          this.activeTilesLoaded = active;
+          this.callbacks.onTileStats(loaded, active);
+        }
+        this.reportLayerTileStats();
+        this.updateAdaptivePointHierarchyPointSize();
+        this.updateAdaptivePointHierarchyRuntime();
+        this.emitAdaptivePointHierarchyDepthStats();
+        if (loaded > 0 && !this.firstVisibleReported) {
+          this.firstVisibleReported = true;
+          this.callbacks.onBrowserMetric('firstVisibleTime', performance.now() - this.loadStartTime);
+        }
+      });
+      this.installTileFailureLogging(tileset);
+    } catch (err) {
+      this.adaptivePointHierarchyActive = false;
+      this.stopAdaptivePointHierarchyDiagnosticTelemetry();
+      const error = err as Error;
+      console.error('[Viewer] Failed to load Adaptive Point Hierarchy:', error);
+      let message = error.message ?? 'Unknown error';
+      if (message.includes('404') || message.includes('Not Found')) {
+        message = `${tilesetFile} not found for Adaptive Point Hierarchy dataset "${dataset}".\n` +
+          '-> Run Task 3 preview publisher first.';
+      }
+      this.callbacks.onStateChange('error', message);
+    }
+  }
+
+  private emitAdaptivePointHierarchyDepthStats(): void {
+    if (!this.primaryTileset) return;
+    const runtime = this.primaryTileset as unknown as RuntimeTileset;
+    const now = performance.now();
+    this.beginAdaptivePointHierarchyLifecycleFrame(runtime, now);
+    const selected = Array.isArray(runtime._selectedTiles)
+      ? runtime._selectedTiles
+      : runtime.selectedTiles;
+    const stats = emptyAdaptivePointHierarchyDepthStats();
+    const activeStats = emptyAdaptivePointHierarchyDepthStats();
+    let activeStatsAvailable = false;
+    const pointsByDepth = new Map<string, number | 'unavailable'>();
+    let selectedPoints: number | 'unavailable' = 0;
+    const selectedLeaves: Array<{
+      nodeId: string;
+      uri: string | null;
+      depth: number;
+      runtimePoints: number | null;
+      builderEmittedPoints: number;
+      pointCountDelta: number | null;
+      extentMeters?: AphNodeDiagnostics['extentMeters'];
+      bboxDensityPointsPerSquareMeter?: number | null;
+      underfilledReason?: string | null;
+      metadataSource: 'runtime-extras' | 'metadata-map' | 'unavailable';
+    }> = [];
+    let internalSelectedPoints = 0;
+    let leafSelectedPoints = 0;
+    let p001SelectedPoints = 0;
+    let unknownMetadataSelectedContent = 0;
+    let ownershipSelectedPoints: number | 'unavailable' = 0;
+    let d5Active = false;
+    let d6Active = false;
+    if (Array.isArray(selected)) {
+      for (const tile of selected) {
+        const uri = extractTileContentUri(tile);
+        this.observeAdaptivePointHierarchySelectedTile(tile, now);
+        const metadata = this.adaptivePointHierarchyPointMetadata(uri, tile);
+        const recordDepth = (target: AdaptivePointHierarchyDepthStats): void => {
+          if (metadata.level === null) {
+            target.unclassified += 1;
+          } else if (metadata.level === 'p001') {
+            target.p001 += 1;
+          } else {
+            target.byDepth[metadata.level] = (target.byDepth[metadata.level] ?? 0) + 1;
+          }
+        };
+        recordDepth(stats);
+        const contentReady = adaptivePointHierarchyTileReady(tile) === true;
+        if (contentReady) {
+          activeStatsAvailable = true;
+          recordDepth(activeStats);
+          if (metadata.level === 5) d5Active = true;
+          if (metadata.level === 6) d6Active = true;
+          const observation = this.adaptivePointHierarchyTileObservation(tile);
+          const diagnostics = this.adaptivePointHierarchyDiagnostics(tile, observation?.canonicalUri ?? null);
+          const runtimePoints = metadata.pointsLength;
+          if (runtimePoints === null || ownershipSelectedPoints === 'unavailable') {
+            ownershipSelectedPoints = 'unavailable';
+          } else {
+            ownershipSelectedPoints += runtimePoints;
+          }
+          if (metadata.level === 'p001') {
+            p001SelectedPoints += runtimePoints ?? 0;
+          } else if (diagnostics.diagnostics?.kind === 'internal') {
+            internalSelectedPoints += runtimePoints ?? 0;
+          } else if (
+            diagnostics.diagnostics?.kind === 'leaf' ||
+            diagnostics.diagnostics?.kind === 'leaf_max_depth'
+          ) {
+            leafSelectedPoints += runtimePoints ?? 0;
+            selectedLeaves.push({
+              nodeId: diagnostics.diagnostics.nodeId,
+              uri: observation?.canonicalUri ?? null,
+              depth: Number(diagnostics.diagnostics.depth),
+              runtimePoints,
+              builderEmittedPoints: diagnostics.diagnostics.emittedPointCount,
+              pointCountDelta: runtimePoints === null
+                ? null
+                : runtimePoints - diagnostics.diagnostics.emittedPointCount,
+              extentMeters: diagnostics.diagnostics.extentMeters,
+              bboxDensityPointsPerSquareMeter: diagnostics.diagnostics.bboxDensityPointsPerSquareMeter,
+              underfilledReason: diagnostics.diagnostics.underfilledReason,
+              metadataSource: diagnostics.source,
+            });
+          } else {
+            unknownMetadataSelectedContent += 1;
+          }
+        }
+        if (metadata.level === null) continue;
+        const key = metadata.level === 'p001' ? 'p001' : `d${metadata.level}`;
+        const current = pointsByDepth.get(key) ?? 0;
+        if (metadata.pointsLength === null || current === 'unavailable') {
+          pointsByDepth.set(key, 'unavailable');
+          selectedPoints = 'unavailable';
+        } else {
+          pointsByDepth.set(key, current + metadata.pointsLength);
+          if (selectedPoints !== 'unavailable') selectedPoints += metadata.pointsLength;
+        }
+      }
+    }
+    this.updateAdaptivePointHierarchyCycleTelemetry(runtime, d5Active, d6Active);
+    const formatted = formatAdaptivePointHierarchyDepthStats(stats);
+    const activeFormatted = activeStatsAvailable
+      ? formatAdaptivePointHierarchyDepthStats(activeStats)
+      : 'unavailable';
+    const runtimeSelectedPoints = selectedPointCount(runtime);
+    const reconciliationDelta = typeof runtimeSelectedPoints === 'number' && typeof selectedPoints === 'number'
+      ? selectedPoints - runtimeSelectedPoints
+      : 'unavailable';
+    this.callbacks.onBrowserMetric('aphSelectedTilesByDepth', formatted);
+    this.callbacks.onBrowserMetric('aphActiveDepths', activeFormatted);
+    this.callbacks.onBrowserMetric('aphSelectedPointsByDepth', this.formatAdaptivePointCounts(pointsByDepth));
+    this.callbacks.onBrowserMetric('aphPointReconciliationDelta', reconciliationDelta);
+    const rankedLeaves = selectedLeaves
+      .sort((a, b) => (b.runtimePoints ?? -1) - (a.runtimePoints ?? -1))
+      .slice(0, 10);
+    const leafRuntimePoints = selectedLeaves.map((leaf) => leaf.runtimePoints).filter((points): points is number => points !== null);
+    const leafDeltaAvailable = selectedLeaves.every((leaf) => leaf.pointCountDelta !== null);
+    const leafRuntimeTotal = leafRuntimePoints.reduce((total, points) => total + points, 0);
+    const leafBuilderTotal = selectedLeaves.reduce((total, leaf) => total + leaf.builderEmittedPoints, 0);
+    const shareDenominator = typeof ownershipSelectedPoints === 'number' && ownershipSelectedPoints > 0
+      ? ownershipSelectedPoints
+      : null;
+    const ownershipSummary = {
+      internalSelectedPoints,
+      leafSelectedPoints,
+      p001SelectedPoints,
+      totalSelectedPoints: ownershipSelectedPoints,
+      internalSharePercent: shareDenominator === null ? null : 100 * internalSelectedPoints / shareDenominator,
+      leafSharePercent: shareDenominator === null ? null : 100 * leafSelectedPoints / shareDenominator,
+      p001SharePercent: shareDenominator === null ? null : 100 * p001SelectedPoints / shareDenominator,
+      unknownMetadataSelectedContent,
+      runtimeSelectedPointReconciliationDelta: typeof runtimeSelectedPoints === 'number' && typeof ownershipSelectedPoints === 'number'
+        ? ownershipSelectedPoints - runtimeSelectedPoints
+        : 'unavailable',
+    };
+    this.callbacks.onBrowserMetric('aphSelectedLeaves', JSON.stringify({
+      capturedAtMs: now,
+      semantics: 'selected-and-ready-current-frame',
+      count: selectedLeaves.length,
+      totalRuntimePoints: leafRuntimePoints.length === selectedLeaves.length ? leafRuntimeTotal : 'unavailable',
+      minRuntimePoints: leafRuntimePoints.length ? Math.min(...leafRuntimePoints) : null,
+      maxRuntimePoints: leafRuntimePoints.length ? Math.max(...leafRuntimePoints) : null,
+      avgRuntimePoints: leafRuntimePoints.length === selectedLeaves.length && selectedLeaves.length
+        ? leafRuntimeTotal / selectedLeaves.length
+        : null,
+      top10: rankedLeaves,
+      metadataUnavailableSelectedContent: unknownMetadataSelectedContent,
+    }));
+    this.callbacks.onBrowserMetric(
+      'aphSelectedLeafPointReconciliationDelta',
+      leafDeltaAvailable ? leafRuntimeTotal - leafBuilderTotal : 'unavailable',
+    );
+    this.callbacks.onBrowserMetric('aphSelectedOwnershipSummary', JSON.stringify(ownershipSummary));
+    if (typeof runtimeSelectedPoints === 'number' && runtimeSelectedPoints > 0) {
+      this.adaptivePointHierarchySawSelectedContent = true;
+      this.adaptivePointHierarchyZeroSelectedFrames = 0;
+    } else if (this.adaptivePointHierarchySawSelectedContent) {
+      this.adaptivePointHierarchyZeroSelectedFrames += 1;
+      this.adaptivePointHierarchyMaxZeroSelectedFrames = Math.max(
+        this.adaptivePointHierarchyMaxZeroSelectedFrames,
+        this.adaptivePointHierarchyZeroSelectedFrames
+      );
+    }
+    this.callbacks.onBrowserMetric('aphZeroSelectedFrames', this.adaptivePointHierarchyZeroSelectedFrames);
+    this.callbacks.onBrowserMetric('aphMaxZeroSelectedFrames', this.adaptivePointHierarchyMaxZeroSelectedFrames);
+    this.callbacks.onAdaptivePointHierarchyDepthStats?.(stats, this.activeTileCount());
+  }
+
+  private applyAdaptivePointHierarchySimpleTraversal(tileset: Cesium.Cesium3DTileset): void {
+    const runtime = tileset as unknown as RuntimeTileset;
+    tileset.maximumScreenSpaceError = this.adaptivePointHierarchySimpleSse;
+    tileset.skipLevelOfDetail = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.skipLevelOfDetail;
+    runtime.skipLevelOfDetail = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.skipLevelOfDetail;
+    runtime.preferLeaves = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.preferLeaves;
+    tileset.foveatedScreenSpaceError = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.foveatedScreenSpaceError;
+    runtime.foveatedScreenSpaceError = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.foveatedScreenSpaceError;
+    runtime.cullRequestsWhileMoving = ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.cullRequestsWhileMoving;
+    runtime.immediatelyLoadDesiredLevelOfDetail =
+      ADAPTIVE_POINT_HIERARCHY_SIMPLE_TRAVERSAL.immediatelyLoadDesiredLevelOfDetail;
+  }
+
+  private reportAdaptivePointHierarchySimpleRuntime(): void {
+    if (!this.primaryTileset) return;
+    const runtime = this.primaryTileset as unknown as RuntimeTileset;
+    const runtimeSse = this.primaryTileset.maximumScreenSpaceError;
+    this.callbacks.onBrowserMetric('aphControllerMode', 'simple');
+    this.callbacks.onBrowserMetric('aphConfiguredSse', this.adaptivePointHierarchySimpleSse);
+    this.callbacks.onBrowserMetric('aphRuntimeSse', runtimeSse);
+    this.callbacks.onBrowserMetric('aphSsePair', `${this.adaptivePointHierarchySimpleSse} / ${runtimeSse}`);
+    this.callbacks.onBrowserMetric('aphDetailEligible', 'not-applicable');
+    this.callbacks.onBrowserMetric('aphVrvMode', ADAPTIVE_POINT_HIERARCHY_VRV);
+    this.callbacks.onBrowserMetric('aphEffectiveSse', runtimeSse);
+    this.callbacks.onBrowserMetric('focusEffectiveSSE', runtimeSse);
+    this.callbacks.onBrowserMetric('aphRuntimeState', 'SIMPLE');
+    this.callbacks.onBrowserMetric('aphPressureLevel', 'DISABLED');
+    this.callbacks.onBrowserMetric('aphCameraMoving', String(this.adaptivePointHierarchyCameraMoving));
+    this.callbacks.onBrowserMetric('aphWarmupImmediateSuppressed', 'not-applicable');
+    this.callbacks.onBrowserMetric('aphImmediateDesiredLod', String(runtime.immediatelyLoadDesiredLevelOfDetail ?? false));
+    this.callbacks.onBrowserMetric('aphFrameTimeEmaMs', 'not-applicable');
+  }
+
+  private updateAdaptivePointHierarchyRuntime(): void {
+    if (!this.primaryTileset) return;
+    if (ADAPTIVE_POINT_HIERARCHY_CONTROLLER === 'simple') {
+      this.reportAdaptivePointHierarchySimpleRuntime();
+      return;
+    }
+    if (!this.adaptivePointHierarchyController) return;
+    const now = performance.now();
+    const rawElapsed = Math.max(now - this.adaptivePointHierarchyLastFrameAt, 0);
+    const elapsed = Math.min(rawElapsed, 250);
+    this.adaptivePointHierarchyLastFrameAt = now;
+    this.adaptivePointHierarchyFrameTimeEmaMs = rawElapsed > 250
+      ? null
+      : this.adaptivePointHierarchyFrameTimeEmaMs === null
+        ? elapsed
+        : this.adaptivePointHierarchyFrameTimeEmaMs * 0.8 + elapsed * 0.2;
+    const runtime = this.primaryTileset as unknown as RuntimeTileset;
+    const selected = selectedPointCount(runtime);
+    const decision = this.adaptivePointHierarchyController.update({
+      now,
+      selectedPoints: typeof selected === 'number' ? selected : null,
+      frameTimeEmaMs: this.adaptivePointHierarchyFrameTimeEmaMs,
+      memoryBytes: typeof runtime.totalMemoryUsageInBytes === 'number'
+        ? runtime.totalMemoryUsageInBytes
+        : null,
+      cameraRangeMeters: this.currentOverviewCameraRange(),
+      intersectsFrontierVrv: this.adaptivePointHierarchyIntersectsFrontierVrv(runtime),
+      cameraMoving: this.adaptivePointHierarchyCameraMoving,
+      cameraIdleMs: this.adaptivePointHierarchyCameraMoving
+        ? 0
+        : Math.max(0, now - this.adaptivePointHierarchyCameraStoppedAt),
+      refinementCycleId: this.adaptivePointHierarchyRefinementCycleId,
+      warmupImmediateLoadSuppressed: this.adaptivePointHierarchyWarmupImmediateLoadSuppressed,
+    });
+    if (decision.cameraPhase === 'DETAIL_WARMUP' && decision.pressureLevel !== 'NONE') {
+      this.adaptivePointHierarchyWarmupImmediateLoadSuppressed = true;
+    }
+    this.primaryTileset.maximumScreenSpaceError = decision.effectiveSse;
+    runtime.skipLevelOfDetail = decision.skipLevelOfDetail;
+    runtime.preferLeaves = decision.preferLeaves;
+    runtime.foveatedScreenSpaceError = decision.foveatedScreenSpaceError;
+    runtime.foveatedConeSize = decision.foveatedConeSize;
+    runtime.foveatedMinimumScreenSpaceErrorRelaxation = decision.foveatedMinimumScreenSpaceErrorRelaxation;
+    runtime.foveatedTimeDelay = decision.foveatedTimeDelay;
+    runtime.cullRequestsWhileMoving = decision.cullRequestsWhileMoving;
+    runtime.immediatelyLoadDesiredLevelOfDetail = decision.immediatelyLoadDesiredLevelOfDetail;
+    this.callbacks.onBrowserMetric('aphDetailEligible', String(decision.detailEligible));
+    this.callbacks.onBrowserMetric('aphControllerMode', 'advanced');
+    this.callbacks.onBrowserMetric('aphConfiguredSse', this.adaptivePointHierarchyTuning.farSse);
+    this.callbacks.onBrowserMetric('aphRuntimeSse', decision.effectiveSse);
+    this.callbacks.onBrowserMetric('aphSsePair', `${this.adaptivePointHierarchyTuning.farSse} / ${decision.effectiveSse}`);
+    this.callbacks.onBrowserMetric('aphVrvMode', ADAPTIVE_POINT_HIERARCHY_VRV);
+    this.callbacks.onBrowserMetric('aphEffectiveSse', decision.effectiveSse);
+    this.callbacks.onBrowserMetric('focusEffectiveSSE', decision.effectiveSse);
+    this.callbacks.onBrowserMetric('aphRuntimeState', decision.cameraPhase);
+    this.callbacks.onBrowserMetric('aphPressureLevel', decision.pressureLevel);
+    this.callbacks.onBrowserMetric('aphCameraMoving', String(this.adaptivePointHierarchyCameraMoving));
+    this.callbacks.onBrowserMetric('aphWarmupImmediateSuppressed', String(this.adaptivePointHierarchyWarmupImmediateLoadSuppressed));
+    this.callbacks.onBrowserMetric('aphImmediateDesiredLod', String(decision.immediatelyLoadDesiredLevelOfDetail));
+    this.callbacks.onBrowserMetric('aphFrameTimeEmaMs', this.adaptivePointHierarchyFrameTimeEmaMs ?? 'unavailable');
+  }
+
+  /** Read-only camera/request observation; never changes APH traversal. */
+  private startAdaptivePointHierarchyDiagnosticTelemetry(): void {
+    this.stopAdaptivePointHierarchyDiagnosticTelemetry();
+    this.adaptivePointHierarchyCameraMoving = false;
+    this.adaptivePointHierarchyRefinementCycleId = 0;
+    this.openAdaptivePointHierarchyCycle(performance.now());
+    this.adaptivePointHierarchyCameraMoveStartUnsubscribe = this.viewer.camera.moveStart.addEventListener(() => {
+      if (!this.adaptivePointHierarchyActive) return;
+      if (this.adaptivePointHierarchyCycleStatus === 'active') {
+        this.adaptivePointHierarchyCycleStatus = 'aborted';
+        this.finalizeAdaptivePointHierarchyCycle('camera-move', 'aborted');
+      }
+      this.adaptivePointHierarchyCameraMoving = true;
+      this.emitAdaptivePointHierarchyLifecycleMetrics();
+    });
+    this.adaptivePointHierarchyCameraMoveEndUnsubscribe = this.viewer.camera.moveEnd.addEventListener(() => {
+      if (!this.adaptivePointHierarchyActive) return;
+      this.adaptivePointHierarchyCameraMoving = false;
+      this.adaptivePointHierarchyRefinementCycleId += 1;
+      this.openAdaptivePointHierarchyCycle(performance.now());
+      this.viewer.scene.requestRender();
+    });
+  }
+
+  private openAdaptivePointHierarchyCycle(now: number): void {
+    this.adaptivePointHierarchyCameraStoppedAt = now;
+    this.adaptivePointHierarchyCycleStartedAt = now;
+    this.adaptivePointHierarchyCycleStatus = 'active';
+    this.adaptivePointHierarchyTargetStatus = 'pending';
+    this.adaptivePointHierarchyTargetReachedAt = null;
+    this.adaptivePointHierarchyCompletedAt = null;
+    this.adaptivePointHierarchyStableSince = null;
+    this.adaptivePointHierarchyFirstD5ActiveAt = null;
+    this.adaptivePointHierarchyFirstD6ActiveAt = null;
+    this.adaptivePointHierarchyDetailRequestAfterStopAt = null;
+    this.adaptivePointHierarchyLifecycle.clear();
+    this.adaptivePointHierarchyResourceAttempts.clear();
+    this.adaptivePointHierarchyZeroSelectedFrames = 0;
+    this.adaptivePointHierarchyMaxZeroSelectedFrames = 0;
+    this.adaptivePointHierarchySawSelectedContent = false;
+  }
+
+  private stopAdaptivePointHierarchyDiagnosticTelemetry(): void {
+    this.adaptivePointHierarchyCameraMoveStartUnsubscribe?.();
+    this.adaptivePointHierarchyCameraMoveStartUnsubscribe = null;
+    this.adaptivePointHierarchyCameraMoveEndUnsubscribe?.();
+    this.adaptivePointHierarchyCameraMoveEndUnsubscribe = null;
+  }
+
+  private applyAdaptivePointHierarchyPointRendering(): void {
+    if (!this.primaryTileset) return;
+    const settings: AdaptivePointHierarchyRenderSettings = ADAPTIVE_POINT_HIERARCHY_RENDER_SETTINGS;
+    const shading = this.primaryTileset.pointCloudShading ?? new Cesium.PointCloudShading({});
+    shading.attenuation = settings.attenuation;
+    shading.geometricErrorScale = settings.geometricErrorScale;
+    shading.maximumAttenuation = settings.maximumAttenuation;
+    shading.eyeDomeLighting = settings.eyeDomeLighting;
+    shading.eyeDomeLightingStrength = settings.eyeDomeLightingStrength;
+    shading.eyeDomeLightingRadius = settings.eyeDomeLightingRadius;
+    this.primaryTileset.pointCloudShading = shading;
+    this.adaptivePointHierarchyAppliedPointSizePx = null;
+    this.updateAdaptivePointHierarchyPointSize(true);
+    this.callbacks.onBrowserMetric('aphRenderProfile', settings.profile);
+    this.callbacks.onBrowserMetric('aphMaximumAttenuation', settings.maximumAttenuation);
+    this.callbacks.onBrowserMetric('aphEdlStrength', settings.eyeDomeLightingStrength);
+    this.callbacks.onBrowserMetric('aphEdlRadius', settings.eyeDomeLightingRadius);
+  }
+
+  private adaptivePointHierarchyPointMetadata(
+    uri: string | null,
+    tile: RuntimeTile
+  ): { level: number | 'p001' | null; pointsLength: number | null } {
+    const key = uri ?? '';
+    const cached = this.adaptivePointHierarchyPointMeta.get(key);
+    if (cached) return cached;
+    const level = classifyAdaptivePointHierarchyUri(emptyAdaptivePointHierarchyDepthStats(), uri);
+    const pointsLength = typeof tile.content?.pointsLength === 'number'
+      ? contentPointCount(tile.content)
+      : null;
+    const metadata = { level, pointsLength };
+    this.adaptivePointHierarchyPointMeta.set(key, metadata);
+    return metadata;
+  }
+
+  private resetAdaptivePointHierarchyMetadata(entryUrl: string): void {
+    this.adaptivePointHierarchyMetadataByCanonicalUri.clear();
+    this.adaptivePointHierarchyMetadataSubtrees.clear();
+    this.adaptivePointHierarchyMetadataLoads.clear();
+    this.adaptivePointHierarchyMetadataRootUrl = entryUrl;
+  }
+
+  private async loadAdaptivePointHierarchyMetadataIndex(entryUrl: string, document: TilesetDocument): Promise<void> {
+    const indexUri = document.asset?.extras?.aphMetadataIndexUri;
+    if (!indexUri) return;
+    try {
+      const response = await fetch(new URL(indexUri, entryUrl));
+      if (!response.ok) return;
+      const payload = await response.json() as { subtrees?: Record<string, unknown> };
+      for (const [z0Id, relativeUri] of Object.entries(payload.subtrees ?? {})) {
+        if (typeof relativeUri === 'string') this.adaptivePointHierarchyMetadataSubtrees.set(z0Id, relativeUri);
+      }
+      this.viewer.scene.requestRender();
+    } catch {
+      // Diagnostics are optional.  The report exposes unavailable metadata
+      // rather than treating a failed metadata sidecar as traversal failure.
+    }
+  }
+
+  private ensureAdaptivePointHierarchyMetadataForUri(canonicalUri: string): void {
+    const match = canonicalUri.match(/(?:^|\/)adaptive\/(z0_x\d{6}_y\d{6})\//)
+      ?? canonicalUri.match(/(?:^|\/)z0\/(z0_x\d{6}_y\d{6})\.pnts$/);
+    const z0Id = match?.[1];
+    if (!z0Id || this.adaptivePointHierarchyMetadataLoads.has(z0Id)) return;
+    const relativeMapUri = this.adaptivePointHierarchyMetadataSubtrees.get(z0Id);
+    const rootUrl = this.adaptivePointHierarchyMetadataRootUrl;
+    if (!relativeMapUri || !rootUrl) return;
+    const load = (async (): Promise<void> => {
+      try {
+        const response = await fetch(new URL(relativeMapUri, rootUrl));
+        if (!response.ok) return;
+        const payload = await response.json() as { entries?: Record<string, AphNodeDiagnostics> };
+        for (const [relativeContentUri, diagnostics] of Object.entries(payload.entries ?? {})) {
+          if (!diagnostics || typeof diagnostics.nodeId !== 'string') continue;
+          const canonical = canonicalizeAdaptivePointHierarchyUri(relativeContentUri, rootUrl);
+          this.adaptivePointHierarchyMetadataByCanonicalUri.set(canonical, diagnostics);
+        }
+        this.viewer.scene.requestRender();
+      } catch {
+        // Leave the entry unavailable; telemetry must not infer metadata.
+      }
+    })();
+    this.adaptivePointHierarchyMetadataLoads.set(z0Id, load);
+  }
+
+  private adaptivePointHierarchyDiagnostics(tile: RuntimeTile, canonicalUri: string | null) {
+    if (canonicalUri) this.ensureAdaptivePointHierarchyMetadataForUri(canonicalUri);
+    return resolveAdaptivePointHierarchyDiagnostics(
+      tile._header?.extras,
+      canonicalUri,
+      this.adaptivePointHierarchyMetadataByCanonicalUri,
+    );
+  }
+
+  private formatAdaptivePointCounts(values: Map<string, number | 'unavailable'>): string {
+    if (values.size === 0) return '—';
+    return [...values.entries()]
+      .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+      .map(([depth, count]) => `${depth}=${count === 'unavailable' ? 'unavailable' : Math.round(count)}`)
+      .join(' ');
+  }
+
+  private beginAdaptivePointHierarchyLifecycleFrame(runtime: RuntimeTileset, now: number): void {
+    if (this.adaptivePointHierarchyCycleStatus !== 'active' || this.adaptivePointHierarchyCameraMoving) return;
+    for (const entry of this.adaptivePointHierarchyLifecycle.values()) {
+      entry.requestedNow = false;
+      entry.inFlightNow = false;
+      entry.processingNow = false;
+      entry.selectedThisFrame = false;
+    }
+    this.observeAdaptivePointHierarchyQueue(runtime._requestedTiles, 'requested', now);
+    this.observeAdaptivePointHierarchyQueue(runtime._requestedTilesInFlight, 'inFlight', now);
+    this.observeAdaptivePointHierarchyQueue(runtime._processingQueue, 'processing', now);
+    const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    for (const resource of resources) {
+      if (resource.startTime < this.adaptivePointHierarchyCycleStartedAt) continue;
+      const depth = classifyAdaptivePointHierarchyUri(emptyAdaptivePointHierarchyDepthStats(), resource.name);
+      if (depth === null) continue;
+      const canonicalUri = canonicalizeAdaptivePointHierarchyUri(resource.name);
+      const attemptKey = `${canonicalUri}@${resource.startTime}`;
+      if (this.adaptivePointHierarchyResourceAttempts.has(attemptKey)) continue;
+      this.adaptivePointHierarchyResourceAttempts.add(attemptKey);
+      const entry = this.ensureAdaptivePointHierarchyLifecycle(canonicalUri, depth);
+      entry.source.resourceTiming = true;
+      entry.resourceRequestCount += 1;
+      entry.requestCount = entry.resourceRequestCount;
+      entry.firstRequestedAt = entry.firstRequestedAt === null ? resource.startTime : Math.min(entry.firstRequestedAt, resource.startTime);
+      entry.lastRequestedAt = Math.max(entry.lastRequestedAt ?? resource.startTime, resource.startTime);
+      entry.bytes += resource.transferSize || resource.encodedBodySize || resource.decodedBodySize || 0;
+      this.adaptivePointHierarchyDetailRequestAfterStopAt ??= resource.startTime;
+    }
+  }
+
+  private observeAdaptivePointHierarchyQueue(
+    tiles: RuntimeTile[] | undefined,
+    state: 'requested' | 'inFlight' | 'processing',
+    now: number
+  ): void {
+    if (!Array.isArray(tiles)) return;
+    for (const tile of tiles) {
+      const observation = this.adaptivePointHierarchyTileObservation(tile);
+      if (!observation) continue;
+      const entry = this.ensureAdaptivePointHierarchyLifecycle(observation.canonicalUri, observation.depth);
+      const enteringRequestQueue = !entry.queuedLastFrame
+        && !entry.requestedNow
+        && !entry.inFlightNow
+        && !entry.processingNow;
+      entry.runtimeTile = tile;
+      entry.source.runtime = true;
+      if (state === 'requested') entry.requestedNow = true;
+      if (state === 'inFlight') {
+        entry.inFlightNow = true;
+        entry.everInFlight = true;
+      }
+      if (state === 'processing') {
+        entry.processingNow = true;
+        entry.everProcessing = true;
+      }
+      if (enteringRequestQueue) {
+        entry.runtimeFallbackRequestCount += 1;
+        if (!entry.source.resourceTiming) entry.requestCount = entry.runtimeFallbackRequestCount;
+        entry.firstRequestedAt ??= now;
+        entry.lastRequestedAt = now;
+      }
+    }
+  }
+
+  private observeAdaptivePointHierarchySelectedTile(tile: RuntimeTile, now: number): void {
+    if (this.adaptivePointHierarchyCycleStatus !== 'active') return;
+    const observation = this.adaptivePointHierarchyTileObservation(tile);
+    if (!observation) return;
+    const entry = this.ensureAdaptivePointHierarchyLifecycle(observation.canonicalUri, observation.depth);
+    entry.runtimeTile = tile;
+    entry.source.runtime = true;
+    entry.selectedThisFrame = true;
+    entry.everSelectedInCycle = true;
+    entry.selectedFrameCount += 1;
+    entry.firstSelectedAt ??= now;
+    entry.lastSelectedAt = now;
+  }
+
+  private updateAdaptivePointHierarchyCycleTelemetry(
+    runtime: RuntimeTileset,
+    d5Active: boolean,
+    d6Active: boolean
+  ): void {
+    const now = performance.now();
+    for (const entry of this.adaptivePointHierarchyLifecycle.values()) {
+      entry.readyNow = adaptivePointHierarchyTileReady(entry.runtimeTile);
+      if (entry.readyNow) {
+        entry.everReady = true;
+        entry.firstReadyAt ??= now;
+      }
+      entry.queuedLastFrame = entry.requestedNow || entry.inFlightNow || entry.processingNow;
+    }
+    if (this.adaptivePointHierarchyCycleStatus === 'active' && !this.adaptivePointHierarchyCameraMoving) {
+      if (d5Active && this.adaptivePointHierarchyFirstD5ActiveAt === null) this.adaptivePointHierarchyFirstD5ActiveAt = now;
+      if (d6Active && this.adaptivePointHierarchyFirstD6ActiveAt === null) this.adaptivePointHierarchyFirstD6ActiveAt = now;
+      if (d5Active && this.adaptivePointHierarchyTargetStatus === 'pending') {
+        this.adaptivePointHierarchyTargetStatus = 'reached';
+        this.adaptivePointHierarchyTargetReachedAt = now;
+      }
+      if (now - this.adaptivePointHierarchyCameraStoppedAt >= 15_000 && this.adaptivePointHierarchyTargetStatus === 'pending') {
+        this.adaptivePointHierarchyTargetStatus = 'timed-out';
+      }
+      if (this.spatialLodQueuesSettled(runtime)) {
+        this.adaptivePointHierarchyStableSince ??= now;
+        if (now - this.adaptivePointHierarchyStableSince >= 250) {
+          this.completeAdaptivePointHierarchyCycle(now);
+        }
+      } else {
+        this.adaptivePointHierarchyStableSince = null;
+      }
+    }
+    this.emitAdaptivePointHierarchyLifecycleMetrics();
+  }
+
+  private adaptivePointHierarchyTileObservation(tile: RuntimeTile): { canonicalUri: string; depth: AphDepth } | null {
+    const resolved = runtimeTileResolvedContentUri(tile);
+    const raw = resolved ?? extractTileContentUri(tile);
+    const depth = classifyAdaptivePointHierarchyUri(emptyAdaptivePointHierarchyDepthStats(), raw);
+    if (!raw || depth === null) return null;
+    return { canonicalUri: canonicalizeAdaptivePointHierarchyUri(raw, this.adaptivePointHierarchyTilesetBaseUrl()), depth };
+  }
+
+  private adaptivePointHierarchyTilesetBaseUrl(): string | undefined {
+    const tileset = this.primaryTileset as unknown as { _resource?: { url?: unknown } } | null;
+    return typeof tileset?._resource?.url === 'string' ? tileset._resource.url : undefined;
+  }
+
+  private ensureAdaptivePointHierarchyLifecycle(canonicalUri: string, depth: AphDepth): AphContentLifecycle {
+    const existing = this.adaptivePointHierarchyLifecycle.get(canonicalUri);
+    if (existing) return existing;
+    const entry: AphContentLifecycle = {
+      canonicalUri, depth, requestCount: 0, resourceRequestCount: 0, runtimeFallbackRequestCount: 0,
+      firstRequestedAt: null, lastRequestedAt: null, inFlightNow: false, processingNow: false,
+      requestedNow: false, queuedLastFrame: false, everInFlight: false, everProcessing: false,
+      readyNow: null, everReady: false, firstReadyAt: null, selectedThisFrame: false,
+      everSelectedInCycle: false, selectedFrameCount: 0, firstSelectedAt: null, lastSelectedAt: null,
+      runtimeTile: null, bytes: 0, source: { runtime: false, resourceTiming: false },
+    };
+    this.adaptivePointHierarchyLifecycle.set(canonicalUri, entry);
+    return entry;
+  }
+
+  private formatAdaptivePointHierarchyLifecycle(predicate: (entry: AphContentLifecycle) => boolean): string {
+    const stats = emptyAdaptivePointHierarchyDepthStats();
+    for (const entry of this.adaptivePointHierarchyLifecycle.values()) {
+      if (!predicate(entry)) continue;
+      if (entry.depth === 'p001') stats.p001 += 1;
+      else if (typeof entry.depth === 'number') stats.byDepth[entry.depth] = (stats.byDepth[entry.depth] ?? 0) + 1;
+      else stats.unclassified += 1;
+    }
+    return stats.p001 === 0 && Object.keys(stats.byDepth).length === 0 && stats.unclassified === 0
+      ? '—'
+      : formatAdaptivePointHierarchyDepthStats(stats);
+  }
+
+  private completeAdaptivePointHierarchyCycle(now: number): void {
+    if (this.adaptivePointHierarchyCycleStatus !== 'active') return;
+    this.adaptivePointHierarchyCycleStatus = 'complete';
+    this.adaptivePointHierarchyCompletedAt = now;
+    this.finalizeAdaptivePointHierarchyCycle('settled', 'complete');
+  }
+
+  private finalizeAdaptivePointHierarchyCycle(
+    closure: AphCycleClosure,
+    status: 'complete' | 'aborted'
+  ): void {
+    const readyNeverSelected = [...this.adaptivePointHierarchyLifecycle.values()]
+      .filter((entry) => entry.everReady && !entry.everSelectedInCycle);
+    this.adaptivePointHierarchyLastClosedCycle = {
+      cycleId: this.adaptivePointHierarchyRefinementCycleId,
+      status,
+      closure,
+      wasteState: 'indeterminate',
+      readyNeverSelectedUriCount: readyNeverSelected.length,
+      requestAttemptCount: [...this.adaptivePointHierarchyLifecycle.values()]
+        .reduce((total, entry) => total + entry.requestCount, 0),
+      bytes: readyNeverSelected.reduce((total, entry) => total + entry.bytes, 0),
+    };
+  }
+
+  private emitAdaptivePointHierarchyLifecycleMetrics(): void {
+    const lifecycle = this.adaptivePointHierarchyLifecycle;
+    const count = (predicate: (entry: AphContentLifecycle) => boolean): number =>
+      [...lifecycle.values()].filter(predicate).length;
+    this.callbacks.onBrowserMetric('aphRequestedDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.requestCount > 0));
+    this.callbacks.onBrowserMetric('aphInFlightDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.inFlightNow));
+    this.callbacks.onBrowserMetric('aphProcessingDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.processingNow));
+    this.callbacks.onBrowserMetric('aphReadyDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.readyNow === true));
+    this.callbacks.onBrowserMetric('aphEverReadyDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.everReady));
+    this.callbacks.onBrowserMetric('aphReadyNotSelectedDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.readyNow === true && !entry.selectedThisFrame));
+    this.callbacks.onBrowserMetric('aphUnreconciledRequestedDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.source.resourceTiming && !entry.source.runtime));
+    this.callbacks.onBrowserMetric('aphReadyStateUnknownDepths', this.formatAdaptivePointHierarchyLifecycle((entry) => entry.source.runtime && entry.readyNow === null));
+    this.callbacks.onBrowserMetric('aphRequestedUriCount', count((entry) => entry.requestCount > 0));
+    this.callbacks.onBrowserMetric('aphRequestAttemptCount', [...lifecycle.values()].reduce((total, entry) => total + entry.requestCount, 0));
+    this.callbacks.onBrowserMetric('aphRefinementCycleId', this.adaptivePointHierarchyRefinementCycleId);
+    this.callbacks.onBrowserMetric('aphRefinementCycleStatus', this.adaptivePointHierarchyCycleStatus);
+    this.callbacks.onBrowserMetric('aphTargetDepth', 5);
+    this.callbacks.onBrowserMetric('aphTargetStatus', this.adaptivePointHierarchyTargetStatus);
+    this.callbacks.onBrowserMetric('aphCycleCompletedAfterStopMs', this.adaptivePointHierarchyCompletedAt === null ? '—' : this.adaptivePointHierarchyCompletedAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphTargetReachedAfterStopMs', this.adaptivePointHierarchyTargetReachedAt === null ? '—' : this.adaptivePointHierarchyTargetReachedAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphFirstRequestAfterStopMs', this.adaptivePointHierarchyDetailRequestAfterStopAt === null ? '—' : this.adaptivePointHierarchyDetailRequestAfterStopAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphDetailFirstRequestDelayMs', this.adaptivePointHierarchyDetailRequestAfterStopAt === null ? '—' : this.adaptivePointHierarchyDetailRequestAfterStopAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphFirstD5ActiveAfterStopMs', this.adaptivePointHierarchyFirstD5ActiveAt === null ? '—' : this.adaptivePointHierarchyFirstD5ActiveAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphFirstD6ActiveAfterStopMs', this.adaptivePointHierarchyFirstD6ActiveAt === null ? '—' : this.adaptivePointHierarchyFirstD6ActiveAt - this.adaptivePointHierarchyCameraStoppedAt);
+    this.callbacks.onBrowserMetric('aphWasteAssessmentState', this.adaptivePointHierarchyCycleStatus === 'active' ? 'pending' : 'indeterminate');
+    this.callbacks.onBrowserMetric('aphReadyNeverSelectedUris', count((entry) => entry.everReady && !entry.everSelectedInCycle));
+    this.callbacks.onBrowserMetric('aphDefiniteWasteUris', 0);
+    this.callbacks.onBrowserMetric('aphLastClosedCycle', this.adaptivePointHierarchyLastClosedCycle === null ? '—' : JSON.stringify(this.adaptivePointHierarchyLastClosedCycle));
+  }
+
+  private adaptivePointHierarchyIntersectsFrontierVrv(runtime: RuntimeTileset): boolean {
+    const scene = this.viewer.scene as unknown as { frameState?: unknown; _frameState?: unknown };
+    const frameState = scene.frameState ?? scene._frameState;
+    if (!frameState) return false;
+    const tiles = runtime._selectedTiles ?? runtime.selectedTiles ?? [];
+    return tiles.some((tile) => {
+      const volume = tile._viewerRequestVolume ?? tile.viewerRequestVolume;
+      if (typeof volume?.distanceToCamera !== 'function') return false;
+      try {
+        return volume.distanceToCamera(frameState) === 0;
+      } catch {
+        return false;
+      }
+    });
   }
 
   /**
@@ -771,7 +1692,7 @@ export class PointCloudViewer {
       runtime.preferLeaves !== decision.preferLeaves ||
       runtime.foveatedScreenSpaceError !== decision.foveatedScreenSpaceError ||
       runtime.foveatedMinimumScreenSpaceErrorRelaxation !==
-        decision.foveatedMinimumScreenSpaceErrorRelaxation
+      decision.foveatedMinimumScreenSpaceErrorRelaxation
     );
     tileset.maximumScreenSpaceError = decision.effectiveSse;
     tileset.cacheBytes = SPATIAL_LOD_CACHE_BYTES;
@@ -1051,9 +1972,9 @@ export class PointCloudViewer {
     }
     while (
       this.spatialLodZ4TimelineMilestoneIndex <
-        SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS.length &&
+      SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS.length &&
       elapsedMs >= SPATIAL_LOD_REFINEMENT_TIMELINE_MILESTONES_MS[
-        this.spatialLodZ4TimelineMilestoneIndex
+      this.spatialLodZ4TimelineMilestoneIndex
       ]
     ) {
       this.spatialLodZ4RequestTimeline.push({ elapsedMs, count });
@@ -1431,9 +2352,9 @@ export class PointCloudViewer {
     const shouldAlignAreaToMap = MAPTILER_BASEMAP_ENABLED;
     const documentPromise = shouldAlignAreaToMap
       ? fetch(tilesetUrl).then(async (response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          return response.json() as Promise<TilesetDocument>;
-        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        return response.json() as Promise<TilesetDocument>;
+      })
       : Promise.resolve(null);
     const [tileset, document] = await Promise.all([
       Cesium.Cesium3DTileset.fromUrl(tilesetUrl, {
@@ -2434,6 +3355,11 @@ export class PointCloudViewer {
     const clamped = clampOverviewPointSizeScale(scale);
     if (Math.abs(clamped - this.overviewPointSizeScale) < 1e-9) return;
     this.overviewPointSizeScale = clamped;
+    if (this.adaptivePointHierarchyActive) {
+      this.updateAdaptivePointHierarchyPointSize(true);
+      this.viewer.scene.requestRender();
+      return;
+    }
     if (this.pointSizeRuntimeActive()) {
       this.updateOverviewPointSize();
     }
@@ -2441,6 +3367,83 @@ export class PointCloudViewer {
 
   getOverviewPointSizeScale(): number {
     return this.overviewPointSizeScale;
+  }
+
+  setAdaptivePointHierarchyTuning(
+    tuning: Partial<AdaptivePointHierarchyTuning>
+  ): AdaptivePointHierarchyTuning {
+    this.adaptivePointHierarchyTuning = normalizeAdaptivePointHierarchyTuning(tuning);
+    this.adaptivePointHierarchyController?.setTuning(this.adaptivePointHierarchyTuning);
+    if (this.adaptivePointHierarchyActive) this.viewer.scene.requestRender();
+    return this.getAdaptivePointHierarchyTuning();
+  }
+
+  getAdaptivePointHierarchyTuning(): AdaptivePointHierarchyTuning {
+    return { ...this.adaptivePointHierarchyTuning };
+  }
+
+  setAdaptivePointHierarchyPointSizeTuning(
+    tuning: Partial<AdaptivePointHierarchyPointSizeTuning>
+  ): AdaptivePointHierarchyPointSizeTuning {
+    const current = this.adaptivePointHierarchyPointSizeTuning;
+    const nearDistanceMeters = clampAdaptivePointHierarchyPointSizeDistance(
+      tuning.nearDistanceMeters ?? current.nearDistanceMeters
+    );
+    const farDistanceMeters = Math.max(
+      nearDistanceMeters + 1,
+      clampAdaptivePointHierarchyPointSizeDistance(
+        tuning.farDistanceMeters ?? current.farDistanceMeters
+      )
+    );
+    this.adaptivePointHierarchyPointSizeTuning = {
+      farPointSizePx: clampOverviewPointSizePx(
+        tuning.farPointSizePx ?? current.farPointSizePx
+      ),
+      midPointSizePx: clampOverviewPointSizePx(
+        tuning.midPointSizePx ?? current.midPointSizePx
+      ),
+      nearPointSizePx: clampOverviewPointSizePx(
+        tuning.nearPointSizePx ?? current.nearPointSizePx
+      ),
+      nearDistanceMeters,
+      farDistanceMeters,
+    };
+    if (this.adaptivePointHierarchyActive) {
+      this.updateAdaptivePointHierarchyPointSize(true);
+      this.viewer.scene.requestRender();
+    }
+    return this.getAdaptivePointHierarchyPointSizeTuning();
+  }
+
+  getAdaptivePointHierarchyPointSizeTuning(): AdaptivePointHierarchyPointSizeTuning {
+    return { ...this.adaptivePointHierarchyPointSizeTuning };
+  }
+
+  setAdaptivePointHierarchySimpleSse(sse: number): number {
+    const next = normalizeAdaptivePointHierarchySimpleSse(sse);
+    const changed = next !== this.adaptivePointHierarchySimpleSse;
+    this.adaptivePointHierarchySimpleSse = next;
+    if (
+      this.adaptivePointHierarchyActive &&
+      ADAPTIVE_POINT_HIERARCHY_CONTROLLER === 'simple' &&
+      this.primaryTileset
+    ) {
+      this.applyAdaptivePointHierarchySimpleTraversal(this.primaryTileset);
+      this.viewer.scene.requestRender();
+      if (changed && !this.adaptivePointHierarchyCameraMoving) {
+        if (this.adaptivePointHierarchyCycleStatus === 'active') {
+          this.adaptivePointHierarchyCycleStatus = 'aborted';
+          this.finalizeAdaptivePointHierarchyCycle('sse-change', 'aborted');
+        }
+        this.adaptivePointHierarchyRefinementCycleId += 1;
+        this.openAdaptivePointHierarchyCycle(performance.now());
+      }
+    }
+    return this.getAdaptivePointHierarchySimpleSse();
+  }
+
+  getAdaptivePointHierarchySimpleSse(): number {
+    return this.adaptivePointHierarchySimpleSse;
   }
 
   private syncOverviewRuntime(
@@ -2546,13 +3549,13 @@ export class PointCloudViewer {
     this.updateOverviewCameraRangeRatio();
     const nextBand = this.oneLodTreePointSizeActive
       ? oneLodTreeBandForRatio(
-          this.overviewCameraRangeRatio,
-          this.overviewPointSizeBand
-        )
+        this.overviewCameraRangeRatio,
+        this.overviewPointSizeBand
+      )
       : overviewBandForRatio(
-          this.overviewCameraRangeRatio,
-          this.overviewPointSizeBand
-        );
+        this.overviewCameraRangeRatio,
+        this.overviewPointSizeBand
+      );
     const nextPx = this.pointSizePxForOverviewBand(nextBand);
     const bandChanged = nextBand !== this.overviewPointSizeBand;
     const pxChanged = nextPx !== this.overviewPointSizePx;
@@ -2566,6 +3569,57 @@ export class PointCloudViewer {
     }
     this.reportOverviewTuning();
     this.logOverviewDiagnostics();
+  }
+
+  private updateAdaptivePointHierarchyPointSize(force = false): void {
+    if (!this.adaptivePointHierarchyActive || !this.primaryTileset) return;
+    const distance = this.currentOverviewCameraRange();
+    const pointSizePx = this.adaptivePointHierarchyPointSizeForDistance(distance);
+    if (
+      !force &&
+      this.adaptivePointHierarchyAppliedPointSizePx !== null &&
+      Math.abs(pointSizePx - this.adaptivePointHierarchyAppliedPointSizePx) < 0.05
+    ) {
+      return;
+    }
+    this.adaptivePointHierarchyAppliedPointSizePx = pointSizePx;
+    this.primaryTileset.style = createOverviewPointSizeStyle(pointSizePx);
+    const tuning = this.adaptivePointHierarchyPointSizeTuning;
+    const band = distance <= tuning.nearDistanceMeters
+      ? 'near'
+      : distance >= tuning.farDistanceMeters
+        ? 'far'
+        : 'transition';
+    this.callbacks.onBrowserMetric('pointSizePx', Number(pointSizePx.toFixed(2)));
+    this.callbacks.onBrowserMetric('pointSizeBand', band);
+    this.callbacks.onBrowserMetric('pointSizeScale', this.overviewPointSizeScale);
+  }
+
+  private adaptivePointHierarchyPointSizeForDistance(distanceMeters: number): number {
+    const tuning = this.adaptivePointHierarchyPointSizeTuning;
+    const midDistance = (tuning.nearDistanceMeters + tuning.farDistanceMeters) / 2;
+    const [startDistance, endDistance, startSize, endSize] = distanceMeters <= midDistance
+      ? [
+        tuning.nearDistanceMeters,
+        midDistance,
+        tuning.nearPointSizePx,
+        tuning.midPointSizePx,
+      ]
+      : [
+        midDistance,
+        tuning.farDistanceMeters,
+        tuning.midPointSizePx,
+        tuning.farPointSizePx,
+      ];
+    const linear = Cesium.Math.clamp(
+      (distanceMeters - startDistance) / (endDistance - startDistance),
+      0,
+      1
+    );
+    const smooth = linear * linear * (3 - 2 * linear);
+    return clampOverviewPointSizePx(
+      Cesium.Math.lerp(startSize, endSize, smooth) * this.overviewPointSizeScale
+    );
   }
 
   private pointSizePxForOverviewBand(band: OverviewPointSizeBand): number {
@@ -2819,6 +3873,14 @@ export class PointCloudViewer {
     this.reportOverviewTuning();
     this.reportLayerTileStats();
     this.spatialLodActive = false;
+    this.adaptivePointHierarchyActive = false;
+    this.adaptivePointHierarchyController = null;
+    this.stopAdaptivePointHierarchyDiagnosticTelemetry();
+    this.adaptivePointHierarchyPointMeta.clear();
+    this.adaptivePointHierarchyMetadataByCanonicalUri.clear();
+    this.adaptivePointHierarchyMetadataSubtrees.clear();
+    this.adaptivePointHierarchyMetadataLoads.clear();
+    this.adaptivePointHierarchyMetadataRootUrl = null;
   }
 
   private primaryPresetOverrides(
@@ -3096,6 +4158,13 @@ function sumNumericStats(
   return 'unsupported';
 }
 
+function clampAdaptivePointHierarchyPointSizeDistance(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_ADAPTIVE_POINT_HIERARCHY_POINT_SIZE_TUNING.nearDistanceMeters;
+  }
+  return Cesium.Math.clamp(value, 1, 10_000);
+}
+
 function selectedPointCount(tileset: RuntimeTileset): number | string {
   if (typeof tileset.statistics?.numberOfPointsSelected === 'number') {
     return tileset.statistics.numberOfPointsSelected;
@@ -3122,4 +4191,27 @@ function contentPointCount(content: RuntimeTileContent | undefined): number {
     0
   ) ?? 0;
   return ownPoints + innerPoints;
+}
+
+function runtimeTileResolvedContentUri(tile: RuntimeTile): string | null {
+  const url = tile._contentResource?.url;
+  if (typeof url === 'string') return url;
+  const getter = tile._contentResource?.getUrlComponent;
+  if (typeof getter === 'function') {
+    try {
+      const value = getter.call(tile._contentResource);
+      return typeof value === 'string' ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function adaptivePointHierarchyTileReady(tile: RuntimeTile | null): boolean | null {
+  if (!tile) return null;
+  if (tile.contentReady === true || tile.content?.ready === true) return true;
+  if (typeof tile.content?.pointsLength === 'number') return true;
+  if (tile.contentReady === false || tile._contentState !== undefined || tile.content?.state !== undefined) return false;
+  return null;
 }

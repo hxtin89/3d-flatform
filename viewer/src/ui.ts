@@ -1,6 +1,13 @@
 // ui.ts — UI state management for the point cloud viewer
 import { type PresetName, PRESETS } from './presets';
-import { type ViewerState } from './viewer';
+import {
+  type AdaptivePointHierarchyControllerMode,
+  type AdaptivePointHierarchyTuning,
+} from './adaptive-point-hierarchy';
+import {
+  type AdaptivePointHierarchyPointSizeTuning,
+  type ViewerState,
+} from './viewer';
 
 // ── Status overlay ──────────────────────────────────────────────
 const statusOverlay = document.getElementById('status-overlay')!;
@@ -38,6 +45,17 @@ const overviewPointSizeSlider = document.getElementById(
   'slider-overview-point-size'
 ) as HTMLInputElement | null;
 const overviewPointSizeValue = document.getElementById('overview-point-size-val');
+const overviewPointSizeLabel = document.getElementById('overview-point-size-label');
+const aphSimpleSseSelect = document.getElementById('select-aph-simple-sse') as HTMLSelectElement | null;
+const aphFarSseSelect = document.getElementById('select-aph-far-sse') as HTMLSelectElement | null;
+const aphApproachRangeInput = document.getElementById('input-aph-approach-range') as HTMLInputElement | null;
+const aphApproachSseSelect = document.getElementById('select-aph-approach-sse') as HTMLSelectElement | null;
+const aphDetailSseSelect = document.getElementById('select-aph-detail-sse') as HTMLSelectElement | null;
+const aphFarPointSizeInput = document.getElementById('input-aph-far-point-size') as HTMLInputElement | null;
+const aphNearPointSizeInput = document.getElementById('input-aph-near-point-size') as HTMLInputElement | null;
+const aphMidPointSizeInput = document.getElementById('input-aph-mid-point-size') as HTMLInputElement | null;
+const aphNearDistanceInput = document.getElementById('input-aph-near-distance') as HTMLInputElement | null;
+const aphFarDistanceInput = document.getElementById('input-aph-far-distance') as HTMLInputElement | null;
 const controlsPanel = document.getElementById('controls-panel');
 const controlsPanelToggle = document.getElementById(
   'controls-panel-toggle'
@@ -128,15 +146,26 @@ export function setPresetAvailability(
   if (status) status.textContent = label;
 }
 
-export function setPanelLodMode(mode: 'manual' | 'one-lod-tree' | 'spatial-lod'): void {
+export function setPanelLodMode(
+  mode: 'manual' | 'one-lod-tree' | 'spatial-lod' | 'adaptive-point-hierarchy'
+): void {
   document.body.dataset.lodMode = mode;
-  const isRuntimeLod = mode === 'one-lod-tree' || mode === 'spatial-lod';
+  const isRuntimeLod = mode !== 'manual';
   if (renderingLabel) {
     renderingLabel.textContent = isRuntimeLod ? 'Settings' : 'Rendering';
+  }
+  if (overviewPointSizeLabel) {
+    overviewPointSizeLabel.textContent = 'Point Size';
   }
   if (statSseLabel) {
     statSseLabel.textContent = isRuntimeLod ? 'Runtime SSE' : 'SSE';
   }
+}
+
+export function setAdaptivePointHierarchyControllerMode(
+  mode: AdaptivePointHierarchyControllerMode
+): void {
+  document.body.dataset.aphController = mode;
 }
 
 export function setReportVariant(variant: 'dataset' | 'runtime'): void {
@@ -187,6 +216,92 @@ export function setOverviewPointSizeAvailability(enabled: boolean, label: string
   if (!overviewPointSizeSlider) return;
   overviewPointSizeSlider.disabled = !enabled;
   overviewPointSizeSlider.title = enabled ? '' : label;
+}
+
+export function initAdaptivePointHierarchyPointSizeTuning(
+  onChange: (tuning: AdaptivePointHierarchyPointSizeTuning) => void
+): void {
+  const emit = (): void => {
+    const tuning = readAdaptivePointHierarchyPointSizeTuning();
+    if (tuning) onChange(tuning);
+  };
+  aphFarPointSizeInput?.addEventListener('change', emit);
+  aphNearPointSizeInput?.addEventListener('change', emit);
+  aphMidPointSizeInput?.addEventListener('change', emit);
+  aphNearDistanceInput?.addEventListener('change', emit);
+  aphFarDistanceInput?.addEventListener('change', emit);
+}
+
+export function setAdaptivePointHierarchyPointSizeTuning(
+  tuning: AdaptivePointHierarchyPointSizeTuning
+): void {
+  if (aphFarPointSizeInput) aphFarPointSizeInput.value = String(tuning.farPointSizePx);
+  if (aphNearPointSizeInput) aphNearPointSizeInput.value = String(tuning.nearPointSizePx);
+  if (aphMidPointSizeInput) aphMidPointSizeInput.value = String(tuning.midPointSizePx);
+  if (aphNearDistanceInput) aphNearDistanceInput.value = String(tuning.nearDistanceMeters);
+  if (aphFarDistanceInput) aphFarDistanceInput.value = String(tuning.farDistanceMeters);
+}
+
+export function initAdaptivePointHierarchySimpleSse(onChange: (sse: number) => void): void {
+  aphSimpleSseSelect?.addEventListener('change', () => {
+    const sse = Number(aphSimpleSseSelect.value);
+    if (Number.isFinite(sse) && sse > 0) onChange(sse);
+  });
+}
+
+export function setAdaptivePointHierarchySimpleSse(sse: number): void {
+  if (aphSimpleSseSelect) aphSimpleSseSelect.value = String(sse);
+}
+
+export function initAdaptivePointHierarchyTuning(
+  onChange: (tuning: AdaptivePointHierarchyTuning) => void
+): void {
+  const emit = (): void => {
+    const tuning = readAdaptivePointHierarchyTuning();
+    if (tuning) onChange(tuning);
+  };
+  aphFarSseSelect?.addEventListener('change', emit);
+  aphApproachRangeInput?.addEventListener('change', emit);
+  aphApproachSseSelect?.addEventListener('change', emit);
+  aphDetailSseSelect?.addEventListener('change', emit);
+}
+
+export function setAdaptivePointHierarchyTuning(tuning: AdaptivePointHierarchyTuning): void {
+  if (aphFarSseSelect) aphFarSseSelect.value = String(tuning.farSse);
+  if (aphApproachRangeInput) aphApproachRangeInput.value = String(tuning.approachRangeMeters);
+  if (aphApproachSseSelect) aphApproachSseSelect.value = String(tuning.approachSse);
+  if (aphDetailSseSelect) aphDetailSseSelect.value = String(tuning.detailSse);
+}
+
+function readAdaptivePointHierarchyTuning(): AdaptivePointHierarchyTuning | null {
+  if (!aphFarSseSelect || !aphApproachRangeInput || !aphApproachSseSelect || !aphDetailSseSelect) {
+    return null;
+  }
+  return {
+    farSse: Number(aphFarSseSelect.value),
+    approachRangeMeters: Number(aphApproachRangeInput.value),
+    approachSse: Number(aphApproachSseSelect.value),
+    detailSse: Number(aphDetailSseSelect.value),
+  };
+}
+
+function readAdaptivePointHierarchyPointSizeTuning(): AdaptivePointHierarchyPointSizeTuning | null {
+  if (
+    !aphFarPointSizeInput ||
+    !aphNearPointSizeInput ||
+    !aphMidPointSizeInput ||
+    !aphNearDistanceInput ||
+    !aphFarDistanceInput
+  ) {
+    return null;
+  }
+  return {
+    farPointSizePx: Number(aphFarPointSizeInput.value),
+    midPointSizePx: Number(aphMidPointSizeInput.value),
+    nearPointSizePx: Number(aphNearPointSizeInput.value),
+    nearDistanceMeters: Number(aphNearDistanceInput.value),
+    farDistanceMeters: Number(aphFarDistanceInput.value),
+  };
 }
 
 export function initControlsPanelToggle(): void {

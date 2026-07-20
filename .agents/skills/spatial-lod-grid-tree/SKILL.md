@@ -5,6 +5,8 @@ description: Build, upgrade, validate, tune, debug, or explain the SBB Spatial L
 
 # Spatial LOD Grid/Tree
 
+For content-driven residual quadtrees inside each z0, use the separate `adaptive-point-hierarchy` skill. Spatial LOD remains the fixed z/x/y grid implementation and must keep its parser/controller isolated from APH.
+
 Use a single 3D Tiles tree whose LOD units are fixed spatial grid cells, not areas. Area metadata may still drive selection/camera UX, but it must not define LOD density or tileset boundaries.
 
 ## Start Here

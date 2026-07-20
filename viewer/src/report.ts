@@ -125,6 +125,56 @@ export type BrowserMetricName =
   | 'spatialLodFrameTimeEmaMs'
   | 'spatialLodSkipLodLatchMs'
   | 'spatialLodEyeDomeLighting'
+  | 'aphActiveDepths'
+  | 'aphRequestedDepths'
+  | 'aphInFlightDepths'
+  | 'aphProcessingDepths'
+  | 'aphReadyDepths'
+  | 'aphEverReadyDepths'
+  | 'aphReadyNotSelectedDepths'
+  | 'aphUnreconciledRequestedDepths'
+  | 'aphReadyStateUnknownDepths'
+  | 'aphRequestedUriCount'
+  | 'aphRequestAttemptCount'
+  | 'aphSelectedTilesByDepth'
+  | 'aphSelectedPointsByDepth'
+  | 'aphSelectedLeaves'
+  | 'aphSelectedLeafPointReconciliationDelta'
+  | 'aphSelectedOwnershipSummary'
+  | 'aphDetailEligible'
+  | 'aphDetailFirstRequestDelayMs'
+  | 'aphVrvMode'
+  | 'aphPointReconciliationDelta'
+  | 'aphEffectiveSse'
+  | 'aphControllerMode'
+  | 'aphConfiguredSse'
+  | 'aphRuntimeSse'
+  | 'aphSsePair'
+  | 'aphRuntimeState'
+  | 'aphPressureLevel'
+  | 'aphCameraMoving'
+  | 'aphWarmupImmediateSuppressed'
+  | 'aphImmediateDesiredLod'
+  | 'aphFrameTimeEmaMs'
+  | 'aphRenderProfile'
+  | 'aphMaximumAttenuation'
+  | 'aphEdlStrength'
+  | 'aphEdlRadius'
+  | 'aphRefinementCycleId'
+  | 'aphRefinementCycleStatus'
+  | 'aphTargetDepth'
+  | 'aphTargetStatus'
+  | 'aphCycleCompletedAfterStopMs'
+  | 'aphTargetReachedAfterStopMs'
+  | 'aphWasteAssessmentState'
+  | 'aphReadyNeverSelectedUris'
+  | 'aphDefiniteWasteUris'
+  | 'aphLastClosedCycle'
+  | 'aphFirstRequestAfterStopMs'
+  | 'aphFirstD5ActiveAfterStopMs'
+  | 'aphFirstD6ActiveAfterStopMs'
+  | 'aphZeroSelectedFrames'
+  | 'aphMaxZeroSelectedFrames'
   | 'overviewSsePhase'
   | 'overviewSse'
   | 'overviewBootstrapRequests'
@@ -232,6 +282,56 @@ const browserMetrics: BrowserMetrics = {
   spatialLodFrameTimeEmaMs: '—',
   spatialLodSkipLodLatchMs: '—',
   spatialLodEyeDomeLighting: '—',
+  aphActiveDepths: '—',
+  aphRequestedDepths: '—',
+  aphInFlightDepths: '—',
+  aphProcessingDepths: '—',
+  aphReadyDepths: '—',
+  aphEverReadyDepths: '—',
+  aphReadyNotSelectedDepths: '—',
+  aphUnreconciledRequestedDepths: '—',
+  aphReadyStateUnknownDepths: '—',
+  aphRequestedUriCount: '—',
+  aphRequestAttemptCount: '—',
+  aphSelectedTilesByDepth: '—',
+  aphSelectedPointsByDepth: '—',
+  aphSelectedLeaves: '—',
+  aphSelectedLeafPointReconciliationDelta: '—',
+  aphSelectedOwnershipSummary: '—',
+  aphDetailEligible: '—',
+  aphDetailFirstRequestDelayMs: '—',
+  aphVrvMode: '—',
+  aphPointReconciliationDelta: '—',
+  aphEffectiveSse: '—',
+  aphControllerMode: '—',
+  aphConfiguredSse: '—',
+  aphRuntimeSse: '—',
+  aphSsePair: '—',
+  aphRuntimeState: '—',
+  aphPressureLevel: '—',
+  aphCameraMoving: '—',
+  aphWarmupImmediateSuppressed: '—',
+  aphImmediateDesiredLod: '—',
+  aphFrameTimeEmaMs: '—',
+  aphRenderProfile: '—',
+  aphMaximumAttenuation: '—',
+  aphEdlStrength: '—',
+  aphEdlRadius: '—',
+  aphRefinementCycleId: '—',
+  aphRefinementCycleStatus: '—',
+  aphTargetDepth: '—',
+  aphTargetStatus: '—',
+  aphCycleCompletedAfterStopMs: '—',
+  aphTargetReachedAfterStopMs: '—',
+  aphWasteAssessmentState: '—',
+  aphReadyNeverSelectedUris: '—',
+  aphDefiniteWasteUris: '—',
+  aphLastClosedCycle: '—',
+  aphFirstRequestAfterStopMs: '—',
+  aphFirstD5ActiveAfterStopMs: '—',
+  aphFirstD6ActiveAfterStopMs: '—',
+  aphZeroSelectedFrames: '—',
+  aphMaxZeroSelectedFrames: '—',
   overviewSsePhase: '—',
   overviewSse: '—',
   overviewBootstrapRequests: 0,
@@ -452,6 +552,56 @@ export function resetBrowserMetrics(): void {
     spatialLodFrameTimeEmaMs: '—',
     spatialLodSkipLodLatchMs: '—',
     spatialLodEyeDomeLighting: '—',
+    aphActiveDepths: '—',
+    aphRequestedDepths: '—',
+    aphInFlightDepths: '—',
+    aphProcessingDepths: '—',
+    aphReadyDepths: '—',
+    aphEverReadyDepths: '—',
+    aphReadyNotSelectedDepths: '—',
+    aphUnreconciledRequestedDepths: '—',
+    aphReadyStateUnknownDepths: '—',
+    aphRequestedUriCount: '—',
+    aphRequestAttemptCount: '—',
+    aphSelectedTilesByDepth: '—',
+    aphSelectedPointsByDepth: '—',
+    aphSelectedLeaves: '—',
+    aphSelectedLeafPointReconciliationDelta: '—',
+    aphSelectedOwnershipSummary: '—',
+    aphDetailEligible: '—',
+    aphDetailFirstRequestDelayMs: '—',
+    aphVrvMode: '—',
+    aphPointReconciliationDelta: '—',
+    aphEffectiveSse: '—',
+    aphControllerMode: '—',
+    aphConfiguredSse: '—',
+    aphRuntimeSse: '—',
+    aphSsePair: '—',
+    aphRuntimeState: '—',
+    aphPressureLevel: '—',
+    aphCameraMoving: '—',
+    aphWarmupImmediateSuppressed: '—',
+    aphImmediateDesiredLod: '—',
+    aphFrameTimeEmaMs: '—',
+    aphRenderProfile: '—',
+    aphMaximumAttenuation: '—',
+    aphEdlStrength: '—',
+    aphEdlRadius: '—',
+    aphRefinementCycleId: '—',
+    aphRefinementCycleStatus: '—',
+    aphTargetDepth: '—',
+    aphTargetStatus: '—',
+    aphCycleCompletedAfterStopMs: '—',
+    aphTargetReachedAfterStopMs: '—',
+    aphWasteAssessmentState: '—',
+    aphReadyNeverSelectedUris: '—',
+    aphDefiniteWasteUris: '—',
+    aphLastClosedCycle: '—',
+    aphFirstRequestAfterStopMs: '—',
+    aphFirstD5ActiveAfterStopMs: '—',
+    aphFirstD6ActiveAfterStopMs: '—',
+    aphZeroSelectedFrames: '—',
+    aphMaxZeroSelectedFrames: '—',
     overviewSsePhase: '—',
     overviewSse: '—',
     overviewBootstrapRequests: 0,
@@ -942,6 +1092,64 @@ async function copyReport(): Promise<void> {
         },
       },
     },
+    adaptivePointHierarchy: {
+      activeDepths: browserMetrics.aphActiveDepths,
+      requestedDepths: browserMetrics.aphRequestedDepths,
+      inFlightDepths: browserMetrics.aphInFlightDepths,
+      processingDepths: browserMetrics.aphProcessingDepths,
+      readyDepths: browserMetrics.aphReadyDepths,
+      everReadyDepths: browserMetrics.aphEverReadyDepths,
+      readyNotSelectedDepths: browserMetrics.aphReadyNotSelectedDepths,
+      unreconciledRequestedDepths: browserMetrics.aphUnreconciledRequestedDepths,
+      readyStateUnknownDepths: browserMetrics.aphReadyStateUnknownDepths,
+      requestedUriCount: browserMetrics.aphRequestedUriCount,
+      requestAttemptCount: browserMetrics.aphRequestAttemptCount,
+      selectedTilesByDepth: browserMetrics.aphSelectedTilesByDepth,
+      selectedPointsByDepth: browserMetrics.aphSelectedPointsByDepth,
+      selectedLeaves: parseAdaptivePointHierarchyJsonMetric(browserMetrics.aphSelectedLeaves as string | number),
+      selectedLeafPointReconciliationDelta: browserMetrics.aphSelectedLeafPointReconciliationDelta,
+      selectedOwnershipSummary: parseAdaptivePointHierarchyJsonMetric(browserMetrics.aphSelectedOwnershipSummary as string | number),
+      detailEligible: browserMetrics.aphDetailEligible,
+      detailFirstRequestDelayMs: browserMetrics.aphDetailFirstRequestDelayMs,
+      vrvMode: browserMetrics.aphVrvMode,
+      pointReconciliationDelta: browserMetrics.aphPointReconciliationDelta,
+      effectiveSSE: browserMetrics.aphEffectiveSse,
+      controllerMode: browserMetrics.aphControllerMode,
+      configuredSSE: browserMetrics.aphConfiguredSse,
+      runtimeSSE: browserMetrics.aphRuntimeSse,
+      ssePair: browserMetrics.aphSsePair,
+      runtimeState: browserMetrics.aphRuntimeState,
+      pressureLevel: browserMetrics.aphPressureLevel,
+      cameraMoving: browserMetrics.aphCameraMoving,
+      frameTimeEmaMs: browserMetrics.aphFrameTimeEmaMs,
+      rendering: {
+        profile: browserMetrics.aphRenderProfile,
+        maximumAttenuation: browserMetrics.aphMaximumAttenuation,
+        edlStrength: browserMetrics.aphEdlStrength,
+        edlRadius: browserMetrics.aphEdlRadius,
+      },
+      refinement: {
+        cycleId: browserMetrics.aphRefinementCycleId,
+        cycleStatus: browserMetrics.aphRefinementCycleStatus,
+        targetDepth: browserMetrics.aphTargetDepth,
+        targetStatus: browserMetrics.aphTargetStatus,
+        cycleCompletedAfterStopMs: browserMetrics.aphCycleCompletedAfterStopMs,
+        targetReachedAfterStopMs: browserMetrics.aphTargetReachedAfterStopMs,
+        warmupImmediateSuppressed: browserMetrics.aphWarmupImmediateSuppressed,
+        immediateDesiredLod: browserMetrics.aphImmediateDesiredLod,
+        firstRequestAfterStopMs: browserMetrics.aphFirstRequestAfterStopMs,
+        firstD5ActiveAfterStopMs: browserMetrics.aphFirstD5ActiveAfterStopMs,
+        firstD6ActiveAfterStopMs: browserMetrics.aphFirstD6ActiveAfterStopMs,
+        wasteAssessment: {
+          state: browserMetrics.aphWasteAssessmentState,
+          readyNeverSelectedUriCount: browserMetrics.aphReadyNeverSelectedUris,
+          definiteWasteUriCount: browserMetrics.aphDefiniteWasteUris,
+        },
+        lastClosedCycle: parseAdaptivePointHierarchyClosedCycle(browserMetrics.aphLastClosedCycle as string | number),
+        zeroSelectedFrames: browserMetrics.aphZeroSelectedFrames,
+        maxZeroSelectedFrames: browserMetrics.aphMaxZeroSelectedFrames,
+      },
+    },
     overviewTuning: {
       pointSizePx: browserMetrics.pointSizePx,
       pointSizeBand: browserMetrics.pointSizeBand,
@@ -1028,6 +1236,22 @@ function pageReloaded(): boolean {
   return nav?.type === 'reload';
 }
 
+function parseAdaptivePointHierarchyClosedCycle(value: string | number): Record<string, unknown> | null {
+  return parseAdaptivePointHierarchyJsonMetric(value);
+}
+
+function parseAdaptivePointHierarchyJsonMetric(value: string | number): Record<string, unknown> | null {
+  if (typeof value !== 'string' || value === '—') return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function formatBrowserMetric(metric: BrowserMetricName, value: string | number): string {
   if (typeof value === 'string') return value;
   if (metric.endsWith('Time')) return `${Math.round(value)} ms`;
@@ -1044,6 +1268,7 @@ function formatBrowserMetric(metric: BrowserMetricName, value: string | number):
   if (metric === 'cacheBytesRuntime') return formatBytes(value);
   if (metric === 'spatialLodFrameTimeEmaMs') return `${value.toFixed(1)} ms`;
   if (metric === 'spatialLodSkipLodLatchMs') return `${Math.round(value)} ms`;
+  if (metric === 'aphDetailFirstRequestDelayMs') return `${Math.round(value)} ms`;
   if (metric === 'spatialLodTargetPoints' || metric === 'spatialLodSelectedPoints') {
     return formatNumber(value);
   }
