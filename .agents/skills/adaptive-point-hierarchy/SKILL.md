@@ -170,7 +170,7 @@ Use the baseline when inspecting quality or tuning point size:
 
 - `aphController=simple`: fixed direct Cesium traversal. Use this for A/B tests. `advanced` enables adaptive SSE/pressure logic and is not a quality baseline.
 - `aphVrv=none`: no request-volume gate. `frontier-tight` is an optimisation experiment; do not compare it with `none` while simultaneously tuning quality.
-- `aphRender=raw`: attenuation and EDL are off. Any value other than `raw` selects the balanced render profile, which enables Cesium attenuation/EDL. It is not named `styled` in the current parser.
+- `aphRender=raw`: attenuation and EDL are off, and is the default when the parameter is omitted or invalid. `aphRender=balanced` explicitly enables Cesium attenuation/EDL. `styled` is not a recognised parser value.
 
 APH point-size UI is independent of render profile. `Far`, `Mid`, and `Near Point Size` are base px values over camera distance. `Point Size` is a 0.5–5× global multiplier applied to the whole curve. Use raw when judging source density or hole masking.
 

@@ -184,7 +184,7 @@ export function normalizeAdaptivePointHierarchySimpleSse(value: number | undefin
 }
 
 export function parseAdaptivePointHierarchyRenderProfile(value: string | null): AdaptivePointHierarchyRenderProfile {
-  return value === 'raw' ? 'raw' : 'balanced';
+  return value === 'balanced' ? 'balanced' : 'raw';
 }
 
 export function clampAdaptivePointHierarchyRenderValue(

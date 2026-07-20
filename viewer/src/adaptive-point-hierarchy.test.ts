@@ -278,9 +278,11 @@ describe('adaptive point hierarchy helpers', () => {
     expect(pressured.immediatelyLoadDesiredLevelOfDetail).toBe(false);
   });
 
-  it('parses conservative balanced and raw rendering profiles', () => {
+  it('defaults rendering profiles to raw and accepts balanced explicitly', () => {
     expect(parseAdaptivePointHierarchyRenderProfile('raw')).toBe('raw');
-    expect(parseAdaptivePointHierarchyRenderProfile('bad')).toBe('balanced');
+    expect(parseAdaptivePointHierarchyRenderProfile(null)).toBe('raw');
+    expect(parseAdaptivePointHierarchyRenderProfile('bad')).toBe('raw');
+    expect(parseAdaptivePointHierarchyRenderProfile('balanced')).toBe('balanced');
     expect(adaptivePointHierarchyRenderSettings('balanced', '2.2', '-1', '3')).toMatchObject({
       maximumAttenuation: 1.5,
       eyeDomeLightingStrength: 0.3,
