@@ -18,7 +18,7 @@ import { WebGPURenderer, PointsNodeMaterial } from 'three/webgpu'
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js'
 import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js'
 import {
-  Discard, Fn, If, clamp, float, instancedBufferAttribute, max, mix,
+  Discard, Fn, If, attribute, clamp, float, instancedBufferAttribute, max, mix,
   smoothstep, uniform, uv, vec2, vec3,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
@@ -247,19 +247,29 @@ export async function createEagleBench(
   // Hidden stress mass: the visible bird is too small to characterise a GPU,
   // so a growing block of points is processed alongside it but placed outside
   // the clip volume — full vertex cost, zero pixels.
+  //
+  // It uses the same instanced-quad primitive as the streamed tiles: a real
+  // point costs four vertices there, not one, so a stress mass of plain
+  // THREE.Points would overstate the device by roughly that factor.
   const stressPositions = new Float32Array(maxPoints * 3)
   for (let index = 0; index < maxPoints; index++) {
     stressPositions[index * 3] = 50 + (index % 97) * 0.01
     stressPositions[index * 3 + 1] = (index % 89) * 0.01
     stressPositions[index * 3 + 2] = -5 - (index % 83) * 0.01
   }
-  const stressGeometry = new THREE.BufferGeometry()
-  stressGeometry.setAttribute('position', new THREE.BufferAttribute(stressPositions, 3))
-  stressGeometry.setDrawRange(0, 0)
+  const stressGeometry = new THREE.InstancedBufferGeometry()
+  stressGeometry.setAttribute('position', new THREE.BufferAttribute(
+    new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]), 3,
+  ))
+  stressGeometry.setIndex([0, 1, 2, 0, 2, 3])
+  const stressInstance = new THREE.InstancedBufferAttribute(stressPositions, 3)
+  stressGeometry.setAttribute('benchPointPosition', stressInstance)
+  stressGeometry.instanceCount = 0
   const stressMaterial = new PointsNodeMaterial()
   stressMaterial.sizeAttenuation = false
   stressMaterial.sizeNode = float(cfg.pointSizePx)
-  const stressPoints = new THREE.Points(stressGeometry, stressMaterial)
+  stressMaterial.positionNode = attribute('benchPointPosition', 'vec3')
+  const stressPoints = new THREE.Mesh(stressGeometry, stressMaterial)
   stressPoints.frustumCulled = false
   scene.add(stressPoints)
 
@@ -327,7 +337,7 @@ export async function createEagleBench(
     stressCount = Math.round(currentLoadProgress * maxPoints)
 
     syncLayout()
-    stressGeometry.setDrawRange(0, stressCount)
+    stressGeometry.instanceCount = stressCount
     void renderer.renderAsync(scene, camera)
     if (document.visibilityState === 'visible' && lastFrameAt > 0 && stressCount > 0) {
       const frameMs = now - lastFrameAt

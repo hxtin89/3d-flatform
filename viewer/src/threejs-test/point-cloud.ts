@@ -1,10 +1,11 @@
-// Point-cloud material shared by every streamed tile. The geometry itself stays
+// Point-cloud material for the streamed tiles. The geometry itself stays
 // tile-owned so Three can release CPU and GPU resources as the camera moves.
+// Points are drawn as instanced quads — see createCloudMaterial for why.
 import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
-  Fn, If, Discard, uniform, attribute, positionWorld, texture3D,
-  vec3, vec4, float, mix, smoothstep, length, max,
+  Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
+  vec2, vec3, vec4, float, mix, smoothstep, length, max,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -74,16 +75,41 @@ export function maskDimNode(u: CloudUniforms, floor = 0): any {
   return (u.maskMode.greaterThan(1.5) as any).select(blended, float(1))
 }
 
+/** Names of the per-instance attributes each tile geometry must carry. Kept out
+ * of three's own `instancePosition`/`instanceColor` namespace so no InstancedMesh
+ * machinery can claim them. */
+export const POINT_POSITION_ATTRIBUTE = 'cloudPointPosition'
+export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
+
 /** Create a material for exactly one streamed tile. Never share it across tiles:
- * UnloadTilesPlugin disposes hidden tile materials independently. */
-export function createCloudMaterial(u: CloudUniforms): PointsNodeMaterial {
+ * UnloadTilesPlugin disposes hidden tile materials independently.
+ *
+ * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
+ * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
+ * backends pin a real point primitive to one pixel (WebGPU has no point-size
+ * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at
+ * a >1 device pixel ratio is smaller than a CSS pixel, which is what tore holes
+ * into the canopy. `colorItemSize` is 4 for RGBA tiles and 3 for RGB.
+ */
+export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): PointsNodeMaterial {
   const material = new PointsNodeMaterial()
   material.transparent = false
   material.depthWrite = true
   material.sizeAttenuation = false
   material.sizeNode = u.pointSize
+  // Drives positionLocal, so positionWorld below stays the point centre rather
+  // than a quad corner — the mask, cloud shadow and height grading keep working.
+  material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+
+  const pointColor = colorItemSize === 4
+    ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
+    : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
 
   material.colorNode = Fn(() => {
+    // Round dots instead of squares. The mask discard below already costs this
+    // material its early-z, so the extra rejection is effectively free.
+    If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
+
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
     const distance = length(enu.xy.sub(u.maskCenter))
 
@@ -107,7 +133,7 @@ export function createCloudMaterial(u: CloudUniforms): PointsNodeMaterial {
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
     // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    return (attribute('color', 'vec3') as any)
+    return pointColor
       .pow(2.2)
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)

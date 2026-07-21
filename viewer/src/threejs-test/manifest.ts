@@ -11,6 +11,11 @@ export interface GlobeManifest {
   /** One external Overview -> Explore -> Detail tree covering all manifest areas. */
   oneLodTreeDataset: string
   oneLodTreeTilesetFile: 'tileset-one-lod-tree.json'
+  /** Adaptive Point Hierarchy: one ~11-deep quadtree of ~75k-point nodes over the
+   * same ENU origin. Unlike the One LOD Tree it carries real density at close
+   * range — the published One LOD chain stops at the p02 overview band. */
+  adaptiveHierarchyDataset: string
+  adaptiveHierarchyTilesetFile: 'tileset.json'
   /** ENU-frame bbox used for the initial camera target. */
   areaBbox: number[] | null
   /** Combined ENU bbox used for the real survey centre. */
@@ -60,6 +65,8 @@ export async function fetchGlobeManifest(baseUrl: string, dataset: string): Prom
     enuOriginLonLat: m.enuOriginLonLat,
     oneLodTreeDataset: `${cleanDataset}/${cleanDataset}-one-lod-tree`,
     oneLodTreeTilesetFile: 'tileset-one-lod-tree.json',
+    adaptiveHierarchyDataset: `${cleanDataset}/${cleanDataset}-adaptive-point-hierarchy`,
+    adaptiveHierarchyTilesetFile: 'tileset.json',
     areaBbox: Array.isArray(defaultArea?.bbox) && defaultArea.bbox.length === 6 ? defaultArea.bbox : null,
     surveyBbox,
     areaVerticalSpan: Number.isFinite(areaVerticalSpan) ? areaVerticalSpan : null,

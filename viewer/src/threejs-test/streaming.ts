@@ -4,7 +4,9 @@
 import * as THREE from 'three'
 import { TilesRenderer } from '3d-tiles-renderer'
 import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
-import { createCloudMaterial, type CloudUniforms } from './point-cloud'
+import {
+  createCloudMaterial, POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
+} from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import { EXPERIENCE_CONFIG } from './config'
@@ -74,8 +76,12 @@ export function createStreamingCloud(opts: {
   errorTarget?: number
   limits?: Partial<StreamingLimits>
   debugVolume?: boolean
+  /** The Adaptive Point Hierarchy is one continuous quadtree without request
+   * volumes or density bands, so the One-LOD-Tree machinery must stay out of it. */
+  requestVolumes?: boolean
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
+  const useRequestVolumes = opts.requestVolumes !== false
   const limits = { ...DEFAULT_LIMITS, ...opts.limits }
 
   const tiles = new TilesRenderer(tilesetUrl)
@@ -93,11 +99,15 @@ export function createStreamingCloud(opts: {
 
   // The current 3DTilesRendererJS release ignores viewerRequestVolume. Without
   // this plugin p10 and p100 may refine together, defeating the One LOD Tree.
-  const requestVolumePlugin = new ViewerRequestVolumePlugin({
-    xyScale: EXPERIENCE_CONFIG.lod.requestVolumeXyScale,
-    debug: opts.debugVolume,
-  })
-  tiles.registerPlugin(requestVolumePlugin as any)
+  // The APH tilesets ship as `tileset-no-vrv.json` and carry none, so the plugin
+  // would only add traversal cost there.
+  const requestVolumePlugin = useRequestVolumes
+    ? new ViewerRequestVolumePlugin({
+      xyScale: EXPERIENCE_CONFIG.lod.requestVolumeXyScale,
+      debug: opts.debugVolume,
+    })
+    : null
+  if (requestVolumePlugin) tiles.registerPlugin(requestVolumePlugin as any)
 
   // Real mask culling: outside tiles are not fetched, refined or rendered.
   class FrustumMaskRegion extends SphereRegion {
@@ -127,19 +137,76 @@ export function createStreamingCloud(opts: {
   const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
   const failedTiles = new Set<string>()
 
+  // One camera-facing quad per point, instanced. The corner offsets live in the
+  // `position` attribute because that is what PointsNodeMaterial's sprite path
+  // scales by the point size; `uv` gives the round-dot cutout.
+  const QUAD_CORNERS = new Float32Array([
+    -0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
+  ])
+  const QUAD_UVS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+  const QUAD_INDICES = [0, 1, 2, 0, 2, 3]
+
+  /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
+   * the tile carries no usable position buffer. */
+  function buildPointQuads(source: THREE.Points): THREE.Mesh | null {
+    const position = source.geometry?.getAttribute('position')
+    if (!position) return null
+    const color = source.geometry.getAttribute('color')
+
+    const geometry = new THREE.InstancedBufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
+    geometry.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS, 2))
+    geometry.setIndex(QUAD_INDICES)
+    // The tile's own buffers are reused as-is — no copy, no format conversion.
+    // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
+    // vector via NodeBuilder.getTypeFromAttribute.
+    geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(
+      position.array, position.itemSize, position.normalized,
+    ))
+    if (color) {
+      geometry.setAttribute(POINT_COLOR_ATTRIBUTE, new THREE.InstancedBufferAttribute(
+        color.array, color.itemSize, color.normalized,
+      ))
+    }
+    geometry.instanceCount = position.count
+
+    const mesh = new THREE.Mesh(geometry, createCloudMaterial(uniforms, color?.itemSize ?? 3))
+    // A Mesh, not a Sprite: WebGPUUtils.getPrimitiveTopology only names a
+    // topology for isMesh, and Mesh avoids Sprite's own culling and raycasting.
+    mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
+    return mesh
+  }
+
   // Materials must be tile-owned. A shared material is unsafe with
   // UnloadTilesPlugin because hiding one tile disposes its material and would
   // invalidate every other tile that shared the same instance.
   tiles.addEventListener('load-model', ({ scene: model, tile, url }: any) => {
     let points = 0
+    const sources: THREE.Points[] = []
     model.traverse((object: any) => {
-      if (!object.isPoints) return
-      points += object.geometry?.attributes?.position?.count ?? 0
-      if (Array.isArray(object.material)) object.material.forEach((material: any) => material?.dispose?.())
-      else object.material?.dispose?.()
-      object.material = createCloudMaterial(uniforms)
-      object.frustumCulled = false // tile-level culling is handled by TilesRenderer
+      if (object.isPoints) sources.push(object)
     })
+    for (const source of sources) {
+      points += source.geometry?.getAttribute('position')?.count ?? 0
+      const mesh = buildPointQuads(source)
+      if (!mesh) continue
+
+      // TilesRenderer collected the tile's geometries and materials during
+      // parseTile, which runs before this event fires, so anything created here
+      // has to be registered for disposal by hand or it leaks on unload.
+      const engineData = tile?.engineData
+      if (Array.isArray(engineData?.geometry)) engineData.geometry.push(mesh.geometry)
+      if (Array.isArray(engineData?.materials)) engineData.materials.push(mesh.material)
+
+      // The quads hang under the original Points rather than replacing it: the
+      // PNTS loader hands back that Points object *as* the tile root, so at this
+      // point it still has no parent to swap it out of. Parenting also inherits
+      // the tile transform for free. The carrier itself draws nothing.
+      source.add(mesh)
+      source.geometry.setDrawRange(0, 0)
+      if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
+      else (source.material as any)?.dispose?.()
+    }
     const source = `${url ?? ''} ${tile?.content?.uri ?? ''} ${tile?.internal?.basePath ?? ''}`
     tileStats.set(tile, { points, density: densityBandForUri(source) })
   })
@@ -160,7 +227,8 @@ export function createStreamingCloud(opts: {
   return {
     tiles,
     group: tiles.group,
-    debugVolume: requestVolumePlugin.debugCounts,
+    debugVolume: requestVolumePlugin?.debugCounts
+      ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
       tiles.update()
     },
@@ -168,7 +236,7 @@ export function createStreamingCloud(opts: {
       tiles.errorTarget = value
     },
     setDensityCeiling(level: number) {
-      requestVolumePlugin.setDensityCeiling(level)
+      requestVolumePlugin?.setDensityCeiling(level)
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes

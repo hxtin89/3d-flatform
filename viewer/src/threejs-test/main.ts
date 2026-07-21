@@ -8,7 +8,7 @@ import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
-import { AdaptiveQualityController } from './adaptive-quality'
+import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
@@ -37,6 +37,11 @@ const folder = (import.meta.env.VITE_POINTCLOUD_TILES_FOLDER ?? 'pointcloud-tile
 const baseUrl = domain ? `https://${domain}/${folder}` : ''
 const MAPTILER_KEY = (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim()
 const dataset = params.get('dataset') ?? 'peru-b2-globe'
+/** Which published point tree to stream. `aph` is the Adaptive Point Hierarchy
+ * the Cesium reference viewer uses and the only one carrying real close-range
+ * density — the published One LOD chain stops at the p02 overview band.
+ * `?tree=one-lod` restores the old chain for an A/B comparison. */
+const pointTree: 'aph' | 'one-lod' = params.get('tree') === 'one-lod' ? 'one-lod' : 'aph'
 const forceWebGL = params.has('webgl')
 const groundSnap = !params.has('nosnap')
 const modelEditorEnabled = params.get('modelEditor') === '1'
@@ -245,9 +250,9 @@ function applyBenchPreset(): void {
     stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
     globe?.setMemoryBudget(48 * 1024 * 1024, 32 * 1024 * 1024)
     // Larger points keep the canopy readable at a lower pixel ratio.
-    uniforms.pointSize.value = 3
-    sizeEl.value = '3'
-    $('#sizev').textContent = '3'
+    pointSizeScale = 1.3
+    sizeEl.value = String(pointSizeScale)
+    applyPointSize()
   }
   renderer.setSize(window.innerWidth, window.innerHeight)
   globe?.setResolution()
@@ -320,8 +325,22 @@ const camera = new THREE.PerspectiveCamera(
   EXPERIENCE_CONFIG.atmosphere.maximumFarM,
 )
 const uniforms = createUniforms()
-const adaptiveQuality = new AdaptiveQualityController()
+const adaptiveQuality = new AdaptiveQualityController(pointTree === 'aph' ? APH_BAND_SSE : undefined)
 const fps = new Fps()
+
+/** Point size is a band base times a user multiplier, never an absolute value:
+ * a sparse overview needs fatter dots to close the canopy than a p100 close-up,
+ * and the slider must survive every band change. */
+let pointSizeScale = 1
+let pointSizeBand = EXPERIENCE_CONFIG.lod.bandPointSizePx.length - 1
+function applyPointSize(band = pointSizeBand): void {
+  pointSizeBand = band
+  const base = EXPERIENCE_CONFIG.lod.bandPointSizePx[band]
+    ?? EXPERIENCE_CONFIG.lod.bandPointSizePx[0]
+  const pixels = base * pointSizeScale
+  uniforms.pointSize.value = pixels
+  $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${pixels.toFixed(1)}px`
+}
 
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
@@ -856,8 +875,8 @@ document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button)
   button.addEventListener('click', () => setMaskMode(Number(button.dataset.mask)))
 })
 sizeEl.addEventListener('input', () => {
-  uniforms.pointSize.value = Number(sizeEl.value)
-  $('#sizev').textContent = sizeEl.value
+  pointSizeScale = Number(sizeEl.value)
+  applyPointSize()
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(
   reducedMotion
@@ -920,6 +939,7 @@ function updateStreaming(now: number): StreamingStats | null {
   // p100 tiles and buries a phone — so the ceiling is set from the same band.
   // While the loader is up, stay on the cheapest tier.
   stream.setDensityCeiling(bootLoading ? 0 : 2 - quality.band)
+  if (quality.band !== pointSizeBand) applyPointSize(quality.band)
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.update()
@@ -1124,7 +1144,16 @@ async function main(): Promise<void> {
     onDismissAim: dismissAimMode,
   })
   stream = createStreamingCloud({
-    tilesetUrl: `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`,
+    tilesetUrl: pointTree === 'aph'
+      ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
+      : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`,
+    requestVolumes: pointTree !== 'aph',
+    // The APH quadtree only pays off with residency to match: the Cesium
+    // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
+    // evict close-range nodes as fast as they arrive.
+    limits: pointTree === 'aph'
+      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
+      : undefined,
     camera,
     renderer,
     scene,

@@ -29,8 +29,21 @@ export const EXPERIENCE_CONFIG = {
     overviewSse: 256,
     exploreSse: 124,
     detailSse: 64,
+    // Same three bands against the Adaptive Point Hierarchy, whose nodes carry
+    // far more points. These match the Cesium reference ladder (far 16 /
+    // approach 8 / detail 4). Measured on desktop WebGPU: SSE 4 selects ~10M
+    // points at a held 60 fps, so the quad expansion three.js needs (WebGPU has
+    // no sized point primitive) still fits inside the frame budget. Weak devices
+    // are handled by the pressure controller, not by a coarser ladder here.
+    aphDetailSse: 4,
+    aphExploreSse: 8,
+    aphOverviewSse: 16,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
+    // Drawn point size in CSS pixels per band, coarse band last — same order as
+    // the SSE values above. Sparser bands need fatter points to close the
+    // canopy, mirroring the Cesium viewer's overviewBasePointSize (src/presets.ts).
+    bandPointSizePx: [1.5, 2.5, 3] as const,
     // Horizontal slack on the pipeline's viewer request volumes, in multiples
     // of the chunk footprint. 1 = hug the chunk exactly, which leaves gaps the
     // camera can sit in without ever opening p10/p100.
