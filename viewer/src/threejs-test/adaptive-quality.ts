@@ -1,3 +1,5 @@
+import { EXPERIENCE_CONFIG } from './config'
+
 export type DensityBand = 'Overview p02' | 'Explore p10' | 'Detail p100'
 
 export interface AdaptiveQualitySample {
@@ -13,53 +15,76 @@ export interface AdaptiveQualityState {
   pressure: number
 }
 
-// CPU/GPU caches are hard-bounded elsewhere. These are emergency residency
-// thresholds for currently visible points, not a desktop-vs-mobile budget.
-const TARGET_POINTS = 4_000_000
-const EMERGENCY_POINTS = 5_500_000
-const RECOVERY_POINTS = 3_500_000
+// Load is judged by frame time. Point counts are only a residency guard: a
+// desktop GPU draws 13M points at 120fps, so a low point ceiling here throttles
+// machines that are not under load at all.
+const HARD_POINTS = 24_000_000
 const TARGET_FPS = 58
 const MAX_SSE = 512
 
-/** Same camera bands as the One LOD Tree UX, expressed as ground range. */
-export function baseSseForRange(range: number): number {
-  if (!Number.isFinite(range) || range > 12_000) return 256
-  if (range > 2_500) return 124
-  return 64
-}
+const BAND_SSE = [
+  EXPERIENCE_CONFIG.lod.detailSse,
+  EXPERIENCE_CONFIG.lod.exploreSse,
+  EXPERIENCE_CONFIG.lod.overviewSse,
+]
+const BAND_EDGES = [
+  EXPERIENCE_CONFIG.lod.detailMaxHeightM,
+  EXPERIENCE_CONFIG.lod.exploreMaxHeightM,
+]
+const BAND_HYSTERESIS = EXPERIENCE_CONFIG.lod.bandHysteresis
 
 /**
- * Device-agnostic feedback controller. Every device gets the same UI and data
- * tree; slower hardware automatically trades refinement for stable frame time.
+ * Density is a pure function of camera distance. The controller additionally
+ * tracks a `pressure` value from frame time, which callers spend on the cheap
+ * knobs — vignette mask, parrot count, cloud quality, view distance — never on
+ * point density.
  */
 export class AdaptiveQualityController {
   private pressure = 1
   private pressureFloor = 1
   private lastUpdate = 0
   private sse = 256
+  private band = BAND_SSE.length - 1
 
-  /** Measured-device bias (loader benchmark): weak hardware starts and stays
-   * at a coarser refinement level instead of discovering it through jank. */
+  /** Sticky: a band is only left once the range is a clear margin past its
+   * edge, otherwise sitting on an edge oscillates the whole density level. */
+  private bandSse(range: number): number {
+    if (!Number.isFinite(range)) {
+      this.band = BAND_SSE.length - 1
+      return BAND_SSE[this.band]
+    }
+    while (this.band < BAND_EDGES.length && range > BAND_EDGES[this.band] * (1 + BAND_HYSTERESIS)) {
+      this.band++
+    }
+    while (this.band > 0 && range < BAND_EDGES[this.band - 1] * (1 - BAND_HYSTERESIS)) {
+      this.band--
+    }
+    return BAND_SSE[this.band]
+  }
+
+  /** Bias from the loader benchmark, so weak hardware starts with the cheap
+   * knobs already turned down instead of discovering its limits through jank. */
   setPressureFloor(floor: number): void {
     this.pressureFloor = Math.min(4, Math.max(1, floor))
     this.pressure = Math.max(this.pressure, this.pressureFloor)
   }
 
   update(sample: AdaptiveQualitySample): AdaptiveQualityState {
-    const baseSse = baseSseForRange(sample.cameraGroundRange)
+    const baseSse = this.bandSse(sample.cameraGroundRange)
 
     if (sample.now - this.lastUpdate >= 750) {
       this.lastUpdate = sample.now
-      if (sample.visiblePoints > EMERGENCY_POINTS || (sample.fps > 0 && sample.fps < 45)) {
+      const hasFps = sample.fps > 0
+      if ((hasFps && sample.fps < 45) || sample.visiblePoints > HARD_POINTS) {
         this.pressure = Math.min(4, this.pressure * 1.6)
-      } else if (sample.visiblePoints > TARGET_POINTS || (sample.fps > 0 && sample.fps < TARGET_FPS - 3)) {
+      } else if (hasFps && sample.fps < TARGET_FPS - 3) {
         this.pressure = Math.min(4, this.pressure * 1.25)
-      } else if (sample.visiblePoints < RECOVERY_POINTS && sample.fps >= TARGET_FPS) {
+      } else if (!hasFps || sample.fps >= TARGET_FPS) {
         this.pressure = Math.max(this.pressureFloor, this.pressure * 0.85)
       }
     }
 
-    this.sse = Math.min(MAX_SSE, Math.max(baseSse, baseSse * this.pressure))
+    this.sse = Math.min(MAX_SSE, baseSse)
     return { sse: this.sse, baseSse, pressure: this.pressure }
   }
 }

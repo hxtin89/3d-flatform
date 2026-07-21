@@ -27,6 +27,7 @@ import { createAudioLayer, type AudioLayer } from './audio-layer'
 import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-bench'
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
+import { createCameraFlight, type EnuOffset } from './camera-flight'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -39,6 +40,9 @@ const dataset = params.get('dataset') ?? 'peru-b2-globe'
 const forceWebGL = params.has('webgl')
 const groundSnap = !params.has('nosnap')
 const modelEditorEnabled = params.get('modelEditor') === '1'
+/** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
+ * camera can reach a side-on view and the cloud/map seam can be inspected. */
+const freeOrbit = params.has('freeorbit')
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
@@ -195,6 +199,10 @@ loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 /** Turn the loader benchmark into start settings: strong devices skip the
  * vignette trick and render full quality; weak ones start conservative so the
  * experience never dips below the target frame rate. Runtime guards remain. */
+/** The loader benchmark picks how much scenery the device can afford. Point
+ * density is not part of that bargain — it is fixed by camera distance — so the
+ * budget is spent on the vignette mask, pixel ratio, view distance, cloud and
+ * parrot detail instead. */
 function applyBenchPreset(): void {
   const measured = eagleBench?.result() ?? null
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
@@ -210,23 +218,30 @@ function applyBenchPreset(): void {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
     adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
-    // Generous residency: the default budgets sit below one full scene and
-    // cause visible unload/refetch holes after every camera move.
-    stream?.setMemoryBudget(256 * 1024 * 1024, 192 * 1024 * 1024)
+    atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
+    // A settled Detail p100 view measures ~220 MB. Budgets below that evict
+    // tiles the very next frame needs, producing continuous refetching.
+    stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
     globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
   } else if (preset === 'medium') {
     setMaskMode(2)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.1))
     adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
-    stream?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+    atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
+    stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
     globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
   } else {
     setMaskMode(2)
     renderer.setPixelRatio(1)
     adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
-    // Slightly larger points hide the coarser refinement level.
+    atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.constrained
+    // Previously left at the library default of 96 MB, which thrashes for the
+    // same reason, with less headroom to recover.
+    stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
+    globe?.setMemoryBudget(48 * 1024 * 1024, 32 * 1024 * 1024)
+    // Larger points keep the canopy readable at a lower pixel ratio.
     uniforms.pointSize.value = 3
     sizeEl.value = '3'
     $('#sizev').textContent = '3'
@@ -318,9 +333,18 @@ let cloudNoiseTexture: THREE.Data3DTexture | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
 let cameraGroundRange = Infinity
+/** Refinement distance. Kept apart from cameraGroundRange, which measures the
+ * screen-centre look-at point and runs to kilometres near the horizon. */
+let cameraCloudRange = Infinity
+/** Before the manifest lands the ENU frame is identity and areaMinZ is 0, so a
+ * height read from it comes out as 0 — the finest refinement of the whole
+ * survey, requested while the loader is still running. */
+let enuFrameReady = false
+let rangeDebug: Record<string, number> | null = null
 let graphicsFailed = false
 let cinematicFlightProgress = 1
 let atmosphereFar = camera.far
+let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
 let lastFieldTier: PerformanceTier | null = null
 let disposed = false
@@ -494,7 +518,7 @@ function setAimMode(active: boolean, announce = true): void {
 }
 
 function toggleAimMode(): void {
-  if (bootLoading || flight || !videoModalEl.hidden) return
+  if (bootLoading || cameraFlight.active || !videoModalEl.hidden) return
   setAimMode(!aimMode)
 }
 
@@ -557,7 +581,7 @@ function closeFieldVideo(resumeRenderer = true): void {
   videoModalEl.classList.remove('is-ready', 'is-playing')
   videoModalEl.hidden = true
   for (const element of modalBackgroundElements) element.inert = false
-  if (globe) globe.controls.enabled = !flight
+  if (globe) globe.controls.enabled = !cameraFlight.active
   if (resumeRenderer && wasOpen && !graphicsFailed) renderer.setAnimationLoop(loop)
   if (wasOpen) videoReturnFocus?.focus()
   videoReturnFocus = null
@@ -654,6 +678,7 @@ const vignetteEl = $<HTMLDivElement>('#vignette')
 const navigationCameraEnu = new THREE.Vector3()
 const navigationCameraWorld = new THREE.Vector3()
 
+const cloudRangeEnu = new THREE.Vector3()
 const zoomProbeEnu = new THREE.Vector3()
 const zoomProbeDirection = new THREE.Vector3()
 
@@ -661,6 +686,7 @@ const zoomProbeDirection = new THREE.Vector3()
  * and is not looking clearly upward — keyboard zoom-in would only glide
  * forward there instead of getting closer, so it is stopped. */
 function isZoomInBlocked(): boolean {
+  if (freeOrbit) return false
   worldToEnu(camera.position, zoomProbeEnu)
   if (zoomProbeEnu.z > navigationFloorZ + 2) return false
   const dx = zoomProbeEnu.x - cloudCenterEnu.x
@@ -672,7 +698,7 @@ function isZoomInBlocked(): boolean {
 
 /** Final local guard against touch inertia crossing the point-cloud floor. */
 function enforceNavigationBounds(): void {
-  if (!globe) return
+  if (!globe || freeOrbit) return
 
   worldToEnu(camera.position, navigationCameraEnu)
   const dx = navigationCameraEnu.x - cloudCenterEnu.x
@@ -709,6 +735,7 @@ function updateMaskFollow(): void {
   ndc.set(0, 0)
   ray.setFromCamera(ndc, camera)
 
+  let missedGround = false
   if (ray.ray.intersectPlane(groundPlane, hitEcef)) {
     cameraGroundRange = camera.position.distanceTo(hitEcef)
     hitEnu.copy(hitEcef).applyMatrix4(enuInverse)
@@ -718,8 +745,27 @@ function updateMaskFollow(): void {
     uniforms.maskCenter.value.copy(followEnu)
   } else {
     cameraGroundRange = camera.position.distanceTo(cloudCenterEcef)
-    if (!followInit) { maskWorldActive = false; return }
+    missedGround = true
   }
+
+  // Refinement distance: height over the cloud floor plus how far outside the
+  // survey footprint the camera sits. The screen-centre hit above is useless
+  // here — pointed at the horizon it swings by kilometres per degree of pitch.
+  if (enuFrameReady) {
+    worldToEnu(camera.position, cloudRangeEnu)
+    const altitude = Math.max(0, cloudRangeEnu.z - areaMinZ)
+    const outside = Math.max(
+      0,
+      Math.hypot(cloudRangeEnu.x - cloudCenterEnu.x, cloudRangeEnu.y - cloudCenterEnu.y)
+        - navigationBoundsRadius,
+    )
+    cameraCloudRange = Math.hypot(altitude, outside)
+    rangeDebug = { altitude, outside, range: cameraCloudRange, groundRange: cameraGroundRange }
+  } else {
+    cameraCloudRange = cameraGroundRange
+  }
+
+  if (missedGround && !followInit) { maskWorldActive = false; return }
 
   if (mode === 0) {
     maskWorldActive = false
@@ -754,9 +800,9 @@ function updateAtmosphere(now: number): void {
     ? cameraGroundRange
     : EXPERIENCE_CONFIG.atmosphere.fallbackRangeM
   const targetFar = THREE.MathUtils.clamp(
-    range * EXPERIENCE_CONFIG.atmosphere.farRangeMultiplier,
+    range * EXPERIENCE_CONFIG.atmosphere.farRangeMultiplier * atmosphereFarScale,
     EXPERIENCE_CONFIG.atmosphere.minimumFarM,
-    EXPERIENCE_CONFIG.atmosphere.maximumFarM,
+    EXPERIENCE_CONFIG.atmosphere.maximumFarM * atmosphereFarScale,
   )
   atmosphereFar = THREE.MathUtils.lerp(
     atmosphereFar,
@@ -771,32 +817,18 @@ function updateAtmosphere(now: number): void {
 }
 
 // ---------------------------------------------------------------- fly-to
-interface CameraFlight {
-  /** 'arc' sweeps along a Bézier and steers the gaze; 'dolly' zooms straight
-   * toward the target without ever changing the camera angle. */
-  mode: 'arc' | 'dolly'
-  start: THREE.Vector3
-  control1: THREE.Vector3
-  control2: THREE.Vector3
-  end: THREE.Vector3
-  /** ENU point the camera settles its gaze on during the final approach. */
-  lookTarget: THREE.Vector3
-  t0: number
-  duration: number
-  lastUpdate: number
-}
+const cameraFlight = createCameraFlight({
+  camera,
+  enuUp,
+  worldToEnu,
+  enuToWorld,
+  cloudCentre: () => cloudCenterEnu,
+  navigationFloorZ: () => navigationFloorZ,
+  setControlsEnabled: (enabled) => { if (globe) globe.controls.enabled = enabled },
+  onProgress: (progress) => { cinematicFlightProgress = progress },
+})
 
-let flight: CameraFlight | null = null
-const flightPositionEnu = new THREE.Vector3()
-const flightLookEnu = new THREE.Vector3()
-const flightPositionWorld = new THREE.Vector3()
-const flightLookWorld = new THREE.Vector3()
-// Camera.lookAt() uses the camera's -Z forward axis. A plain Object3D would use
-// +Z here and make the interpolated orientation turn away from the terrain.
-const flightOrientation = new THREE.PerspectiveCamera()
-type EnuOffset = readonly [number, number, number]
-
-function cloudOffsetPoint(offset: EnuOffset): THREE.Vector3 {
+function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
   return new THREE.Vector3(
     cloudCenterEnu.x + offset[0],
     cloudCenterEnu.y + offset[1],
@@ -804,124 +836,14 @@ function cloudOffsetPoint(offset: EnuOffset): THREE.Vector3 {
   )
 }
 
-function sampleFlightPath(activeFlight: CameraFlight, progress: number, target: THREE.Vector3): THREE.Vector3 {
-  const rawT = THREE.MathUtils.clamp(progress, 0, 1)
-  // One continuous curve: global smootherstep only eases the endpoints, never
-  // introduces the zero-velocity seam that the former two-stage path had.
-  const t = rawT * rawT * rawT * (rawT * (rawT * 6 - 15) + 10)
-  const inverse = 1 - t
-  return target.set(
-    inverse * inverse * inverse * activeFlight.start.x
-      + 3 * inverse * inverse * t * activeFlight.control1.x
-      + 3 * inverse * t * t * activeFlight.control2.x
-      + t * t * t * activeFlight.end.x,
-    inverse * inverse * inverse * activeFlight.start.y
-      + 3 * inverse * inverse * t * activeFlight.control1.y
-      + 3 * inverse * t * t * activeFlight.control2.y
-      + t * t * t * activeFlight.end.y,
-    inverse * inverse * inverse * activeFlight.start.z
-      + 3 * inverse * inverse * t * activeFlight.control1.z
-      + 3 * inverse * t * t * activeFlight.control2.z
-      + t * t * t * activeFlight.end.z,
-  )
-}
-
 function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false): void {
   setAimMode(false, false)
-  const end = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)
-  let start: THREE.Vector3
-  let control1: THREE.Vector3
-  let control2: THREE.Vector3
-
-  if (startFromOverview) {
-    start = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewOffsetM)
-    control1 = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewControl1OffsetM)
-    control2 = cloudOffsetPoint(EXPERIENCE_CONFIG.flight.overviewControl2OffsetM)
-  } else {
-    start = worldToEnu(camera.position)
-    const range = start.distanceTo(end)
-    control1 = start.clone().lerp(end, 0.28)
-    control1.x -= Math.min(10_000, range * 0.07)
-    control1.z = Math.max(control1.z, end.z + Math.min(16_000, range * 0.16))
-    control2 = start.clone().lerp(end, 0.72)
-    control2.x += Math.min(8_000, range * 0.055)
-    control2.z = Math.max(control2.z, end.z + Math.min(8_000, range * 0.075))
-  }
-
-  const started = performance.now()
-  flight = {
-    mode: 'arc',
-    start, control1, control2, end,
-    lookTarget: cloudCenterEnu.clone(),
-    t0: started, duration, lastUpdate: started,
-  }
-  cinematicFlightProgress = 0
-  camera.position.copy(enuToWorld(start, flightPositionWorld))
-  sampleFlightPath(flight, 0.025, flightLookEnu)
-  camera.up.copy(enuUp)
-  camera.lookAt(enuToWorld(flightLookEnu, flightLookWorld))
-  if (globe) globe.controls.enabled = false
+  cameraFlight.toCloud(duration, startFromOverview)
 }
 
-/** Straight dolly zoom toward an ENU point: double-clicks and marker clicks.
- * The camera angle never changes — it simply travels along the sight line and
- * stops endDistanceM short of the target (or at the navigation floor). */
 function flyToPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void {
   setAimMode(false, false)
-  const start = worldToEnu(camera.position)
-  const direction = targetEnu.clone().sub(start)
-  const distance = direction.length()
-  if (distance <= endDistanceM + 1) return
-  direction.divideScalar(distance)
-  let travel = distance - endDistanceM
-  // Cap travel along the ray so the end stays above the navigation floor —
-  // solving on the ray keeps the path perfectly straight (no z-clamp kink).
-  if (direction.z < -1e-6) {
-    travel = Math.min(travel, (navigationFloorZ - start.z) / direction.z)
-  }
-  if (travel <= 1) return
-  const end = start.clone().addScaledVector(direction, travel)
-  const started = performance.now()
-  flight = {
-    mode: 'dolly',
-    start,
-    control1: start.clone().lerp(end, 0.3),
-    control2: start.clone().lerp(end, 0.75),
-    end,
-    lookTarget: targetEnu.clone(),
-    t0: started, duration: durationMs, lastUpdate: started,
-  }
-  cinematicFlightProgress = 0
-  if (globe) globe.controls.enabled = false
-}
-
-function updateFlight(now: number): void {
-  if (!flight) return
-  const activeFlight = flight
-  const t = Math.min(1, (now - activeFlight.t0) / activeFlight.duration)
-  const elapsed = Math.min(48, Math.max(0, now - activeFlight.lastUpdate))
-  activeFlight.lastUpdate = now
-  cinematicFlightProgress = t
-  sampleFlightPath(activeFlight, t, flightPositionEnu)
-  camera.position.copy(enuToWorld(flightPositionEnu, flightPositionWorld))
-
-  if (activeFlight.mode === 'arc') {
-    sampleFlightPath(activeFlight, Math.min(1, t + 0.022), flightLookEnu)
-    flightLookEnu.lerp(activeFlight.lookTarget, smooth01(0.56, 1, t))
-    camera.up.copy(enuUp)
-    enuToWorld(flightLookEnu, flightLookWorld)
-    flightOrientation.position.copy(camera.position)
-    flightOrientation.up.copy(enuUp)
-    flightOrientation.lookAt(flightLookWorld)
-    camera.quaternion.slerp(flightOrientation.quaternion, 1 - Math.exp(-elapsed / 85))
-    if (t >= 1) camera.quaternion.copy(flightOrientation.quaternion)
-  }
-  // Dolly flights never touch the orientation — that is their whole point.
-
-  if (t >= 1) {
-    flight = null
-    if (globe) globe.controls.enabled = true
-  }
+  cameraFlight.toPoint(targetEnu, endDistanceM, durationMs)
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -944,7 +866,7 @@ $('#flyTo').addEventListener('click', () => flyToCloud(
 // only — every UI overlay sits above it, so label clicks can never misfire.
 const dblClickNdc = new THREE.Vector2()
 const onCanvasDblClick = (event: MouseEvent) => {
-  if (bootLoading || flight || aimMode || !videoModalEl.hidden || !globe) return
+  if (bootLoading || cameraFlight.active || aimMode || !videoModalEl.hidden || !globe) return
   dblClickNdc.set(
     (event.clientX / window.innerWidth) * 2 - 1,
     -(event.clientY / window.innerHeight) * 2 + 1,
@@ -981,17 +903,19 @@ function updateStreaming(now: number): StreamingStats | null {
     now,
     fps: fps.fps,
     visiblePoints: lastStreamStats?.points ?? 0,
-    cameraGroundRange,
+    cameraGroundRange: cameraCloudRange,
   })
-  // Hold a coarse refinement floor while the cinematic camera is moving. The
-  // near tiles were already warmed behind the loader, so this prevents flight-
-  // time decode/upload spikes without changing the final visual quality.
-  const flightSse = flight ? Math.max(quality.sse, 256) : quality.sse
-  if (Math.abs(flightSse - sseAuto) > 0.25) {
-    sseAuto = flightSse
+  const targetSse = bootLoading
+    ? Math.max(quality.sse, EXPERIENCE_CONFIG.lod.bootSse)
+    : quality.sse
+  if (Math.abs(targetSse - sseAuto) > 0.25) {
+    sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
   }
-  stream.setQualityPressure(flight ? Math.max(quality.pressure, 1.6) : quality.pressure)
+  // Full density is always permitted. Passing frame-rate pressure here caps the
+  // request-volume density ceiling; the medium preset's floor of 1.4 sits above
+  // the plugin's 1.25 threshold, which barred Detail p100 outright.
+  stream.setQualityPressure(1)
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.update()
@@ -1030,11 +954,11 @@ function updateHud(stats: StreamingStats | null): void {
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
-  updateFlight(now)
+  cameraFlight.update(now)
   keyboardNavigation?.update(
     now,
     cameraGroundRange,
-    !bootLoading && !flight && videoModalEl.hidden,
+    !bootLoading && !cameraFlight.active && videoModalEl.hidden,
     isZoomInBlocked(),
   )
   globe?.update(enforceNavigationBounds)
@@ -1046,7 +970,7 @@ function loop(now: number): void {
     camera,
     cameraGroundRange,
     fps.fps,
-    !bootLoading && !flight && videoModalEl.hidden,
+    !bootLoading && !cameraFlight.active && videoModalEl.hidden,
   )
   if (daylightState) {
     updateTimeControls(daylightState)
@@ -1116,7 +1040,11 @@ async function main(): Promise<void> {
 
   if (manifest.areaBbox) {
     const [, , minZ] = manifest.areaBbox
-    zOffset = groundSnap ? -minZ : 0
+    // Imagery is draped on the bare ellipsoid, so ground level is ellipsoidal
+    // height 0. Dropping by the bbox floor alone lands the cloud on the ENU
+    // origin, which itself sits enuOriginLonLat[2] above that — hence both.
+    const originHeight = manifest.enuOriginLonLat?.[2] ?? 0
+    zOffset = groundSnap ? -(minZ + originHeight) : 0
     areaMinZ = minZ
     // The ENU AABB is tilted and therefore overstates vertical height. The
     // source Z span reflects the actual cloud thickness (about 74 m for Peru).
@@ -1147,15 +1075,20 @@ async function main(): Promise<void> {
   uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
   const planePoint = enuToWorld(new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40))
   groundPlane.setFromNormalAndCoplanarPoint(enuUp, planePoint)
+  enuFrameReady = true
 
   globe = createGlobe({
     renderer: renderer as any,
     camera,
     scene,
     maptilerKey: MAPTILER_KEY,
-    cameraClearance: navigationClearance,
+    cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
   })
+  if (freeOrbit) {
+    globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
+    globe.controls.minDistance = 1
+  }
   keyboardNavigation = createKeyboardNavigation({
     camera,
     controls: globe.controls,
@@ -1177,7 +1110,13 @@ async function main(): Promise<void> {
   })
   stream.group.position.copy(enuUp).multiplyScalar(zOffset)
   // Debug handle for streaming diagnosis in the console.
-  ;(window as any).__wild = { stream, camera, get flight() { return flight }, get sse() { return sseAuto } }
+  ;(window as any).__wild = {
+    stream,
+    camera,
+    get flight() { return cameraFlight.active },
+    get sse() { return sseAuto },
+    get range() { return rangeDebug },
+  }
 
   environmentLayer = createEnvironmentLayer({
     scene,
@@ -1228,7 +1167,7 @@ async function main(): Promise<void> {
   // Bootstrap close enough to request real point tiles. The fullscreen loader
   // conceals this staging position; once both data layers are visible we jump
   // to the overview and begin the user-facing flight.
-  camera.position.copy(enuToWorld(cloudOffsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)))
+  camera.position.copy(enuToWorld(cloudOffsetEnu(EXPERIENCE_CONFIG.flight.destinationOffsetM)))
   camera.up.copy(enuUp)
   camera.lookAt(cloudCenterEcef)
 

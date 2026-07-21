@@ -17,6 +17,27 @@ export const EXPERIENCE_CONFIG = {
     markerApproachDistanceM: 320,
     markerFlightDurationMs: 2_600,
   },
+  lod: {
+    // Height over the point-cloud floor at which each density band takes over.
+    // Distance alone decides density; frame rate is paid for elsewhere (vignette
+    // mask, parrot count, cloud quality).
+    // Must exceed navigation.minimumClearanceM plus the dataset's vertical
+    // span: the zoom stop parks the camera 220-300 m up, so a lower threshold
+    // here is unreachable and the finest band would never engage.
+    detailMaxHeightM: 400,
+    exploreMaxHeightM: 2_500,
+    // Screen-space error target per band, coarse to fine.
+    overviewSse: 256,
+    exploreSse: 124,
+    detailSse: 64,
+    // Margin a band keeps past its edge, so drift cannot flip the level.
+    bandHysteresis: 0.15,
+    // While the fullscreen loader is up the camera already sits at its staging
+    // position inside the detail band. Nothing of it is visible, so refinement
+    // is held coarse until boot completes — otherwise the loader waits on tiles
+    // nobody sees.
+    bootSse: 256,
+  },
   navigation: {
     // Clearance grows with the dataset's measured vertical span.
     minimumClearanceM: 220,
@@ -144,19 +165,21 @@ export const EXPERIENCE_CONFIG = {
   eagleBench: {
     // Loader eagle doubles as a point-rendering benchmark: density follows the
     // load progress, frame times are sampled, and the result picks the start
-    // preset so the device never drops below the target frame rate.
+    // preset. The preset must hold the target frame rate while the scene runs
+    // at full Detail p100 in motion, since density is no longer reduced — so
+    // the bars sit higher than when the throttle could take points away.
     maxPoints: 2_500_000,
     maxPointsMobile: 900_000,
     targetFps: 60,
     // Highest density bucket that still holds ~target fps, as a fraction of
     // maxPoints: above strongFraction → strong, above mediumFraction → medium.
     strongFraction: 0.95,
-    mediumFraction: 0.4,
+    mediumFraction: 0.5,
     // Absolute proof-of-throughput gate for the strong preset: the stress mass
     // is clipped (vertex-only), so passing the mobile max of 900k points says
     // nothing about the fragment-bound real scene. Strong — and with it "no
     // vignette" — requires demonstrated desktop-class throughput.
-    strongMinPoints: 2_000_000,
+    strongMinPoints: 2_400_000,
     minSamples: 60,
     pointSizePx: 2,
   },
@@ -196,6 +219,10 @@ export const EXPERIENCE_CONFIG = {
     // the globe's horizon edge flicker against the sky like z-fighting.
     updateIntervalMs: 0,
     distanceSmoothing: 0.06,
+    // Since density is never reduced, weaker devices buy their frames by
+    // shortening the view instead: the far plane shrinks and the fog closes in,
+    // which culls distant tiles and shrinks the drawn set.
+    farScaleByPreset: { strong: 1, medium: 0.72, constrained: 0.5 },
   },
   rain: {
     dryDurationMs: 10_000,
