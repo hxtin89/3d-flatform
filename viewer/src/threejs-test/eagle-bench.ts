@@ -365,7 +365,7 @@ export async function createEagleBench(
       let preset: BenchPreset | null = null
       if (totalSamples >= cfg.minSamples) {
         const fraction = pointsAtTarget / maxPoints
-        preset = fraction >= cfg.strongFraction
+        preset = fraction >= cfg.strongFraction && pointsAtTarget >= cfg.strongMinPoints
           ? 'strong'
           : fraction >= cfg.mediumFraction ? 'medium' : 'constrained'
       }

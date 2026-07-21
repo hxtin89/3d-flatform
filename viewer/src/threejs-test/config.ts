@@ -152,6 +152,11 @@ export const EXPERIENCE_CONFIG = {
     // maxPoints: above strongFraction → strong, above mediumFraction → medium.
     strongFraction: 0.95,
     mediumFraction: 0.4,
+    // Absolute proof-of-throughput gate for the strong preset: the stress mass
+    // is clipped (vertex-only), so passing the mobile max of 900k points says
+    // nothing about the fragment-bound real scene. Strong — and with it "no
+    // vignette" — requires demonstrated desktop-class throughput.
+    strongMinPoints: 2_000_000,
     minSamples: 60,
     pointSizePx: 2,
   },
