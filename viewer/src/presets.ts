@@ -87,8 +87,8 @@ export function applyPreset(
   const preset = options.variant === 'globe'
     ? GLOBE_PRESETS[presetName] ?? PRESETS[presetName]
     : PRESETS[presetName];
-    console.log('presetName', presetName);
-    console.log('preset', preset);
+  console.log('presetName', presetName);
+  console.log('preset', preset);
   const maximumScreenSpaceError = overrides.maximumScreenSpaceError ?? preset.maximumScreenSpaceError;
 
   tileset.maximumScreenSpaceError = maximumScreenSpaceError;
@@ -122,9 +122,9 @@ export type OverviewPointSizeBand = 'near' | 'medium' | 'far';
 export const OVERVIEW_CACHE_BYTES = 512 * 1024 * 1024;
 export const OVERVIEW_CACHE_OVERFLOW_BYTES = 256 * 1024 * 1024;
 export const OVERVIEW_POINT_SIZE_SCALE_MIN = 0.5;
-export const OVERVIEW_POINT_SIZE_SCALE_MAX = 2;
+export const OVERVIEW_POINT_SIZE_SCALE_MAX = 5;
 export const OVERVIEW_POINT_SIZE_SCALE_STEP = 0.25;
-export const OVERVIEW_POINT_SIZE_SCALE_DEFAULT = 1; // default 0.5 px in local mode point size
+export const OVERVIEW_POINT_SIZE_SCALE_DEFAULT = 1; // neutral 1× multiplier; APH far size defaults to 2 px
 export const OVERVIEW_POINT_SIZE_PX_MIN = 0.5;
 export const OVERVIEW_POINT_SIZE_PX_MAX = 6;
 

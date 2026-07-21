@@ -2,6 +2,9 @@
 import './style.css';
 import {
   DATASET,
+  ADAPTIVE_POINT_HIERARCHY_CONTROLLER,
+  ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0,
+  ADAPTIVE_POINT_HIERARCHY_VRV,
   LOD_MODE,
   TILE_CONFIG,
   TILE_SOURCE,
@@ -25,8 +28,15 @@ import {
   initControlsPanelToggle,
   initDetailSseSelect,
   initOverviewPointSizeSlider,
+  initAdaptivePointHierarchyTuning,
+  initAdaptivePointHierarchyPointSizeTuning,
+  initAdaptivePointHierarchySimpleSse,
   setOverviewPointSizeScale,
   setOverviewPointSizeAvailability,
+  setAdaptivePointHierarchyTuning,
+  setAdaptivePointHierarchyPointSizeTuning,
+  setAdaptivePointHierarchySimpleSse,
+  setAdaptivePointHierarchyControllerMode,
   isContextLayerEnabled,
   setAreaOptions,
   setAreaDetectionStatus,
@@ -48,6 +58,7 @@ import {
   reloadDatasetReport,
   resetBrowserMetrics,
   setOverviewSseValidation,
+  updateSpatialLodActiveTileSamples,
   useRuntimeOnlyDatasetReport,
   type BrowserMetricName,
 } from './report';
@@ -67,12 +78,24 @@ import {
   oneLodTreeDataset,
   oneLodTreeSse,
 } from './one-lod-tree';
+import {
+  SPATIAL_LOD_TILESET_FILE,
+  spatialLodDataset,
+  type SpatialLodLevelStats,
+} from './spatial-lod';
+import {
+  adaptivePointHierarchyDataset,
+  adaptivePointHierarchyTilesetFile,
+  formatAdaptivePointHierarchyDepthStats,
+  type AdaptivePointHierarchyDepthStats,
+} from './adaptive-point-hierarchy';
 
 setDatasetLabel(DATASET);
 setSourceLabel(TILE_SOURCE);
 setServerUrl(TILE_CONFIG.baseUrl || 'CloudFront not configured');
 setPanelLodMode(LOD_MODE);
-setReportVariant(LOD_MODE === 'one-lod-tree' ? 'runtime' : 'dataset');
+setAdaptivePointHierarchyControllerMode(ADAPTIVE_POINT_HIERARCHY_CONTROLLER);
+setReportVariant(LOD_MODE === 'manual' ? 'dataset' : 'runtime');
 initDatasetReport();
 
 let areaManifest: AreaManifest | null = null;
@@ -80,6 +103,21 @@ let currentArea: AreaManifestEntry | null = null;
 let currentResolved: ResolvedDataset = resolveDataset(DATASET, 'low', null, null);
 let preDetailCameraSnapshot: CameraSnapshot | null = null;
 let contextLayerEnabled = false;
+let spatialLodLevelStats: SpatialLodLevelStats | null = { z0: 0, z1: 0, z2: 0, z3: 0, z4: 0 };
+let adaptivePointHierarchyDepthStats: AdaptivePointHierarchyDepthStats | null = null;
+
+function renderSpatialLodStatus(): void {
+  if (LOD_MODE !== 'spatial-lod') return;
+  const sse = viewer.getSSE();
+  if (spatialLodLevelStats === null) {
+    setAreaDetectionStatus(`Spatial LOD · SSE ${sse} · z-levels: —`);
+    return;
+  }
+  const s = spatialLodLevelStats;
+  setAreaDetectionStatus(
+    `Spatial LOD · SSE ${sse} · z0=${s.z0} z1=${s.z1} z2=${s.z2} z3=${s.z3} z4=${s.z4}`
+  );
+}
 
 type CurrentViewDetection = {
   area: AreaManifestEntry;
@@ -111,10 +149,13 @@ const viewer = new PointCloudViewer('cesium-container', {
       sse: viewer.getSSE(),
       memory: viewer.getCacheMB(),
     });
-    const pointSizeAvailable = LOD_MODE === 'one-lod-tree' || preset === 'low';
+    const pointSizeAvailable = LOD_MODE === 'one-lod-tree' || LOD_MODE === 'adaptive-point-hierarchy' || (LOD_MODE === 'manual' && preset === 'low');
+    const pointSizeDisabledLabel = LOD_MODE === 'spatial-lod'
+      ? 'Runtime hierarchy mode'
+      : 'Available in Overview only';
     setOverviewPointSizeAvailability(
       pointSizeAvailable,
-      pointSizeAvailable ? '' : 'Available in Overview only'
+      pointSizeAvailable ? '' : pointSizeDisabledLabel
     );
     if (pointSizeAvailable) setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   },
@@ -127,6 +168,19 @@ const viewer = new PointCloudViewer('cesium-container', {
   onInteraction: () => {
     markInteraction();
   },
+  onSpatialLodLevelStats: (stats: SpatialLodLevelStats | null, _active: number | string) => {
+    spatialLodLevelStats = stats;
+    renderSpatialLodStatus();
+  },
+  onSpatialLodActiveTileSamples: (samples) => {
+    updateSpatialLodActiveTileSamples(samples);
+  },
+  onAdaptivePointHierarchyDepthStats: (stats) => {
+    adaptivePointHierarchyDepthStats = stats;
+    setAreaDetectionStatus(
+      `Adaptive Point Hierarchy · SSE ${viewer.getSSE()} · ${formatAdaptivePointHierarchyDepthStats(stats)}`
+    );
+  },
 });
 
 // Wire up UI controls
@@ -135,6 +189,10 @@ initPresetButtons((preset: PresetName) => {
     applyOneLodTreePreset(preset);
     return;
   }
+  if (LOD_MODE === 'spatial-lod') {
+    return;
+  }
+  if (LOD_MODE === 'adaptive-point-hierarchy') return;
   applyMode(preset, { detectCurrentViewForDetail: preset === 'high' }).catch((err) => {
     console.error('[Main] Failed to switch mode:', err);
     setStatus('error', `Mode switch failed: ${err.message}`);
@@ -169,7 +227,7 @@ initContextLayerToggle((enabled: boolean) => {
 });
 
 initDetailSseSelect((sse: number) => {
-  if (LOD_MODE === 'one-lod-tree') return;
+  if (LOD_MODE !== 'manual') return;
   viewer.setDetailSseOverride(sse);
   updateStats({
     sse: viewer.getSSE(),
@@ -180,6 +238,26 @@ initDetailSseSelect((sse: number) => {
 initOverviewPointSizeSlider((scale: number) => {
   viewer.setOverviewPointSizeScale(scale);
   setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
+});
+
+initAdaptivePointHierarchyPointSizeTuning((tuning) => {
+  if (LOD_MODE !== 'adaptive-point-hierarchy') return;
+  const normalized = viewer.setAdaptivePointHierarchyPointSizeTuning(tuning);
+  setAdaptivePointHierarchyPointSizeTuning(normalized);
+});
+
+initAdaptivePointHierarchyTuning((tuning) => {
+  if (LOD_MODE !== 'adaptive-point-hierarchy') return;
+  const normalized = viewer.setAdaptivePointHierarchyTuning(tuning);
+  setAdaptivePointHierarchyTuning(normalized);
+  updateStats({ sse: viewer.getSSE(), memory: viewer.getCacheMB() });
+});
+
+initAdaptivePointHierarchySimpleSse((sse) => {
+  if (LOD_MODE !== 'adaptive-point-hierarchy' || ADAPTIVE_POINT_HIERARCHY_CONTROLLER !== 'simple') return;
+  const normalized = viewer.setAdaptivePointHierarchySimpleSse(sse);
+  setAdaptivePointHierarchySimpleSse(normalized);
+  updateStats({ sse: viewer.getSSE(), memory: viewer.getCacheMB() });
 });
 
 initFlyHomeButton(() => {
@@ -199,6 +277,14 @@ bootstrap().catch((err) => {
 async function bootstrap(): Promise<void> {
   if (LOD_MODE === 'one-lod-tree') {
     await bootstrapOneLodTree();
+    return;
+  }
+  if (LOD_MODE === 'spatial-lod') {
+    await bootstrapSpatialLod();
+    return;
+  }
+  if (LOD_MODE === 'adaptive-point-hierarchy') {
+    await bootstrapAdaptivePointHierarchy();
     return;
   }
   try {
@@ -248,6 +334,7 @@ async function bootstrapOneLodTree(): Promise<void> {
   setUseCurrentViewAvailability(false, 'Single-tree mode');
   setContextLayerAvailability(false, 'Single-tree mode');
   setOverviewPointSizeAvailability(true, '');
+  setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
   setPresetAvailability('low', true, `Single tree · SSE ${oneLodTreeSse('low')}`);
   setPresetAvailability('medium', true, `Single tree · SSE ${oneLodTreeSse('medium')}`);
   setPresetAvailability('high', true, `Single tree · SSE ${oneLodTreeSse('high')}`);
@@ -280,6 +367,169 @@ function applyOneLodTreePreset(preset: PresetName): void {
   });
   setAreaDetectionStatus(
     `One LOD Tree: ${modeForPreset(preset)} render budget · SSE ${oneLodTreeSse(preset)}`
+  );
+}
+
+async function bootstrapSpatialLod(): Promise<void> {
+  const resolvedDataset = spatialLodDataset(DATASET);
+  currentResolved = {
+    logicalDataset: DATASET,
+    resolvedDataset,
+    selectedAreaId: null,
+    modeStatus: 'ready',
+    modeStatusLabel: 'spatial-lod tree',
+    sourceChunkId: null,
+    contextDataset: null,
+    contextStatus: null,
+    contextStatusLabel: null,
+    contextExcludedAreaId: null,
+    contextExcludedSourceChunkId: null,
+  };
+
+  setDatasetLabel(resolvedDataset);
+  setReportDatasetContext(currentResolved);
+  useRuntimeOnlyDatasetReport();
+
+  // Area manifest is metadata + camera navigation only.
+  try {
+    areaManifest = await fetchAreaManifest(DATASET);
+  } catch (err) {
+    console.warn('[Main] Failed to load area manifest for spatial-lod:', err);
+    areaManifest = null;
+  }
+  currentArea = selectedArea(areaManifest, areaManifest?.defaultAreaId ?? null);
+  if (currentArea) {
+    currentResolved = { ...currentResolved, selectedAreaId: currentArea.areaId };
+    setReportDatasetContext(currentResolved);
+  }
+  if (areaManifest) {
+    setAreaOptions(
+      areaManifest.areas.map((area) => ({ areaId: area.areaId, label: area.label })),
+      currentArea?.areaId ?? null
+    );
+    setUseCurrentViewAvailability(areaManifest.areas.length > 0, 'Area manifest is not ready yet.');
+  } else {
+    setAreaOptions([], null);
+    setUseCurrentViewAvailability(false, 'Area manifest is not ready yet.');
+  }
+
+  // Spatial LOD is one adaptive runtime: z0/p001 bootstraps; z1-z4 refine by budget.
+  setContextLayerAvailability(false, 'Spatial LOD mode');
+  setOverviewPointSizeAvailability(false, 'Spatial LOD mode');
+  const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
+  if (detailSseSelect) detailSseSelect.disabled = true;
+  setAreaDetectionStatus('Spatial LOD: adaptive point-budget refinement');
+
+  resetBrowserMetrics();
+  updateBrowserMetric('framingMode', 'flyTo');
+  await viewer.loadSpatialLod(resolvedDataset, SPATIAL_LOD_TILESET_FILE);
+  useRuntimeOnlyDatasetReport();
+  setActivePreset('low');
+  updateReportMode('low');
+  updateBrowserMetric('focusEffectiveSSE', viewer.getSSE());
+  updateStats({
+    sse: viewer.getSSE(),
+    memory: viewer.getCacheMB(),
+    tiles: 0,
+  });
+  renderSpatialLodStatus();
+}
+
+async function bootstrapAdaptivePointHierarchy(): Promise<void> {
+  const resolvedDataset = adaptivePointHierarchyDataset(DATASET);
+  const tilesetFile = adaptivePointHierarchyTilesetFile(
+    ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0,
+    ADAPTIVE_POINT_HIERARCHY_VRV
+  );
+  currentResolved = {
+    logicalDataset: DATASET,
+    resolvedDataset,
+    selectedAreaId: ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0,
+    modeStatus: 'ready',
+    modeStatusLabel: ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0 ? 'z0 preview' : 'full hierarchy',
+    sourceChunkId: null,
+    contextDataset: null,
+    contextStatus: null,
+    contextStatusLabel: null,
+    contextExcludedAreaId: null,
+    contextExcludedSourceChunkId: null,
+  };
+
+  setDatasetLabel(resolvedDataset);
+  setReportDatasetContext(currentResolved);
+  useRuntimeOnlyDatasetReport();
+  setAreaOptions([], null);
+  setUseCurrentViewAvailability(false, 'Adaptive Point Hierarchy preview');
+  setContextLayerAvailability(false, 'Adaptive Point Hierarchy mode');
+  setOverviewPointSizeAvailability(true, '');
+  setOverviewPointSizeScale(viewer.getOverviewPointSizeScale());
+  setAdaptivePointHierarchyPointSizeTuning(viewer.getAdaptivePointHierarchyPointSizeTuning());
+  if (ADAPTIVE_POINT_HIERARCHY_CONTROLLER === 'advanced') {
+    setAdaptivePointHierarchyTuning(viewer.getAdaptivePointHierarchyTuning());
+  } else {
+    setAdaptivePointHierarchySimpleSse(viewer.getAdaptivePointHierarchySimpleSse());
+  }
+  setPresetAvailability(
+    'low',
+    true,
+    `Adaptive tree · ${ADAPTIVE_POINT_HIERARCHY_CONTROLLER} · VRV ${ADAPTIVE_POINT_HIERARCHY_VRV}`
+  );
+  setPresetAvailability('medium', false, 'Adaptive Point Hierarchy uses one runtime budget');
+  setPresetAvailability('high', false, 'Adaptive Point Hierarchy uses one runtime budget');
+  const detailSseSelect = document.getElementById('select-detail-sse') as HTMLSelectElement | null;
+  if (detailSseSelect) detailSseSelect.disabled = true;
+  const preview = ADAPTIVE_POINT_HIERARCHY_PREVIEW_Z0 ?? 'full dataset';
+  setAreaDetectionStatus(
+    `Adaptive Point Hierarchy: ${ADAPTIVE_POINT_HIERARCHY_CONTROLLER} · loading ${preview} · VRV ${ADAPTIVE_POINT_HIERARCHY_VRV}`
+  );
+
+  resetBrowserMetrics();
+  updateBrowserMetric('framingMode', 'flyTo');
+  await viewer.loadAdaptivePointHierarchy(resolvedDataset, tilesetFile);
+  useRuntimeOnlyDatasetReport();
+  setActivePreset('low');
+  updateReportMode('low');
+  if (ADAPTIVE_POINT_HIERARCHY_CONTROLLER === 'advanced') {
+    setAdaptivePointHierarchyTuning(viewer.getAdaptivePointHierarchyTuning());
+  } else {
+    setAdaptivePointHierarchySimpleSse(viewer.getAdaptivePointHierarchySimpleSse());
+  }
+  updateStats({ sse: viewer.getSSE(), memory: viewer.getCacheMB(), tiles: 0 });
+  if (adaptivePointHierarchyDepthStats) {
+    setAreaDetectionStatus(
+      `Adaptive Point Hierarchy · ${formatAdaptivePointHierarchyDepthStats(adaptivePointHierarchyDepthStats)}`
+    );
+  }
+}
+
+/** Area selection in spatial-lod mode only flies the camera; it never reloads. */
+function flyToSpatialArea(area: AreaManifestEntry | null): void {
+  if (!area || !areaManifest) return;
+  const transform = areaManifest.rootTransform;
+  if (!Array.isArray(transform) || transform.length !== 16) {
+    setAreaDetectionStatus(`Spatial LOD: ${areaLabel(area)} (no ENU transform — flying home)`);
+    viewer.flyHome();
+    return;
+  }
+  viewer.flyToEnuBBox(area.bbox, transform);
+  setAreaDetectionStatus(`Spatial LOD: flew to ${areaLabel(area)}`);
+}
+
+/** In spatial-lod mode, "Use current view" only updates Area metadata. */
+function useCurrentViewSpatial(preset: PresetName, previousAreaId: string | null): void {
+  if (!areaManifest) {
+    setAreaDetectionStatus('Area manifest is not ready yet.');
+    return;
+  }
+  const detected = detectCurrentViewArea(preset);
+  if (!detected?.area) return;
+  const area = detected.area;
+  currentArea = area;
+  setSelectedAreaOption(area.areaId);
+  currentResolved = { ...currentResolved, selectedAreaId: area.areaId };
+  setReportDatasetContext(currentResolved);
+  setAreaDetectionStatus(
+    `Spatial LOD: current view is ${areaLabel(area)} ${detectionStatusSuffix(detected.detection)} (metadata only)`
   );
 }
 async function applyMode(
@@ -467,6 +717,11 @@ function detectCurrentViewArea(preset: PresetName): {
 async function useCurrentView(): Promise<void> {
   const preset = viewer.getCurrentPreset();
   const previousAreaId = currentArea?.areaId ?? null;
+  if (LOD_MODE === 'adaptive-point-hierarchy') return;
+  if (LOD_MODE === 'spatial-lod') {
+    useCurrentViewSpatial(preset, previousAreaId);
+    return;
+  }
   if (!areaManifest) {
     setAreaDetectionStatus('Area manifest is not ready yet.');
     setAreaDetectionReport('manifest_not_ready', null, previousAreaId, preset, {
@@ -548,6 +803,13 @@ async function selectArea(
 ): Promise<void> {
   currentArea = area;
   setSelectedAreaOption(currentArea?.areaId ?? null);
+  if (LOD_MODE === 'adaptive-point-hierarchy') return;
+  if (LOD_MODE === 'spatial-lod') {
+    flyToSpatialArea(currentArea);
+    currentResolved = { ...currentResolved, selectedAreaId: currentArea?.areaId ?? null };
+    setReportDatasetContext(currentResolved);
+    return;
+  }
   updateModeAvailability();
   if (opts.statusMessage) setAreaDetectionStatus(opts.statusMessage);
 

@@ -1,15 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SBB Point Cloud Viewer — Local Pipeline</title>
-  <meta name="description" content="Local self-hosted 3D point cloud viewer powered by CesiumJS. Renders LAZ/3D Tiles from the local processing pipeline without Cesium ion." />
+  <meta name="description"
+    content="Local self-hosted 3D point cloud viewer powered by CesiumJS. Renders LAZ/3D Tiles from the local processing pipeline without Cesium ion." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
+
 <body>
   <!-- Main viewer container -->
   <div id="cesium-container"></div>
@@ -18,10 +23,12 @@
   <div id="status-overlay" class="status-overlay">
     <div class="status-icon" id="status-icon">
       <div class="spinner" id="status-spinner"></div>
-      <svg id="status-check" class="icon-check hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <svg id="status-check" class="icon-check hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.5">
         <polyline points="20 6 9 17 4 12"></polyline>
       </svg>
-      <svg id="status-error-icon" class="icon-error hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <svg id="status-error-icon" class="icon-error hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.5">
         <circle cx="12" cy="12" r="10"></circle>
         <line x1="15" y1="9" x2="9" y2="15"></line>
         <line x1="9" y1="9" x2="15" y2="15"></line>
@@ -49,7 +56,8 @@
 
   <!-- Controls panel -->
   <div class="controls-panel" id="controls-panel">
-    <button class="panel-toggle" id="controls-panel-toggle" type="button" aria-label="Hide controls panel" aria-expanded="true">=</button>
+    <button class="panel-toggle" id="controls-panel-toggle" type="button" aria-label="Hide controls panel"
+      aria-expanded="true">=</button>
     <div class="panel-content" id="controls-panel-content">
       <!-- User modes -->
       <div class="control-group" id="mode-control">
@@ -72,7 +80,8 @@
         <select class="area-select" id="area-select" disabled>
           <option>No area manifest</option>
         </select>
-        <button class="action-btn area-action-btn" id="btn-use-current-view" type="button" disabled>Use current view</button>
+        <button class="action-btn area-action-btn" id="btn-use-current-view" type="button" disabled>Use current
+          view</button>
         <div class="area-detect-status" id="area-detect-status">Area manifest is not ready yet.</div>
       </div>
 
@@ -95,10 +104,117 @@
             </span>
           </div>
           <div class="stat-row" id="overview-point-size-row">
-            <span class="stat-key">Point Size</span>
+            <span class="stat-key" id="overview-point-size-label">Point Size</span>
             <span class="stat-val overview-point-size-val">
-              <input type="range" class="overview-slider" id="slider-overview-point-size" min="0.5" max="2" step="0.25" value="1" disabled>
+              <input type="range" class="overview-slider" id="slider-overview-point-size" min="0.5" max="5" step="0.25"
+                value="1" disabled>
               <span id="overview-point-size-val">1×</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row">
+            <span class="stat-key">Far Point Size</span>
+            <span class="stat-val aph-phase-setting">
+              <input class="aph-range-input" id="input-aph-far-point-size" type="number" min="0.5" max="5" step="0.25"
+                value="2" aria-label="Far point size in pixels">
+              <span>px</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row">
+            <span class="stat-key">Mid Point Size</span>
+            <span class="stat-val aph-phase-setting">
+              <input class="aph-range-input" id="input-aph-mid-point-size" type="number" min="0.5" max="5" step="0.25"
+                value="2.5" aria-label="Mid point size in pixels">
+              <span>px</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row">
+            <span class="stat-key">Near Point Size</span>
+            <span class="stat-val aph-phase-setting">
+              <input class="aph-range-input" id="input-aph-near-point-size" type="number" min="0.5" max="5" step="0.25"
+                value="3" aria-label="Near point size in pixels">
+              <span>px</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row">
+            <span class="stat-key">Near Distance</span>
+            <span class="stat-val aph-phase-setting">
+              <span>≤</span>
+              <input class="aph-range-input" id="input-aph-near-distance" type="number" min="1" max="10000" step="10"
+                value="100" aria-label="Near point size distance in meters">
+              <span>m</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row">
+            <span class="stat-key">Far Distance</span>
+            <span class="stat-val aph-phase-setting">
+              <span>≥</span>
+              <input class="aph-range-input" id="input-aph-far-distance" type="number" min="2" max="10000" step="10"
+                value="250" aria-label="Far point size distance in meters">
+              <span>m</span>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row aph-simple-settings-row">
+            <span class="stat-key">Traversal SSE</span>
+            <span class="stat-val">
+              <select class="debug-select aph-sse-select" id="select-aph-simple-sse" aria-label="Simple traversal SSE">
+                <option value="4">4</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="16">16</option>
+                <option value="24">24</option>
+                <option value="32">32</option>
+                <option value="48">48</option>
+                <option value="64">64</option>
+              </select>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row aph-advanced-settings-row">
+            <span class="stat-key">Far SSE</span>
+            <span class="stat-val">
+              <select class="debug-select aph-sse-select" id="select-aph-far-sse">
+                <option value="4">4</option>
+                <option value="8">8</option>
+                <option value="12">12</option>
+                <option value="16" selected>16</option>
+                <option value="24">24</option>
+                <option value="32">32</option>
+                <option value="48">48</option>
+                <option value="64">64</option>
+              </select>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row aph-advanced-settings-row">
+            <span class="stat-key">Approach</span>
+            <span class="stat-val aph-phase-setting">
+              <span>≤</span>
+              <input class="aph-range-input" id="input-aph-approach-range" type="number" min="250" max="50000"
+                step="250" value="3000" aria-label="Approach distance in meters">
+              <span>m</span>
+              <select class="debug-select aph-sse-select" id="select-aph-approach-sse" aria-label="Approach SSE">
+                <option value="4">4</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="16">16</option>
+                <option value="24">24</option>
+                <option value="32">32</option>
+                <option value="48">48</option>
+                <option value="64">64</option>
+              </select>
+            </span>
+          </div>
+          <div class="stat-row aph-settings-row aph-advanced-settings-row">
+            <span class="stat-key">Detail ≤250 m</span>
+            <span class="stat-val">
+              <select class="debug-select aph-sse-select" id="select-aph-detail-sse">
+                <option value="4" selected>4</option>
+                <option value="8">8</option>
+                <option value="12">12</option>
+                <option value="16">16</option>
+                <option value="24">24</option>
+                <option value="32">32</option>
+                <option value="48">48</option>
+                <option value="64">64</option>
+              </select>
             </span>
           </div>
           <div class="stat-row manual-rendering-row">
@@ -131,25 +247,90 @@
         </div>
 
         <div class="report-grid compact-report-grid">
-          <div class="stat-row pipeline-report-row"><span class="stat-key">Source Points</span><span class="stat-val" data-report-field="sourcePointCount">—</span></div>
-          <div class="stat-row"><span class="stat-key">Visible Points</span><span class="stat-val" data-report-field="visiblePointsEstimated">—</span></div>
-          <div class="stat-row pipeline-report-row"><span class="stat-key">Tileset Size</span><span class="stat-val" data-report-field="tilesSize">—</span></div>
-          <div class="stat-row pipeline-report-row"><span class="stat-key">Tile Count</span><span class="stat-val" data-report-field="tileCount">—</span></div>
-          <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val" data-report-field="selectedTiles">—</span></div>
-          <div class="stat-row"><span class="stat-key">Point Size</span><span class="stat-val" data-report-field="pointSizePx">—</span></div>
-          <div class="stat-row"><span class="stat-key">Point Band</span><span class="stat-val" data-report-field="pointSizeBand">—</span></div>
-          <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val" data-report-field="focusEffectiveSSE">—</span></div>
-          <div class="stat-row"><span class="stat-key">Point Scale</span><span class="stat-val" data-report-field="pointSizeScale">—</span></div>
-          <div class="stat-row"><span class="stat-key">Cam Range Ratio</span><span class="stat-val" data-report-field="cameraRangeRatio">—</span></div>
-          <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val" data-report-field="networkMbLoaded">—</span></div>
-          <div class="stat-row"><span class="stat-key">PNTS Requests</span><span class="stat-val" data-report-field="pntsRequests">—</span></div>
-          <div class="stat-row"><span class="stat-key">Tileset Requests</span><span class="stat-val" data-report-field="tilesetRequests">—</span></div>
-          <div class="stat-row"><span class="stat-key">Bytes Transferred</span><span class="stat-val" data-report-field="bytesTransferred">—</span></div>
-          <div class="stat-row"><span class="stat-key">Cache Hit Ratio</span><span class="stat-val" data-report-field="cacheHitRatio">unknown</span></div>
-          <div class="stat-row"><span class="stat-key">Tileset Memory</span><span class="stat-val" data-report-field="tilesetMemoryBytes">unsupported</span></div>
-          <div class="stat-row"><span class="stat-key">Interaction FPS</span><span class="stat-val" data-report-field="interactionFps">—</span></div>
-          <div class="stat-row"><span class="stat-key">Initial FPS</span><span class="stat-val" data-report-field="initialFps">—</span></div>
-          <div class="stat-row"><span class="stat-key">Visible Time</span><span class="stat-val" data-report-field="firstVisibleTime">—</span></div>
+          <div class="stat-row runtime-lod-camera-row"><span class="stat-key">Camera Distance</span><span
+              class="stat-val" data-report-field="cameraDistanceMeters">—</span></div>
+          <div class="stat-row runtime-lod-camera-row"><span class="stat-key">Camera Height</span><span class="stat-val"
+              data-report-field="cameraHeightMeters">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Source Points</span><span class="stat-val"
+              data-report-field="sourcePointCount">—</span></div>
+          <div class="stat-row"><span class="stat-key">Visible Points</span><span class="stat-val"
+              data-report-field="visiblePointsEstimated">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Tileset Size</span><span class="stat-val"
+              data-report-field="tilesSize">—</span></div>
+          <div class="stat-row pipeline-report-row"><span class="stat-key">Tile Count</span><span class="stat-val"
+              data-report-field="tileCount">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Active Z Levels</span><span
+              class="stat-val" data-report-field="activeSpatialLodLevels">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Loaded Tiles</span><span class="stat-val"
+              data-report-field="loadedTiles">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Requested Z Files</span><span
+              class="stat-val" data-report-field="requestedSpatialLodFiles">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Active Tiles</span><span class="stat-val"
+              data-report-field="activeLoadedTiles">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Runtime State</span><span class="stat-val"
+              data-report-field="spatialLodRuntimeState">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Point Budget</span><span class="stat-val"
+              data-report-field="spatialLodTargetPoints">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Selected Points</span><span
+              class="stat-val" data-report-field="spatialLodSelectedPoints">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Frame EMA</span><span class="stat-val"
+              data-report-field="spatialLodFrameTimeEmaMs">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Effective SSE</span><span class="stat-val"
+              data-report-field="spatialLodEffectiveSSE">—</span></div>
+          <div class="stat-row spatial-lod-report-row"><span class="stat-key">Memory SSE</span><span class="stat-val"
+              data-report-field="spatialLodMemoryAdjustedSSE">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">APH Controller</span><span class="stat-val"
+              data-report-field="aphControllerMode">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Configured / Runtime SSE</span><span
+              class="stat-val" data-report-field="aphSsePair">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Requested Adaptive Depths</span><span
+              class="stat-val" data-report-field="aphRequestedDepths">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Selected Adaptive Depths</span><span
+              class="stat-val" data-report-field="aphSelectedTilesByDepth">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Active Adaptive Depths</span><span
+              class="stat-val" data-report-field="aphActiveDepths">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">APH Runtime</span><span class="stat-val"
+              data-report-field="aphRuntimeState">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">APH SSE</span><span class="stat-val"
+              data-report-field="aphEffectiveSse">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Detail Eligible</span><span class="stat-val"
+              data-report-field="aphDetailEligible">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">Detail First Request</span><span class="stat-val"
+              data-report-field="aphDetailFirstRequestDelayMs">—</span></div>
+          <div class="stat-row aph-report-row"><span class="stat-key">VRV Mode</span><span class="stat-val"
+              data-report-field="aphVrvMode">—</span></div>
+          <div class="stat-row"><span class="stat-key">Selected Tiles</span><span class="stat-val"
+              data-report-field="selectedTiles">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Size</span><span class="stat-val"
+              data-report-field="pointSizePx">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Band</span><span class="stat-val"
+              data-report-field="pointSizeBand">—</span></div>
+          <div class="stat-row"><span class="stat-key">Runtime SSE</span><span class="stat-val"
+              data-report-field="focusEffectiveSSE">—</span></div>
+          <div class="stat-row"><span class="stat-key">Point Scale</span><span class="stat-val"
+              data-report-field="pointSizeScale">—</span></div>
+          <div class="stat-row"><span class="stat-key">Cam Range Ratio</span><span class="stat-val"
+              data-report-field="cameraRangeRatio">—</span></div>
+          <div class="stat-row"><span class="stat-key">Network Loaded</span><span class="stat-val"
+              data-report-field="networkMbLoaded">—</span></div>
+          <div class="stat-row"><span class="stat-key">PNTS Requests</span><span class="stat-val"
+              data-report-field="pntsRequests">—</span></div>
+          <div class="stat-row"><span class="stat-key">Tileset Requests</span><span class="stat-val"
+              data-report-field="tilesetRequests">—</span></div>
+          <div class="stat-row"><span class="stat-key">Bytes Transferred</span><span class="stat-val"
+              data-report-field="bytesTransferred">—</span></div>
+          <div class="stat-row"><span class="stat-key">Cache Hit Ratio</span><span class="stat-val"
+              data-report-field="cacheHitRatio">unknown</span></div>
+          <div class="stat-row"><span class="stat-key">Runtime MB</span><span class="stat-val"
+              data-report-field="memoryUsage">unsupported</span></div>
+          <div class="stat-row"><span class="stat-key">Tileset Memory</span><span class="stat-val"
+              data-report-field="tilesetMemoryBytes">unsupported</span></div>
+          <div class="stat-row"><span class="stat-key">Interaction FPS</span><span class="stat-val"
+              data-report-field="interactionFps">—</span></div>
+          <div class="stat-row"><span class="stat-key">Initial FPS</span><span class="stat-val"
+              data-report-field="initialFps">—</span></div>
+          <div class="stat-row"><span class="stat-key">Visible Time</span><span class="stat-val"
+              data-report-field="firstVisibleTime">—</span></div>
         </div>
         <div class="copy-status" id="copy-status"></div>
       </div>
@@ -179,4 +360,5 @@
 
   <script type="module" src="/src/main.ts"></script>
 </body>
+
 </html>
