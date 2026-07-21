@@ -328,16 +328,37 @@ const uniforms = createUniforms()
 const adaptiveQuality = new AdaptiveQualityController(pointTree === 'aph' ? APH_BAND_SSE : undefined)
 const fps = new Fps()
 
-/** Point size is a band base times a user multiplier, never an absolute value:
- * a sparse overview needs fatter dots to close the canopy than a p100 close-up,
- * and the slider must survive every band change. */
+/** Point size follows camera height continuously — tied to the three SSE bands
+ * it visibly stepped mid-zoom. The slider stays a live multiplier on top of the
+ * curve so it survives every camera move. */
 let pointSizeScale = 1
-let pointSizeBand = EXPERIENCE_CONFIG.lod.bandPointSizePx.length - 1
-function applyPointSize(band = pointSizeBand): void {
-  pointSizeBand = band
-  const base = EXPERIENCE_CONFIG.lod.bandPointSizePx[band]
-    ?? EXPERIENCE_CONFIG.lod.bandPointSizePx[0]
-  const pixels = base * pointSizeScale
+let cameraAltitude = 0
+let lastAppliedPointSize = -1
+
+/** Interpolate the measured anchors linearly in log(height), held flat outside
+ * the calibrated range. */
+function basePointSizeForHeight(heightM: number): number {
+  const anchors = EXPERIENCE_CONFIG.lod.pointSizeByHeightM
+  const height = Math.max(1, heightM)
+  if (height <= anchors[0][0]) return anchors[0][1]
+  const last = anchors[anchors.length - 1]
+  if (height >= last[0]) return last[1]
+  for (let i = 1; i < anchors.length; i++) {
+    const [hiH, hiPx] = anchors[i]
+    if (height > hiH) continue
+    const [loH, loPx] = anchors[i - 1]
+    const t = (Math.log(height) - Math.log(loH)) / (Math.log(hiH) - Math.log(loH))
+    return loPx + (hiPx - loPx) * t
+  }
+  return last[1]
+}
+
+function applyPointSize(): void {
+  const base = basePointSizeForHeight(cameraAltitude)
+  const pixels = base * EXPERIENCE_CONFIG.lod.pointSizeMultiplier * pointSizeScale
+  // The uniform is read by every tile material each frame; skip sub-pixel churn.
+  if (Math.abs(pixels - lastAppliedPointSize) < 0.02) return
+  lastAppliedPointSize = pixels
   uniforms.pointSize.value = pixels
   $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${pixels.toFixed(1)}px`
 }
@@ -782,6 +803,7 @@ function updateMaskFollow(): void {
         - navigationBoundsRadius,
     )
     cameraCloudRange = Math.hypot(altitude, outside)
+    cameraAltitude = altitude
     rangeDebug = { altitude, outside, range: cameraCloudRange, groundRange: cameraGroundRange }
   } else {
     cameraCloudRange = cameraGroundRange
@@ -939,7 +961,7 @@ function updateStreaming(now: number): StreamingStats | null {
   // p100 tiles and buries a phone — so the ceiling is set from the same band.
   // While the loader is up, stay on the cheapest tier.
   stream.setDensityCeiling(bootLoading ? 0 : 2 - quality.band)
-  if (quality.band !== pointSizeBand) applyPointSize(quality.band)
+  applyPointSize()
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.update()
@@ -1083,7 +1105,9 @@ async function main(): Promise<void> {
     // height 0. Dropping by the bbox floor alone lands the cloud on the ENU
     // origin, which itself sits enuOriginLonLat[2] above that — hence both.
     const originHeight = manifest.enuOriginLonLat?.[2] ?? 0
-    zOffset = groundSnap ? -(minZ + originHeight) : 0
+    zOffset = groundSnap
+      ? -(minZ + originHeight) + EXPERIENCE_CONFIG.navigation.pointCloudLiftM
+      : 0
     areaMinZ = minZ
     // The ENU AABB is tilted and therefore overstates vertical height, so the
     // canopy height comes from the source Z span (about 74 m for Peru).

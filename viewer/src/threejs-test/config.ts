@@ -40,10 +40,20 @@ export const EXPERIENCE_CONFIG = {
     aphOverviewSse: 16,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
-    // Drawn point size in CSS pixels per band, coarse band last — same order as
-    // the SSE values above. Sparser bands need fatter points to close the
-    // canopy, mirroring the Cesium viewer's overviewBasePointSize (src/presets.ts).
-    bandPointSizePx: [1.5, 2.5, 3] as const,
+    // Drawn point size in CSS pixels as a continuous function of camera height
+    // over the cloud floor — three fixed bands visibly stepped while zooming.
+    // Anchors are measured preferences: zoom all the way in (~82 m, APH d6),
+    // then count zoom-out presses. Interpolated linearly in log(height) and held
+    // flat outside the range, so the far end never thins out into holes.
+    pointSizeByHeightM: [
+      [82, 3.9],
+      [171, 4.0],
+      [613, 3.0],
+      [1088, 2.5],
+    ] as const,
+    // The one knob for overall point fatness. Everything above is multiplied by
+    // it, the UI slider multiplies on top. 1 = the measured preference.
+    pointSizeMultiplier: 1.0,
     // Horizontal slack on the pipeline's viewer request volumes, in multiples
     // of the chunk footprint. 1 = hug the chunk exactly, which leaves gaps the
     // camera can sit in without ever opening p10/p100.
@@ -63,6 +73,11 @@ export const EXPERIENCE_CONFIG = {
     // Keep lod.detailMaxHeightM above the effective stop, or the finest density
     // band stops engaging at full zoom.
     zoomStopHeightM: 80,
+    // Lifts the whole point cloud above the draped basemap imagery. Ground
+    // snapping lands the cloud floor exactly on the ellipsoid, which reads as
+    // sunk into the terrain wherever the imagery bulges. Second tuning knob
+    // next to lod.pointSizeMultiplier; metres, 0 = pure ground snap.
+    pointCloudLiftM: 8,
     // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
     maximumOrbitDegrees: 72,
