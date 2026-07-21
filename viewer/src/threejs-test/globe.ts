@@ -97,7 +97,7 @@ export function createGlobe(opts: {
   // from pulling the camera through the surface. A 72° orbit ceiling keeps the
   // view downward instead of allowing it to roll under the data.
   controls.cameraRadius = cameraClearance
-  controls.minDistance = Math.max(EXPERIENCE_CONFIG.navigation.minimumZoomDistanceM, cameraClearance * 1.1)
+  controls.minDistance = cameraClearance
   controls.minAltitude = 0
   controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true

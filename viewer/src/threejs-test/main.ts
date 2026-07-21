@@ -43,6 +43,9 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
+/** Shows the measured heights in the HUD. Implied by freeorbit, but available
+ * on its own so the configured zoom stop can be checked while it still bites. */
+const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
@@ -671,7 +674,7 @@ const maskSphereWorld = new THREE.Vector3()
 let maskWorldActive = false
 let maskWorldRadius = 0
 let areaMinZ = 0
-let navigationClearance: number = EXPERIENCE_CONFIG.navigation.minimumClearanceM
+let navigationClearance: number = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
 let navigationFloorZ = navigationClearance
 let navigationBoundsRadius = 2500
 const vignetteEl = $<HTMLDivElement>('#vignette')
@@ -912,10 +915,11 @@ function updateStreaming(now: number): StreamingStats | null {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
   }
-  // Full density is always permitted. Passing frame-rate pressure here caps the
-  // request-volume density ceiling; the medium preset's floor of 1.4 sits above
-  // the plugin's 1.25 threshold, which barred Detail p100 outright.
-  stream.setQualityPressure(1)
+  // The band is the density contract: overview far out, detail up close. The
+  // error target alone does not enforce it — a distant camera still fetches
+  // p100 tiles and buries a phone — so the ceiling is set from the same band.
+  // While the loader is up, stay on the cheapest tier.
+  stream.setDensityCeiling(bootLoading ? 0 : 2 - quality.band)
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.update()
@@ -932,6 +936,12 @@ const densityEl = $('#loaded')
 const lodEl = $('#displayed')
 const cacheEl = $('#cache')
 const chipFpsEl = $('#chipFps')
+const diagStatsEl = $<HTMLDivElement>('#diagStats')
+const diagAltitudeEl = $('#diagAltitude')
+const diagRangeEl = $('#diagRange')
+const diagStopEl = $('#diagStop')
+const diagMissingEl = $('#diagMissing')
+if (showDiagnostics) diagStatsEl.hidden = false
 
 function updateHud(stats: StreamingStats | null): void {
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
@@ -949,6 +959,14 @@ function updateHud(stats: StreamingStats | null): void {
   fpsEl.className = `v ${className}`
   chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
   chipFpsEl.className = className
+
+  // Fly to the height that looks right, read it off here, put it into
+  // navigation.zoomStopHeightM.
+  if (!showDiagnostics) return
+  diagAltitudeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.altitude)} m` : '—'
+  diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
+  diagStopEl.textContent = `${Math.round(navigationClearance)} m`
+  diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
 }
 
 function loop(now: number): void {
@@ -960,6 +978,7 @@ function loop(now: number): void {
     cameraGroundRange,
     !bootLoading && !cameraFlight.active && videoModalEl.hidden,
     isZoomInBlocked(),
+    navigationClearance,
   )
   globe?.update(enforceNavigationBounds)
   updateMaskFollow()
@@ -1046,13 +1065,17 @@ async function main(): Promise<void> {
     const originHeight = manifest.enuOriginLonLat?.[2] ?? 0
     zOffset = groundSnap ? -(minZ + originHeight) : 0
     areaMinZ = minZ
-    // The ENU AABB is tilted and therefore overstates vertical height. The
-    // source Z span reflects the actual cloud thickness (about 74 m for Peru).
-    navigationClearance = Math.max(
-      EXPERIENCE_CONFIG.navigation.minimumClearanceM,
-      (manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM)
-        + EXPERIENCE_CONFIG.navigation.extraCloudClearanceM,
-    )
+    // The ENU AABB is tilted and therefore overstates vertical height, so the
+    // canopy height comes from the source Z span (about 74 m for Peru).
+    const configuredStop = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
+    const canopyHeight = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
+    navigationClearance = Math.max(configuredStop, canopyHeight)
+    if (navigationClearance > configuredStop) {
+      console.info(
+        `[navigation] zoom stop raised from ${Math.round(configuredStop)} m to `
+        + `${Math.round(navigationClearance)} m — the canopy is that tall here.`,
+      )
+    }
     navigationFloorZ = minZ + navigationClearance
     // The shader's ENU frame still carries zOffset, so ground-relative heights
     // for the golden rim and the virtual cloud deck must add it back.
@@ -1107,6 +1130,7 @@ async function main(): Promise<void> {
     scene,
     uniforms,
     errorTarget: sseAuto,
+    debugVolume: showDiagnostics,
   })
   stream.group.position.copy(enuUp).multiplyScalar(zOffset)
   // Debug handle for streaming diagnosis in the console.

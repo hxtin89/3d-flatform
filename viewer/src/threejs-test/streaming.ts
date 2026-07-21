@@ -7,6 +7,7 @@ import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-rend
 import { createCloudMaterial, type CloudUniforms } from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
+import { EXPERIENCE_CONFIG } from './config'
 
 export interface StreamingStats {
   visible: number
@@ -15,14 +16,19 @@ export interface StreamingStats {
   density: DensityBand
   cacheBytes: number
   gpuBytes: number
+  /** Distinct tiles the server never returned — gaps in the published data. */
+  missingTiles: number
 }
 
 export interface StreamingCloud {
   tiles: TilesRenderer
   group: THREE.Object3D
+  /** Diagnostics only. */
+  debugVolume: { blockedByCeiling: number[]; inside: number[]; outside: number[]; noVolume: number[] }
   update(): void
   setErrorTarget(v: number): void
-  setQualityPressure(v: number): void
+  /** 0 = p02, 1 = p10, 2 = p100. */
+  setDensityCeiling(level: number): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
@@ -67,6 +73,7 @@ export function createStreamingCloud(opts: {
   uniforms: CloudUniforms
   errorTarget?: number
   limits?: Partial<StreamingLimits>
+  debugVolume?: boolean
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
   const limits = { ...DEFAULT_LIMITS, ...opts.limits }
@@ -86,7 +93,10 @@ export function createStreamingCloud(opts: {
 
   // The current 3DTilesRendererJS release ignores viewerRequestVolume. Without
   // this plugin p10 and p100 may refine together, defeating the One LOD Tree.
-  const requestVolumePlugin = new ViewerRequestVolumePlugin()
+  const requestVolumePlugin = new ViewerRequestVolumePlugin({
+    xyScale: EXPERIENCE_CONFIG.lod.requestVolumeXyScale,
+    debug: opts.debugVolume,
+  })
   tiles.registerPlugin(requestVolumePlugin as any)
 
   // Real mask culling: outside tiles are not fetched, refined or rendered.
@@ -115,6 +125,7 @@ export function createStreamingCloud(opts: {
   tiles.registerPlugin(unloadPlugin as any)
 
   const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
+  const failedTiles = new Set<string>()
 
   // Materials must be tile-owned. A shared material is unsafe with
   // UnloadTilesPlugin because hiding one tile disposes its material and would
@@ -133,22 +144,31 @@ export function createStreamingCloud(opts: {
     tileStats.set(tile, { points, density: densityBandForUri(source) })
   })
   tiles.addEventListener('dispose-model', ({ tile }: any) => tileStats.delete(tile))
-  tiles.addEventListener('load-error', ({ url, error }: any) =>
-    console.error('[streaming] tile error', url, error?.message))
+  // A missing tile is a gap in the published data, not a crash, and the
+  // renderer retries whenever it comes back into view. Report each URL once so
+  // one absent tile cannot bury the console, but leave the retries alone: the
+  // file may well appear after the next upload.
+  tiles.addEventListener('load-error', ({ url, error }: any) => {
+    const key = String(url ?? '')
+    if (failedTiles.has(key)) return
+    failedTiles.add(key)
+    console.warn(`[streaming] tile unavailable (${failedTiles.size} so far)`, key, error?.message)
+  })
 
   scene.add(tiles.group)
 
   return {
     tiles,
     group: tiles.group,
+    debugVolume: requestVolumePlugin.debugCounts,
     update() {
       tiles.update()
     },
     setErrorTarget(value: number) {
       tiles.errorTarget = value
     },
-    setQualityPressure(value: number) {
-      requestVolumePlugin.setPressure(value)
+    setDensityCeiling(level: number) {
+      requestVolumePlugin.setDensityCeiling(level)
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
@@ -179,6 +199,7 @@ export function createStreamingCloud(opts: {
       return {
         visible: tiles.visibleTiles.size,
         points,
+        missingTiles: failedTiles.size,
         progress: tiles.loadProgress,
         density,
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,

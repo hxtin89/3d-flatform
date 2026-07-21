@@ -8,7 +8,13 @@ const ACTION_CODES = new Set(['KeyC', 'Enter', 'Escape'])
 const REQUIRED_NAVIGATION_TASKS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'zoom-in', 'zoom-out'])
 
 export interface KeyboardNavigation {
-  update(now: number, cameraGroundRange: number, enabled: boolean, zoomInBlocked?: boolean): void
+  update(
+    now: number,
+    cameraGroundRange: number,
+    enabled: boolean,
+    zoomInBlocked?: boolean,
+    zoomStopM?: number,
+  ): void
   setAimActive(active: boolean): void
   dispose(): void
 }
@@ -170,7 +176,7 @@ export function createKeyboardNavigation(options: {
   syncGuide()
 
   return {
-    update(now, cameraGroundRange, enabled, zoomInBlocked = false) {
+    update(now, cameraGroundRange, enabled, zoomInBlocked = false, zoomStopM = 0) {
       shortcutsEnabled = enabled
       const elapsed = Math.min(64, Math.max(0, now - lastUpdate))
       lastUpdate = now
@@ -215,8 +221,7 @@ export function createKeyboardNavigation(options: {
       let zoomInput = pressed.has('Space') ? (hasShift() ? -1 : 1) : 0
       // At the zoom stop (range limit or navigation floor) Space must not keep
       // sliding the camera forward — lateral travel is what WASD is for.
-      if (zoomInput > 0 && (zoomInBlocked
-        || cameraGroundRange <= EXPERIENCE_CONFIG.navigation.minimumZoomDistanceM)) {
+      if (zoomInput > 0 && (zoomInBlocked || cameraGroundRange <= zoomStopM)) {
         zoomInput = 0
         zoomVelocity = Math.min(0, zoomVelocity)
       }

@@ -178,7 +178,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let cloudMode: CloudMode = 'off'
   let cloudReason = cloudIntent ? 'Adaptive cloud quality' : 'Clouds are off'
   let lowFpsSince = 0
-  let manualMinutes: number | null = null
+  let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
   let lastDaylightUpdate = -Infinity
   let lastLiveRefresh = -Infinity
   let resources: {
@@ -211,9 +211,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   sunlight.target = sunTarget
 
   const state: DaylightState = {
-    peruMinutes: 720,
-    timeLabel: '12:00',
-    live: true,
+    peruMinutes: EXPERIENCE_CONFIG.environment.startPeruMinutes,
+    timeLabel: '14:00',
+    live: false,
     phase: 'day',
     sunElevationRad: Math.PI / 3,
     sunDirectionEnu: new THREE.Vector3(0.3, -0.4, 0.85).normalize(),

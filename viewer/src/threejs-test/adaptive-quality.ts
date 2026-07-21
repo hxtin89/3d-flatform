@@ -13,6 +13,8 @@ export interface AdaptiveQualityState {
   sse: number
   baseSse: number
   pressure: number
+  /** 0 = detail, 1 = explore, 2 = overview — chosen purely by camera height. */
+  band: number
 }
 
 // Load is judged by frame time. Point counts are only a residency guard: a
@@ -85,7 +87,7 @@ export class AdaptiveQualityController {
     }
 
     this.sse = Math.min(MAX_SSE, baseSse)
-    return { sse: this.sse, baseSse, pressure: this.pressure }
+    return { sse: this.sse, baseSse, pressure: this.pressure, band: this.band }
   }
 }
 

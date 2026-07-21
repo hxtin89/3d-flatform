@@ -21,10 +21,9 @@ export const EXPERIENCE_CONFIG = {
     // Height over the point-cloud floor at which each density band takes over.
     // Distance alone decides density; frame rate is paid for elsewhere (vignette
     // mask, parrot count, cloud quality).
-    // Must exceed navigation.minimumClearanceM plus the dataset's vertical
-    // span: the zoom stop parks the camera 220-300 m up, so a lower threshold
-    // here is unreachable and the finest band would never engage.
-    detailMaxHeightM: 400,
+    // Must stay above navigation.zoomStopHeightM, otherwise the finest band is
+    // unreachable: the camera never gets closer than the zoom stop.
+    detailMaxHeightM: 150,
     exploreMaxHeightM: 2_500,
     // Screen-space error target per band, coarse to fine.
     overviewSse: 256,
@@ -32,6 +31,10 @@ export const EXPERIENCE_CONFIG = {
     detailSse: 64,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
+    // Horizontal slack on the pipeline's viewer request volumes, in multiples
+    // of the chunk footprint. 1 = hug the chunk exactly, which leaves gaps the
+    // camera can sit in without ever opening p10/p100.
+    requestVolumeXyScale: 2.5,
     // While the fullscreen loader is up the camera already sits at its staging
     // position inside the detail band. Nothing of it is visible, so refinement
     // is held coarse until boot completes — otherwise the loader waits on tiles
@@ -39,11 +42,16 @@ export const EXPERIENCE_CONFIG = {
     bootSse: 256,
   },
   navigation: {
-    // Clearance grows with the dataset's measured vertical span.
-    minimumClearanceM: 220,
-    extraCloudClearanceM: 80,
+    // Metres above the point-cloud floor where zooming stops. Single knob: the
+    // navigation floor, the orbit camera radius and its minimum pivot distance
+    // all derive from this one number. Raised to the dataset's measured canopy
+    // height if set below it, so the camera cannot end up inside the crowns —
+    // the HUD shows the effective value and a console line reports the raise.
+    // Keep lod.detailMaxHeightM above the effective stop, or the finest density
+    // band stops engaging at full zoom.
+    zoomStopHeightM: 80,
+    // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
-    minimumZoomDistanceM: 240,
     maximumOrbitDegrees: 72,
     minimumBoundsRadiusM: 2_500,
     surveyBoundsScale: 0.6,
@@ -74,6 +82,10 @@ export const EXPERIENCE_CONFIG = {
   environment: {
     // Peru has no daylight-saving change; the slider still uses the IANA zone.
     timeZone: 'America/Lima',
+    // The scene opens on this Peru time. Live time is opt-in: the JETZT button
+    // in the time dock switches to it, so the first impression is a fixed,
+    // well-lit hour instead of whatever the field site happens to be doing.
+    startPeruMinutes: 14 * 60,
     utcOffsetHours: -5,
     updateIntervalMs: 250,
     liveRefreshMs: 30_000,

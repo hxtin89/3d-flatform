@@ -29,17 +29,35 @@ type VolumeTester = (position: THREE.Vector3) => boolean
 export class ViewerRequestVolumePlugin {
   readonly name = 'VIEWER_REQUEST_VOLUME_PLUGIN'
 
+  /** Horizontal slack on the request box, in multiples of its own footprint.
+   * The generated boxes hug the chunk exactly, so a camera hovering between
+   * two chunks — where the intro flight ends — never opens either of them and
+   * stays on the overview no matter how far it zooms. Vertical extent is left
+   * alone; the pipeline already stretches it by the stage ratio. */
+  private xyScale = 1
+
   private tiles: any = null
   private testers = new WeakMap<object, VolumeTester | null>()
   private warned = new WeakSet<object>()
   private densityCeiling = 2
+  /** Diagnostics only, and off by default: this counts inside the traversal
+   * hot path, which runs millions of times per second. */
+  readonly debugCounts = { blockedByCeiling: [0, 0, 0], inside: [0, 0, 0], outside: [0, 0, 0], noVolume: [0, 0, 0] }
+  private debug = false
+
+  constructor(options?: { xyScale?: number; debug?: boolean }) {
+    if (options?.xyScale && options.xyScale > 0) this.xyScale = options.xyScale
+    this.debug = Boolean(options?.debug)
+  }
 
   init(tiles: any): void {
     this.tiles = tiles
   }
 
   calculateTileViewError(tile: RequestVolumeTile, target: ViewErrorTarget): boolean {
-    if (this.densityRank(tile) > this.densityCeiling) {
+    const rank = this.densityRank(tile)
+    if (rank > this.densityCeiling) {
+      if (this.debug) this.debugCounts.blockedByCeiling[rank]++
       target.inView = false
       target.error = 0
       target.distance = Infinity
@@ -47,7 +65,7 @@ export class ViewerRequestVolumePlugin {
     }
 
     const definition = tile.viewerRequestVolume
-    if (!definition) return false
+    if (!definition) { if (this.debug) this.debugCounts.noVolume[rank]++; return false }
 
     let tester = this.testers.get(tile as object)
     if (tester === undefined) {
@@ -57,6 +75,7 @@ export class ViewerRequestVolumePlugin {
 
     const cameraInfo = this.tiles?.cameraInfo as Array<{ position: THREE.Vector3 }> | undefined
     const inside = Boolean(tester && cameraInfo?.some(({ position }) => tester!(position)))
+    if (this.debug) this.debugCounts[inside ? 'inside' : 'outside'][rank]++
     target.inView = inside
     target.error = 0
     target.distance = inside ? 0 : Infinity
@@ -69,15 +88,12 @@ export class ViewerRequestVolumePlugin {
     this.warned = new WeakSet()
   }
 
-  /** Pressure 1 shows every zoom-eligible tier. Sustained frame pressure first
-   * suppresses p100, then p10. Recovery uses the same tree in reverse. */
-  setPressure(pressure: number): void {
-    // Separate entry/exit thresholds prevent p10 or p100 from flapping when the
-    // measured frame rate sits on a boundary.
-    if (this.densityCeiling === 2 && pressure >= 1.25) this.densityCeiling = 1
-    else if (this.densityCeiling === 1 && pressure >= 2.2) this.densityCeiling = 0
-    else if (this.densityCeiling === 1 && pressure <= 1.05) this.densityCeiling = 2
-    else if (this.densityCeiling === 0 && pressure <= 1.6) this.densityCeiling = 1
+  /** Highest tier this camera position may load: 0 = p02, 1 = p10, 2 = p100.
+   * Driven by camera height, not by frame rate — the screen-space error alone
+   * does not stop p100 from being fetched, so without this ceiling a distant
+   * camera pulls full-density tiles and a phone drops to single-digit fps. */
+  setDensityCeiling(level: number): void {
+    this.densityCeiling = Math.max(0, Math.min(2, Math.round(level)))
   }
 
   private createTester(tile: RequestVolumeTile, definition: RequestVolume): VolumeTester | null {
@@ -96,9 +112,10 @@ export class ViewerRequestVolumePlugin {
       if (Math.abs(boxToWorld.determinant()) < 1e-12) return this.reject(tile, 'degenerate viewer request box')
       const inverse = boxToWorld.invert()
       const local = new THREE.Vector3()
+      const xy = this.xyScale + 0.00001
       return (position) => {
         local.copy(position).applyMatrix4(inverse)
-        return Math.abs(local.x) <= 1.00001 && Math.abs(local.y) <= 1.00001 && Math.abs(local.z) <= 1.00001
+        return Math.abs(local.x) <= xy && Math.abs(local.y) <= xy && Math.abs(local.z) <= 1.00001
       }
     }
 
