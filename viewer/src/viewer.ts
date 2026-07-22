@@ -2647,7 +2647,7 @@ export class PointCloudViewer {
     this.installLocalPointCloudControls();
   }
 
-  private setOrbitTargetFromScreenPosition(position: Cesium.Cartesian2): void {
+  private getOrbitTargetFromScreenPosition(position: Cesium.Cartesian2): Cesium.Cartesian3 | null {
     const scene = this.viewer.scene;
     let target: Cesium.Cartesian3 | undefined;
 
@@ -2675,7 +2675,7 @@ export class PointCloudViewer {
         candidate === this.primaryTileset ||
         candidate === this.contextTileset
       ));
-      if (!hitPointCloudTileset) return;
+      if (!hitPointCloudTileset) return null;
     }
 
     if (scene.pickPositionSupported) {
@@ -2699,8 +2699,15 @@ export class PointCloudViewer {
       !Number.isFinite(target.y) ||
       !Number.isFinite(target.z)
     ) {
-      return;
+      return null;
     }
+
+    return target;
+  }
+
+  private setOrbitTargetFromScreenPosition(position: Cesium.Cartesian2): void {
+    const target = this.getOrbitTargetFromScreenPosition(position);
+    if (!target) return;
 
     const offset = Cesium.Cartesian3.subtract(
       this.viewer.camera.positionWC,
@@ -2720,6 +2727,43 @@ export class PointCloudViewer {
     this.orbitPitch = Math.asin(Cesium.Math.clamp(offset.z / range, -1, 1));
   }
 
+  /** Zoom along the screen ray without turning the camera toward the pivot. */
+  private zoomGlobeCameraAtScreenPosition(position: Cesium.Cartesian2, factor: number): boolean {
+    const target = this.getOrbitTargetFromScreenPosition(position);
+    if (!target) return false;
+
+    const camera = this.viewer.camera;
+    const toTarget = Cesium.Cartesian3.subtract(
+      target,
+      camera.positionWC,
+      new Cesium.Cartesian3()
+    );
+    const currentRange = Cesium.Cartesian3.magnitude(toTarget);
+    if (currentRange <= 0) return false;
+
+    const nextRange = Cesium.Math.clamp(
+      currentRange * factor,
+      this.minCameraDistance,
+      this.maxCameraDistance
+    );
+    if (Math.abs(nextRange - currentRange) < 0.001) return true;
+
+    const distanceDelta = currentRange - nextRange;
+    Cesium.Cartesian3.normalize(toTarget, toTarget);
+    const destination = Cesium.Cartesian3.add(
+      camera.positionWC,
+      Cesium.Cartesian3.multiplyByScalar(toTarget, distanceDelta, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    const direction = Cesium.Cartesian3.clone(camera.directionWC);
+    const up = Cesium.Cartesian3.clone(camera.upWC);
+    camera.setView({ destination, orientation: { direction, up } });
+
+    this.orbitTarget = Cesium.Cartesian3.clone(target);
+    this.orbitRange = nextRange;
+    return true;
+  }
+
   private installGlobePointCloudControls(): void {
     this.inputHandler?.destroy();
     this.touchInputCleanup?.();
@@ -2729,6 +2773,7 @@ export class PointCloudViewer {
     let pendingDx = 0;
     let pendingDy = 0;
     let pendingDrag: 'orbit' | 'pan' | null = null;
+    let hoverPosition: Cesium.Cartesian2 | null = null;
 
     const zoomByFactor = (factor: number): void => {
       const camera = this.viewer.camera;
@@ -2772,6 +2817,45 @@ export class PointCloudViewer {
       });
     };
 
+    const flushCameraMotion = (): void => {
+      motionFrame = null;
+      const nextDrag = pendingDrag;
+      const nextDx = pendingDx;
+      const nextDy = pendingDy;
+      pendingDrag = null;
+      pendingDx = 0;
+      pendingDy = 0;
+
+      // A scene reload may replace the input handler before this frame runs.
+      if (this.inputHandler !== handler || !nextDrag) return;
+
+      // APH uses a short, frame-rate-independent tail so orbiting does not
+      // visibly step between high-frequency pointer events. Keep other LOD
+      // modes byte-for-byte equivalent to their existing camera behaviour.
+      const orbitSmoothing = nextDrag === 'orbit' && this.adaptivePointHierarchyActive
+        ? 0.68
+        : 1;
+      const appliedDx = nextDx * orbitSmoothing;
+      const appliedDy = nextDy * orbitSmoothing;
+      if (nextDrag === 'orbit') {
+        this.rotateGlobeCamera(appliedDx, appliedDy);
+      } else {
+        this.panGlobeCamera(appliedDx, appliedDy);
+      }
+
+      const remainingDx = nextDx - appliedDx;
+      const remainingDy = nextDy - appliedDy;
+      if (
+        orbitSmoothing < 1 &&
+        (Math.abs(remainingDx) > 0.01 || Math.abs(remainingDy) > 0.01)
+      ) {
+        pendingDrag = nextDrag;
+        pendingDx = remainingDx;
+        pendingDy = remainingDy;
+        motionFrame = requestAnimationFrame(flushCameraMotion);
+      }
+    };
+
     const scheduleCameraMotion = (
       drag: 'orbit' | 'pan',
       dx: number,
@@ -2785,24 +2869,7 @@ export class PointCloudViewer {
       pendingDx += dx;
       pendingDy += dy;
       if (motionFrame !== null) return;
-
-      motionFrame = requestAnimationFrame(() => {
-        motionFrame = null;
-        const nextDrag = pendingDrag;
-        const nextDx = pendingDx;
-        const nextDy = pendingDy;
-        pendingDrag = null;
-        pendingDx = 0;
-        pendingDy = 0;
-
-        // A scene reload may replace the input handler before this frame runs.
-        if (this.inputHandler !== handler || !nextDrag) return;
-        if (nextDrag === 'orbit') {
-          this.rotateGlobeCamera(nextDx, nextDy);
-        } else {
-          this.panGlobeCamera(nextDx, nextDy);
-        }
-      });
+      motionFrame = requestAnimationFrame(flushCameraMotion);
     };
 
     this.inputHandler = handler;
@@ -2853,6 +2920,7 @@ export class PointCloudViewer {
     }, Cesium.ScreenSpaceEventType.RIGHT_UP);
 
     handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
+      hoverPosition = Cesium.Cartesian2.clone(movement.endPosition);
       if (!this.activeDrag || !this.lastPointer) return;
 
       const dx = movement.endPosition.x - this.lastPointer.x;
@@ -2875,7 +2943,13 @@ export class PointCloudViewer {
     handler.setInputAction((delta: number) => {
       this.callbacks.onInteraction();
       if (this.globeOverviewOrbitZoomActive) {
-        zoomByFactor(delta > 0 ? 0.86 : 1.16);
+        const factor = delta > 0 ? 0.86 : 1.16;
+        // Cesium's wheel event carries no screen position. Preserve the most
+        // recent pointer coordinate so APH can dolly along the cursor ray.
+        const zoomedAtCursor = this.adaptivePointHierarchyActive && hoverPosition
+          ? this.zoomGlobeCameraAtScreenPosition(hoverPosition, factor)
+          : false;
+        if (!zoomedAtCursor) zoomByFactor(factor);
       }
     }, Cesium.ScreenSpaceEventType.WHEEL);
 
@@ -2921,7 +2995,13 @@ export class PointCloudViewer {
       const dy = nextMidpoint.y - lastTouchMidpoint.y;
 
       if (Math.abs(nextDistance - lastTouchDistance) > 0.5) {
-        zoomByFactor(lastTouchDistance / nextDistance);
+        if (this.adaptivePointHierarchyActive) {
+          if (!this.zoomGlobeCameraAtScreenPosition(nextMidpoint, lastTouchDistance / nextDistance)) {
+            zoomByFactor(lastTouchDistance / nextDistance);
+          }
+        } else {
+          zoomByFactor(lastTouchDistance / nextDistance);
+        }
       }
       if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
         this.panGlobeCamera(dx, dy);
