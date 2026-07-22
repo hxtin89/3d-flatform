@@ -3267,13 +3267,17 @@ export class PointCloudViewer {
       this.orbitTarget
     );
     const spatialLodGlobePan = this.spatialLodActive && this.globeControlsActive;
+    const adaptivePointHierarchyGlobePan = this.adaptivePointHierarchyActive && this.globeControlsActive;
+    const tangentGlobePan = spatialLodGlobePan || adaptivePointHierarchyGlobePan;
     const panScale = spatialLodGlobePan
       ? spatialLodPanScaleMetersPerPixel(range)
-      : Math.max(range, this.panScaleBase * 0.2) * 0.0012;
+      : adaptivePointHierarchyGlobePan
+        ? Math.max(range, ADAPTIVE_POINT_HIERARCHY_MIN_CAMERA_DISTANCE_METERS) * 0.0012
+        : Math.max(range, this.panScaleBase * 0.2) * 0.0012;
     let rightAxis = camera.rightWC;
     let upAxis = camera.upWC;
 
-    if (spatialLodGlobePan) {
+    if (tangentGlobePan) {
       const surfaceNormal = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(
         this.orbitTarget,
         new Cesium.Cartesian3()
@@ -3318,7 +3322,16 @@ export class PointCloudViewer {
         rightAxis,
         new Cesium.Cartesian3()
       );
-      upAxis = projectToTangent(camera.upWC, fallbackUp);
+      if (adaptivePointHierarchyGlobePan) {
+        // APH right-drag should travel over the ground in the viewing
+        // direction, not climb through the globe camera's vertical up axis.
+        upAxis = projectToTangent(camera.directionWC, fallbackUp);
+        if (Cesium.Cartesian3.dot(upAxis, camera.upWC) < 0) {
+          Cesium.Cartesian3.negate(upAxis, upAxis);
+        }
+      } else {
+        upAxis = projectToTangent(camera.upWC, fallbackUp);
+      }
     }
 
     const right = Cesium.Cartesian3.multiplyByScalar(
