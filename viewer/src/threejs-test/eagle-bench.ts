@@ -68,7 +68,11 @@ export interface EagleBench {
   dispose(): void
 }
 
-const EAGLE_SVG_URL = '/assets/svg/wilderness-eagle.svg'
+// Must go through BASE_URL: the production build is served from
+// /livingdashboard/, where a root-absolute path 404s and takes the whole
+// benchmark down with it — the loader then silently falls back to the flat CSS
+// eagle and the device tier is guessed instead of measured.
+const EAGLE_SVG_URL = `${import.meta.env.BASE_URL}assets/svg/wilderness-eagle.svg`
 const DENSITY_BUCKETS = 12
 const MAX_THICKNESS = 0.2
 const EAGLE_SCALE = 0.78

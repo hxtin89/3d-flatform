@@ -5,7 +5,8 @@ import * as THREE from 'three'
 import { TilesRenderer } from '3d-tiles-renderer'
 import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
-  createCloudMaterial, POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
+  applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices,
+  POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
@@ -35,6 +36,9 @@ export interface StreamingCloud {
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
+  /** Diagnostic A/B: CPU-computed (float64) vs in-shader (float32) model-view
+   * matrices. Off makes the ECEF rounding jitter visible again. */
+  setHighPrecision(enabled: boolean): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   stats(): StreamingStats
@@ -243,6 +247,12 @@ export function createStreamingCloud(opts: {
       tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)
       tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (600 * 1024)))
       ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
+    },
+    setHighPrecision(enabled: boolean) {
+      setHighPrecisionMatrices(enabled)
+      // The scene graph is the registry — every live tile material hangs under
+      // the tiles group, and UnloadTilesPlugin keeps disposing them itself.
+      tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (!centerWorld || !(radius > 0)) {

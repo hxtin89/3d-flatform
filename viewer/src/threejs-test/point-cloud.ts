@@ -6,6 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
   vec2, vec3, vec4, float, mix, smoothstep, length, max,
+  context, highpModelViewMatrix,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -81,6 +82,39 @@ export function maskDimNode(u: CloudUniforms, floor = 0): any {
 export const POINT_POSITION_ATTRIBUTE = 'cloudPointPosition'
 export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
 
+// Every tile sits on the WGS84 globe, so its world matrix carries an ECEF
+// translation of ~5.8e6 m — 0.5 m per float32 step at that magnitude. Three's
+// node materials build the model-view matrix in the shader by default
+// (`mediumpModelViewMatrix = cameraViewMatrix.mul(modelWorldMatrix)`), so each
+// tile rounds on its own grid and the camera matrix rounds along with it: tiles
+// shift by metres relative to one another and tear visible seams into the
+// canopy as the camera moves. `highpModelViewMatrix` multiplies the same two
+// matrices in JS at float64 and uploads the camera-relative result, which is
+// small enough to stay exact — the classic WebGLRenderer has always done this.
+//
+// Applied per material rather than through `renderer.highPrecision`, which is
+// documented as incompatible with InstancedMesh and SkinnedMesh; this scene has
+// both (cloud puffs in environment-layer, the rigged parrots in
+// field-model-layer). Our tiles are plain Meshes with an InstancedBufferGeometry,
+// whose per-instance attributes feed positionLocal before the matrix is applied.
+const HIGH_PRECISION_CONTEXT = context({ modelViewMatrix: highpModelViewMatrix })
+let highPrecisionMatrices = true
+
+/** Diagnostic switch behind the panel toggle. Only affects materials created
+ * afterwards — callers refresh live tiles themselves. */
+export function setHighPrecisionMatrices(enabled: boolean): void {
+  highPrecisionMatrices = enabled
+}
+
+/** Apply the current precision mode to one already-built material. */
+export function applyMatrixPrecision(material: any): void {
+  if (!material) return
+  const next = highPrecisionMatrices ? HIGH_PRECISION_CONTEXT : null
+  if (material.contextNode === next) return
+  material.contextNode = next
+  material.needsUpdate = true
+}
+
 /** Create a material for exactly one streamed tile. Never share it across tiles:
  * UnloadTilesPlugin disposes hidden tile materials independently.
  *
@@ -93,6 +127,7 @@ export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
  */
 export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): PointsNodeMaterial {
   const material = new PointsNodeMaterial()
+  if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
   material.transparent = false
   material.depthWrite = true
   material.sizeAttenuation = false

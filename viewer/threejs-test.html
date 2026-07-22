@@ -564,6 +564,16 @@
         <input type="range" id="size" min="0.5" max="3" step="0.1" value="1" />
       </div>
       <div class="row">
+        <label class="h" for="precisionToggle">Matrix-Präzision</label>
+        <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Präzision · High</button>
+        <span class="weather-note" id="precisionNote">Aus = Model-View im Shader (float32); Kacheln zittern auf ECEF-Rundung. Während Loader und Flug automatisch aus</span>
+      </div>
+      <div class="row">
+        <label class="h" for="liftToggle">Höhen-Offset</label>
+        <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · An</button>
+        <span class="weather-note" id="liftNote">Nur Diagnose: Aus senkt die Wolke, die Höhen-Uniforms folgen nicht</span>
+      </div>
+      <div class="row">
         <label class="h">Mask</label>
         <div class="seg" id="maskSeg">
           <button data-mask="0">Off</button>

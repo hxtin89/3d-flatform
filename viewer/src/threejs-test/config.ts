@@ -16,6 +16,12 @@ export const EXPERIENCE_CONFIG = {
     dblClickMinRangeM: 420,
     markerApproachDistanceM: 320,
     markerFlightDurationMs: 2_600,
+    // Fraction of the entrance flight at which the point cloud appears and its
+    // streamer resumes. Before that the cloud is a speck on the horizon that
+    // buys nothing visually while its traversal, fetches and GPU uploads cost a
+    // weak phone the whole frame budget. Keyed by the loader benchmark's
+    // preset: 1 = only once the flight has landed.
+    cloudRevealProgress: { strong: 0.55, medium: 0.85, constrained: 1 },
   },
   lod: {
     // Height over the point-cloud floor at which each density band takes over.
@@ -63,6 +69,14 @@ export const EXPERIENCE_CONFIG = {
     // is held coarse until boot completes — otherwise the loader waits on tiles
     // nobody sees.
     bootSse: 256,
+    // The entrance flight starts the moment the loader hides, which is exactly
+    // when the boot brake above is released. It ends a few hundred metres above
+    // the canopy, so without a floor the finest APH level streams in mid
+    // animation. Kilometres out that detail is invisible anyway.
+    flightSse: 64,
+    // Back to the distance-driven density after landing, spread over this long
+    // so the refill arrives gradually instead of in a single frame.
+    flightSseRampMs: 1_000,
   },
   navigation: {
     // Metres above the point-cloud floor where zooming stops. Single knob: the

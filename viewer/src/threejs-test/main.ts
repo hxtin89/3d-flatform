@@ -28,6 +28,7 @@ import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-ben
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
+import { flightSseFloor } from './flight-quality'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -216,6 +217,8 @@ function applyBenchPreset(): void {
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
   const preset: BenchPreset = measured?.preset
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
+  // Also decides how late the point cloud joins the entrance flight.
+  benchPreset = preset
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
@@ -273,6 +276,12 @@ const onLoaderStart = () => {
   loaderEl.classList.add('finishing')
   rainCycleStartedAt = now
   loaderFlightStarted = true
+  // Park the cloud until the flight has closed most of the distance. The loader
+  // staged the camera at the flight's destination, so the tiles the reveal needs
+  // are already resident — pausing the streamer keeps them, because unloading
+  // also only happens inside tiles.update().
+  entranceFlightPending = EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
+  if (entranceFlightPending) setPointCloudRevealed(false)
   flyToCloud(
     reducedMotion
       ? EXPERIENCE_CONFIG.flight.reducedMotionDurationMs
@@ -386,6 +395,12 @@ let enuFrameReady = false
 let rangeDebug: Record<string, number> | null = null
 let graphicsFailed = false
 let cinematicFlightProgress = 1
+/** Overwritten by the loader benchmark before the entrance flight starts. */
+let benchPreset: BenchPreset = 'medium'
+/** The entrance flight hides and pauses the point cloud until its reveal point;
+ * every later flight leaves the cloud alone. */
+let entranceFlightPending = false
+let pointCloudRevealed = true
 let atmosphereFar = camera.far
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
@@ -488,8 +503,34 @@ const onTimeNow = () => {
   environmentLayer?.setPeruMinutes(null)
   if (environmentLayer) updateTimeControls(environmentLayer.getDaylightState())
 }
+// Diagnostics for the tile jitter: high precision is the fix, the lift toggle
+// exists to rule the ground-snap offset out by hand.
+const precisionToggleEl = $<HTMLButtonElement>('#precisionToggle')
+const liftToggleEl = $<HTMLButtonElement>('#liftToggle')
+let highPrecisionMatrices = true
+let heightOffsetEnabled = true
+
+const onPrecisionToggle = () => {
+  highPrecisionMatrices = !highPrecisionMatrices
+  // The loop owns the actual switch — it also has to suppress it during the
+  // loader and the flight.
+  updateMatrixPrecision(performance.now())
+  precisionToggleEl.classList.toggle('on', highPrecisionMatrices)
+  precisionToggleEl.setAttribute('aria-pressed', String(highPrecisionMatrices))
+  precisionToggleEl.textContent = `◈ Präzision · ${highPrecisionMatrices ? 'High' : 'Medium'}`
+}
+const onLiftToggle = () => {
+  heightOffsetEnabled = !heightOffsetEnabled
+  applyHeightOffset()
+  liftToggleEl.classList.toggle('on', heightOffsetEnabled)
+  liftToggleEl.setAttribute('aria-pressed', String(heightOffsetEnabled))
+  liftToggleEl.textContent = `⇅ Offset · ${heightOffsetEnabled ? 'An' : 'Aus'}`
+}
+
 cloudToggleEl.disabled = true
 soundToggleEl.disabled = true
+precisionToggleEl.addEventListener('click', onPrecisionToggle)
+liftToggleEl.addEventListener('click', onLiftToggle)
 cloudToggleEl.addEventListener('click', onCloudToggle)
 timeDockToggleEl.addEventListener('click', onTimeDockToggle)
 timeSliderEl.addEventListener('input', onTimeInput)
@@ -511,6 +552,13 @@ const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
 let zOffset = 0
+
+/** Lift the streamed cloud off the draped imagery. Diagnostic only when off:
+ * the canopy and cloud-deck uniforms keep the offset they were bound with, so
+ * the height grading no longer lines up. */
+function applyHeightOffset(): void {
+  stream?.group.position.copy(enuUp).multiplyScalar(heightOffsetEnabled ? zOffset : 0)
+}
 
 function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
   return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrame)
@@ -940,8 +988,57 @@ window.addEventListener('resize', () => {
 })
 
 // ---------------------------------------------------------------- streaming / HUD / loop
+let flightEndedAt = -Infinity
+let wasFlying = false
+let appliedHighPrecision: boolean | null = null
+
+/**
+ * High-precision matrices are only worth their per-tile CPU matrix multiply
+ * once the camera is close enough for the ECEF rounding to reach a pixel.
+ * Held off through the loader as well as the flight, so the material rebuild
+ * the switch triggers happens exactly once — on arrival, while flightSseFloor
+ * still keeps the tile count down — instead of once at each end of the flight.
+ */
+function setPointCloudRevealed(revealed: boolean): void {
+  pointCloudRevealed = revealed
+  if (stream) stream.group.visible = revealed
+}
+
+/**
+ * Let the point cloud join the entrance flight only near its end. Kilometres
+ * out it is a speck a weak phone still pays full traversal, download, parse and
+ * upload cost for — the iPhone dropped to single-digit frame rates there. The
+ * reveal point comes from the loader benchmark, so strong hardware sees the
+ * cloud through most of the approach and weak hardware only after landing.
+ */
+function updateCloudReveal(): void {
+  if (!entranceFlightPending) return
+  const revealAt = EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset]
+  // `!cameraFlight.active` is the backstop: a skipped, interrupted or
+  // reduced-motion flight must never leave the cloud parked forever.
+  if (cinematicFlightProgress >= revealAt || !cameraFlight.active) {
+    entranceFlightPending = false
+    setPointCloudRevealed(true)
+  }
+}
+
+function updateMatrixPrecision(now: number): void {
+  if (wasFlying && !cameraFlight.active) flightEndedAt = now
+  wasFlying = cameraFlight.active
+
+  const want = highPrecisionMatrices && !bootLoading && !cameraFlight.active
+  if (want === appliedHighPrecision) return
+  appliedHighPrecision = want
+  stream?.setHighPrecision(want)
+  globe?.refreshMatrixPrecision()
+}
+
 function updateStreaming(now: number): StreamingStats | null {
   if (!stream) return null
+  // Parked during the entrance flight: no traversal, no fetches, no parsing —
+  // and no unloading either, so the tiles the loader already put in place for
+  // the destination survive until the reveal.
+  if (!pointCloudRevealed) return lastStreamStats
 
   const quality = adaptiveQuality.update({
     now,
@@ -949,9 +1046,16 @@ function updateStreaming(now: number): StreamingStats | null {
     visiblePoints: lastStreamStats?.points ?? 0,
     cameraGroundRange: cameraCloudRange,
   })
-  const targetSse = bootLoading
-    ? Math.max(quality.sse, EXPERIENCE_CONFIG.lod.bootSse)
-    : quality.sse
+  const targetSse = Math.max(
+    quality.sse,
+    bootLoading
+      ? EXPERIENCE_CONFIG.lod.bootSse
+      : flightSseFloor({
+        flying: cameraFlight.active,
+        msSinceLanding: now - flightEndedAt,
+        targetSse: quality.sse,
+      }),
+  )
   if (Math.abs(targetSse - sseAuto) > 0.25) {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
@@ -1015,6 +1119,8 @@ function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
   cameraFlight.update(now)
+  updateCloudReveal()
+  updateMatrixPrecision(now)
   keyboardNavigation?.update(
     now,
     cameraGroundRange,
@@ -1185,7 +1291,7 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
   })
-  stream.group.position.copy(enuUp).multiplyScalar(zOffset)
+  applyHeightOffset()
   // Debug handle for streaming diagnosis in the console.
   ;(window as any).__wild = {
     stream,
@@ -1330,6 +1436,8 @@ function dispose(): void {
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
   delete loaderEagleCanvasEl.dataset.benchState
   rainToggleEl.removeEventListener('click', onRainToggle)
+  precisionToggleEl.removeEventListener('click', onPrecisionToggle)
+  liftToggleEl.removeEventListener('click', onLiftToggle)
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
   timeSliderEl.removeEventListener('input', onTimeInput)

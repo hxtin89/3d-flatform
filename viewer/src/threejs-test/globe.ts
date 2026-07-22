@@ -9,7 +9,7 @@ import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { texture } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
-import { maskDimNode, type CloudUniforms } from './point-cloud'
+import { applyMatrixPrecision, maskDimNode, type CloudUniforms } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
@@ -22,6 +22,8 @@ export interface Globe {
   update(constrainCamera?: () => void): void
   setResolution(): void
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
+  /** Re-apply the current matrix precision mode to already-loaded imagery. */
+  refreshMatrixPrecision(): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
@@ -80,6 +82,9 @@ export function createGlobe(opts: {
       map.flipY = false
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
+      // Imagery hangs off the same ECEF transforms as the point tiles and jitters
+      // with them — see applyMatrixPrecision.
+      applyMatrixPrecision(mat)
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
       mat.colorNode = texture(map)
@@ -128,6 +133,9 @@ export function createGlobe(opts: {
       tiles.update()
     },
     setResolution,
+    refreshMatrixPrecision() {
+      tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+    },
     stats() {
       return {
         visible: tiles.visibleTiles.size,
