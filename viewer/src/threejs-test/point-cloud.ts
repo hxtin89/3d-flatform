@@ -33,6 +33,9 @@ export interface CloudUniforms {
   groundFogStrength: any
   groundFogBaseZ: any
   groundFogHeight: any
+  /** Metres below the base over which the fog fades out downward, turning the
+   * one-sided slab into a band. 0 restores the original slab. */
+  groundFogFadeBelow: any
   groundFogDistance: any
   groundFogCurve: any
   /** world/ECEF to local ENU. */
@@ -46,6 +49,9 @@ export interface CloudUniforms {
   cloudShadowOffset: any
   cloudShadowStrength: any
   cloudShadowScale: any
+  /** Tightens the noise-to-shadow ramp around its midpoint: 0 is the original
+   * wide, washed window, 1 a near-binary edge. */
+  cloudShadowContrast: any
   cloudDeckHeight: any
   /** Golden-hour warm rim graded by canopy height (points have no normals). */
   goldenFactor: any
@@ -66,7 +72,7 @@ export function createUniforms(): CloudUniforms {
   return {
     maskCenter: uniform(new THREE.Vector2(0, 0)),
     maskRadius: uniform(120),
-    maskMode: uniform(2),
+    maskMode: uniform(EXPERIENCE_CONFIG.design.maskMode),
     vignetteStrength: uniform(0),
     maskFringe: uniform(EXPERIENCE_CONFIG.design.maskFringe),
     maskFringeCurve: uniform(EXPERIENCE_CONFIG.design.maskFringeCurve),
@@ -79,6 +85,7 @@ export function createUniforms(): CloudUniforms {
     groundFogStrength: uniform(EXPERIENCE_CONFIG.design.groundFog.strength),
     groundFogBaseZ: uniform(0),
     groundFogHeight: uniform(EXPERIENCE_CONFIG.design.groundFog.heightM),
+    groundFogFadeBelow: uniform(EXPERIENCE_CONFIG.design.groundFog.fadeBelowM),
     groundFogDistance: uniform(EXPERIENCE_CONFIG.design.groundFog.efoldDistanceM),
     groundFogCurve: uniform(EXPERIENCE_CONFIG.design.groundFog.curve),
     enuInverse: uniform(new THREE.Matrix4()),
@@ -88,6 +95,7 @@ export function createUniforms(): CloudUniforms {
     cloudShadowOffset: uniform(new THREE.Vector2(0, 0)),
     cloudShadowStrength: uniform(0),
     cloudShadowScale: uniform(1 / EXPERIENCE_CONFIG.pointLighting.cloudShadowScaleM),
+    cloudShadowContrast: uniform(EXPERIENCE_CONFIG.pointLighting.cloudShadowContrast),
     cloudDeckHeight: uniform(EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM),
     goldenFactor: uniform(0),
     warmRimColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.pointLighting.warmRim)),
@@ -137,6 +145,15 @@ export function applyMaskSurround(u: CloudUniforms, color: any, floor = 0): any 
  * thick, looking down through it from 1 km up is thin, and neither needs its own
  * special case. The mix() guards the `1/dz` term on near-level rays, where the
  * integral degenerates to `length * density`.
+ *
+ * `groundFogFadeBelow` turns the one-sided slab into a band — a layer hanging in
+ * the canopy with clear air beneath it. Deliberately applied as an envelope on
+ * the integrated result rather than inside the integral: a two-sided profile has
+ * no closed form, and re-deriving one would cost the cheapness that is this
+ * function's whole point. The consequence is that the lower edge is shaped by the
+ * shaded fragment's own height, not by how much of the band the view ray actually
+ * crossed — so the band reads correctly looking at it, and softens rather than
+ * layering properly when the camera sits inside its lower edge.
  */
 export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
   const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
@@ -153,14 +170,25 @@ export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
   const slopedDepth = rayLength.mul(u.groundFogHeight)
     .mul(densityAtSurface.sub(densityAtCamera)).div(deltaZ)
   const opticalDepth = mix(levelDepth, slopedDepth, smoothstep(0.5, 5, abs(deltaZ)))
+  // Lower edge of the band: 1 at the base, ramping to 0 fadeBelow metres under
+  // it. The floor on the width keeps the two smoothstep edges from collapsing
+  // onto each other at fadeBelow 0, where this has to stay a flat 1.
+  const fadeBelow = max(u.groundFogFadeBelow, float(0.001))
+  const belowFade = smoothstep(fadeBelow.negate(), float(0), surfaceZ)
   // groundFogDistance is the e-folding distance for a ray travelling along the
   // fog base. The curve exponent reshapes the Beer-Lambert ramp *after* the
   // integral, so it restyles the falloff without breaking the ray layering;
   // strength stays a plain final multiplier so 0 is reliably off.
+  // groundFogDistance is a divisor and the panel lets it reach 0, so it is floored
+  // here rather than trusting the binding — a NaN would poison every fragment.
+  // The final clamp lets strength go past 100% for a denser, earlier-saturating
+  // ramp without the mix() overshooting past the fog colour into wild values.
   return {
-    amount: float(1).sub(exp(opticalDepth.div(u.groundFogDistance).negate()))
+    amount: float(1).sub(exp(opticalDepth.div(max(u.groundFogDistance, float(0.01))).negate()))
       .pow(u.groundFogCurve)
-      .mul(u.groundFogStrength),
+      .mul(u.groundFogStrength)
+      .mul(belowFade)
+      .clamp(0, 1),
     color: u.groundFogColor,
   }
 }
@@ -269,7 +297,16 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
       const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
       const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))
       const uvw = vec3(deckXY.mul(u.cloudShadowScale).add(u.cloudShadowOffset), float(0.5))
-      const shadowDensity = smoothstep(0.32, 0.62, cloudShadowTextureNode.sample(uvw).r)
+      // Contrast tightens the noise-to-shadow window around its midpoint instead
+      // of scaling the result: widening the ramp would only wash the shadows out
+      // again, while narrowing it turns soft blotches into defined cloud gaps.
+      // Contrast 0 reproduces the original fixed 0.32–0.62 window exactly.
+      const shadowMid = float(0.47)
+      const shadowHalfWindow = mix(float(0.15), float(0.005), u.cloudShadowContrast)
+      const shadowDensity = smoothstep(
+        shadowMid.sub(shadowHalfWindow), shadowMid.add(shadowHalfWindow),
+        cloudShadowTextureNode.sample(uvw).r,
+      )
       cloudShadow.assign(float(1).sub(shadowDensity.mul(u.cloudShadowStrength)))
     }
 

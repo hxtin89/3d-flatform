@@ -238,9 +238,19 @@ export const EXPERIENCE_CONFIG = {
     pointSizePx: 2,
   },
   pointLighting: {
-    // Directional daylight cues for the (normal-less) point cloud.
-    cloudShadowStrength: 0.34,
-    cloudShadowScaleM: 9_000,
+    // Directional daylight cues for the (normal-less) point cloud. All three
+    // cloud-shadow values are live in the design panel; strength goes through
+    // the environment layer because it rides the daylight ramp there.
+    /** Base depth of the drifting canopy shadows, before the layer multiplies it
+     * by daylight and halves it when the visible clouds are off. */
+    cloudShadowStrength: 1,
+    /** Metres per period of the shadow noise — the grain size. Smaller means
+     * finer, busier dappling; larger means broad continental shadows. */
+    cloudShadowScaleM: 1_700,
+    /** Tightens the noise-to-shadow ramp around its midpoint. 0 is the original
+     * wide 0.32–0.62 window (soft, washed); 1 is a near-binary edge, which reads
+     * as hard-edged cloud gaps. */
+    cloudShadowContrast: 0.63,
     cloudDeckHeightM: 3_600,
     goldenRimStrength: 0.5,
     warmRim: 0xffb268,
@@ -267,8 +277,12 @@ export const EXPERIENCE_CONFIG = {
     maximumFarM: 650_000,
     fallbackRangeM: 120_000,
     farRangeMultiplier: 5.5,
-    fogNearFactor: 0.06,
-    fogFarFactor: 0.52,
+    // Both are fractions of the current far plane, not metres, so the haze keeps
+    // the same proportions at every viewing height — the design panel's
+    // Distanz-Nebel card retunes these two. Near at 0 starts the haze right at
+    // the camera, which is what carries the milky depth in the dialled-in look.
+    fogNearFactor: 0,
+    fogFarFactor: 0.42,
     // Per-frame with gentle smoothing: the former 8 Hz far-plane steps made
     // the globe's horizon edge flicker against the sky like z-fighting.
     updateIntervalMs: 0,
@@ -282,10 +296,17 @@ export const EXPERIENCE_CONFIG = {
   // shipped defaults; the sliders write the same uniforms, so anything dialled in
   // here can be pasted back as a new default.
   design: {
+    /** Mask mode the scene starts in: 0 = off, 2 = viewport vignette. Off by
+     * default — the vignette is a look decision, not a performance lever, so the
+     * loader benchmark no longer switches it on for weaker presets either. Set
+     * this to 2 to restore the old behaviour of masking on medium/constrained. */
+    maskMode: 0,
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,
-    /** Multiplies the basemap only — the point cloud keeps its own grading. */
-    mapBrightness: 1,
+    /** Multiplies the basemap only — the point cloud keeps its own grading.
+     * Dialled far down so the imagery sits back as a dark ground plane and the
+     * canopy reads on top of it. */
+    mapBrightness: 0.1,
     /** Stochastic dissolve band at the vignette edge, as a fraction of the mask
      * radius. 0 reproduces the old hard circular cut. */
     maskFringe: 0.35,
@@ -301,29 +322,99 @@ export const EXPERIENCE_CONFIG = {
     /** How far the points and imagery themselves take surroundColor outside the
      * mask. 0 keeps the original fade-to-black. */
     surroundTint: 0,
+    /** Where the vignette anchors as camera pitch changes. Looking down
+     * (top-down), it stays the screen-centre ground hit — already centred.
+     * Looking across the canopy (side view), that same raycast can swing
+     * kilometres per degree of pitch, so it blends toward a point pinned to
+     * the camera itself: the near field is always "inside" the mask, and only
+     * the far field fades — through groundFog, not a hard mask edge. */
+    vignettePosition: {
+      /** Pitch (degrees below horizontal) at and below which the mask is
+       * fully in side-view mode. */
+      sideAngleDeg: 20,
+      /** Pitch at and above which the mask is fully in top-down mode; the
+       * anchor blends linearly-smoothed between this and sideAngleDeg. */
+      topAngleDeg: 65,
+      /** Metres ahead of the camera, along its horizontal look direction,
+       * the side-view anchor sits. 0 pins it directly on the camera. */
+      sideForwardOffsetM: 0,
+      /** Floor on the mask radius while in side view, so being extremely
+       * close to the canopy never shrinks the radius below arm's reach. */
+      sideMinRadiusM: 150,
+      /** Cap on vignetteStrength while fully in side view. Below the shader's
+       * 0.95 discard threshold, side-view points are only dimmed/tinted toward
+       * the surround and the far field is left to groundFog. At 1 the threshold
+       * is reached again, so the stochastic fringe discard is back in side view
+       * too — which is what the dialled-in look uses. */
+      sideMaxVignetteStrength: 1,
+    },
     // Analytic exponential height fog: no raymarch, no extra pass, no texture —
     // a handful of ALU ops folded into the existing point and imagery colour
     // nodes. Nothing animates, so there is nothing to sample per frame.
+    // The dialled-in look is a warm haze band sitting in the canopy rather than
+    // the wide neutral slab this started as. Note how the values work together:
+    // a very short density distance (25 m) would normally fog the near field
+    // solid, but curve 4 pushes almost all of that density out into the distance,
+    // and the 170 m lower fade keeps the air under the band clear. Pinned to a
+    // warm cream instead of following the daylight ramp.
     groundFog: {
-      /** Final multiplier, so 0 is reliably off regardless of the other values. */
-      strength: 0.55,
-      /** Fog floor relative to the survey's lowest point. */
-      baseOffsetM: 0,
+      /** Final multiplier, so 0 is reliably off regardless of the other values.
+       * The panel allows up to 3; the resulting coverage is clamped to 1, so past
+       * 100% the fog saturates earlier rather than overshooting its colour. */
+      strength: 0.75,
+      /** Fog floor relative to the survey's lowest point. Also the height the
+       * band peaks at, since density decays upward from here and fadeBelowM
+       * fades it out downward. */
+      baseOffsetM: 35,
       /** e-folding height of the slab: density falls to 1/e at this height. */
-      heightM: 120,
+      heightM: 10,
+      /** Metres below the base over which the fog fades out downward. 0 is the
+       * original one-sided slab that extends to the ground at full density; any
+       * positive value turns it into a band — a layer hanging in the canopy with
+       * clear air underneath. Together with heightM this sets the band's total
+       * thickness: roughly fadeBelowM below the base, ~2x heightM above it, so
+       * this band is deliberately lopsided — a soft underside, a tight top. */
+      fadeBelowM: 170,
       /** e-folding distance for a ray travelling along the fog base — smaller
-       * values thicken the fog. Not a cutoff: opacity approaches 1 asymptotically. */
-      efoldDistanceM: 1_800,
+       * values thicken the fog. Not a cutoff: opacity approaches 1 asymptotically.
+       * Only this low because curve below banks the density into the distance. */
+      efoldDistanceM: 25,
       /** Exponent shaping the accumulated opacity ramp. 1 is the physical
        * Beer-Lambert curve; >1 holds the near field clear and banks the density
        * into the distance, <1 brings fog on fast and flattens out early.
        * Applied to the integrated result, so the layering stays correct. */
-      curve: 1,
+      curve: 4,
       /** Custom fog colour, blended over the daylight-driven fog colour by
        * `tint` — 0 keeps the automatic day/night ramp, 1 pins this colour. */
-      color: 0xb8ccd8,
-      tint: 0,
+      color: 0xfff2e0,
+      tint: 1,
     },
+  },
+  // The one effect that cannot live inside a colour node: a circle of confusion
+  // has to read neighbouring pixels, so DoF is a real post pass (see
+  // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel
+  // toggle exists so it can be dropped on weak hardware.
+  depthOfField: {
+    enabled: true,
+    /** Pin the focal plane to whatever the screen centre is aimed at, so the
+     * near canopy stays sharp while the background falls away. With this off,
+     * focusDistanceM becomes an absolute distance from the camera. */
+    autoFocus: true,
+    /** With autoFocus on: metres added to the measured ground range — negative
+     * pulls focus in front of the aimed point. Off: the absolute distance.
+     * Pulled 120 m forward so the near canopy, not the aimed ground point,
+     * carries the sharp plane. */
+    focusDistanceM: -120,
+    /** Metres past the focal plane at which content is fully out of focus.
+     * Small values give a shallow, cinematic band; large values keep almost
+     * everything sharp. */
+    focalLengthM: 1_075,
+    /** Unitless bokeh size. Drives how wide the blur kernel spreads, so it is
+     * also the main cost knob. */
+    bokehScale: 2.5,
+    /** Per-frame lerp factor for the auto-focus. Low values keep the focal
+     * plane from snapping while the camera moves. */
+    focusSmoothing: 0.08,
   },
   rain: {
     dryDurationMs: 10_000,

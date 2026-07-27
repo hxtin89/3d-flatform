@@ -29,6 +29,7 @@ import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
+import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -52,6 +53,16 @@ const freeOrbit = params.has('freeorbit')
 /** Shows the measured heights in the HUD. Implied by freeorbit, but available
  * on its own so the configured zoom stop can be checked while it still bites. */
 const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
+/** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
+ * measures. The benchmark samples frame times while tiles are still streaming,
+ * so a hitch can collapse the median past its 60 fps threshold and pin a
+ * capable machine to `constrained` — which renders at pixelRatio 1 and, since
+ * basemap refinement derives from the renderer resolution, visibly softens the
+ * satellite imagery. This is the escape hatch for that. */
+const presetOverride: BenchPreset | null = (() => {
+  const raw = params.get('preset')
+  return raw === 'strong' || raw === 'medium' || raw === 'constrained' ? raw : null
+})()
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
@@ -215,17 +226,23 @@ loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 function applyBenchPreset(): void {
   const measured = eagleBench?.result() ?? null
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
-  const preset: BenchPreset = measured?.preset
+  const preset: BenchPreset = presetOverride
+    ?? measured?.preset
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
-      : 'no measurement (heuristic fallback)'} → preset ${preset}`,
+      : 'no measurement (heuristic fallback)'} → preset ${preset}${
+      presetOverride ? ' (forced by ?preset)' : ''}`,
   )
+  // The vignette used to be part of the bargain — masked on the weaker presets to
+  // cut drawn points. It is a look decision now, so every preset takes the
+  // configured default and the weaker tiers pay with pixel ratio and view
+  // distance alone. Set design.maskMode to 2 to hand the lever back.
   if (preset === 'strong') {
-    setMaskMode(0)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
     adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
@@ -235,7 +252,7 @@ function applyBenchPreset(): void {
     stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
     globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
   } else if (preset === 'medium') {
-    setMaskMode(2)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.1))
     adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
@@ -243,7 +260,7 @@ function applyBenchPreset(): void {
     stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
     globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
   } else {
-    setMaskMode(2)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     renderer.setPixelRatio(1)
     adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
@@ -322,6 +339,12 @@ const DAYLIGHT_SKY = 0x8bc9ec
 renderer.setClearColor(DAYLIGHT_SKY, 1)
 
 const scene = new THREE.Scene()
+// The sky is also a real scene background, not just the renderer's clear colour.
+// The clear colour only reaches the canvas: once the frame is routed through the
+// depth-of-field pass it renders into an offscreen target that clears to
+// transparent black, and the sky came out black. The environment layer keeps both
+// this and the clear colour on the daylight ramp.
+scene.background = new THREE.Color(DAYLIGHT_SKY)
 const distanceFog = new THREE.Fog(
   DAYLIGHT_SKY,
   EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,
@@ -337,6 +360,9 @@ const camera = new THREE.PerspectiveCamera(
 const uniforms = createUniforms()
 const adaptiveQuality = new AdaptiveQualityController(pointTree === 'aph' ? APH_BAND_SSE : undefined)
 const fps = new Fps()
+// Owns the frame's draw call: it either routes the scene through the DoF pass or
+// falls back to renderer.render, so there is one render path either way.
+const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scene, camera })
 
 /** Point size follows camera height continuously — tied to the three SSE bands
  * it visibly stepped mid-zoom. The slider stays a live multiplier on top of the
@@ -405,6 +431,9 @@ let pointCloudRevealed = true
 let atmosphereFar = camera.far
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
+// Distance-fog ends as fractions of the far plane — see updateAtmosphere.
+let distanceFogNearFactor: number = EXPERIENCE_CONFIG.atmosphere.fogNearFactor
+let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
 let lastFieldTier: PerformanceTier | null = null
 let disposed = false
 
@@ -758,6 +787,17 @@ const hitEnu = new THREE.Vector3()
 const hit2d = new THREE.Vector2()
 const followEnu = new THREE.Vector2()
 let followInit = false
+const sideAnchor2d = new THREE.Vector2()
+const pitchForwardWorld = new THREE.Vector3()
+const pitchAheadWorld = new THREE.Vector3()
+const pitchCameraEnu = new THREE.Vector3()
+const pitchAheadEnu = new THREE.Vector3()
+const VIGNETTE_POS = EXPERIENCE_CONFIG.design.vignettePosition
+let vignetteSideAngleDeg: number = VIGNETTE_POS.sideAngleDeg
+let vignetteTopAngleDeg: number = VIGNETTE_POS.topAngleDeg
+let vignetteSideForwardOffsetM: number = VIGNETTE_POS.sideForwardOffsetM
+let vignetteSideMinRadiusM: number = VIGNETTE_POS.sideMinRadiusM
+let vignetteSideMaxStrength: number = VIGNETTE_POS.sideMaxVignetteStrength
 const maskSphereEnu = new THREE.Vector3()
 const maskSphereWorld = new THREE.Vector3()
 let maskWorldActive = false
@@ -825,23 +865,61 @@ function smooth01(edge0: number, edge1: number, value: number): number {
   return t * t * (3 - 2 * t)
 }
 
+/** Degrees below horizontal the camera looks: ~90 straight down, ~0 level,
+ * negative looking up. Same convention as the design-panel slider labels. */
+function cameraPitchDeg(): number {
+  camera.getWorldDirection(pitchForwardWorld)
+  const sinPitch = THREE.MathUtils.clamp(-pitchForwardWorld.dot(enuUp), -1, 1)
+  return THREE.MathUtils.radToDeg(Math.asin(sinPitch))
+}
+
+/** Side-view mask anchor: the camera's own ENU position, nudged forward
+ * along its horizontal look direction by sideForwardOffsetM. Pinned to the
+ * camera rather than a raycast so the mask stays wrapped around the viewer
+ * once the view flattens, instead of chasing a screen-centre ground hit that
+ * swings kilometres per degree of pitch. */
+function sideAnchorEnu2d(target: THREE.Vector2): THREE.Vector2 {
+  worldToEnu(camera.position, pitchCameraEnu)
+  pitchAheadWorld.copy(pitchForwardWorld).add(camera.position)
+  worldToEnu(pitchAheadWorld, pitchAheadEnu)
+  pitchAheadEnu.sub(pitchCameraEnu)
+  pitchAheadEnu.z = 0
+  if (pitchAheadEnu.lengthSq() > 1e-6) pitchAheadEnu.normalize()
+  return target.set(
+    pitchCameraEnu.x + pitchAheadEnu.x * vignetteSideForwardOffsetM,
+    pitchCameraEnu.y + pitchAheadEnu.y * vignetteSideForwardOffsetM,
+  )
+}
+
 function updateMaskFollow(): void {
   const mode = uniforms.maskMode.value
   ndc.set(0, 0)
   ray.setFromCamera(ndc, camera)
+
+  // cameraPitchDeg() also fills pitchForwardWorld, which sideAnchorEnu2d needs.
+  const sideFactor = enuFrameReady
+    ? 1 - smooth01(vignetteSideAngleDeg, vignetteTopAngleDeg, cameraPitchDeg())
+    : 0
+  if (enuFrameReady) sideAnchorEnu2d(sideAnchor2d)
 
   let missedGround = false
   if (ray.ray.intersectPlane(groundPlane, hitEcef)) {
     cameraGroundRange = camera.position.distanceTo(hitEcef)
     hitEnu.copy(hitEcef).applyMatrix4(enuInverse)
     hit2d.set(hitEnu.x, hitEnu.y)
-    if (!followInit) { followEnu.copy(hit2d); followInit = true }
-    else followEnu.lerp(hit2d, 0.2)
-    uniforms.maskCenter.value.copy(followEnu)
   } else {
     cameraGroundRange = camera.position.distanceTo(cloudCenterEcef)
     missedGround = true
+    hit2d.copy(sideAnchor2d)
   }
+  // Blend the screen-centre ground hit (correct once the camera looks down)
+  // toward the camera-pinned anchor (correct once it looks across the
+  // canopy) — see sideAnchorEnu2d for why the raycast alone isn't enough.
+  if (enuFrameReady) hit2d.lerp(sideAnchor2d, sideFactor)
+
+  if (!followInit) { followEnu.copy(hit2d); followInit = true }
+  else followEnu.lerp(hit2d, 0.2)
+  uniforms.maskCenter.value.copy(followEnu)
 
   // Refinement distance: height over the cloud floor plus how far outside the
   // survey footprint the camera sits. The screen-centre hit above is useless
@@ -869,10 +947,19 @@ function updateMaskFollow(): void {
     return
   }
 
-  const radius = THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000)
+  // Side view: floor the radius so being extremely close to the canopy never
+  // shrinks the "portal" below arm's reach, and cap the strength below the
+  // shader's 0.95 discard threshold — points are dimmed/tinted toward the
+  // surround at most, never discarded. Distant points still disappear, but
+  // through groundFog rather than a hard mask edge.
+  const radius = Math.max(
+    THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000),
+    vignetteSideMinRadiusM * sideFactor,
+  )
   const strength = 1 - smooth01(4, 20, cameraGroundRange / radius)
   const flightBlend = smooth01(0.68, 1, cinematicFlightProgress)
-  const visibleStrength = strength * flightBlend
+  const strengthCap = THREE.MathUtils.lerp(1, vignetteSideMaxStrength, sideFactor)
+  const visibleStrength = Math.min(strength * flightBlend, strengthCap)
   uniforms.maskRadius.value = radius
   uniforms.vignetteStrength.value = visibleStrength
   vignetteEl.style.opacity = String(visibleStrength)
@@ -908,8 +995,12 @@ function updateAtmosphere(now: number): void {
 
   camera.far = atmosphereFar
   camera.updateProjectionMatrix()
-  distanceFog.near = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogNearFactor
-  distanceFog.far = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogFarFactor
+  // Both ends are fractions of the current far plane rather than absolute metres,
+  // so the haze keeps the same proportions whether the camera sits 100 m over the
+  // canopy or 90 km out. The design panel retunes the fractions, not the metres —
+  // which is also why they cannot be written to distanceFog once and left alone.
+  distanceFog.near = atmosphereFar * distanceFogNearFactor
+  distanceFog.far = atmosphereFar * Math.max(distanceFogFarFactor, distanceFogNearFactor + 0.01)
 }
 
 // ---------------------------------------------------------------- fly-to
@@ -1011,13 +1102,96 @@ const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
 bindDesignSlider('fogStrength', DESIGN.groundFog.strength, asPercent, (v) => { uniforms.groundFogStrength.value = v })
+// Distance fog: fractions of the far plane, applied in updateAtmosphere. Forcing
+// an immediate pass so the slider does not wait out the smoothing.
+bindDesignSlider('distanceFogNear', EXPERIENCE_CONFIG.atmosphere.fogNearFactor, asPercent, (v) => {
+  distanceFogNearFactor = v
+  lastAtmosphereUpdate = -Infinity
+})
+bindDesignSlider('distanceFogFar', EXPERIENCE_CONFIG.atmosphere.fogFarFactor, asPercent, (v) => {
+  distanceFogFarFactor = v
+  lastAtmosphereUpdate = -Infinity
+})
 bindDesignSlider('fogHeight', DESIGN.groundFog.heightM, asMetres, (v) => { uniforms.groundFogHeight.value = v })
+bindDesignSlider('fogFadeBelow', DESIGN.groundFog.fadeBelowM, asMetres, (v) => { uniforms.groundFogFadeBelow.value = v })
 bindDesignSlider('fogCurve', DESIGN.groundFog.curve, asFactor, (v) => { uniforms.groundFogCurve.value = v })
-bindDesignSlider('fogDistance', DESIGN.groundFog.efoldDistanceM, asMetres, (v) => { uniforms.groundFogDistance.value = v })
+// The uniform is a divisor, so 0 would be a division by zero. The slider still
+// reads 0 m; the shader clamps too, this just keeps the uniform itself finite.
+bindDesignSlider('fogDistance', DESIGN.groundFog.efoldDistanceM, asMetres, (v) => {
+  uniforms.groundFogDistance.value = Math.max(v, 0.01)
+})
 bindDesignSlider('fogBase', DESIGN.groundFog.baseOffsetM, asMetres, (v) => { groundFogBaseOffset = v; applyGroundFogBase() })
 bindDesignSlider('maskFringe', DESIGN.maskFringe, asPercent, (v) => { uniforms.maskFringe.value = v })
 bindDesignSlider('maskFringeCurve', DESIGN.maskFringeCurve, asFactor, (v) => { uniforms.maskFringeCurve.value = v })
 bindDesignSlider('surroundTint', DESIGN.surroundTint, asPercent, (v) => { uniforms.maskSurroundAmount.value = v })
+
+const asDegrees = (value: number) => `${Math.round(value)}°`
+const VIGNETTE_POSITION_DESIGN = DESIGN.vignettePosition
+bindDesignSlider(
+  'vignetteSideAngle', VIGNETTE_POSITION_DESIGN.sideAngleDeg, asDegrees,
+  (v) => { vignetteSideAngleDeg = v },
+)
+bindDesignSlider(
+  'vignetteTopAngle', VIGNETTE_POSITION_DESIGN.topAngleDeg, asDegrees,
+  (v) => { vignetteTopAngleDeg = v },
+)
+bindDesignSlider(
+  'vignetteForwardOffset', VIGNETTE_POSITION_DESIGN.sideForwardOffsetM, asMetres,
+  (v) => { vignetteSideForwardOffsetM = v },
+)
+bindDesignSlider(
+  'vignetteSideMinRadius', VIGNETTE_POSITION_DESIGN.sideMinRadiusM, asMetres,
+  (v) => { vignetteSideMinRadiusM = v },
+)
+bindDesignSlider(
+  'vignetteSideMaxStrength', VIGNETTE_POSITION_DESIGN.sideMaxVignetteStrength, asPercent,
+  (v) => { vignetteSideMaxStrength = v },
+)
+
+// Depth of field. The two toggles read their state back off the layer rather than
+// tracking it here, so the layer stays the single source of truth.
+const DOF = EXPERIENCE_CONFIG.depthOfField
+const dofToggleEl = $<HTMLButtonElement>('#dofToggle')
+const dofAutoFocusEl = $<HTMLButtonElement>('#dofAutoFocus')
+const dofFocusRowEl = $<HTMLDivElement>('#dofFocusRow')
+const syncDofToggles = () => {
+  const on = depthOfField.isEnabled()
+  dofToggleEl.classList.toggle('on', on)
+  dofToggleEl.setAttribute('aria-pressed', String(on))
+  dofToggleEl.textContent = `◉ Depth of Field · ${on ? 'An' : 'Aus'}`
+  const auto = depthOfField.isAutoFocus()
+  dofAutoFocusEl.classList.toggle('on', auto)
+  dofAutoFocusEl.setAttribute('aria-pressed', String(auto))
+  dofAutoFocusEl.textContent = `⊙ Autofokus · ${auto ? 'An' : 'Aus'}`
+  // The focus slider means "offset from the aimed point" with autofocus on and
+  // "absolute distance" with it off. Relabel rather than offer two sliders.
+  dofFocusRowEl.dataset.mode = auto ? 'offset' : 'absolute'
+}
+const onDofToggle = () => { depthOfField.setEnabled(!depthOfField.isEnabled()); syncDofToggles() }
+const onDofAutoFocus = () => { depthOfField.setAutoFocus(!depthOfField.isAutoFocus()); syncDofToggles() }
+dofToggleEl.addEventListener('click', onDofToggle)
+dofAutoFocusEl.addEventListener('click', onDofAutoFocus)
+syncDofToggles()
+bindDesignSlider('dofFocusDistance', DOF.focusDistanceM, asMetres, (v) => depthOfField.setFocusDistance(v))
+bindDesignSlider('dofFocalLength', DOF.focalLengthM, asMetres, (v) => depthOfField.setFocalLength(v))
+bindDesignSlider('dofBokehScale', DOF.bokehScale, asFactor, (v) => depthOfField.setBokehScale(v))
+bindDesignSlider('dofFocusSmoothing', DOF.focusSmoothing, asPercent, (v) => depthOfField.setFocusSmoothing(v))
+
+// Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
+// through the environment layer, which rewrites that uniform from the daylight
+// ramp on every pass and would otherwise overwrite the slider immediately.
+const POINT_LIGHTING = EXPERIENCE_CONFIG.pointLighting
+bindDesignSlider('cloudShadowStrength', POINT_LIGHTING.cloudShadowStrength, asPercent, (v) => {
+  environmentLayer?.setCloudShadowStrength(v)
+})
+// The uniform is 1/metres — the slider is in metres so the label reads as a grain
+// size, with smaller values meaning finer dappling.
+bindDesignSlider('cloudShadowScale', POINT_LIGHTING.cloudShadowScaleM, asMetres, (v) => {
+  uniforms.cloudShadowScale.value = 1 / Math.max(v, 1)
+})
+bindDesignSlider('cloudShadowContrast', POINT_LIGHTING.cloudShadowContrast, asPercent, (v) => {
+  uniforms.cloudShadowContrast.value = v
+})
 
 // Fog colour and tint share one setter: the environment layer folds them into the
 // daylight ramp, so neither can be written straight to the uniform.
@@ -1048,6 +1222,7 @@ bindDesignSlider('surroundOpacity', DESIGN.surroundOpacity, asPercent, (v) => {
 const designCopyEl = $<HTMLButtonElement>('#designCopy')
 designCopyEl.addEventListener('click', async () => {
   const snippet = `design: ${JSON.stringify({
+    maskMode: uniforms.maskMode.value,
     mapSaturation: uniforms.mapSaturation.value,
     mapBrightness: uniforms.mapBrightness.value,
     maskFringe: uniforms.maskFringe.value,
@@ -1055,15 +1230,40 @@ designCopyEl.addEventListener('click', async () => {
     surroundColor: $<HTMLInputElement>('#surroundColor').value.replace('#', '0x'),
     surroundOpacity: Number($<HTMLInputElement>('#surroundOpacity').value),
     surroundTint: uniforms.maskSurroundAmount.value,
+    vignettePosition: {
+      sideAngleDeg: vignetteSideAngleDeg,
+      topAngleDeg: vignetteTopAngleDeg,
+      sideForwardOffsetM: vignetteSideForwardOffsetM,
+      sideMinRadiusM: vignetteSideMinRadiusM,
+      sideMaxVignetteStrength: vignetteSideMaxStrength,
+    },
     groundFog: {
       strength: uniforms.groundFogStrength.value,
       baseOffsetM: groundFogBaseOffset,
       heightM: uniforms.groundFogHeight.value,
+      fadeBelowM: uniforms.groundFogFadeBelow.value,
       efoldDistanceM: uniforms.groundFogDistance.value,
       curve: uniforms.groundFogCurve.value,
       color: fogTintHex.replace('#', '0x'),
       tint: fogTintAmount,
     },
+  }, null, 2)}
+pointLighting: ${JSON.stringify({
+    cloudShadowStrength: Number($<HTMLInputElement>('#cloudShadowStrength').value),
+    cloudShadowScaleM: Number($<HTMLInputElement>('#cloudShadowScale').value),
+    cloudShadowContrast: uniforms.cloudShadowContrast.value,
+  }, null, 2)}
+atmosphere: ${JSON.stringify({
+    fogNearFactor: distanceFogNearFactor,
+    fogFarFactor: distanceFogFarFactor,
+  }, null, 2)}
+depthOfField: ${JSON.stringify({
+    enabled: depthOfField.isEnabled(),
+    autoFocus: depthOfField.isAutoFocus(),
+    focusDistanceM: Number($<HTMLInputElement>('#dofFocusDistance').value),
+    focalLengthM: Number($<HTMLInputElement>('#dofFocalLength').value),
+    bokehScale: Number($<HTMLInputElement>('#dofBokehScale').value),
+    focusSmoothing: Number($<HTMLInputElement>('#dofFocusSmoothing').value),
   }, null, 2)}`
   try {
     await navigator.clipboard.writeText(snippet)
@@ -1294,7 +1494,8 @@ function loop(now: number): void {
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
-  renderer.render(scene, camera)
+  depthOfField.update(cameraGroundRange)
+  depthOfField.render()
 }
 
 // ---------------------------------------------------------------- boot
@@ -1446,8 +1647,10 @@ async function main(): Promise<void> {
   })
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
-  // Hand over any fog tint dialled in while the layer did not exist yet.
+  // Hand over anything dialled in while the layer did not exist yet — both of
+  // these live on the layer because it owns the daylight ramp they ride on.
   applyFogTint()
+  environmentLayer.setCloudShadowStrength(Number($<HTMLInputElement>('#cloudShadowStrength').value))
   audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
@@ -1484,7 +1687,7 @@ async function main(): Promise<void> {
   camera.up.copy(enuUp)
   camera.lookAt(cloudCenterEcef)
 
-  setMaskMode(2)
+  setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
   setStatus('Adaptive streaming · loading tiles…')
   renderer.setAnimationLoop(loop)
 
@@ -1559,6 +1762,7 @@ function dispose(): void {
   environmentLayer?.dispose()
   stream?.dispose()
   globe?.dispose()
+  depthOfField.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()
@@ -1568,6 +1772,8 @@ function dispose(): void {
   rainToggleEl.removeEventListener('click', onRainToggle)
   precisionToggleEl.removeEventListener('click', onPrecisionToggle)
   liftToggleEl.removeEventListener('click', onLiftToggle)
+  dofToggleEl.removeEventListener('click', onDofToggle)
+  dofAutoFocusEl.removeEventListener('click', onDofAutoFocus)
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
   timeSliderEl.removeEventListener('input', onTimeInput)
