@@ -44,6 +44,10 @@ export interface EnvironmentLayer {
   setPeruMinutes(minutes: number | null): void
   /** Design panel: blend a fixed colour over the daylight-driven ground fog. */
   setGroundFogTint(color: THREE.ColorRepresentation, amount: number): void
+  /** Design panel: base depth of the canopy cloud shadows. Goes through the layer
+   * because the shadow uniform is rewritten every frame from the daylight ramp,
+   * so a panel writing the uniform directly would be overwritten immediately. */
+  setCloudShadowStrength(strength: number): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -236,6 +240,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   // next update would overwrite it.
   const groundFogTint = new THREE.Color(EXPERIENCE_CONFIG.design.groundFog.color)
   let groundFogTintAmount: number = EXPERIENCE_CONFIG.design.groundFog.tint
+  let cloudShadowStrengthBase: number = EXPERIENCE_CONFIG.pointLighting.cloudShadowStrength
   const nightGrade = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
   const dayGrade = new THREE.Color(0xffffff)
   const warmLight = new THREE.Color(0xffc58f)
@@ -511,9 +516,15 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       * Math.max(daylight, twilight * 0.5)
     // Canopy shadows only make sense while the sun is up; halve them when the
     // visible clouds are disabled so the ground still reads believably.
-    uniforms.cloudShadowStrength.value = EXPERIENCE_CONFIG.pointLighting.cloudShadowStrength
+    uniforms.cloudShadowStrength.value = cloudShadowStrengthBase
       * daylight * (cloudMode !== 'off' ? 1 : 0.5)
     renderer.setClearColor(state.skyColor, 1)
+    // Both, for the reason documented where scene.background is created: the clear
+    // colour never reaches the depth-of-field pass's offscreen target, so the sky
+    // has to exist as an actual background too.
+    if ((scene.background as THREE.Color | null)?.isColor) {
+      (scene.background as THREE.Color).copy(state.skyColor)
+    }
     fog.color.copy(state.fogColor)
     // Ground fog rides the same daylight ramp as the distance fog, so it turns
     // blue-grey at noon and deep blue at night without its own colour schedule.
@@ -588,6 +599,13 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       groundFogTintAmount = THREE.MathUtils.clamp(amount, 0, 1)
       // Force the next daylight pass so the slider reads as immediate instead of
       // waiting out the 250 ms update interval.
+      lastDaylightUpdate = -Infinity
+      updateDaylight(performance.now())
+    },
+    setCloudShadowStrength(strength) {
+      cloudShadowStrengthBase = THREE.MathUtils.clamp(strength, 0, 1)
+      // Same reason as above: the shadow uniform is only rewritten by the daylight
+      // pass, so force one instead of waiting out its interval.
       lastDaylightUpdate = -Infinity
       updateDaylight(performance.now())
     },
