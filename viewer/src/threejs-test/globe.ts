@@ -6,10 +6,13 @@
 // No Cesium, no Ion. Uses the same satellite-v4 raster endpoint as the Cesium viewer.
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { texture } from 'three/tsl'
+import { texture, mix } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
-import { applyMatrixPrecision, maskDimNode, type CloudUniforms } from './point-cloud'
+import {
+  applyMatrixPrecision, applyMaskSurround, groundFogNode, gradeImageryNode,
+  type CloudUniforms,
+} from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
@@ -87,10 +90,12 @@ export function createGlobe(opts: {
       applyMatrixPrecision(mat)
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
-      mat.colorNode = texture(map)
+      // .rgb, not the raw vec4: gradeImageryNode mixes against a vec3 luma.
+      const graded = gradeImageryNode(uniforms, texture(map).rgb)
         .mul(uniforms.daylightColor)
         .mul(uniforms.daylightIntensity)
-        .mul(maskDimNode(uniforms, 0.50))
+      const fog = groundFogNode(uniforms)
+      mat.colorNode = applyMaskSurround(uniforms, mix(graded, fog.color, fog.amount), 0.50)
       o.material.dispose()
       o.material = mat
     })

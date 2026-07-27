@@ -6,7 +6,8 @@
     <title>Adaptive Globe Point Cloud</title>
     <style>
       :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
-              --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f; }
+              --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f;
+              --surround-rgb: 2 4 10; --surround-opacity: 1; }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: #8bc9ec; overflow: hidden;
                    font: 13px/1.45 "Avenir Next", "Helvetica Neue", sans-serif; color: #e8eaed;
@@ -16,10 +17,15 @@
       /* vignette look: pure screen-space overlay (the point data is hard-clipped at a
          world radius derived from the viewport — this gradient hides the cut edge).
          CSS only → adapts to every viewport/resize for free, zero render cost. */
+      /* --surround-rgb / --surround-opacity are written by the design panel, so the
+         ring colour and strength are tunable without rebuilding the gradient in JS. */
       #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; opacity: 0;
                   background: radial-gradient(ellipse at center,
-                    rgba(2,4,10,0) 0%, rgba(2,4,10,0) 46%, rgba(2,4,10,.38) 66%,
-                    rgba(2,4,10,.72) 88%, rgba(2,4,10,.90) 100%); }
+                    rgb(var(--surround-rgb) / 0) 0%,
+                    rgb(var(--surround-rgb) / 0) 46%,
+                    rgb(var(--surround-rgb) / calc(.38 * var(--surround-opacity))) 66%,
+                    rgb(var(--surround-rgb) / calc(.72 * var(--surround-opacity))) 88%,
+                    rgb(var(--surround-rgb) / calc(.90 * var(--surround-opacity))) 100%); }
       body.mask-vignette #vignette { display: block; }
 
       /* Fullscreen boot sequence: field-station typography + the Wilderness eagle
@@ -206,6 +212,8 @@
       .chip:active { transform: scale(0.96); }
       #hudChip { top: calc(10px + var(--safe-t)); left: 10px; }
       #panelChip { top: calc(10px + var(--safe-t)); right: 10px; }
+      #designChip { top: calc(10px + var(--safe-t)); right: 56px; }
+      body.design-open #designChip { background: #1f6feb; border-color: #1f6feb; }
       #chipFps { font-variant-numeric: tabular-nums; }
       #chipFps.good { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
 
@@ -329,6 +337,31 @@
       #cloudToggle.on { color: #092f29; background: linear-gradient(135deg, #dceceb, #a8d0d5);
                         border-color: rgba(203,239,242,.88); box-shadow: inset 0 1px rgba(255,255,255,.7); }
       #cloudToggle.is-protected { color: #f0c674; border-color: rgba(240,198,116,.42); }
+      /* ---------- design panel: separate window, own scroll, collapsible sections ---------- */
+      #designPanel { top: calc(52px + var(--safe-t)); right: 260px; width: 252px;
+                     display: none; flex-direction: column; gap: 10px;
+                     max-height: calc(100vh - 72px - var(--safe-t) - var(--safe-b)); }
+      body.design-open #designPanel { display: flex; }
+      .design-title { margin: 0 22px 0 0; font: 700 11px/1 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .16em; text-transform: uppercase; color: rgba(232,234,237,.62); }
+      /* The scroll lives on this inner box, so the title and the copy button stay put. */
+      .design-scroll { display: flex; flex-direction: column; gap: 9px; overflow-y: auto; overscroll-behavior: contain;
+                       margin: 0 -4px; padding: 0 4px; }
+      .design-scroll::-webkit-scrollbar { width: 7px; }
+      .design-scroll::-webkit-scrollbar-thumb { background: #30373f; border-radius: 4px; }
+      .design-section { border: 1px solid #262b32; border-radius: 9px; padding: 8px 9px; background: rgba(255,255,255,.014); }
+      .design-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px;
+                                 font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .62; }
+      .design-section > summary::-webkit-details-marker { display: none; }
+      .design-section > summary::before { content: "▸"; font-size: 9px; transition: transform .15s ease; }
+      .design-section[open] > summary::before { transform: rotate(90deg); }
+      .design-section[open] > summary { margin-bottom: 10px; opacity: .85; }
+      .design-section > .row + .row { margin-top: 10px; }
+      input[type=color] { width: 100%; height: 26px; padding: 0; background: none; cursor: pointer;
+                          border: 1px solid #2d333b; border-radius: 7px; }
+      input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+      input[type=color]::-webkit-color-swatch { border: 0; border-radius: 5px; }
+
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
       button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
@@ -438,6 +471,10 @@
         #hud { left: 10px; right: 10px; min-width: 0; }
         #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
+        /* Bottom sheet as well, but above #panel so it stays usable if both are open. */
+        #designPanel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; z-index: 21;
+                       max-height: 64vh; border-radius: 16px 16px 0 0;
+                       padding-bottom: calc(14px + var(--safe-b)); }
         #attribution { left: 10px; right: auto; bottom: calc(70px + var(--safe-b)); }
         .loader-kicker { left: 18px; right: 18px; }
         .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
@@ -501,6 +538,7 @@
     </div>
 
     <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>
+    <button class="chip" id="designChip" aria-label="Design">◐</button>
     <button class="chip" id="panelChip" aria-label="Settings">⚙</button>
 
     <button id="keyboardGuideToggle" type="button" aria-controls="keyboardGuide" aria-expanded="false">⌨ Field keys</button>
@@ -590,6 +628,90 @@
         <button class="act" id="cloudToggle" type="button" aria-pressed="false" aria-describedby="cloudNote">☁ Clouds · Detecting…</button>
         <span class="weather-note" id="cloudNote" aria-live="polite">Checking device headroom</span>
       </div>
+
+    </div>
+
+    <!-- Design panel: its own window, own chip, own scroll. Sections are native
+         <details> so collapsing costs no JS and no state of ours. -->
+    <div id="designPanel" class="card" aria-label="Design">
+      <button class="close" data-close="design">×</button>
+      <p class="design-title">Design</p>
+      <div class="design-scroll">
+        <details class="design-section" open>
+          <summary>Basemap</summary>
+          <div class="row">
+            <label class="h" for="mapSaturation">Saturation · <span class="val" id="mapSaturationVal">—</span></label>
+            <input type="range" id="mapSaturation" min="0" max="1" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="mapBrightness">Brightness · <span class="val" id="mapBrightnessVal">—</span></label>
+            <input type="range" id="mapBrightness" min="0.1" max="1.4" step="0.01" />
+          </div>
+        </details>
+
+        <details class="design-section">
+          <summary>Ground fog</summary>
+          <div class="row">
+            <label class="h" for="fogStrength">Strength · <span class="val" id="fogStrengthVal">—</span></label>
+            <input type="range" id="fogStrength" min="0" max="1" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="fogHeight">Slab height · <span class="val" id="fogHeightVal">—</span></label>
+            <input type="range" id="fogHeight" min="10" max="600" step="5" />
+          </div>
+          <div class="row">
+            <label class="h" for="fogCurve">Falloff curve · <span class="val" id="fogCurveVal">—</span></label>
+            <input type="range" id="fogCurve" min="0.25" max="4" step="0.05" />
+            <span class="weather-note">1 = physikalisch (Beer-Lambert) · &lt;1 Nebel setzt früh ein · &gt;1 Nahfeld bleibt klar, Dichte wandert in die Ferne</span>
+          </div>
+          <div class="row">
+            <label class="h" for="fogDistance">Dichte-Distanz · <span class="val" id="fogDistanceVal">—</span></label>
+            <input type="range" id="fogDistance" min="200" max="12000" step="100" />
+            <span class="weather-note">Kleiner = dichter. e-Faltungslänge entlang der Nebelbasis, kein Cutoff</span>
+          </div>
+          <div class="row">
+            <label class="h" for="fogBase">Basis-Offset · <span class="val" id="fogBaseVal">—</span></label>
+            <input type="range" id="fogBase" min="-150" max="400" step="5" />
+          </div>
+          <div class="row">
+            <label class="h" for="fogColor">Farbe</label>
+            <input type="color" id="fogColor" />
+          </div>
+          <div class="row">
+            <label class="h" for="fogTint">Farb-Anteil · <span class="val" id="fogTintVal">—</span></label>
+            <input type="range" id="fogTint" min="0" max="1" step="0.01" />
+            <span class="weather-note">0 = folgt dem Tageslicht automatisch · 1 = feste Farbe rund um die Uhr</span>
+          </div>
+        </details>
+
+        <details class="design-section">
+          <summary>Vignette &amp; Umfeld</summary>
+          <div class="row">
+            <label class="h" for="maskFringe">Fringe-Breite · <span class="val" id="maskFringeVal">—</span></label>
+            <input type="range" id="maskFringe" min="0" max="0.9" step="0.01" />
+            <span class="weather-note">0 = harte Schnittkante, hoch = Punkte lösen sich zum Rand hin auf</span>
+          </div>
+          <div class="row">
+            <label class="h" for="maskFringeCurve">Fringe-Kurve · <span class="val" id="maskFringeCurveVal">—</span></label>
+            <input type="range" id="maskFringeCurve" min="0.25" max="4" step="0.05" />
+            <span class="weather-note">&gt;1 dünnt früh aus (weit gestreut) · &lt;1 hält die Dichte bis zum Rand</span>
+          </div>
+          <div class="row">
+            <label class="h" for="surroundColor">Umfeld-Farbe</label>
+            <input type="color" id="surroundColor" />
+          </div>
+          <div class="row">
+            <label class="h" for="surroundOpacity">Umfeld-Deckkraft · <span class="val" id="surroundOpacityVal">—</span></label>
+            <input type="range" id="surroundOpacity" min="0" max="1" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="surroundTint">Umfeld-Einfärbung · <span class="val" id="surroundTintVal">—</span></label>
+            <input type="range" id="surroundTint" min="0" max="1" step="0.01" />
+            <span class="weather-note">Färbt Punkte und Karte selbst ein, nicht nur das Overlay</span>
+          </div>
+        </details>
+      </div>
+      <button class="act" id="designCopy" type="button">⧉ Werte kopieren</button>
     </div>
 
     <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">

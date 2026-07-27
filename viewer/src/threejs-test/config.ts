@@ -278,6 +278,53 @@ export const EXPERIENCE_CONFIG = {
     // which culls distant tiles and shrinks the drawn set.
     farScaleByPreset: { strong: 1, medium: 0.72, constrained: 0.5 },
   },
+  // Look grading exposed live by the DESIGN section of the panel. These are the
+  // shipped defaults; the sliders write the same uniforms, so anything dialled in
+  // here can be pasted back as a new default.
+  design: {
+    /** 1 = raw satellite colour, 0 = fully grey. */
+    mapSaturation: 1,
+    /** Multiplies the basemap only — the point cloud keeps its own grading. */
+    mapBrightness: 1,
+    /** Stochastic dissolve band at the vignette edge, as a fraction of the mask
+     * radius. 0 reproduces the old hard circular cut. */
+    maskFringe: 0.35,
+    /** Exponent on the fringe keep-probability across the band. 1 is the linear
+     * smoothstep ramp; >1 thins points out early (sparse, wide scatter), <1 holds
+     * density until near the radius (tight, abrupt scatter). */
+    maskFringeCurve: 1,
+    /** Colour the surround takes: drives both the CSS overlay ring and the
+     * in-shader tint, so the overlay and the geometry agree. */
+    surroundColor: 0x02040a,
+    /** Strength of the CSS overlay ring (screen-space gradient). */
+    surroundOpacity: 1,
+    /** How far the points and imagery themselves take surroundColor outside the
+     * mask. 0 keeps the original fade-to-black. */
+    surroundTint: 0,
+    // Analytic exponential height fog: no raymarch, no extra pass, no texture —
+    // a handful of ALU ops folded into the existing point and imagery colour
+    // nodes. Nothing animates, so there is nothing to sample per frame.
+    groundFog: {
+      /** Final multiplier, so 0 is reliably off regardless of the other values. */
+      strength: 0.55,
+      /** Fog floor relative to the survey's lowest point. */
+      baseOffsetM: 0,
+      /** e-folding height of the slab: density falls to 1/e at this height. */
+      heightM: 120,
+      /** e-folding distance for a ray travelling along the fog base — smaller
+       * values thicken the fog. Not a cutoff: opacity approaches 1 asymptotically. */
+      efoldDistanceM: 1_800,
+      /** Exponent shaping the accumulated opacity ramp. 1 is the physical
+       * Beer-Lambert curve; >1 holds the near field clear and banks the density
+       * into the distance, <1 brings fog on fast and flattens out early.
+       * Applied to the integrated result, so the layering stays correct. */
+      curve: 1,
+      /** Custom fog colour, blended over the daylight-driven fog colour by
+       * `tint` — 0 keeps the automatic day/night ramp, 1 pins this colour. */
+      color: 0xb8ccd8,
+      tint: 0,
+    },
+  },
   rain: {
     dryDurationMs: 10_000,
     activeDurationMs: 8_000,

@@ -5,8 +5,8 @@ import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
-  vec2, vec3, vec4, float, mix, smoothstep, length, max,
-  context, highpModelViewMatrix,
+  vec2, vec3, vec4, float, mix, smoothstep, length, max, abs, exp, hash,
+  cameraPosition, context, highpModelViewMatrix,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -16,7 +16,25 @@ export interface CloudUniforms {
   /** 0 = off, 2 = viewport vignette. */
   maskMode: any
   vignetteStrength: any
+  /** Width of the stochastic dissolve band at the mask edge, as a fraction of
+   * maskRadius. 0 = hard circular cut. */
+  maskFringe: any
+  /** Exponent on the fringe keep-probability across that band. */
+  maskFringeCurve: any
+  /** Colour the surround fades toward, and how strongly geometry takes it. */
+  maskSurroundColor: any
+  maskSurroundAmount: any
   pointSize: any
+  /** Basemap-only grading (the point cloud has its own). */
+  mapSaturation: any
+  mapBrightness: any
+  /** Analytic ground fog, shared by points and imagery. */
+  groundFogColor: any
+  groundFogStrength: any
+  groundFogBaseZ: any
+  groundFogHeight: any
+  groundFogDistance: any
+  groundFogCurve: any
   /** world/ECEF to local ENU. */
   enuInverse: any
   /** Shared daylight grade for point and map imagery. */
@@ -50,7 +68,19 @@ export function createUniforms(): CloudUniforms {
     maskRadius: uniform(120),
     maskMode: uniform(2),
     vignetteStrength: uniform(0),
+    maskFringe: uniform(EXPERIENCE_CONFIG.design.maskFringe),
+    maskFringeCurve: uniform(EXPERIENCE_CONFIG.design.maskFringeCurve),
+    maskSurroundColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.surroundColor)),
+    maskSurroundAmount: uniform(EXPERIENCE_CONFIG.design.surroundTint),
     pointSize: uniform(2),
+    mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
+    mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
+    groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
+    groundFogStrength: uniform(EXPERIENCE_CONFIG.design.groundFog.strength),
+    groundFogBaseZ: uniform(0),
+    groundFogHeight: uniform(EXPERIENCE_CONFIG.design.groundFog.heightM),
+    groundFogDistance: uniform(EXPERIENCE_CONFIG.design.groundFog.efoldDistanceM),
+    groundFogCurve: uniform(EXPERIENCE_CONFIG.design.groundFog.curve),
     enuInverse: uniform(new THREE.Matrix4()),
     daylightColor: uniform(new THREE.Color(0xffffff)),
     daylightIntensity: uniform(1),
@@ -66,14 +96,80 @@ export function createUniforms(): CloudUniforms {
   }
 }
 
-/** Brightness outside the vignette core, evaluated in the survey's ENU frame. */
-export function maskDimNode(u: CloudUniforms, floor = 0): any {
+/** Vignette coverage in the survey's ENU frame: 1 in the core, 0 outside the
+ * radius, and a flat 1 in every non-vignette mask mode. */
+function maskFadeNode(u: CloudUniforms): any {
   const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
   const distance = length(enu.xy.sub(u.maskCenter))
   const fade = smoothstep(u.maskRadius, (u.maskRadius as any).mul(0.5), distance)
-  const floored = fade.mul(1 - floor).add(float(floor))
-  const blended = mix(float(1), floored, u.vignetteStrength)
+  const blended = mix(float(1), fade, u.vignetteStrength)
   return (u.maskMode.greaterThan(1.5) as any).select(blended, float(1))
+}
+
+/**
+ * Apply the vignette surround to a finished colour: dim toward `floor` as before,
+ * then carry the result toward maskSurroundColor so the ring around the mask can
+ * be *graded* rather than only darkened.
+ *
+ * Pulling the floor remap outside the vignetteStrength blend is algebraically the
+ * same as the previous fade-then-floor order (an affine remap commutes with mix),
+ * so surroundAmount 0 reproduces the original look exactly.
+ */
+export function applyMaskSurround(u: CloudUniforms, color: any, floor = 0): any {
+  const fade: any = maskFadeNode(u)
+  const dimmed = color.mul(fade.mul(1 - floor).add(float(floor)))
+  const outside = fade.oneMinus().mul(u.maskSurroundAmount)
+  return mix(dimmed, u.maskSurroundColor, outside)
+}
+
+/**
+ * Ground fog for both the points and the basemap, mixed into a finished colour.
+ *
+ * Analytic rather than raymarched: density is an exponential slab hugging the
+ * survey floor, and the optical depth along a view ray through
+ * `exp(-z / height)` has a closed form — two exp() calls and a divide. No volume
+ * texture, no march loop, no post pass, and nothing to advance per frame because
+ * the fog does not animate. Cost is a handful of ALU ops in shaders that already
+ * sample a texture.
+ *
+ * Integrating along the ray (rather than sampling density at the fragment) is
+ * what makes the fog behave like a real layer: looking across it from inside is
+ * thick, looking down through it from 1 km up is thin, and neither needs its own
+ * special case. The mix() guards the `1/dz` term on near-level rays, where the
+ * integral degenerates to `length * density`.
+ */
+export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
+  const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
+  const cameraEnu = u.enuInverse.mul(vec4(cameraPosition, 1)).xyz
+  const surfaceZ = enu.z.sub(u.groundFogBaseZ)
+  const cameraZ = cameraEnu.z.sub(u.groundFogBaseZ)
+  const rayLength = length(enu.sub(cameraEnu))
+  const deltaZ = cameraZ.sub(surfaceZ)
+  // Density is clamped at the fog base so nothing below it integrates to more
+  // than the slab's own peak — the point cloud dips under the bbox floor.
+  const densityAtSurface = exp(max(surfaceZ, float(0)).div(u.groundFogHeight).negate())
+  const densityAtCamera = exp(max(cameraZ, float(0)).div(u.groundFogHeight).negate())
+  const levelDepth = rayLength.mul(densityAtSurface)
+  const slopedDepth = rayLength.mul(u.groundFogHeight)
+    .mul(densityAtSurface.sub(densityAtCamera)).div(deltaZ)
+  const opticalDepth = mix(levelDepth, slopedDepth, smoothstep(0.5, 5, abs(deltaZ)))
+  // groundFogDistance is the e-folding distance for a ray travelling along the
+  // fog base. The curve exponent reshapes the Beer-Lambert ramp *after* the
+  // integral, so it restyles the falloff without breaking the ray layering;
+  // strength stays a plain final multiplier so 0 is reliably off.
+  return {
+    amount: float(1).sub(exp(opticalDepth.div(u.groundFogDistance).negate()))
+      .pow(u.groundFogCurve)
+      .mul(u.groundFogStrength),
+    color: u.groundFogColor,
+  }
+}
+
+/** Desaturate + darken the basemap only, so the imagery can sit back without
+ * dulling the point cloud that reads on top of it. */
+export function gradeImageryNode(u: CloudUniforms, rgb: any): any {
+  const luma = rgb.r.mul(0.2126).add(rgb.g.mul(0.7152)).add(rgb.b.mul(0.0722))
+  return mix(vec3(luma), rgb, u.mapSaturation).mul(u.mapBrightness)
 }
 
 /** Names of the per-instance attributes each tile geometry must carry. Kept out
@@ -148,8 +244,22 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
     const distance = length(enu.xy.sub(u.maskCenter))
 
+    // Fringe rather than a clean circular cut: across the band each point holds a
+    // stable pseudo-random keep-threshold, so points thin out gradually and the
+    // edge reads as scattered stragglers instead of a scissor line. The seed comes
+    // from the ENU position so a point dissolves identically every frame and
+    // across tile reloads; metre-scale coordinates are scaled up because hash()
+    // truncates its seed to uint. A floor on the width keeps the smoothstep edges
+    // from collapsing onto each other at fringe 0.
+    const fringeInner = u.maskRadius.mul(float(1).sub(max(u.maskFringe, float(0.001))))
+    const keepChance = smoothstep(u.maskRadius, fringeInner, distance).pow(u.maskFringeCurve)
+    // Wrapped into a small range on purpose: hash() truncates its seed to uint,
+    // and raw ENU metres reach ~1e8 after scaling, where float32 quantises to
+    // steps far larger than a point spacing — neighbours would collide and whole
+    // blocks would pop instead of individual points.
+    const dissolveSeed = hash(abs(enu.x.mul(131).add(enu.y.mul(1367))).mod(1_048_576))
     If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
-      .and(distance.greaterThan(u.maskRadius)), () => Discard())
+      .and(dissolveSeed.greaterThan(keepChance)), () => Discard())
 
     // Directional cues without normals: project each point up the sun ray onto
     // a virtual cloud deck and shade it by the drifting cloud density there.
@@ -168,13 +278,17 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
     // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    return pointColor
+    const graded = pointColor
       .pow(2.2)
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)
       .mul(cloudShadow)
       .mul(rim)
-      .mul(maskDimNode(u, 0.30))
+
+    // Fog before the vignette dim, so the mask still darkens the fogged result
+    // rather than the fog re-lighting the vignette edge.
+    const fog = groundFogNode(u)
+    return applyMaskSurround(u, mix(graded, fog.color, fog.amount), 0.30)
   })()
 
   return material

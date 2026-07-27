@@ -42,6 +42,8 @@ export interface EnvironmentLayer {
   /** Override the heuristic tier with a measured one (loader benchmark). */
   applyMeasuredTier(tier: PerformanceTier): void
   setPeruMinutes(minutes: number | null): void
+  /** Design panel: blend a fixed colour over the daylight-driven ground fog. */
+  setGroundFogTint(color: THREE.ColorRepresentation, amount: number): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -229,6 +231,11 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   const daySky = new THREE.Color(EXPERIENCE_CONFIG.environment.daySky)
   const nightFog = new THREE.Color(EXPERIENCE_CONFIG.environment.nightFog)
   const dayFog = new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)
+  // Design-panel ground-fog tint, folded into the daylight fog colour on each
+  // daylight update rather than written straight to the uniform — otherwise the
+  // next update would overwrite it.
+  const groundFogTint = new THREE.Color(EXPERIENCE_CONFIG.design.groundFog.color)
+  let groundFogTintAmount: number = EXPERIENCE_CONFIG.design.groundFog.tint
   const nightGrade = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
   const dayGrade = new THREE.Color(0xffffff)
   const warmLight = new THREE.Color(0xffc58f)
@@ -508,6 +515,12 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       * daylight * (cloudMode !== 'off' ? 1 : 0.5)
     renderer.setClearColor(state.skyColor, 1)
     fog.color.copy(state.fogColor)
+    // Ground fog rides the same daylight ramp as the distance fog, so it turns
+    // blue-grey at noon and deep blue at night without its own colour schedule.
+    // The design panel's tint blends a fixed colour over that ramp: 0 keeps the
+    // automatic behaviour, 1 pins the chosen colour around the clock.
+    uniforms.groundFogColor.value.copy(state.fogColor)
+      .lerp(groundFogTint, groundFogTintAmount)
     hemisphere.color.copy(state.skyColor).lerp(state.lightColor, 0.4)
     hemisphere.groundColor.set(0x163a2d).multiplyScalar(0.5 + daylight * 0.5)
     hemisphere.intensity = state.ambientIntensity
@@ -567,6 +580,14 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     },
     setPeruMinutes(minutes) {
       manualMinutes = minutes === null ? null : Math.round(THREE.MathUtils.clamp(minutes, 0, 1_439))
+      lastDaylightUpdate = -Infinity
+      updateDaylight(performance.now())
+    },
+    setGroundFogTint(color, amount) {
+      groundFogTint.set(color)
+      groundFogTintAmount = THREE.MathUtils.clamp(amount, 0, 1)
+      // Force the next daylight pass so the slider reads as immediate instead of
+      // waiting out the 250 ms update interval.
       lastDaylightUpdate = -Infinity
       updateDaylight(performance.now())
     },

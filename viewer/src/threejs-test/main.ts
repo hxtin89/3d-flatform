@@ -304,6 +304,7 @@ document.body.classList.toggle('hud-open', !compactViewport)
 document.body.classList.toggle('panel-open', !compactViewport)
 $('#hudChip').addEventListener('click', () => document.body.classList.toggle('hud-open'))
 $('#panelChip').addEventListener('click', () => document.body.classList.toggle('panel-open'))
+$('#designChip').addEventListener('click', () => document.body.classList.toggle('design-open'))
 document.querySelectorAll<HTMLButtonElement>('.close').forEach((button) => {
   button.addEventListener('click', () => document.body.classList.remove(`${button.dataset.close}-open`))
 })
@@ -762,6 +763,9 @@ const maskSphereWorld = new THREE.Vector3()
 let maskWorldActive = false
 let maskWorldRadius = 0
 let areaMinZ = 0
+/** Survey floor in the shader's ENU frame (zOffset included) — the ground-fog
+ * base slider is an offset from here. */
+let groundFogFloorZ = 0
 let navigationClearance: number = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
 let navigationFloorZ = navigationClearance
 let navigationBoundsRadius = 2500
@@ -947,6 +951,128 @@ document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button)
 sizeEl.addEventListener('input', () => {
   pointSizeScale = Number(sizeEl.value)
   applyPointSize()
+})
+
+// ---- design panel: every control writes a uniform, so tiles need no rebuild
+/** Fog base is authored as an offset from the survey floor, which only becomes
+ * known when the manifest lands — keep the offset and re-apply it from both sides. */
+let groundFogBaseOffset: number = EXPERIENCE_CONFIG.design.groundFog.baseOffsetM
+function applyGroundFogBase(): void {
+  uniforms.groundFogBaseZ.value = groundFogFloorZ + groundFogBaseOffset
+}
+
+const asPercent = (value: number) => `${Math.round(value * 100)}%`
+const asMetres = (value: number) => `${Math.round(value)} m`
+
+/** The slider's starting position comes from config, not from the HTML `value`
+ * attribute — otherwise the markup and EXPERIENCE_CONFIG.design drift apart. */
+function bindDesignSlider(
+  id: string,
+  initial: number,
+  format: (value: number) => string,
+  apply: (value: number) => void,
+): void {
+  const input = $<HTMLInputElement>(`#${id}`)
+  const readout = $(`#${id}Val`)
+  input.value = String(initial)
+  const sync = () => {
+    const value = Number(input.value)
+    readout.textContent = format(value)
+    apply(value)
+  }
+  input.addEventListener('input', sync)
+  sync()
+}
+
+// Browsers retune a hovered range input on wheel. In a scrollable panel of
+// sliders that means every control you scroll past silently changes value, so
+// the wheel is claimed for scrolling and forwarded to the container by hand.
+const designScrollEl = $<HTMLDivElement>('#designPanel .design-scroll')
+designScrollEl.addEventListener('wheel', (event) => {
+  const target = event.target as HTMLElement
+  if (!(target instanceof HTMLInputElement) || target.type !== 'range') return
+  event.preventDefault()
+  designScrollEl.scrollTop += event.deltaY
+}, { passive: false })
+
+const asFactor = (value: number) => `${value.toFixed(2)}×`
+const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
+
+/** Bind a colour input, seeded from config like the sliders are. */
+function bindDesignColor(id: string, initial: number, apply: (hex: string) => void): void {
+  const input = $<HTMLInputElement>(`#${id}`)
+  input.value = toHex(initial)
+  const sync = () => apply(input.value)
+  input.addEventListener('input', sync)
+  sync()
+}
+
+const DESIGN = EXPERIENCE_CONFIG.design
+bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
+bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
+bindDesignSlider('fogStrength', DESIGN.groundFog.strength, asPercent, (v) => { uniforms.groundFogStrength.value = v })
+bindDesignSlider('fogHeight', DESIGN.groundFog.heightM, asMetres, (v) => { uniforms.groundFogHeight.value = v })
+bindDesignSlider('fogCurve', DESIGN.groundFog.curve, asFactor, (v) => { uniforms.groundFogCurve.value = v })
+bindDesignSlider('fogDistance', DESIGN.groundFog.efoldDistanceM, asMetres, (v) => { uniforms.groundFogDistance.value = v })
+bindDesignSlider('fogBase', DESIGN.groundFog.baseOffsetM, asMetres, (v) => { groundFogBaseOffset = v; applyGroundFogBase() })
+bindDesignSlider('maskFringe', DESIGN.maskFringe, asPercent, (v) => { uniforms.maskFringe.value = v })
+bindDesignSlider('maskFringeCurve', DESIGN.maskFringeCurve, asFactor, (v) => { uniforms.maskFringeCurve.value = v })
+bindDesignSlider('surroundTint', DESIGN.surroundTint, asPercent, (v) => { uniforms.maskSurroundAmount.value = v })
+
+// Fog colour and tint share one setter: the environment layer folds them into the
+// daylight ramp, so neither can be written straight to the uniform.
+let fogTintHex: string = toHex(DESIGN.groundFog.color)
+let fogTintAmount: number = DESIGN.groundFog.tint
+const applyFogTint = () => environmentLayer?.setGroundFogTint(fogTintHex, fogTintAmount)
+bindDesignColor('fogColor', DESIGN.groundFog.color, (hex) => { fogTintHex = hex; applyFogTint() })
+bindDesignSlider('fogTint', DESIGN.groundFog.tint, asPercent, (v) => { fogTintAmount = v; applyFogTint() })
+
+// One surround colour drives both the screen-space overlay ring and the in-shader
+// tint, so the CSS gradient and the geometry can never disagree.
+bindDesignColor('surroundColor', DESIGN.surroundColor, (hex) => {
+  uniforms.maskSurroundColor.value.set(hex)
+  // CSS needs the authored sRGB bytes. Reading r/g/b back off the Color would
+  // hand us three's linear-space conversion instead, and the ring would render
+  // noticeably darker than the swatch the user picked.
+  document.documentElement.style.setProperty(
+    '--surround-rgb',
+    `${parseInt(hex.slice(1, 3), 16)} ${parseInt(hex.slice(3, 5), 16)} ${parseInt(hex.slice(5, 7), 16)}`,
+  )
+})
+bindDesignSlider('surroundOpacity', DESIGN.surroundOpacity, asPercent, (v) => {
+  document.documentElement.style.setProperty('--surround-opacity', String(v))
+})
+
+// Hand the dialled-in look back as a config.ts snippet — cheaper than persisting
+// panel state, and the values end up where they actually belong.
+const designCopyEl = $<HTMLButtonElement>('#designCopy')
+designCopyEl.addEventListener('click', async () => {
+  const snippet = `design: ${JSON.stringify({
+    mapSaturation: uniforms.mapSaturation.value,
+    mapBrightness: uniforms.mapBrightness.value,
+    maskFringe: uniforms.maskFringe.value,
+    maskFringeCurve: uniforms.maskFringeCurve.value,
+    surroundColor: $<HTMLInputElement>('#surroundColor').value.replace('#', '0x'),
+    surroundOpacity: Number($<HTMLInputElement>('#surroundOpacity').value),
+    surroundTint: uniforms.maskSurroundAmount.value,
+    groundFog: {
+      strength: uniforms.groundFogStrength.value,
+      baseOffsetM: groundFogBaseOffset,
+      heightM: uniforms.groundFogHeight.value,
+      efoldDistanceM: uniforms.groundFogDistance.value,
+      curve: uniforms.groundFogCurve.value,
+      color: fogTintHex.replace('#', '0x'),
+      tint: fogTintAmount,
+    },
+  }, null, 2)}`
+  try {
+    await navigator.clipboard.writeText(snippet)
+    designCopyEl.textContent = '✓ Kopiert'
+  } catch {
+    console.info(`[design]\n${snippet}`)
+    designCopyEl.textContent = '⧉ In Konsole'
+  }
+  setTimeout(() => { designCopyEl.textContent = '⧉ Werte kopieren' }, 1600)
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(
   reducedMotion
@@ -1233,6 +1359,8 @@ async function main(): Promise<void> {
     uniforms.canopyBaseZ.value = minZ + zOffset + 8
     uniforms.canopyTopZ.value = minZ + zOffset + span
     uniforms.cloudDeckHeight.value = minZ + zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+    groundFogFloorZ = minZ + zOffset
+    applyGroundFogBase()
   }
 
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
@@ -1318,6 +1446,8 @@ async function main(): Promise<void> {
   })
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
+  // Hand over any fog tint dialled in while the layer did not exist yet.
+  applyFogTint()
   audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
