@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Adaptive Globe Point Cloud</title>
+    <style>
+      :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+              --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #8bc9ec; overflow: hidden;
+                   font: 13px/1.45 "Avenir Next", "Helvetica Neue", sans-serif; color: #e8eaed;
+                   -webkit-user-select: none; user-select: none; }
+      #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+      /* vignette look: pure screen-space overlay (the point data is hard-clipped at a
+         world radius derived from the viewport — this gradient hides the cut edge).
+         CSS only → adapts to every viewport/resize for free, zero render cost. */
+      #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; opacity: 0;
+                  background: radial-gradient(ellipse at center,
+                    rgba(2,4,10,0) 0%, rgba(2,4,10,0) 46%, rgba(2,4,10,.38) 66%,
+                    rgba(2,4,10,.72) 88%, rgba(2,4,10,.90) 100%); }
+      body.mask-vignette #vignette { display: block; }
+
+      /* Fullscreen boot sequence: field-station typography + the Wilderness eagle
+         filling from the ground up. The map renders underneath while this layer owns input. */
+      #loader { --loader-progress: 0%; position: fixed; inset: 0; z-index: 120; display: grid; overflow: hidden;
+                place-items: center; padding: calc(28px + var(--safe-t)) 24px calc(24px + var(--safe-b));
+                color: var(--forest); background: var(--paper);
+                transition: opacity 1.2s cubic-bezier(.22,1,.36,1), transform 1.2s cubic-bezier(.22,1,.36,1);
+                will-change: opacity, transform;
+                isolation: isolate; }
+      #loader[hidden] { display: none; }
+      #loader::before { content: ""; position: absolute; inset: -30%; z-index: -2; opacity: .42;
+                        background:
+                          repeating-radial-gradient(ellipse at 28% 62%, transparent 0 28px, rgba(0,68,50,.09) 29px 30px),
+                          repeating-radial-gradient(ellipse at 72% 28%, transparent 0 44px, rgba(0,68,50,.055) 45px 46px);
+                        transform: rotate(-8deg) scale(1.08); }
+      #loader::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: .22;
+                       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+                       mix-blend-mode: multiply; }
+      #loader.finishing { opacity: 0; transform: translateY(-1%) scale(1.012); pointer-events: none; }
+      .loader-kicker { position: absolute; top: calc(25px + var(--safe-t)); left: 28px; right: 28px;
+                       display: flex; justify-content: space-between; gap: 20px; padding-bottom: 11px;
+                       border-bottom: 1px solid rgba(0,68,50,.25); font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .16em; text-transform: uppercase; }
+      .loader-kicker span:last-child { opacity: .52; text-align: right; }
+      .loader-content { width: min(560px, 100%); display: grid; justify-items: center; text-align: center; }
+      .loader-eagle-frame { position: relative; width: min(74vw, 360px); aspect-ratio: 82 / 49; margin-bottom: clamp(28px, 6vh, 52px); }
+      .loader-eagle { position: absolute; inset: 0; background: var(--forest);
+                      -webkit-mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat;
+                      mask: url('/assets/svg/wilderness-eagle.svg') center / contain no-repeat; }
+      /* SVG layers stay invisible unless the point renderer fails. This avoids
+         a solid eagle flashing before the deterministic point cloud is ready. */
+      .loader-eagle-ghost { opacity: 0; transform: scale(.92) translate(1.5%, 4%); filter: blur(1.5px); }
+      .loader-eagle-fill { clip-path: inset(calc(100% - var(--loader-progress)) 0 0 0);
+                           filter: drop-shadow(0 -8px 18px rgba(0,68,50,.2));
+                           transition: clip-path .28s cubic-bezier(.2,.75,.25,1); }
+      .loader-eagle-fill[hidden] { display: none; }
+      /* Point-cloud eagle: the loading animation doubles as a GPU benchmark.
+         The canvas spans the whole loader so arriving dust is never clipped by
+         a visible box; it floats above the text (clicks pass through). */
+      #loaderEagleCanvas { position: absolute; inset: 0; width: 100%; height: 100%;
+                           z-index: 5; pointer-events: none; }
+      #loaderEagleCanvas[hidden] { display: none; }
+      .loader-system { margin: 0 0 7px; font: 700 10px/1.2 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .2em; text-transform: uppercase; opacity: .58; }
+      #loaderStatus { min-height: 1.5em; margin: 0; font: 500 clamp(17px, 4vw, 22px)/1.25 "Iowan Old Style", Baskerville, serif; }
+      .loader-meter { display: flex; align-items: baseline; margin-top: 18px; font-variant-numeric: tabular-nums; letter-spacing: -.06em; }
+      #loaderPercent { font: 500 clamp(64px, 18vw, 116px)/.86 "Iowan Old Style", Baskerville, serif; }
+      .loader-meter small { margin-left: 8px; font: 700 13px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .04em; }
+      .loader-retry { margin-top: 22px; border: 1px solid var(--forest); border-radius: 999px; padding: 10px 17px;
+                      color: var(--forest); background: transparent; font: 700 11px/1 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+      .loader-retry[hidden] { display: none; }
+
+      /* Ready state: the meter recedes, the Start button rises. The click doubles
+         as the browser gesture that unlocks ambient audio (opt-out beforehand). */
+      .loader-actions { display: grid; justify-items: center; gap: 13px; margin-top: 22px; }
+      .loader-actions[hidden] { display: none; }
+      #loaderSoundOpt { display: inline-flex; align-items: center; gap: 9px; padding: 9px 14px; cursor: pointer;
+                        color: var(--forest); background: rgba(0,68,50,.06); border: 1px solid rgba(0,68,50,.24);
+                        border-radius: 999px; font: 800 9px/1 ui-monospace, SFMono-Regular, monospace;
+                        letter-spacing: .1em; text-transform: uppercase;
+                        transition: opacity .2s ease, background .2s ease; }
+      /* Live mini equalizer: dancing bars = sound will play. Opting out collapses
+         every bar into a flat mute dot, so the state reads without any words. */
+      .loader-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 13px; }
+      .loader-eq i { width: 3px; height: 100%; border-radius: 2px; background: var(--forest);
+                     transform-origin: bottom; animation: loader-eq-dance 1.05s ease-in-out infinite;
+                     transition: transform .25s ease, border-radius .25s ease, background .25s ease; }
+      .loader-eq i:nth-child(1) { animation-delay: -.15s; }
+      .loader-eq i:nth-child(2) { animation-delay: -.45s; }
+      .loader-eq i:nth-child(3) { animation-delay: -.78s; }
+      .loader-eq i:nth-child(4) { animation-delay: -.3s; }
+      .loader-eq i:nth-child(5) { animation-delay: -.6s; }
+      @keyframes loader-eq-dance {
+        0%, 100% { transform: scaleY(.28); }
+        35% { transform: scaleY(1); }
+        70% { transform: scaleY(.5); }
+      }
+      #loaderSoundOpt[aria-pressed="false"] { opacity: .62; }
+      #loaderSoundOpt[aria-pressed="false"] .loader-eq i { animation: none; transform: scaleY(.23);
+                                                           border-radius: 50%; background: rgba(0,68,50,.42); }
+      /* Primary CTA: deep forest with white type — unmistakably the first click. */
+      #loaderStart { display: grid; gap: 4px; min-width: 244px; padding: 14px 28px 16px; cursor: pointer;
+                     color: #f6f2e5; text-align: center;
+                     background: linear-gradient(145deg, #01553f, var(--forest-deep));
+                     border: 1px solid rgba(0,45,34,.9); border-radius: 8px 18px 18px 18px;
+                     box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14);
+                     transition: transform .2s ease, box-shadow .2s ease, filter .2s ease; }
+      #loaderStart:hover { transform: translateY(-1px); filter: brightness(1.08);
+                           box-shadow: 0 22px 52px rgba(0,31,23,.42), inset 0 1px rgba(255,255,255,.14); }
+      #loaderStart:active { transform: translateY(0) scale(.985); }
+      .loader-start-kicker { color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .16em; text-transform: uppercase; }
+      #loaderStart strong { font: 500 21px/1.1 "Iowan Old Style", Baskerville, serif; color: #fff; }
+      #loaderStart:focus-visible, #loaderSoundOpt:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
+      .loader-meter, #loaderStatus { transition: opacity .5s ease, transform .5s ease; }
+      #loader.is-ready .loader-meter { opacity: .26; transform: scale(.92); }
+      #loader.is-ready .loader-actions { animation: loader-rise .55s cubic-bezier(.22,1,.36,1) both; }
+      #loader.is-ready #loaderStart { animation: loader-rise .55s cubic-bezier(.22,1,.36,1) both,
+                                                 loader-pulse 2.6s ease .75s 2; }
+      @keyframes loader-rise { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+      @keyframes loader-pulse {
+        0%, 100% { box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14), 0 0 0 0 rgba(217,249,157,0); }
+        45% { box-shadow: 0 18px 46px rgba(0,31,23,.34), inset 0 1px rgba(255,255,255,.14), 0 0 0 8px rgba(217,249,157,.38); }
+      }
+
+      /* DOM labels projected from real Three.js markers. */
+      #markerOverlay { position: fixed; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
+      .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
+                          will-change: transform, opacity; transition: opacity .18s ease; }
+      .map-marker-label[hidden] { display: none; }
+      .temperature-marker-label { display: grid; grid-template-columns: auto auto; align-items: center; gap: 2px 8px;
+                                  min-width: 126px; padding: 7px 9px 8px; margin-top: -10px; color: #f5f2e8;
+                                  background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
+                                  border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
+                                  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+                                  /* Stations are buttons: clicking flies the camera to the sensor. */
+                                  pointer-events: auto; cursor: pointer; touch-action: manipulation;
+                                  font: inherit; text-align: left; }
+      .temperature-marker-label:hover { border-color: rgba(217,249,157,.8); }
+      .temperature-marker-label:active { filter: brightness(.92); }
+      .temperature-marker-label:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
+      .temperature-live { grid-row: 1; width: max-content; color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                          letter-spacing: .12em; }
+      .temperature-live::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
+                                  border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 3px rgba(217,249,157,.14); }
+      .temperature-station { grid-row: 1; text-align: right; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .09em; }
+      .temperature-value { grid-column: 1 / -1; font: 600 20px/1.05 "Iowan Old Style", Baskerville, serif; }
+      .temperature-marker-label.is-compact { display: flex; min-width: 0; width: 74px; justify-content: center;
+                                             padding: 5px 7px 6px; margin-top: -7px; border-radius: 999px; }
+      .temperature-marker-label.is-compact .temperature-live,
+      .temperature-marker-label.is-compact .temperature-station { display: none; }
+      .temperature-marker-label.is-compact .temperature-value { display: block; font-size: 15px; line-height: 1; white-space: nowrap; }
+      .media-marker-label { pointer-events: auto; display: flex; align-items: center; gap: 8px; margin-top: -12px;
+                            padding: 7px 11px 7px 7px; border: 1px solid rgba(255,209,154,.65); border-radius: 999px;
+                            color: #20150c; background: rgba(255,240,219,.92); box-shadow: 0 10px 34px rgba(0,15,10,.28);
+                            backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); cursor: pointer; }
+      .media-marker-label:active { filter: brightness(.92); }
+      .media-marker-label:focus-visible, .video-close:focus-visible, #keyboardGuideToggle:focus-visible,
+      .keyboard-guide-close:focus-visible, #aimModeButton:focus-visible {
+        outline: 3px solid var(--lime); outline-offset: 3px;
+      }
+      .media-marker-label.is-aimed { border-color: var(--lime); box-shadow: 0 0 0 4px rgba(217,249,157,.18), 0 12px 38px rgba(0,15,10,.34); }
+      .media-marker-icon { display: grid; place-items: center; width: 28px; height: 28px; padding-left: 2px;
+                           border-radius: 50%; color: #fff; background: #9e4d16; font-size: 10px; }
+      .media-marker-label b, .media-marker-label small { display: block; text-align: left; }
+      .media-marker-label b { font: 800 9px/1.1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
+      .media-marker-label small { margin-top: 3px; opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; }
+      .media-marker-label.is-compact { width: 36px; height: 36px; justify-content: center; gap: 0; padding: 4px;
+                                       margin-top: -7px; border-radius: 50%; }
+      .media-marker-label.is-compact > span:last-child { display: none; }
+      .media-marker-label.is-compact .media-marker-icon { width: 26px; height: 26px; }
+
+      /* Video lives in the DOM, never in a GPU texture. */
+      .video-modal { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center;
+                     padding: calc(22px + var(--safe-t)) 18px calc(22px + var(--safe-b));
+                     background: rgba(0,24,17,.74); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+      .video-modal[hidden] { display: none; }
+      .video-card { width: min(980px, 100%); overflow: hidden; border: 1px solid rgba(239,235,222,.35); border-radius: 20px;
+                    color: var(--paper); background: #001e17; box-shadow: 0 30px 100px rgba(0,0,0,.45); }
+      .video-card-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 16px; }
+      .video-eyebrow { margin: 0 0 4px; color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                       letter-spacing: .15em; text-transform: uppercase; }
+      .video-card h2 { margin: 0; font: 500 clamp(18px, 4vw, 28px)/1.1 "Iowan Old Style", Baskerville, serif; }
+      .video-close { flex: none; width: 38px; height: 38px; border: 1px solid rgba(240,237,227,.28); border-radius: 50%;
+                     color: var(--paper); background: rgba(255,255,255,.06); font: 300 24px/1 sans-serif; cursor: pointer; }
+      .video-frame { position: relative; aspect-ratio: 16 / 9; background: #00110d; }
+      .video-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #00110d; }
+      #videoStatus { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); margin: 0;
+                     font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace; letter-spacing: .12em;
+                     text-transform: uppercase; color: rgba(240,237,227,.72); pointer-events: none; }
+      .video-modal.is-playing #videoStatus { display: none; }
+
+      .card { position: fixed; background: rgba(14,17,22,0.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+              border: 1px solid #262b32; border-radius: 12px; padding: 12px 14px; z-index: 20; }
+
+      /* toggle chips — always visible, opposite corners, never overlapping */
+      .chip { position: fixed; z-index: 30; display: flex; align-items: center; gap: 6px;
+              background: rgba(14,17,22,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+              border: 1px solid #2d333b; border-radius: 999px; padding: 8px 13px; cursor: pointer;
+              font: 600 13px/1 system-ui, sans-serif; color: #e8eaed; }
+      .chip:active { transform: scale(0.96); }
+      #hudChip { top: calc(10px + var(--safe-t)); left: 10px; }
+      #panelChip { top: calc(10px + var(--safe-t)); right: 10px; }
+      #chipFps { font-variant-numeric: tabular-nums; }
+      #chipFps.good { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
+
+      .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+                 overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+      /* Physical-keyboard field guide. JS reveals it after capability or input detection. */
+      #keyboardGuideToggle { position: fixed; left: 12px; bottom: calc(46px + var(--safe-b)); z-index: 18;
+                             display: none; align-items: center; gap: 7px; padding: 7px 10px;
+                             color: rgba(240,237,227,.78); background: rgba(0,35,26,.8);
+                             border: 1px solid rgba(217,249,157,.3); border-radius: 999px;
+                             box-shadow: 0 8px 28px rgba(0,15,10,.25); backdrop-filter: blur(8px);
+                             -webkit-backdrop-filter: blur(8px); cursor: pointer;
+                             font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .11em; text-transform: uppercase; }
+      #keyboardGuideToggle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--lime); }
+      body.has-physical-keyboard #keyboardGuideToggle { display: inline-flex; }
+      #keyboardGuide { position: fixed; left: 12px; bottom: calc(84px + var(--safe-b)); z-index: 18;
+                       display: none; grid-template-columns: auto 1fr; gap: 10px 14px; align-items: end;
+                       width: max-content; max-width: calc(100vw - 24px); padding: 10px 12px 11px;
+                       color: var(--paper); background: linear-gradient(145deg, rgba(0,45,34,.88), rgba(0,28,21,.78));
+                       border: 1px solid rgba(217,249,157,.28); border-radius: 5px 14px 14px 14px;
+                       box-shadow: 0 14px 42px rgba(0,15,10,.28); backdrop-filter: blur(10px);
+                       -webkit-backdrop-filter: blur(10px); pointer-events: auto; opacity: .82;
+                       transition: opacity .2s ease, border-color .2s ease, transform .2s ease; }
+      body.has-physical-keyboard #keyboardGuide.is-open { display: grid; }
+      #keyboardGuide.is-engaged { opacity: 1; border-color: rgba(217,249,157,.62); transform: translateY(-2px); }
+      #keyboardGuide.is-complete { opacity: 0; transform: translateY(5px) scale(.98); }
+      .keyboard-guide-head { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+                             padding-bottom: 7px; border-bottom: 1px solid rgba(217,249,157,.18);
+                             font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                             letter-spacing: .16em; text-transform: uppercase; }
+      .keyboard-guide-head::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+                                     background: var(--lime); box-shadow: 0 0 0 4px rgba(217,249,157,.1); }
+      .keyboard-guide-context { margin-left: auto; opacity: .46; letter-spacing: .09em; }
+      .keyboard-guide-close { display: grid; place-items: center; width: 21px; height: 21px; padding: 0;
+                              color: rgba(240,237,227,.62); background: transparent;
+                              border: 1px solid rgba(240,237,227,.18); border-radius: 50%; cursor: pointer; }
+      .wasd-pad { display: grid; grid-template-columns: repeat(3, 25px); grid-template-rows: repeat(2, 25px); gap: 3px; }
+      .wasd-pad [data-key="KeyW"] { grid-column: 2; }
+      .wasd-pad [data-key="KeyA"] { grid-column: 1; grid-row: 2; }
+      .wasd-pad [data-key="KeyS"] { grid-column: 2; grid-row: 2; }
+      .wasd-pad [data-key="KeyD"] { grid-column: 3; grid-row: 2; }
+      .keycap { display: inline-grid; place-items: center; min-width: 25px; height: 25px; padding: 0 6px;
+                border: 1px solid rgba(240,237,227,.54); border-bottom-width: 2px; border-radius: 5px;
+                color: #17362d; background: rgba(240,237,227,.92); box-shadow: inset 0 -1px rgba(0,68,50,.14);
+                font: 800 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .04em;
+                transition: color .12s ease, background .12s ease, transform .12s ease, box-shadow .12s ease; }
+      .keycap.is-active { color: #002d22; background: var(--lime); transform: translateY(1px);
+                          box-shadow: 0 0 0 3px rgba(217,249,157,.14); }
+      .keycap.is-latched { color: #002d22; background: var(--lime); border-color: var(--lime); }
+      .keycap.is-tried, .keyboard-action.is-tried .keycap { border-color: rgba(217,249,157,.85); }
+      .keyboard-zoom { display: grid; gap: 5px; }
+      .keyboard-action { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 7px;
+                         color: rgba(240,237,227,.62); font: 800 7px/1 ui-monospace, SFMono-Regular, monospace;
+                         letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
+      .keyboard-combo { display: flex; align-items: center; gap: 3px; }
+      .keyboard-combo .keycap { min-width: 48px; }
+      .keyboard-combo .keycap[data-key="Shift"] { min-width: 38px; }
+      .keyboard-plus { opacity: .42; }
+      .keyboard-access { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+                         padding-top: 8px; border-top: 1px solid rgba(217,249,157,.18); }
+      #aimModeButton { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 5px;
+                       color: rgba(240,237,227,.74); background: rgba(255,255,255,.04);
+                       border: 1px solid rgba(240,237,227,.16); border-radius: 7px; cursor: pointer;
+                       font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      #aimModeButton.is-on { color: var(--lime); border-color: rgba(217,249,157,.62); background: rgba(217,249,157,.08); }
+      .keyboard-enter-hint { display: flex; align-items: center; gap: 6px; color: rgba(240,237,227,.5);
+                             font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+
+      /* Optical survey reticle: a large hit radius, but only one lightweight DOM overlay. */
+      #aimReticle { position: fixed; left: 50%; top: 50%; z-index: 17; display: none; place-items: center;
+                    width: 192px; height: 192px; transform: translate(-50%,-50%); pointer-events: none;
+                    color: rgba(240,237,227,.72); border: 1px dashed rgba(240,237,227,.28); border-radius: 50%;
+                    background: radial-gradient(circle, transparent 0 32px, rgba(0,45,34,.05) 33px 100%);
+                    transition: color .18s ease, border-color .18s ease, background .18s ease, transform .18s ease; }
+      body.aim-mode { cursor: crosshair; }
+      body.aim-mode #aimReticle { display: grid; }
+      #aimReticle::before, #aimReticle::after { content: ""; position: absolute; background: currentColor; opacity: .8; }
+      #aimReticle::before { width: 36px; height: 1px; }
+      #aimReticle::after { width: 1px; height: 36px; }
+      .aim-reticle-core { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%;
+                          box-shadow: 0 0 0 8px rgba(240,237,227,.06); }
+      #aimReticleLabel { position: absolute; top: calc(50% + 27px); padding: 5px 8px; border-radius: 999px;
+                         color: inherit; background: rgba(0,28,21,.78); border: 1px solid currentColor;
+                         font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .1em; text-transform: uppercase; }
+      #aimReticle.has-target { color: var(--lime); border-style: solid; border-color: rgba(217,249,157,.58);
+                               background: radial-gradient(circle, rgba(217,249,157,.13) 0 34px, transparent 35px 100%);
+                               transform: translate(-50%,-50%) scale(.94); }
+
+      .card .close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #8b949e;
+                     font-size: 17px; line-height: 1; cursor: pointer; padding: 4px; }
+
+      /* HUD (stats) */
+      #hud { top: calc(52px + var(--safe-t)); left: 10px; min-width: 210px; display: none; }
+      body.hud-open #hud { display: block; }
+      #hud h1 { margin: 0 14px 6px 0; font-size: 14px; font-weight: 600; }
+      .badge { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+               padding: 2px 7px; border-radius: 5px; background: #1f6feb33; color: #79b8ff; border: 1px solid #1f6feb55; }
+      .badge.webgl { background: #b5842033; color: #f0c674; border-color: #b5842055; }
+      #status { margin: 8px 0 0; opacity: .8; font-size: 12px; }
+      .stats { margin-top: 8px; display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+      .stats .k { opacity: .55; }
+      .stats .v { text-align: right; font-weight: 600; }
+      #fpsv.good { color: #6ee787; } #fpsv.warn { color: #f0c674; } #fpsv.bad { color: #ff7b72; }
+
+      /* control panel */
+      #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px; }
+      body.panel-open #panel { display: flex; }
+      .row { display: flex; flex-direction: column; gap: 5px; }
+      .row > label.h { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .55; }
+      .seg { display: flex; border: 1px solid #2d333b; border-radius: 8px; overflow: hidden; }
+      .seg button { flex: 1; background: transparent; color: #b9c0c8; border: 0; padding: 8px 3px; font: inherit; font-size: 12px; cursor: pointer; }
+      .seg button.on { background: #1f6feb; color: #fff; }
+      input[type=range] { width: 100%; accent-color: #1f6feb; height: 28px; }
+      .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+      button.act { background: #21262d; color: #e8eaed; border: 1px solid #2d333b; border-radius: 8px;
+                   padding: 9px; font: inherit; cursor: pointer; }
+      button.act.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      #rainToggle.on { background: #176c8d; border-color: #56b6d9; color: #effbff; }
+      #cloudToggle.on { color: #092f29; background: linear-gradient(135deg, #dceceb, #a8d0d5);
+                        border-color: rgba(203,239,242,.88); box-shadow: inset 0 1px rgba(255,255,255,.7); }
+      #cloudToggle.is-protected { color: #f0c674; border-color: rgba(240,198,116,.42); }
+      .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .05em; }
+      button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button.act:active { transform: translateY(1px); }
+      button:disabled { opacity: .45; pointer-events: none; }
+
+      #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
+      #attribution a { color: inherit; }
+
+      /* Peru daylight instrument: a compact field readout expands into a
+         tactile map timeline without covering the survey. */
+      #peruTimeDock { position: fixed; left: 50%; bottom: calc(12px + var(--safe-b)); z-index: 16;
+                      width: min(430px, calc(100vw - 24px)); transform: translateX(-50%); color: var(--forest-deep);
+                      font-variant-numeric: tabular-nums; pointer-events: none; }
+      .peru-time-shell { overflow: hidden; width: 246px; margin: 0 auto;
+                         background: linear-gradient(145deg, rgba(246,242,229,.96), rgba(226,231,215,.92));
+                         border: 1px solid rgba(0,68,50,.26); border-radius: 8px 18px 18px 18px;
+                         box-shadow: 0 18px 46px rgba(0,31,23,.28), inset 0 1px rgba(255,255,255,.74);
+                         backdrop-filter: blur(13px); -webkit-backdrop-filter: blur(13px); pointer-events: auto;
+                         transition: width .36s cubic-bezier(.22,1,.36,1), border-radius .36s ease; }
+      #peruTimeDock.is-open .peru-time-shell { width: 100%; border-radius: 8px 22px 22px 22px; }
+      .field-bottom-primary { display: grid; grid-template-columns: 1fr 48px; align-items: stretch; }
+      #peruTimeDockToggle { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px;
+                            width: 100%; min-height: 46px; padding: 7px 10px; color: inherit; background: transparent;
+                            border: 0; cursor: pointer; text-align: left; }
+      .peru-time-celestial { position: relative; width: 30px; height: 30px; overflow: hidden; border-radius: 50%;
+                             background: linear-gradient(#b9dfed, #e8d59c); box-shadow: 0 0 0 5px rgba(239,184,93,.12);
+                             transition: background .7s ease, box-shadow .7s ease; }
+      .celestial-disc { position: absolute; left: 6px; top: 6px; width: 18px; height: 18px; border-radius: 50%;
+                        background: radial-gradient(circle at 36% 34%, #fffbd7 0 18%, #efb85d 52%, #c6752e 100%);
+                        box-shadow: 0 0 8px rgba(239,184,93,.58); transition: transform .75s cubic-bezier(.22,1,.36,1),
+                        background .7s ease, box-shadow .7s ease; }
+      .celestial-disc::after { content: ""; position: absolute; inset: 0; border-radius: inherit; opacity: 0;
+                               background: #17384b; transform: translate(7px,-4px); transition: opacity .55s ease; }
+      .celestial-horizon { position: absolute; left: 3px; right: 3px; bottom: 6px; height: 1px; opacity: 0;
+                           background: rgba(0,68,50,.56); box-shadow: 0 3px 0 rgba(0,68,50,.11);
+                           transition: opacity .6s ease, transform .75s cubic-bezier(.22,1,.36,1); }
+      #peruTimeDock[data-phase="sunrise"] .peru-time-celestial { background: linear-gradient(#829eb5, #f0c17a); }
+      #peruTimeDock[data-phase="sunset"] .peru-time-celestial { background: linear-gradient(#8a7897, #ee9c64); }
+      #peruTimeDock[data-phase="sunrise"] .celestial-disc,
+      #peruTimeDock[data-phase="sunset"] .celestial-disc { transform: translateY(7px) scale(.84); }
+      #peruTimeDock[data-phase="sunrise"] .celestial-horizon,
+      #peruTimeDock[data-phase="sunset"] .celestial-horizon { opacity: 1; }
+      #peruTimeDock[data-phase="night"] .peru-time-celestial { background: linear-gradient(#102f43, #31546b);
+                                                               box-shadow: 0 0 0 5px rgba(49,84,107,.12); }
+      #peruTimeDock[data-phase="night"] .celestial-disc { transform: scale(.9); background: #edf3df; box-shadow: 0 0 8px rgba(237,243,223,.28); }
+      #peruTimeDock[data-phase="night"] .celestial-disc::after { opacity: 1; }
+      #soundToggle { position: relative; display: grid; place-items: center; min-width: 48px; min-height: 46px; padding: 0;
+                     color: rgba(0,45,34,.52); background: rgba(0,68,50,.035); border: 0; border-left: 1px solid rgba(0,68,50,.14);
+                     cursor: pointer; transition: color .25s ease, background .25s ease; }
+      #soundToggle svg { width: 22px; height: 22px; overflow: visible; }
+      #soundToggle .sound-wave { opacity: .18; transition: opacity .25s ease; }
+      #soundToggle .sound-slash { opacity: 1; transition: opacity .25s ease; }
+      #soundToggle.is-on { color: var(--forest); background: rgba(81,168,111,.11); }
+      #soundToggle.is-on .sound-wave { opacity: 1; }
+      #soundToggle.is-on .sound-slash { opacity: 0; }
+      #soundToggle:disabled { opacity: .42; cursor: not-allowed; }
+      .peru-time-copy { display: grid; gap: 2px; }
+      #peruTimeMode { color: rgba(0,45,34,.58); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                      letter-spacing: .14em; text-transform: uppercase; }
+      #peruTimeMode.is-live::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px;
+                                      border-radius: 50%; background: #51a86f; box-shadow: 0 0 0 3px rgba(81,168,111,.14); }
+      #peruTimeValue { font: 500 20px/.95 "Iowan Old Style", Baskerville, Georgia, serif; letter-spacing: .01em; }
+      .peru-time-chevron { color: rgba(0,45,34,.52); font-size: 16px; transition: transform .3s ease; }
+      #peruTimeDock.is-open .peru-time-chevron { transform: rotate(180deg); }
+      .peru-time-panel { display: grid; grid-template-rows: 0fr; opacity: 0;
+                         transition: grid-template-rows .36s cubic-bezier(.22,1,.36,1), opacity .2s ease; }
+      .peru-time-panel-inner { min-height: 0; overflow: hidden; }
+      #peruTimeDock.is-open .peru-time-panel { grid-template-rows: 1fr; opacity: 1; }
+      .peru-time-control { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center;
+                           padding: 0 14px 13px; border-top: 1px solid rgba(0,68,50,.14); }
+      .peru-time-label { padding-top: 10px; color: rgba(0,45,34,.58); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                         letter-spacing: .13em; text-transform: uppercase; }
+      #peruTimeNow { align-self: end; padding: 5px 9px; color: var(--forest); background: rgba(0,68,50,.06);
+                     border: 1px solid rgba(0,68,50,.24); border-radius: 999px; cursor: pointer;
+                     font: 800 8px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .09em; text-transform: uppercase; }
+      #peruTimeSlider { grid-column: 1 / -1; width: 100%; height: 24px; margin: 0; accent-color: var(--forest); cursor: ew-resize; }
+      .peru-time-ticks { grid-column: 1 / -1; display: flex; justify-content: space-between; margin-top: -5px;
+                         color: rgba(0,45,34,.42); font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; }
+      #peruTimeDock :focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+
+      #modelTransformEditor { position: fixed; top: calc(12px + var(--safe-t)); left: 50%; z-index: 60;
+                              width: min(440px, calc(100vw - 24px)); padding: 10px; transform: translateX(-50%);
+                              color: var(--paper); background: rgba(5,16,19,.9); border: 1px solid rgba(217,249,157,.3);
+                              border-radius: 14px; box-shadow: 0 18px 52px rgba(0,0,0,.38); backdrop-filter: blur(14px);
+                              -webkit-backdrop-filter: blur(14px); }
+      .model-editor-head { display: flex; justify-content: space-between; gap: 12px; margin: 0 2px 8px;
+                           color: var(--lime); font: 800 8px/1.2 ui-monospace, SFMono-Regular, monospace;
+                           letter-spacing: .12em; }
+      .model-editor-head span { color: rgba(240,237,227,.48); letter-spacing: .03em; }
+      .model-editor-segment { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; margin-top: 4px; }
+      .model-editor-segment button { min-height: 34px; color: rgba(240,237,227,.64); background: rgba(255,255,255,.035);
+                                     border: 1px solid rgba(240,237,227,.13); border-radius: 8px; cursor: pointer;
+                                     font: 700 10px/1 ui-monospace, SFMono-Regular, monospace; }
+      .model-editor-segment button.is-active { color: #062d23; background: var(--lime); border-color: var(--lime); }
+      #modelEditorReadout { display: block; margin: 8px 2px 5px; color: #fff;
+                            font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace; }
+      #modelEditorOutput { width: 100%; height: 70px; resize: vertical; padding: 7px; color: rgba(240,237,227,.72);
+                           background: rgba(0,0,0,.22); border: 1px solid rgba(240,237,227,.1); border-radius: 7px;
+                           font: 9px/1.3 ui-monospace, SFMono-Regular, monospace; user-select: text; -webkit-user-select: text; }
+      #modelEditorStatus { min-height: 1em; margin: 5px 2px 0; color: rgba(217,249,157,.62);
+                           font: 700 8px/1 ui-monospace, SFMono-Regular, monospace; text-transform: uppercase; letter-spacing: .08em; }
+      #modelTransformEditor.is-dragging { border-color: rgba(217,249,157,.72); }
+
+      /* ---------- mobile: panel becomes a bottom sheet ---------- */
+      @media (max-width: 700px) {
+        #hud { left: 10px; right: 10px; min-width: 0; }
+        #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
+                 border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
+        #attribution { left: 10px; right: auto; bottom: calc(70px + var(--safe-b)); }
+        .loader-kicker { left: 18px; right: 18px; }
+        .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
+        .temperature-value { font-size: 18px; }
+        .video-modal { padding-left: 10px; padding-right: 10px; }
+        .video-card { border-radius: 15px; }
+        #keyboardGuideToggle { left: 10px; bottom: calc(112px + var(--safe-b)); }
+        #keyboardGuide { left: 10px; bottom: calc(150px + var(--safe-b)); transform: scale(.9);
+                         transform-origin: left bottom; }
+        #keyboardGuide.is-engaged { transform: translateY(-2px) scale(.9); }
+        #peruTimeDock { bottom: calc(10px + var(--safe-b)); }
+        #peruTimeDock.is-open { width: calc(100vw - 20px); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #loader, .loader-eagle-fill, .map-marker-label, #keyboardGuide, .keycap, #aimReticle,
+        .peru-time-shell, .peru-time-panel, .peru-time-chevron, .celestial-disc,
+        .celestial-horizon, .peru-time-celestial, .loader-meter, #loaderStatus,
+        #loaderStart, #loaderSoundOpt { transition-duration: .01ms !important; }
+        .loader-actions, #loaderStart { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+        /* Static staggered bars still read as an equalizer without motion. */
+        .loader-eq i { animation: none !important; }
+        #loaderSoundOpt[aria-pressed="true"] .loader-eq i:nth-child(odd) { transform: scaleY(.85); }
+        #loaderSoundOpt[aria-pressed="true"] .loader-eq i:nth-child(even) { transform: scaleY(.45); }
+      }
+    </style>
+  </head>
+  <body class="mask-vignette">
+    <canvas id="view"></canvas>
+    <div id="vignette"></div>
+    <div id="markerOverlay"></div>
+    <div id="interactionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="aimReticle" aria-hidden="true">
+      <span class="aim-reticle-core"></span>
+      <span id="aimReticleLabel">Ziel suchen</span>
+    </div>
+
+    <div id="loader" role="progressbar" aria-label="Point Cloud wird geladen" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
+      <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
+      <div class="loader-content">
+        <div class="loader-eagle-frame" aria-hidden="true">
+          <div class="loader-eagle loader-eagle-ghost"></div>
+          <div class="loader-eagle loader-eagle-fill" id="loaderEagleFill" hidden></div>
+        </div>
+        <p class="loader-system">Flight preparation / point cloud</p>
+        <p id="loaderStatus" aria-live="polite">Initialisiere Feldsystem …</p>
+        <div class="loader-meter"><span id="loaderPercent">00</span><small>%</small></div>
+        <div class="loader-actions" id="loaderActions" hidden>
+          <button id="loaderSoundOpt" type="button" aria-pressed="true">
+            <span class="loader-eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            <span id="loaderSoundOptLabel">Mit Naturklängen</span>
+          </button>
+          <button id="loaderStart" type="button">
+            <span class="loader-start-kicker">Feldsystem bereit</span>
+            <strong>Expedition starten</strong>
+          </button>
+        </div>
+        <button class="loader-retry" id="loaderRetry" type="button" hidden>Erneut versuchen</button>
+      </div>
+      <canvas id="loaderEagleCanvas" aria-hidden="true" hidden></canvas>
+    </div>
+
+    <button class="chip" id="hudChip" aria-label="Statistics">ⓘ <span id="chipFps">—</span></button>
+    <button class="chip" id="panelChip" aria-label="Settings">⚙</button>
+
+    <button id="keyboardGuideToggle" type="button" aria-controls="keyboardGuide" aria-expanded="false">⌨ Field keys</button>
+    <aside id="keyboardGuide" role="region" aria-labelledby="keyboardGuideTitle" aria-hidden="true">
+      <div class="keyboard-guide-head">
+        <span id="keyboardGuideTitle">Field navigation</span>
+        <span class="keyboard-guide-context">Physical keyboard</span>
+        <button id="keyboardGuideClose" class="keyboard-guide-close" type="button" aria-label="Field Navigation ausblenden">×</button>
+      </div>
+      <div class="wasd-pad" aria-label="W A S D for directional movement">
+        <kbd class="keycap" data-key="KeyW" data-nav-task="KeyW">W</kbd>
+        <kbd class="keycap" data-key="KeyA" data-nav-task="KeyA">A</kbd>
+        <kbd class="keycap" data-key="KeyS" data-nav-task="KeyS">S</kbd>
+        <kbd class="keycap" data-key="KeyD" data-nav-task="KeyD">D</kbd>
+      </div>
+      <div class="keyboard-zoom">
+        <div class="keyboard-action" data-nav-task="zoom-in">
+          <span class="keyboard-combo"><kbd class="keycap" data-key="Space">Space</kbd></span><span>Zoom in</span>
+        </div>
+        <div class="keyboard-action" data-nav-task="zoom-out">
+          <span class="keyboard-combo"><kbd class="keycap" data-key="Shift">Shift</kbd><span class="keyboard-plus">+</span><kbd class="keycap" data-key="Space">Space</kbd></span><span>Zoom out</span>
+        </div>
+      </div>
+      <div class="keyboard-access">
+        <button id="aimModeButton" type="button" aria-pressed="false" aria-keyshortcuts="C">
+          <kbd class="keycap" data-key="KeyC">C</kbd><span>Focus target</span>
+        </button>
+        <span class="keyboard-enter-hint"><kbd class="keycap" data-key="Enter">Enter</kbd><span>Open</span></span>
+      </div>
+    </aside>
+
+    <div id="hud" class="card">
+      <button class="close" data-close="hud">×</button>
+      <h1>Adaptive Point Cloud</h1>
+      <span id="backend" class="badge">…</span>
+      <div id="status">Initializing…</div>
+      <div class="stats">
+        <span class="k">Density</span><span class="v" id="loaded">—</span>
+        <span class="k">Adaptive LOD</span><span class="v" id="displayed">—</span>
+        <span class="k">Visible points</span><span class="v" id="visible">0</span>
+        <span class="k">Point tiles</span><span class="v" id="blocks">0</span>
+        <span class="k">Map tiles</span><span class="v" id="mapTiles">0</span>
+        <span class="k">Cache CPU · GPU</span><span class="v" id="cache">0 MB · 0 MB</span>
+        <span class="k">FPS</span><span class="v" id="fpsv">—</span>
+        <span class="k">ms/frame</span><span class="v" id="msv">—</span>
+      </div>
+      <!-- Filled and revealed only with ?freeorbit, to read off a zoom stop. -->
+      <div class="stats" id="diagStats" hidden>
+        <span class="k">Höhe über Grund</span><span class="v" id="diagAltitude">—</span>
+        <span class="k">LOD-Distanz</span><span class="v" id="diagRange">—</span>
+        <span class="k">Zoom-Anschlag</span><span class="v" id="diagStop">—</span>
+        <span class="k">Fehlende Kacheln</span><span class="v" id="diagMissing">0</span>
+      </div>
+    </div>
+
+    <div id="panel" class="card">
+      <button class="close" data-close="panel">×</button>
+      <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
+      <div class="row">
+        <label class="h">Point Size · <span class="val" id="sizev">1.0× · 3.0px</span></label>
+        <input type="range" id="size" min="0.5" max="3" step="0.1" value="1" />
+      </div>
+      <div class="row">
+        <label class="h" for="precisionToggle">Matrix-Präzision</label>
+        <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Präzision · High</button>
+        <span class="weather-note" id="precisionNote">Aus = Model-View im Shader (float32); Kacheln zittern auf ECEF-Rundung. Während Loader und Flug automatisch aus</span>
+      </div>
+      <div class="row">
+        <label class="h" for="liftToggle">Höhen-Offset</label>
+        <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · An</button>
+        <span class="weather-note" id="liftNote">Nur Diagnose: Aus senkt die Wolke, die Höhen-Uniforms folgen nicht</span>
+      </div>
+      <div class="row">
+        <label class="h">Mask</label>
+        <div class="seg" id="maskSeg">
+          <button data-mask="0">Off</button>
+          <button data-mask="2" class="on">Vignette</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="h" for="rainToggle">Weather shader</label>
+        <button class="act" id="rainToggle" type="button" aria-pressed="true" aria-describedby="rainNote">☂ Rain cycle · Dry</button>
+        <span class="weather-note" id="rainNote">Automatic nearby weather cycle</span>
+      </div>
+      <div class="row">
+        <label class="h" for="cloudToggle">Cloud layer</label>
+        <button class="act" id="cloudToggle" type="button" aria-pressed="false" aria-describedby="cloudNote">☁ Clouds · Detecting…</button>
+        <span class="weather-note" id="cloudNote" aria-live="polite">Checking device headroom</span>
+      </div>
+    </div>
+
+    <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">
+      <div class="peru-time-shell">
+        <div class="field-bottom-primary">
+          <button id="peruTimeDockToggle" type="button" aria-expanded="false" aria-controls="peruTimePanel">
+            <span class="peru-time-celestial" aria-hidden="true"><span class="celestial-disc"></span><span class="celestial-horizon"></span></span>
+            <span class="peru-time-copy"><span id="peruTimeMode" class="is-live">LIVE · PET</span><strong id="peruTimeValue">12:00</strong></span>
+            <span class="peru-time-chevron" aria-hidden="true">⌃</span>
+          </button>
+          <button id="soundToggle" type="button" aria-pressed="false" aria-label="Naturklänge einschalten">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 10v4h3l4 3V7l-4 3H4Z" />
+              <path class="sound-wave" d="M14.5 9.2a4 4 0 0 1 0 5.6M17 6.8a7.2 7.2 0 0 1 0 10.4" />
+              <path class="sound-slash" d="m5 5 14 14" />
+            </svg>
+          </button>
+        </div>
+        <div id="peruTimePanel" class="peru-time-panel">
+          <div class="peru-time-panel-inner">
+            <div class="peru-time-control">
+              <label class="peru-time-label" for="peruTimeSlider">Field light · Peru time</label>
+              <button id="peruTimeNow" type="button" hidden>Jetzt</button>
+              <input id="peruTimeSlider" type="range" min="0" max="1439" step="5" value="720" aria-label="Tageszeit in Peru" aria-valuetext="12:00 Uhr, Peru" />
+              <div class="peru-time-ticks" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <span id="audioStatus" class="sr-only" role="status" aria-live="polite"></span>
+    <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
+
+    <div id="videoModal" class="video-modal" role="dialog" aria-modal="true" aria-labelledby="videoTitle" hidden>
+      <section class="video-card">
+        <header class="video-card-header">
+          <div>
+            <p class="video-eyebrow">Wilderness International · Field Film</p>
+            <h2 id="videoTitle">Der Wald ist unser stärkster Verbündeter.</h2>
+          </div>
+          <button id="videoClose" class="video-close" type="button" aria-label="Video schließen">×</button>
+        </header>
+        <div class="video-frame">
+          <video id="fieldVideo" controls playsinline preload="none" aria-label="Wilderness International Imagefilm"></video>
+          <p id="videoStatus">Video wird geladen …</p>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/threejs-test/main.ts"></script>
+  </body>
+</html>

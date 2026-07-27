@@ -1,0 +1,660 @@
+import * as THREE from 'three'
+import { MeshBasicNodeMaterial, NodeMaterial } from 'three/webgpu'
+import {
+  Break, Fn, If, Loop, float, smoothstep, texture3D, uniform, vec3, vec4,
+  exp, pow, dot, normalize, hash, screenCoordinate,
+  modelWorldMatrixInverse, positionWorld, cameraPosition,
+} from 'three/tsl'
+import { JitteredRaymarchingBox } from './tsl-raymarch'
+import { EXPERIENCE_CONFIG } from './config'
+import type { CloudUniforms } from './point-cloud'
+
+export type CloudMode = 'off' | 'soft' | 'volume'
+export type PerformanceTier = 'constrained' | 'balanced' | 'strong'
+export type DaylightPhase = 'night' | 'sunrise' | 'day' | 'sunset'
+
+export interface DaylightState {
+  peruMinutes: number
+  timeLabel: string
+  live: boolean
+  phase: DaylightPhase
+  sunElevationRad: number
+  sunDirectionEnu: THREE.Vector3
+  skyColor: THREE.Color
+  fogColor: THREE.Color
+  lightColor: THREE.Color
+  daylightColor: THREE.Color
+  intensity: number
+  ambientIntensity: number
+}
+
+export interface CloudState {
+  mode: CloudMode
+  tier: PerformanceTier
+  intent: boolean
+  reason: string
+}
+
+export interface EnvironmentLayer {
+  getDaylightState(): DaylightState
+  getCloudState(): CloudState
+  setCloudIntent(enabled: boolean): void
+  /** Override the heuristic tier with a measured one (loader benchmark). */
+  applyMeasuredTier(tier: PerformanceTier): void
+  setPeruMinutes(minutes: number | null): void
+  update(
+    now: number,
+    camera: THREE.PerspectiveCamera,
+    cameraGroundRange: number,
+    fps: number,
+    qualityGuardEnabled: boolean,
+  ): DaylightState
+  dispose(): void
+}
+
+interface EnvironmentLayerOptions {
+  scene: THREE.Scene
+  renderer: { setClearColor(color: THREE.ColorRepresentation, alpha?: number): void }
+  fog: THREE.Fog
+  uniforms: CloudUniforms
+  enuFrame: THREE.Matrix4
+  zOffset: number
+  surveyCentreEnu: THREE.Vector3
+  /** Radius of the point-cloud area; near clouds never spawn outside it. */
+  surveyRadiusM: number
+  originLonLat: readonly [number, number, number]
+  /** Shared density volume, owned by the caller (also drives point-cloud shadows). */
+  cloudNoiseTexture: THREE.Data3DTexture
+  isWebGPU: boolean
+  reducedMotion: boolean
+  onCloudStateChange?(state: CloudState): void
+}
+
+const CLOUD_PREFERENCE_KEY = 'living-dashboard:clouds'
+const TWO_PI = Math.PI * 2
+
+function clamp01(value: number): number {
+  return THREE.MathUtils.clamp(value, 0, 1)
+}
+
+function smooth01(edge0: number, edge1: number, value: number): number {
+  const t = clamp01((value - edge0) / Math.max(1e-6, edge1 - edge0))
+  return t * t * (3 - 2 * t)
+}
+
+function getPeruClock(nowMs: number): { date: Date; minutes: number } {
+  const offsetMs = EXPERIENCE_CONFIG.environment.utcOffsetHours * 60 * 60 * 1000
+  const date = new Date(nowMs + offsetMs)
+  return { date, minutes: date.getUTCHours() * 60 + date.getUTCMinutes() }
+}
+
+function dayOfYear(date: Date): number {
+  const start = Date.UTC(date.getUTCFullYear(), 0, 0)
+  const current = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  return Math.floor((current - start) / 86_400_000)
+}
+
+function calculateSunDirection(
+  date: Date,
+  minutes: number,
+  longitudeDeg: number,
+  latitudeDeg: number,
+  target: THREE.Vector3,
+): { direction: THREE.Vector3; elevation: number; hourAngle: number } {
+  const hour = minutes / 60
+  const gamma = TWO_PI / 365 * (dayOfYear(date) - 1 + (hour - 12) / 24)
+  const equationOfTime = 229.18 * (
+    0.000075 + 0.001868 * Math.cos(gamma) - 0.032077 * Math.sin(gamma)
+    - 0.014615 * Math.cos(2 * gamma) - 0.040849 * Math.sin(2 * gamma)
+  )
+  const declination = 0.006918 - 0.399912 * Math.cos(gamma) + 0.070257 * Math.sin(gamma)
+    - 0.006758 * Math.cos(2 * gamma) + 0.000907 * Math.sin(2 * gamma)
+    - 0.002697 * Math.cos(3 * gamma) + 0.00148 * Math.sin(3 * gamma)
+  const timeOffset = equationOfTime + 4 * longitudeDeg
+    - 60 * EXPERIENCE_CONFIG.environment.utcOffsetHours
+  const trueSolarMinutes = (minutes + timeOffset + 1_440) % 1_440
+  const hourAngle = THREE.MathUtils.degToRad(trueSolarMinutes / 4 - 180)
+  const latitude = THREE.MathUtils.degToRad(latitudeDeg)
+  const sinElevation = Math.sin(latitude) * Math.sin(declination)
+    + Math.cos(latitude) * Math.cos(declination) * Math.cos(hourAngle)
+  const elevation = Math.asin(THREE.MathUtils.clamp(sinElevation, -1, 1))
+  const azimuth = Math.atan2(
+    Math.sin(hourAngle),
+    Math.cos(hourAngle) * Math.sin(latitude) - Math.tan(declination) * Math.cos(latitude),
+  ) + Math.PI
+
+  target.set(
+    Math.sin(azimuth) * Math.cos(elevation),
+    Math.cos(azimuth) * Math.cos(elevation),
+    Math.sin(elevation),
+  ).normalize()
+  return { direction: target, elevation, hourAngle }
+}
+
+export function classifyTier(isWebGPU: boolean): PerformanceTier {
+  const connection = (navigator as any).connection
+  const saveData = Boolean(connection?.saveData)
+  const cores = navigator.hardwareConcurrency || 2
+  const memory = Number((navigator as any).deviceMemory)
+  const coarseMobile = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 1_100
+  if (!isWebGPU || saveData || coarseMobile || cores < 6 || (Number.isFinite(memory) && memory < 4)) {
+    return 'constrained'
+  }
+  if (cores >= EXPERIENCE_CONFIG.clouds.strongMinimumCores
+    && (!Number.isFinite(memory) || memory >= EXPERIENCE_CONFIG.clouds.strongMinimumMemoryGb)) {
+    return 'strong'
+  }
+  return 'balanced'
+}
+
+interface VolumeMaterialHandle {
+  material: NodeMaterial
+  opacity: any
+  wind: any
+  sunColor: any
+  ambientColor: any
+  sunDir: any
+}
+
+interface NearCloud {
+  mesh: THREE.Mesh
+  handle: VolumeMaterialHandle
+  driftDirection: THREE.Vector2
+  cycleStart: number
+  visibleFor: number
+  gapFor: number
+}
+
+export function createEnvironmentLayer(options: EnvironmentLayerOptions): EnvironmentLayer {
+  const {
+    scene, renderer, fog, uniforms, enuFrame, zOffset, surveyCentreEnu, surveyRadiusM,
+    originLonLat, cloudNoiseTexture, isWebGPU, reducedMotion, onCloudStateChange,
+  } = options
+  const tier = classifyTier(isWebGPU)
+  let activeTier = tier
+  let storedPreference: string | null = null
+  try { storedPreference = localStorage.getItem(CLOUD_PREFERENCE_KEY) } catch { /* private mode */ }
+  let cloudIntent = storedPreference === null ? tier !== 'constrained' : storedPreference === 'on'
+  let cloudMode: CloudMode = 'off'
+  let cloudReason = cloudIntent ? 'Adaptive cloud quality' : 'Clouds are off'
+  let lowFpsSince = 0
+  let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
+  let lastDaylightUpdate = -Infinity
+  let lastLiveRefresh = -Infinity
+  let resources: {
+    mode: Exclude<CloudMode, 'off'>
+    group: THREE.Group
+    geometry: THREE.BufferGeometry
+    material: THREE.Material
+    opacityUniform?: any
+    windUniform?: any
+    sunColorUniform?: any
+    ambientColorUniform?: any
+    sunDirUniform?: any
+    nearClouds?: NearCloud[]
+  } | null = null
+
+  const root = new THREE.Group()
+  root.name = 'wilderness-environment-layer'
+  root.matrixAutoUpdate = false
+  root.matrix.copy(enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, zOffset))
+  root.matrixWorldNeedsUpdate = true
+  scene.add(root)
+  const rootInverse = new THREE.Matrix4().copy(root.matrix).invert()
+  const nearCameraEnu = new THREE.Vector3()
+  let lastNearUpdate = performance.now()
+
+  const hemisphere = new THREE.HemisphereLight(0xc9e9ff, 0x163a2d, 1)
+  const sunlight = new THREE.DirectionalLight(0xffffff, 1.4)
+  const sunTarget = new THREE.Object3D()
+  scene.add(hemisphere, sunlight, sunTarget)
+  sunlight.target = sunTarget
+
+  const state: DaylightState = {
+    peruMinutes: EXPERIENCE_CONFIG.environment.startPeruMinutes,
+    timeLabel: '14:00',
+    live: false,
+    phase: 'day',
+    sunElevationRad: Math.PI / 3,
+    sunDirectionEnu: new THREE.Vector3(0.3, -0.4, 0.85).normalize(),
+    skyColor: new THREE.Color(EXPERIENCE_CONFIG.environment.daySky),
+    fogColor: new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog),
+    lightColor: new THREE.Color(0xffffff),
+    daylightColor: new THREE.Color(0xffffff),
+    intensity: 1,
+    ambientIntensity: 1,
+  }
+  const nightSky = new THREE.Color(EXPERIENCE_CONFIG.environment.nightSky)
+  const dawnSky = new THREE.Color(EXPERIENCE_CONFIG.environment.dawnSky)
+  const daySky = new THREE.Color(EXPERIENCE_CONFIG.environment.daySky)
+  const nightFog = new THREE.Color(EXPERIENCE_CONFIG.environment.nightFog)
+  const dayFog = new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)
+  const nightGrade = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
+  const dayGrade = new THREE.Color(0xffffff)
+  const warmLight = new THREE.Color(0xffc58f)
+  const moonLight = new THREE.Color(0x9fc5e8)
+  const whiteAmbient = new THREE.Color(0xffffff)
+  const worldCentre = surveyCentreEnu.clone().applyMatrix4(root.matrix)
+  const worldSunDirection = new THREE.Vector3()
+  const enuRotation = new THREE.Matrix3().setFromMatrix4(enuFrame)
+
+  function notifyCloudState(): void {
+    onCloudStateChange?.({ mode: cloudMode, tier: activeTier, intent: cloudIntent, reason: cloudReason })
+  }
+
+  function disposeCloudResources(): void {
+    if (!resources) return
+    root.remove(resources.group)
+    resources.geometry.dispose()
+    resources.material.dispose()
+    if (resources.nearClouds) {
+      for (const cloud of resources.nearClouds) cloud.handle.material.dispose()
+    }
+    resources = null
+  }
+
+  function createSoftClouds(): void {
+    const group = new THREE.Group()
+    group.name = 'wilderness-soft-clouds'
+    const geometry = new THREE.SphereGeometry(1, 10, 7)
+    const material = new MeshBasicNodeMaterial()
+    material.color.set(0xe9f2f2)
+    material.transparent = true
+    material.opacity = 0.16
+    material.depthWrite = false
+    material.side = THREE.FrontSide
+    const count = EXPERIENCE_CONFIG.clouds.fields.length * EXPERIENCE_CONFIG.clouds.softPuffsPerField
+    const mesh = new THREE.InstancedMesh(geometry, material, count)
+    mesh.name = 'wilderness-soft-cloud-puffs'
+    mesh.renderOrder = 2
+    mesh.frustumCulled = true
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3()
+    const quaternion = new THREE.Quaternion()
+    let index = 0
+    for (let fieldIndex = 0; fieldIndex < EXPERIENCE_CONFIG.clouds.fields.length; fieldIndex++) {
+      const field = EXPERIENCE_CONFIG.clouds.fields[fieldIndex]
+      for (let puff = 0; puff < EXPERIENCE_CONFIG.clouds.softPuffsPerField; puff++) {
+        const seed = fieldIndex * 97 + puff * 31
+        const angle = seed * 2.399963
+        const radial = Math.sqrt((puff + 0.5) / EXPERIENCE_CONFIG.clouds.softPuffsPerField)
+        position.set(
+          surveyCentreEnu.x + field.offsetM[0] + Math.cos(angle) * field.sizeM[0] * 0.33 * radial,
+          surveyCentreEnu.y + field.offsetM[1] + Math.sin(angle) * field.sizeM[1] * 0.33 * radial,
+          surveyCentreEnu.z + field.offsetM[2] + Math.sin(seed * 1.17) * field.sizeM[2] * 0.13,
+        )
+        const base = 0.13 + ((seed * 17) % 19) / 180
+        scale.set(field.sizeM[0] * base, field.sizeM[2] * (0.18 + base * 0.25), field.sizeM[1] * base)
+        matrix.compose(position, quaternion, scale)
+        mesh.setMatrixAt(index++, matrix)
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true
+    group.add(mesh)
+    root.add(group)
+    resources = { mode: 'soft', group, geometry, material }
+  }
+
+  // Deterministic RNG for near-cloud placement so reloads look familiar.
+  let nearSeed = 0x9e3779b9
+  function nearRandom(): number {
+    nearSeed += 0x6d2b79f5
+    let value = nearSeed
+    value = Math.imul(value ^ (value >>> 15), value | 1)
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
+  }
+  function nearBetween(range: readonly [number, number]): number {
+    return range[0] + nearRandom() * (range[1] - range[0])
+  }
+
+  function buildVolumeMaterial(steps: number): VolumeMaterialHandle {
+    const cfg = EXPERIENCE_CONFIG.clouds
+    const cloudOpacity = uniform(1)
+    const windOffset = uniform(new THREE.Vector3())
+    const sunColor = uniform(new THREE.Color(0xfff4e0))
+    const ambientColor = uniform(new THREE.Color(0xa8c8dd))
+    const sunDirWorld = uniform(new THREE.Vector3(0, 0, 1))
+    const cloudTexture = texture3D(cloudNoiseTexture, null, 0)
+    const coverageLow = float(cfg.coverage[0])
+    const coverageHigh = float(cfg.coverage[1])
+    const volumeNode = Fn(() => {
+      const finalColor = vec4(0).toVar()
+      // World sun direction bent into each field's box-local space; w = 0 keeps
+      // it a direction and modelWorldMatrixInverse absorbs the non-uniform scale.
+      const sunLocal = normalize(modelWorldMatrixInverse.mul(vec4(sunDirWorld, 0)).xyz)
+      // Henyey-Greenstein forward scattering plus a small isotropic floor so the
+      // sun-facing rim glows (silver lining) without blacking out the far side.
+      const viewDir = normalize(positionWorld.sub(cameraPosition))
+      const g = float(cfg.hgG)
+      const cosTheta = dot(viewDir, normalize(vec3(sunDirWorld)))
+      const phase = float(1).sub(g.mul(g))
+        .div(pow(float(1).add(g.mul(g)).sub(g.mul(2).mul(cosTheta)), 1.5).mul(4 * Math.PI))
+        .add(0.3)
+      // Static per-pixel jitter dissolves slice banding; no time seed because
+      // there is no TAA pass to resolve temporal shimmer.
+      const jitter = hash(screenCoordinate.x.add(screenCoordinate.y.mul(919)))
+      // Optical depth per light tap: step length (box units) times extinction.
+      const tapExtinction = cfg.extinction * cfg.lightStepBoxFraction
+
+      JitteredRaymarchingBox(steps, jitter, ({ positionRay }) => {
+        const samplePosition = positionRay.add(0.5).add(windOffset)
+        const density = smoothstep(coverageLow, coverageHigh, cloudTexture.sample(samplePosition).r).toVar()
+        If(density.greaterThan(0.002), () => {
+          // Short march toward the sun: Beer-Lambert self-shadowing with a
+          // powder term brightening thin edges the plain exponential darkens.
+          const lightDensity = float(0).toVar()
+          const lightPosition = samplePosition.toVar()
+          const lightStep = sunLocal.mul(cfg.lightStepBoxFraction)
+          Loop(cfg.lightSteps, () => {
+            lightPosition.addAssign(lightStep)
+            lightDensity.addAssign(smoothstep(coverageLow, coverageHigh, cloudTexture.sample(lightPosition).r))
+          })
+          const transmittance = exp(lightDensity.mul(-tapExtinction))
+          const powder = float(1).sub(exp(lightDensity.mul(-tapExtinction * 2)))
+          const lit = vec3(sunColor as any)
+            .mul(transmittance.mul(powder.mul(0.7).add(0.3)).mul(phase).mul(cfg.sunBoost))
+            .add(vec3(ambientColor as any).mul(cfg.ambientAmount))
+          const alpha = density.mul(cfg.stepAlpha)
+          finalColor.rgb.addAssign(finalColor.a.oneMinus().mul(alpha).mul(lit))
+          finalColor.a.addAssign(finalColor.a.oneMinus().mul(alpha))
+        })
+        If(finalColor.a.greaterThanEqual(0.95), () => Break())
+      })
+      return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity))
+    })()
+    const material = new NodeMaterial()
+    material.colorNode = volumeNode
+    material.side = THREE.BackSide
+    material.transparent = true
+    material.depthWrite = false
+    return {
+      material,
+      opacity: cloudOpacity, wind: windOffset,
+      sunColor, ambientColor, sunDir: sunDirWorld,
+    }
+  }
+
+  function respawnNearCloud(cloud: NearCloud, now: number, initial = false): void {
+    const cfg = EXPERIENCE_CONFIG.clouds.near
+    const angle = nearRandom() * TWO_PI
+    const radius = Math.sqrt(nearRandom()) * surveyRadiusM * cfg.radiusFraction
+    const altitude = nearBetween(cfg.altitudeM)
+    const sizeX = nearBetween(cfg.sizeXyM)
+    const sizeY = nearBetween(cfg.sizeXyM)
+    const sizeZ = nearBetween(cfg.sizeZM)
+    cloud.mesh.position.set(
+      surveyCentreEnu.x + Math.cos(angle) * radius,
+      surveyCentreEnu.y + Math.sin(angle) * radius,
+      surveyCentreEnu.z + altitude + sizeZ * 0.5,
+    )
+    cloud.mesh.scale.set(sizeX, sizeY, sizeZ)
+    const wind = EXPERIENCE_CONFIG.clouds.windMps
+    cloud.driftDirection.set(wind[0], wind[1]).normalize()
+      .rotateAround(new THREE.Vector2(), (nearRandom() - 0.5) * 0.9)
+    cloud.visibleFor = nearBetween(cfg.visibleSeconds)
+    cloud.gapFor = nearBetween(cfg.gapSeconds)
+    // Initial clouds start scattered through their cycle so the sky is neither
+    // empty nor fully stocked at once; respawns restart at the fade-in.
+    const fullCycle = cfg.fadeSeconds * 2 + cloud.visibleFor + cloud.gapFor
+    cloud.cycleStart = initial ? now - nearRandom() * fullCycle * 1000 : now
+  }
+
+  function createVolumeClouds(): void {
+    const geometry = new THREE.BoxGeometry(1, 1, 1)
+    const group = new THREE.Group()
+    group.name = 'wilderness-volume-clouds'
+
+    // Distant flight-path fields: one shared material, unchanged behaviour.
+    const farHandle = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.raymarchStepsStrong)
+    for (const field of EXPERIENCE_CONFIG.clouds.fields) {
+      const mesh = new THREE.Mesh(geometry, farHandle.material)
+      mesh.position.set(
+        surveyCentreEnu.x + field.offsetM[0],
+        surveyCentreEnu.y + field.offsetM[1],
+        surveyCentreEnu.z + field.offsetM[2],
+      )
+      mesh.scale.set(field.sizeM[0], field.sizeM[1], field.sizeM[2])
+      mesh.renderOrder = 2
+      group.add(mesh)
+    }
+
+    // Sparse near clouds over the survey itself — each has its own material so
+    // it can fade in, drift and dissolve on an individual slow cycle.
+    const nearClouds: NearCloud[] = []
+    const now = performance.now()
+    for (let index = 0; index < EXPERIENCE_CONFIG.clouds.near.count; index++) {
+      const handle = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.near.raymarchSteps)
+      handle.opacity.value = 0
+      const mesh = new THREE.Mesh(geometry, handle.material)
+      mesh.renderOrder = 2
+      const cloud: NearCloud = {
+        mesh, handle,
+        driftDirection: new THREE.Vector2(1, 0),
+        cycleStart: now, visibleFor: 120, gapFor: 60,
+      }
+      respawnNearCloud(cloud, now, true)
+      group.add(mesh)
+      nearClouds.push(cloud)
+    }
+
+    root.add(group)
+    resources = {
+      mode: 'volume', group, geometry, material: farHandle.material,
+      opacityUniform: farHandle.opacity, windUniform: farHandle.wind,
+      sunColorUniform: farHandle.sunColor, ambientColorUniform: farHandle.ambientColor,
+      sunDirUniform: farHandle.sunDir,
+      nearClouds,
+    }
+  }
+
+  function setMode(nextMode: CloudMode, reason: string): void {
+    if (cloudMode === nextMode && resources?.mode === nextMode) {
+      cloudReason = reason
+      notifyCloudState()
+      return
+    }
+    disposeCloudResources()
+    cloudMode = nextMode
+    cloudReason = reason
+    if (nextMode === 'soft') createSoftClouds()
+    if (nextMode === 'volume') createVolumeClouds()
+    // Freshly created materials carry default lighting uniforms until the next
+    // daylight pass; force it so mode switches never flash the wrong palette.
+    lastDaylightUpdate = -Infinity
+    notifyCloudState()
+  }
+
+  function preferredMode(): Exclude<CloudMode, 'off'> {
+    return activeTier === 'strong' ? 'volume' : 'soft'
+  }
+
+  function updateDaylight(now: number): void {
+    if (now - lastDaylightUpdate < EXPERIENCE_CONFIG.environment.updateIntervalMs
+      && !(manualMinutes === null && now - lastLiveRefresh >= EXPERIENCE_CONFIG.environment.liveRefreshMs)) return
+    lastDaylightUpdate = now
+    if (manualMinutes === null) lastLiveRefresh = now
+    const clock = getPeruClock(Date.now())
+    const minutes = manualMinutes ?? clock.minutes
+    const solar = calculateSunDirection(clock.date, minutes, originLonLat[0], originLonLat[1], state.sunDirectionEnu)
+    const daylight = smooth01(THREE.MathUtils.degToRad(-8), THREE.MathUtils.degToRad(18), solar.elevation)
+    const twilight = smooth01(THREE.MathUtils.degToRad(-12), THREE.MathUtils.degToRad(5), solar.elevation)
+    const golden = Math.exp(-Math.pow((THREE.MathUtils.radToDeg(solar.elevation) - 7) / 11, 2))
+    state.peruMinutes = minutes
+    state.timeLabel = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+    state.live = manualMinutes === null
+    state.phase = solar.elevation < THREE.MathUtils.degToRad(-6)
+      ? 'night'
+      : solar.elevation < THREE.MathUtils.degToRad(6)
+        ? solar.hourAngle < 0 ? 'sunrise' : 'sunset'
+        : 'day'
+    state.sunElevationRad = solar.elevation
+    state.skyColor.copy(nightSky).lerp(dawnSky, twilight).lerp(daySky, daylight * 0.82)
+    state.fogColor.copy(nightFog).lerp(dayFog, daylight)
+    state.lightColor.copy(moonLight).lerp(dayGrade, daylight).lerp(warmLight, golden * 0.32)
+    state.daylightColor.copy(nightGrade).lerp(dayGrade, daylight)
+      .lerp(warmLight, golden * EXPERIENCE_CONFIG.pointLighting.goldenGradeBoost)
+    state.intensity = THREE.MathUtils.lerp(EXPERIENCE_CONFIG.environment.minimumSceneLight, 1, daylight)
+    state.ambientIntensity = THREE.MathUtils.lerp(0.44, 1.1, daylight)
+    uniforms.daylightColor.value.copy(state.daylightColor)
+    uniforms.daylightIntensity.value = state.intensity
+    uniforms.sunDirectionEnu.value.copy(state.sunDirectionEnu)
+    uniforms.goldenFactor.value = golden * EXPERIENCE_CONFIG.pointLighting.goldenRimStrength
+      * Math.max(daylight, twilight * 0.5)
+    // Canopy shadows only make sense while the sun is up; halve them when the
+    // visible clouds are disabled so the ground still reads believably.
+    uniforms.cloudShadowStrength.value = EXPERIENCE_CONFIG.pointLighting.cloudShadowStrength
+      * daylight * (cloudMode !== 'off' ? 1 : 0.5)
+    renderer.setClearColor(state.skyColor, 1)
+    fog.color.copy(state.fogColor)
+    hemisphere.color.copy(state.skyColor).lerp(state.lightColor, 0.4)
+    hemisphere.groundColor.set(0x163a2d).multiplyScalar(0.5 + daylight * 0.5)
+    hemisphere.intensity = state.ambientIntensity
+    sunlight.color.copy(state.lightColor)
+    sunlight.intensity = THREE.MathUtils.lerp(0.28, 1.75, daylight)
+    worldSunDirection.copy(state.sunDirectionEnu).applyMatrix3(enuRotation).normalize()
+    sunlight.position.copy(worldCentre).addScaledVector(worldSunDirection, 80_000)
+    sunTarget.position.copy(worldCentre)
+    sunlight.updateMatrixWorld()
+    sunTarget.updateMatrixWorld()
+    if (resources?.mode === 'soft') {
+      const material = resources.material as THREE.Material & { color?: THREE.Color }
+      material.color?.copy(state.lightColor).lerp(state.skyColor, 0.18)
+    } else if (resources?.mode === 'volume') {
+      resources.sunColorUniform.value.copy(state.lightColor)
+        .multiplyScalar(THREE.MathUtils.lerp(0.35, 1.6, daylight))
+      // Bias the ambient well toward white so daytime clouds read bright,
+      // not sky-grey; night still darkens via lightColor/ambientIntensity.
+      resources.ambientColorUniform.value.copy(state.skyColor)
+        .lerp(whiteAmbient, 0.55 * daylight + 0.1).multiplyScalar(state.ambientIntensity)
+      resources.sunDirUniform.value.copy(worldSunDirection)
+      if (resources.nearClouds) {
+        for (const cloud of resources.nearClouds) {
+          cloud.handle.sunColor.value.copy(resources.sunColorUniform.value)
+          cloud.handle.ambientColor.value.copy(resources.ambientColorUniform.value)
+          cloud.handle.sunDir.value.copy(worldSunDirection)
+        }
+      }
+    }
+  }
+
+  if (cloudIntent) setMode(preferredMode(), tier === 'strong' ? 'Volumetric WebGPU clouds' : 'Lightweight cloud volumes')
+  else notifyCloudState()
+  updateDaylight(performance.now())
+
+  return {
+    getDaylightState: () => state,
+    getCloudState: () => ({ mode: cloudMode, tier: activeTier, intent: cloudIntent, reason: cloudReason }),
+    setCloudIntent(enabled) {
+      cloudIntent = enabled
+      lowFpsSince = 0
+      try { localStorage.setItem(CLOUD_PREFERENCE_KEY, enabled ? 'on' : 'off') } catch { /* private mode */ }
+      setMode(enabled ? preferredMode() : 'off', enabled ? 'Clouds enabled by user' : 'Clouds disabled by user')
+    },
+    applyMeasuredTier(tier) {
+      activeTier = tier
+      lowFpsSince = 0
+      if (!cloudIntent) { notifyCloudState(); return }
+      if (tier === 'constrained') {
+        cloudIntent = false
+        setMode('off', 'Clouds disabled by device probe')
+      } else {
+        setMode(preferredMode(), tier === 'strong'
+          ? 'Volumetric WebGPU clouds (probe)'
+          : 'Lightweight cloud volumes (probe)')
+      }
+    },
+    setPeruMinutes(minutes) {
+      manualMinutes = minutes === null ? null : Math.round(THREE.MathUtils.clamp(minutes, 0, 1_439))
+      lastDaylightUpdate = -Infinity
+      updateDaylight(performance.now())
+    },
+    update(now, camera, cameraGroundRange, fps, qualityGuardEnabled) {
+      updateDaylight(now)
+      const rangeOpacity = smooth01(
+        EXPERIENCE_CONFIG.clouds.closeFadeEndM,
+        EXPERIENCE_CONFIG.clouds.closeFadeStartM,
+        cameraGroundRange,
+      )
+      const motionOpacity = reducedMotion ? 0.72 : 1
+      const wind = EXPERIENCE_CONFIG.clouds.windMps
+      const windU = (now * 0.001 * wind[0] / 20_000) % 1
+      const windV = (now * 0.001 * wind[1] / 8_000) % 1
+      // Canopy shadows drift with the same wind phase as the volume overhead.
+      uniforms.cloudShadowOffset.value.set(windU, windV)
+      if (resources?.mode === 'soft') {
+        const material = resources.material as MeshBasicNodeMaterial
+        material.opacity = 0.16 * rangeOpacity * motionOpacity
+        resources.group.position.set(
+          Math.sin(now * 0.00003) * 240,
+          Math.cos(now * 0.000025) * 110,
+          0,
+        )
+      } else if (resources?.mode === 'volume') {
+        resources.opacityUniform.value = rangeOpacity * motionOpacity
+        resources.windUniform.value.set(windU, windV, 0)
+
+        // Near clouds: individual slow life cycles (materialise → hold → dissolve
+        // → pause → respawn elsewhere) plus a barely perceptible real-metre drift.
+        if (resources.nearClouds) {
+          const cfg = EXPERIENCE_CONFIG.clouds.near
+          const elapsedSeconds = Math.min(0.1, Math.max(0, now - lastNearUpdate) * 0.001)
+          lastNearUpdate = now
+          for (const cloud of resources.nearClouds) {
+            const age = (now - cloud.cycleStart) * 0.001
+            const fade = cfg.fadeSeconds
+            const fullCycle = fade * 2 + cloud.visibleFor + cloud.gapFor
+            if (age >= fullCycle) {
+              respawnNearCloud(cloud, now)
+              cloud.handle.opacity.value = 0
+              continue
+            }
+            let envelope = 0
+            if (age < fade) envelope = smooth01(0, 1, age / fade)
+            else if (age < fade + cloud.visibleFor) envelope = 1
+            else if (age < fade * 2 + cloud.visibleFor) {
+              envelope = smooth01(0, 1, 1 - (age - fade - cloud.visibleFor) / fade)
+            }
+            if (envelope > 0) {
+              cloud.mesh.position.x += cloud.driftDirection.x * cfg.driftMps * elapsedSeconds
+              cloud.mesh.position.y += cloud.driftDirection.y * cfg.driftMps * elapsedSeconds
+              // Fade out early when the camera is about to fly through the box.
+              nearCameraEnu.copy(camera.position).applyMatrix4(rootInverse)
+              const halfDiagonal = cloud.mesh.scale.length() * 0.5
+              const distance = nearCameraEnu.distanceTo(cloud.mesh.position)
+              envelope *= smooth01(halfDiagonal * 0.8, halfDiagonal * 1.6, distance)
+            }
+            cloud.handle.opacity.value = envelope * cfg.maxOpacity * motionOpacity
+            cloud.handle.wind.value.set(windU, windV, 0)
+          }
+        }
+      }
+
+      if (qualityGuardEnabled && cloudMode !== 'off' && fps > 0) {
+        const threshold = cloudMode === 'volume'
+          ? EXPERIENCE_CONFIG.clouds.volumeFallbackFps
+          : EXPERIENCE_CONFIG.clouds.disableFps
+        if (fps < threshold) {
+          if (!lowFpsSince) lowFpsSince = now
+          if (now - lowFpsSince >= EXPERIENCE_CONFIG.clouds.lowFpsDurationMs) {
+            if (cloudMode === 'volume') {
+              activeTier = 'balanced'
+              setMode('soft', 'Cloud detail reduced to protect frame rate')
+            } else {
+              activeTier = 'constrained'
+              cloudIntent = false
+              setMode('off', 'Clouds paused to protect frame rate')
+            }
+            lowFpsSince = 0
+          }
+        } else lowFpsSince = 0
+      } else lowFpsSince = 0
+      return state
+    },
+    dispose() {
+      disposeCloudResources()
+      scene.remove(root, hemisphere, sunlight, sunTarget)
+    },
+  }
+}

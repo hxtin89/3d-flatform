@@ -4,17 +4,22 @@
   "description": "CesiumJS point cloud viewer — local self-hosted pipeline",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "test": "vitest run",
-    "preview": "vite preview"
+    "dev": "vite --host",
+    "dev:https": "VITE_HTTPS=1 vite --host",
+    "audio:prepare": "node scripts/prepare-sounds.mjs",
+    "bench:verify": "node --experimental-strip-types --test src/threejs-test/*.test.ts",
+    "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
+    "preview": "vite preview --base=/livingdashboard/"
   },
   "dependencies": {
-    "cesium": "^1.120.0"
+    "3d-tiles-renderer": "^0.4.28",
+    "cesium": "^1.120.0",
+    "three": "^0.185.0"
   },
   "devDependencies": {
+    "@types/three": "^0.185.0",
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
     "typescript": "^5.4.0",
-    "vitest": "^2.1.9",
     "vite": "^5.4.0",
     "vite-plugin-cesium": "^1.2.23"
   }
