@@ -4,9 +4,12 @@ import { resolve } from 'node:path'
 const output = resolve('dist')
 const viewerEntry = resolve(output, 'threejs-test.html')
 const indexEntry = resolve(output, 'index.html')
+const cesiumEntry = resolve(output, 'cesium.html')
 const cesiumPluginOutput = resolve(output, 'livingdashboard', 'cesium')
 const cesiumOutput = resolve(output, 'cesium')
 
+// Preserve CesiumJS viewer under cesium.html before overwriting index.html
+await copyFile(indexEntry, cesiumEntry)
 await copyFile(viewerEntry, indexEntry)
 
 // vite-plugin-cesium includes Vite's public base in its filesystem path.
@@ -15,12 +18,17 @@ await rm(cesiumOutput, { recursive: true, force: true })
 await rename(cesiumPluginOutput, cesiumOutput)
 await rm(resolve(output, 'livingdashboard'), { recursive: true, force: true })
 
-const html = await readFile(indexEntry, 'utf8')
-const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
-  ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
-if (invalidRootPath) {
-  throw new Error(`production entry still contains a root-relative asset: ${invalidRootPath[0]}`)
+const checkRootPath = async (filePath, name) => {
+  const html = await readFile(filePath, 'utf8')
+  const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
+    ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
+  if (invalidRootPath) {
+    throw new Error(`production entry (${name}) still contains a root-relative asset: ${invalidRootPath[0]}`)
+  }
 }
+
+await checkRootPath(indexEntry, 'index.html')
+await checkRootPath(cesiumEntry, 'cesium.html')
 
 const htaccess = `Options -Indexes
 DirectoryIndex index.html
