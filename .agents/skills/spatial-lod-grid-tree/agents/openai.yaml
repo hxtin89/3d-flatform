@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spatial LOD Grid Tree"
+  short_description: "Build and debug the SBB Spatial LOD Grid/Tree pipeline."
+  default_prompt: "Use this skill when working on the SBB Spatial LOD Grid/Tree pipeline."

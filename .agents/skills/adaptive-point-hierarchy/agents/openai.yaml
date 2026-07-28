@@ -1,0 +1,4 @@
+interface:
+  display_name: "Adaptive Point Hierarchy"
+  short_description: "Build and validate adaptive point trees"
+  default_prompt: "Use $adaptive-point-hierarchy to build or debug an APH preview."

@@ -260,9 +260,24 @@ html, body {
 }
 
 body[data-lod-mode="one-lod-tree"] #mode-control,
+body[data-lod-mode="spatial-lod"] #mode-control,
+body[data-lod-mode="adaptive-point-hierarchy"] #mode-control,
 body[data-lod-mode="one-lod-tree"] #area-control,
+body[data-lod-mode="spatial-lod"] #area-control,
+body[data-lod-mode="adaptive-point-hierarchy"] #area-control,
 body[data-lod-mode="one-lod-tree"] .manual-rendering-row,
+body[data-lod-mode="spatial-lod"] .manual-rendering-row,
+body[data-lod-mode="adaptive-point-hierarchy"] .manual-rendering-row,
+body:not([data-lod-mode="spatial-lod"]) .spatial-lod-report-row,
+body:not([data-lod-mode="adaptive-point-hierarchy"]) .aph-report-row,
+body:not([data-lod-mode="adaptive-point-hierarchy"]) .aph-settings-row,
+body:not([data-lod-mode="spatial-lod"]):not([data-lod-mode="adaptive-point-hierarchy"]) .runtime-lod-camera-row,
 body[data-report-variant="runtime"] .pipeline-report-row {
+  display: none !important;
+}
+
+body[data-lod-mode="adaptive-point-hierarchy"][data-aph-controller="simple"] .aph-advanced-settings-row,
+body[data-lod-mode="adaptive-point-hierarchy"][data-aph-controller="advanced"] .aph-simple-settings-row {
   display: none !important;
 }
 
@@ -439,7 +454,7 @@ body[data-report-variant="runtime"] .pipeline-report-row {
 }
 
 .overview-slider {
-  width: 56px;
+  width: 72px;
   accent-color: var(--accent, #4f8cff);
   cursor: pointer;
 }
@@ -450,8 +465,31 @@ body[data-report-variant="runtime"] .pipeline-report-row {
 }
 
 #overview-point-size-val {
-  min-width: 24px;
+  min-width: 30px;
   text-align: right;
+}
+
+.aph-phase-setting {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.aph-range-input {
+  width: 62px;
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  color: var(--text-primary);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.aph-sse-select {
+  width: 50px;
 }
 
 .area-select {
