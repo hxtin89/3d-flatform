@@ -315,6 +315,28 @@
       /* control panel */
       #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px; }
       body.panel-open #panel { display: flex; }
+      /* Solo-Modus: 3DGS-Ansicht aktiv — alle anderen Regler ausgegraut/inaktiv. */
+      #panel.splat-solo .row:not(.splat-row) { opacity: .38; pointer-events: none; }
+      /* … und die Karten-Overlays (Marker, HUD, Uhr, Tastatur-Guide, Attribution)
+         ganz weg, damit die 3DGS-Ansicht für sich steht. Panel + Settings-Chip
+         bleiben, damit man wieder herausschalten kann. */
+      body.splat-solo #markerOverlay,
+      body.splat-solo #hud,
+      body.splat-solo #hudChip,
+      body.splat-solo #keyboardGuide,
+      body.splat-solo #keyboardGuideToggle,
+      body.splat-solo #peruTimeDock,
+      body.splat-solo #attribution,
+      body.splat-solo #aimReticle { display: none !important; }
+      /* WASD-Hinweis, nur im Solo-Modus sichtbar. */
+      #splatHint { display: none; position: fixed; left: 16px; bottom: calc(16px + var(--safe-b, 0px)); z-index: 13;
+        flex-direction: column; gap: 9px; align-items: flex-start; pointer-events: none; }
+      body.splat-solo #splatHint { display: flex; }
+      .splat-caps { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .splat-caps > div { display: flex; gap: 4px; }
+      .splat-hint-text { font: 700 10px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .09em;
+        text-transform: uppercase; color: #eef4ee; padding: 6px 10px; border-radius: 999px;
+        background: rgba(10,20,16,.5); backdrop-filter: blur(6px); }
       .row { display: flex; flex-direction: column; gap: 5px; }
       .row > label.h { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .55; }
       .seg { display: flex; border: 1px solid #2d333b; border-radius: 8px; overflow: hidden; }
@@ -469,6 +491,17 @@
     <canvas id="view"></canvas>
     <div id="vignette"></div>
     <div id="markerOverlay"></div>
+    <div id="splatHint" aria-hidden="true">
+      <div class="splat-caps">
+        <span class="keycap" data-key="KeyW">W</span>
+        <div>
+          <span class="keycap" data-key="KeyA">A</span>
+          <span class="keycap" data-key="KeyS">S</span>
+          <span class="keycap" data-key="KeyD">D</span>
+        </div>
+      </div>
+      <span class="splat-hint-text">Klick = Umsehen (Maus) · WASD = Laufen · Esc = frei</span>
+    </div>
     <div id="interactionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="aimReticle" aria-hidden="true">
       <span class="aim-reticle-core"></span>
@@ -572,6 +605,11 @@
         <label class="h" for="liftToggle">Höhen-Offset</label>
         <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · An</button>
         <span class="weather-note" id="liftNote">Nur Diagnose: Aus senkt die Wolke, die Höhen-Uniforms folgen nicht</span>
+      </div>
+      <div class="row splat-row">
+        <label class="h" for="gaussianToggle">3DGS-Test</label>
+        <button class="act" id="gaussianToggle" type="button" aria-pressed="false" aria-describedby="gaussianNote">✦ 3DGS · Aus</button>
+        <span class="weather-note" id="gaussianNote">Machbarkeitstest: Gaussian-Splatting-Modell (Spark) in eigenem WebGL-Overlay, 61 MB — Drag zum Umsehen</span>
       </div>
       <div class="row">
         <label class="h">Mask</label>

@@ -29,6 +29,7 @@ import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
+import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -38,6 +39,12 @@ const folder = (import.meta.env.VITE_POINTCLOUD_TILES_FOLDER ?? 'pointcloud-tile
 const baseUrl = domain ? `https://${domain}/${folder}` : ''
 const MAPTILER_KEY = (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim()
 const dataset = params.get('dataset') ?? 'peru-b2-globe'
+/** 3DGS-Machbarkeitstest: Spark rendert dieses INRIA-Splat-Modell in einem
+ * eigenen WebGL-Overlay (siehe gaussian-splat-layer.ts). Kleinster ladbarer
+ * Downsample der ply-result-Ablage (61 MB). */
+const GAUSSIAN_SPLAT_URL = baseUrl
+  ? `${baseUrl}/ply-result/point_cloud/iteration_100/point_cloud_5.ply`
+  : ''
 /** Which published point tree to stream. `aph` is the Adaptive Point Hierarchy
  * the Cesium reference viewer uses and the only one carrying real close-range
  * density — the published One LOD chain stops at the p02 overview band.
@@ -510,6 +517,55 @@ const liftToggleEl = $<HTMLButtonElement>('#liftToggle')
 let highPrecisionMatrices = true
 let heightOffsetEnabled = true
 
+// 3DGS-Machbarkeitstest — eigenes WebGL-Overlay, lazy erzeugt beim ersten Klick.
+const gaussianToggleEl = $<HTMLButtonElement>('#gaussianToggle')
+const gaussianNoteEl = $('#gaussianNote')
+let gaussianSplatLayer: GaussianSplatLayer | null = null
+
+const onGaussianToggle = () => {
+  if (!GAUSSIAN_SPLAT_URL) { gaussianNoteEl.textContent = 'CloudFront-Domain fehlt — kein 3DGS-Test möglich'; return }
+  if (!gaussianSplatLayer) {
+    gaussianSplatLayer = createGaussianSplatLayer({
+      url: GAUSSIAN_SPLAT_URL,
+      onStateChange: (splatState) => { gaussianNoteEl.textContent = splatState.message },
+    })
+  }
+  const next = !gaussianSplatLayer.isEnabled()
+  gaussianSplatLayer.setEnabled(next)
+  gaussianToggleEl.classList.toggle('on', next)
+  gaussianToggleEl.setAttribute('aria-pressed', String(next))
+  gaussianToggleEl.textContent = `✦ 3DGS · ${next ? 'An' : 'Aus'}`
+  setSplatSolo(next)
+}
+
+// Solo-Modus: die 3DGS-Ansicht ist eine eigenständige App. Ist sie an, wird die
+// gesamte Hauptszene stummgeschaltet — der Loop zweigt früh ab (kein WebGPU-Draw
+// der Punktwolke, keine Wolken/Regen/Streaming) und die Haupt-Canvas wird
+// verborgen. Die übrigen Panel-Regler werden ausgegraut, damit klar ist, dass
+// sie im Solo-Modus nichts tun.
+const highlightSplatKey = (event: KeyboardEvent, on: boolean) => {
+  $(`#splatHint .keycap[data-key="${event.code}"]`)?.classList.toggle('is-active', on)
+}
+const onSplatKeyDown = (event: KeyboardEvent) => highlightSplatKey(event, true)
+const onSplatKeyUp = (event: KeyboardEvent) => highlightSplatKey(event, false)
+
+function setSplatSolo(on: boolean): void {
+  canvas.style.display = on ? 'none' : ''
+  $('#panel').classList.toggle('splat-solo', on)
+  // Blendet die Karten-Overlays (Marker-Chips, HUD, Uhr, Tastatur-Guide …) aus,
+  // damit die 3DGS-Ansicht für sich steht.
+  document.body.classList.toggle('splat-solo', on)
+  // WASD-Tasten im Hinweis live mitleuchten lassen.
+  if (on) {
+    document.addEventListener('keydown', onSplatKeyDown)
+    document.addEventListener('keyup', onSplatKeyUp)
+  } else {
+    document.removeEventListener('keydown', onSplatKeyDown)
+    document.removeEventListener('keyup', onSplatKeyUp)
+    document.querySelectorAll('#splatHint .keycap.is-active').forEach((el) => el.classList.remove('is-active'))
+  }
+}
+
 const onPrecisionToggle = () => {
   highPrecisionMatrices = !highPrecisionMatrices
   // The loop owns the actual switch — it also has to suppress it during the
@@ -531,6 +587,7 @@ cloudToggleEl.disabled = true
 soundToggleEl.disabled = true
 precisionToggleEl.addEventListener('click', onPrecisionToggle)
 liftToggleEl.addEventListener('click', onLiftToggle)
+gaussianToggleEl.addEventListener('click', onGaussianToggle)
 cloudToggleEl.addEventListener('click', onCloudToggle)
 timeDockToggleEl.addEventListener('click', onTimeDockToggle)
 timeSliderEl.addEventListener('input', onTimeInput)
@@ -985,6 +1042,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
   globe?.setResolution()
   stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  gaussianSplatLayer?.resize()
 })
 
 // ---------------------------------------------------------------- streaming / HUD / loop
@@ -1118,6 +1176,9 @@ function updateHud(stats: StreamingStats | null): void {
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
+  // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
+  // WebGPU-Punktwolke, Wolken-Raymarch, Streaming). Eigener WebGL-Renderer.
+  if (gaussianSplatLayer?.isEnabled()) { gaussianSplatLayer.update(); return }
   cameraFlight.update(now)
   updateCloudReveal()
   updateMatrixPrecision(now)
@@ -1438,6 +1499,10 @@ function dispose(): void {
   rainToggleEl.removeEventListener('click', onRainToggle)
   precisionToggleEl.removeEventListener('click', onPrecisionToggle)
   liftToggleEl.removeEventListener('click', onLiftToggle)
+  gaussianToggleEl.removeEventListener('click', onGaussianToggle)
+  document.removeEventListener('keydown', onSplatKeyDown)
+  document.removeEventListener('keyup', onSplatKeyUp)
+  gaussianSplatLayer?.dispose()
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
   timeSliderEl.removeEventListener('input', onTimeInput)
