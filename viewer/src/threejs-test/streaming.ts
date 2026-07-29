@@ -23,6 +23,13 @@ export interface StreamingStats {
   missingTiles: number
 }
 
+export interface MemoryBudgetSnapshot {
+  maxBytesSize: number
+  minBytesSize: number
+  maxSize: number
+  gpuBytesTarget: number
+}
+
 export interface StreamingCloud {
   tiles: TilesRenderer
   group: THREE.Object3D
@@ -36,6 +43,10 @@ export interface StreamingCloud {
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
+  /** Exact cache/GPU values for snapshot & restore (compare mode) — the
+   * regular setter above is intentionally monotonic and cannot restore. */
+  getMemoryBudget(): MemoryBudgetSnapshot
+  setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
   /** Diagnostic A/B: CPU-computed (float64) vs in-shader (float32) model-view
    * matrices. Off makes the ECEF rounding jitter visible again. */
   setHighPrecision(enabled: boolean): void
@@ -247,6 +258,22 @@ export function createStreamingCloud(opts: {
       tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)
       tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (600 * 1024)))
       ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
+    },
+    getMemoryBudget() {
+      return {
+        maxBytesSize: tiles.lruCache.maxBytesSize,
+        minBytesSize: tiles.lruCache.minBytesSize,
+        maxSize: tiles.lruCache.maxSize,
+        gpuBytesTarget: (unloadPlugin as any).bytesTarget as number,
+      }
+    },
+    setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
+      // setMemoryBudget() only ever grows maxSize / shrinks minBytesSize, so a
+      // snapshot restore (compare mode off) needs plain assignment.
+      tiles.lruCache.maxBytesSize = budget.maxBytesSize
+      tiles.lruCache.minBytesSize = budget.minBytesSize
+      tiles.lruCache.maxSize = budget.maxSize
+      ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
     },
     setHighPrecision(enabled: boolean) {
       setHighPrecisionMatrices(enabled)

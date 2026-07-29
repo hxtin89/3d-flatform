@@ -313,8 +313,19 @@
       #fpsv.good { color: #6ee787; } #fpsv.warn { color: #f0c674; } #fpsv.bad { color: #ff7b72; }
 
       /* control panel */
-      #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px; }
+      #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px;
+               max-height: calc(100vh - 70px - var(--safe-t)); overflow-y: auto; }
       body.panel-open #panel { display: flex; }
+      /* Vergleichsmodus (Cesium-Vergleich): Master überschreibt alle Optimierungen —
+         die überschriebenen Regler sind sichtbar ausgegraut, nur die Vergleichs-
+         zeilen bleiben bedienbar. */
+      #panel.compare-mode .row:not(.compare-row) { opacity: .38; pointer-events: none; }
+      body.compare-mode #markerOverlay { display: none !important; }
+      #markerOverlay.markers-hidden { display: none !important; }
+      .opt-head { margin: 4px 0 0; color: rgba(232,234,237,.72); font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace;
+                  text-transform: uppercase; letter-spacing: .08em; }
+      #compareRows { display: flex; flex-direction: column; gap: 11px; }
+      #compareToggle.on { background: #6d3d12; border-color: #d99a56; color: #fff3e6; }
       /* Solo-Modus: 3DGS-Ansicht aktiv — alle anderen Regler ausgegraut/inaktiv. */
       #panel.splat-solo .row:not(.splat-row) { opacity: .38; pointer-events: none; }
       /* … und die Karten-Overlays (Marker, HUD, Uhr, Tastatur-Guide, Attribution)
@@ -500,7 +511,7 @@
           <span class="keycap" data-key="KeyD">D</span>
         </div>
       </div>
-      <span class="splat-hint-text">Klick = Umsehen (Maus) · WASD = Laufen · Esc = frei</span>
+      <span class="splat-hint-text">Click = look around (mouse) · WASD = walk · Esc = release</span>
     </div>
     <div id="interactionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="aimReticle" aria-hidden="true">
@@ -597,19 +608,19 @@
         <input type="range" id="size" min="0.5" max="3" step="0.1" value="1" />
       </div>
       <div class="row">
-        <label class="h" for="precisionToggle">Matrix-Präzision</label>
-        <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Präzision · High</button>
-        <span class="weather-note" id="precisionNote">Aus = Model-View im Shader (float32); Kacheln zittern auf ECEF-Rundung. Während Loader und Flug automatisch aus</span>
+        <label class="h" for="precisionToggle">Matrix precision</label>
+        <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Precision · High</button>
+        <span class="weather-note" id="precisionNote">Off = model-view in the shader (float32); tiles jitter on ECEF rounding. Automatically off during loader and flight</span>
       </div>
       <div class="row">
-        <label class="h" for="liftToggle">Höhen-Offset</label>
-        <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · An</button>
-        <span class="weather-note" id="liftNote">Nur Diagnose: Aus senkt die Wolke, die Höhen-Uniforms folgen nicht</span>
+        <label class="h" for="liftToggle">Height offset</label>
+        <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · On</button>
+        <span class="weather-note" id="liftNote">Diagnostics only: off lowers the cloud, the height uniforms do not follow</span>
       </div>
       <div class="row splat-row">
-        <label class="h" for="gaussianToggle">3DGS-Test</label>
-        <button class="act" id="gaussianToggle" type="button" aria-pressed="false" aria-describedby="gaussianNote">✦ 3DGS · Aus</button>
-        <span class="weather-note" id="gaussianNote">Machbarkeitstest: Gaussian-Splatting-Modell (Spark) in eigenem WebGL-Overlay, 61 MB — Drag zum Umsehen</span>
+        <label class="h" for="gaussianToggle">3DGS test</label>
+        <button class="act" id="gaussianToggle" type="button" aria-pressed="false" aria-describedby="gaussianNote">✦ 3DGS · Off</button>
+        <span class="weather-note" id="gaussianNote">Feasibility test: Gaussian-splatting model (Spark) in its own WebGL overlay, 61 MB — click to look around</span>
       </div>
       <div class="row">
         <label class="h">Mask</label>
@@ -628,6 +639,17 @@
         <button class="act" id="cloudToggle" type="button" aria-pressed="false" aria-describedby="cloudNote">☁ Clouds · Detecting…</button>
         <span class="weather-note" id="cloudNote" aria-live="polite">Checking device headroom</span>
       </div>
+      <p class="opt-head">Optimizations · Cesium comparison</p>
+      <div class="row compare-row">
+        <label class="h" for="compareToggle">Compare mode</label>
+        <button class="act" id="compareToggle" type="button" aria-pressed="false" aria-describedby="compareNote">⚖ Compare mode · Off</button>
+        <span class="weather-note" id="compareNote">Everything off — only the point cloud with zoom-dependent density, navigation and basemap. Individual choices below are kept</span>
+      </div>
+      <div class="row compare-row">
+        <button class="act" id="compareReload" type="button" aria-describedby="compareReloadNote">⟳ Restart in compare mode</button>
+        <span class="weather-note" id="compareReloadNote">Reloads with ?compare=1: no device benchmark, no startup resolution cap — the full, fair comparison</span>
+      </div>
+      <div id="compareRows"></div>
     </div>
 
     <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">

@@ -55,6 +55,8 @@ export interface MarkerActionTarget {
 }
 
 export interface MarkerLayer {
+  /** Hide/show 3D pins and DOM chips (compare mode); skip update() while hidden. */
+  setVisible(visible: boolean): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -388,6 +390,10 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   }
 
   return {
+    setVisible(visible) {
+      root.visible = visible
+      overlay.classList.toggle('markers-hidden', !visible)
+    },
     update(now, camera, cameraGroundRange, maskCenter, maskRadius, maskActive) {
       const markerScale = THREE.MathUtils.clamp(cameraGroundRange / 1500, 0.72, 4)
       const updateTemperatures = now - lastTemperatureUpdate >= 1000

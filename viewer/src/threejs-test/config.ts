@@ -60,6 +60,9 @@ export const EXPERIENCE_CONFIG = {
     // The one knob for overall point fatness. Everything above is multiplied by
     // it, the UI slider multiplies on top. 1 = the measured preference.
     pointSizeMultiplier: 1.0,
+    // Base size when the height curve above is toggled off (Cesium comparison:
+    // one fixed size like Cesium's pointSize, slider still multiplies).
+    fixedPointSizePx: 2.5,
     // Horizontal slack on the pipeline's viewer request volumes, in multiples
     // of the chunk footprint. 1 = hug the chunk exactly, which leaves gaps the
     // camera can sit in without ever opening p10/p100.
@@ -184,6 +187,14 @@ export const EXPERIENCE_CONFIG = {
     volumeFallbackFps: 50,
     disableFps: 45,
     lowFpsDurationMs: 3_000,
+    // Recovery path for guard demotions: a single 3 s dip (tile-upload burst
+    // after landing, OS compositor hitch) must not park a strong GPU on soft
+    // clouds for the whole session. Promote back to volumetric once the frame
+    // rate has held above promoteFps for promoteDurationMs; bounded attempts
+    // so a genuinely borderline device cannot ping-pong.
+    promoteFps: 57,
+    promoteDurationMs: 12_000,
+    maxPromotions: 2,
   },
   tower: {
     // Field asset offsets are relative to the shifted hotspot centre.
