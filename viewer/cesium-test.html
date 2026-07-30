@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Adaptive Globe Point Cloud</title>
+    <title>Adaptive Globe Point Cloud · Cesium</title>
     <style>
       :root { color-scheme: dark; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
               --forest: #004432; --forest-deep: #002d22; --paper: #f0ede3; --lime: #d9f99d; --amber: #ffb65f; }
@@ -12,6 +12,7 @@
                    font: 13px/1.45 "Avenir Next", "Helvetica Neue", sans-serif; color: #e8eaed;
                    -webkit-user-select: none; user-select: none; }
       #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+      #view canvas { width: 100%; height: 100%; display: block; }
 
       /* vignette look: pure screen-space overlay (the point data is hard-clipped at a
          world radius derived from the viewport — this gradient hides the cut edge).
@@ -499,7 +500,7 @@
     </style>
   </head>
   <body class="mask-vignette">
-    <canvas id="view"></canvas>
+    <div id="view"></div>
     <div id="vignette"></div>
     <div id="markerOverlay"></div>
     <div id="splatHint" aria-hidden="true">
@@ -604,8 +605,8 @@
       <button class="close" data-close="panel">×</button>
       <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
       <div class="row">
-        <button class="act" id="variantSwitch" type="button" aria-describedby="variantNote">⇄ Switch to Cesium variant</button>
-        <span class="weather-note" id="variantNote">Same data and features on CesiumJS — for the side-by-side performance comparison. Keeps URL parameters</span>
+        <button class="act" id="variantSwitch" type="button" aria-describedby="variantNote">⇄ Switch to Three.js variant</button>
+        <span class="weather-note" id="variantNote">Same data and features on Three.js/WebGPU — for the side-by-side performance comparison. Keeps URL parameters</span>
       </div>
       <div class="row">
         <label class="h">Point Size · <span class="val" id="sizev">1.0× · 3.0px</span></label>
@@ -624,7 +625,7 @@
       <div class="row splat-row">
         <label class="h" for="gaussianToggle">3DGS test</label>
         <button class="act" id="gaussianToggle" type="button" aria-pressed="false" aria-describedby="gaussianNote">✦ 3DGS · Off</button>
-        <span class="weather-note" id="gaussianNote">Feasibility test: Gaussian-splatting model (Spark) in its own WebGL overlay, 61 MB — click to look around</span>
+        <span class="weather-note" id="gaussianNote">Native Cesium splat tileset (spz-compressed, 4.4 MB from a 61 MB ply) — same scene and depth as the point cloud</span>
       </div>
       <div class="row">
         <label class="h">Mask</label>
@@ -708,9 +709,9 @@
       // Variant switcher — deliberately inline and self-contained so deleting
       // either app folder never breaks the other page's script graph.
       document.getElementById('variantSwitch').addEventListener('click', () => {
-        location.href = './cesium-test.html' + location.search
+        location.href = './threejs-test.html' + location.search
       })
     </script>
-    <script type="module" src="/src/threejs-test/main.ts"></script>
+    <script type="module" src="/src/cesium-app/main.ts"></script>
   </body>
 </html>
