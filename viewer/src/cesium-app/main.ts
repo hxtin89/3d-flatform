@@ -10,8 +10,20 @@ import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
 import {
   createCameraFlight,
   type CameraFlightController,
+  type EnuOffset,
   type EnuVector3,
 } from './camera-flight'
+import {
+  assetUrl as shapeAssetUrl,
+  fetchDonationShape,
+  type DonationShapeForm,
+  type DonationShapeSource,
+  type DonationShapeStyle,
+} from './donation-shape-data'
+import {
+  createDonationShapeLayer,
+  type DonationShapeLayer,
+} from './donation-shape-layer'
 import { EXPERIENCE_CONFIG } from './config'
 import { flightSseFloor } from './flight-quality'
 import {
@@ -58,6 +70,15 @@ const dataset = params.get('dataset') ?? 'peru-b2-globe'
 const compareParam = params.get('compare') === '1'
 const showDiagnostics = params.has('diag') || import.meta.env.DEV
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+/** Protected-parcel outline. Started here, before the viewer exists, so the
+ * flight can be aimed at the parcel centroid without the boot sequence ever
+ * waiting on it. `?shape=` accepts an absolute URL for a future booking API. */
+const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
+const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
+  .catch((error) => {
+    console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
+    return null
+  })
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -345,6 +366,7 @@ let rainLayer: RainLayer | null = null
 let audioLayer: AudioLayer | null = null
 let fieldModelLayer: FieldModelLayer | null = null
 let markerLayer: MarkerLayer | null = null
+let donationShapeLayer: DonationShapeLayer | null = null
 let lastFieldTier: CloudState['tier'] | null = null
 let disposed = false
 const pointTilesetEventRemovers: Array<() => void> = []
@@ -868,15 +890,38 @@ function enforceNavigationBounds(): void {
   })
 }
 
-const flyToEl = $<HTMLButtonElement>('#flyTo')
-const onFlyToClick = () => {
-  setAimMode(false, false)
-  cameraFlight?.toCloud(
-    reducedMotion
-      ? EXPERIENCE_CONFIG.flight.reducedMotionManualDurationMs
-      : EXPERIENCE_CONFIG.flight.manualDurationMs,
+/** Boot pose: sit at `target + offset` and look at `target`. The fullscreen
+ * loader conceals this staging position while the destination tiles stream. */
+function stageBootCamera(target: EnuVector3, offset: EnuOffset): void {
+  if (!cesium || !enuFrame) return
+  const destination = enuFrame.enuToWorld(new Cesium.Cartesian3(
+    target.x + offset[0],
+    target.y + offset[1],
+    target.z + offset[2],
+  ))
+  const lookAt = enuFrame.enuToWorld(
+    new Cesium.Cartesian3(target.x, target.y, target.z),
   )
+  const direction = Cesium.Cartesian3.subtract(lookAt, destination, new Cesium.Cartesian3())
+  if (Cesium.Cartesian3.magnitudeSquared(direction) < Cesium.Math.EPSILON12) return
+  Cesium.Cartesian3.normalize(direction, direction)
+  cesium.camera.setView({ destination, orientation: { direction, up: enuFrame.up } })
 }
+
+function flyToCloud(
+  durationMs: number = EXPERIENCE_CONFIG.flight.manualDurationMs,
+  startFromOverview = false,
+): void {
+  setAimMode(false, false)
+  cameraFlight?.toCloud(durationMs, startFromOverview)
+}
+
+const flyToEl = $<HTMLButtonElement>('#flyTo')
+const onFlyToClick = () => flyToCloud(
+  reducedMotion
+    ? EXPERIENCE_CONFIG.flight.reducedMotionManualDurationMs
+    : EXPERIENCE_CONFIG.flight.manualDurationMs,
+)
 flyToEl.addEventListener('click', onFlyToClick)
 
 const onCanvasDblClick = (event: MouseEvent) => {
@@ -1017,6 +1062,9 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
       case 'markers':
         markerLayer?.setVisible(effective.markers)
         if (!effective.markers) setAimMode(false, false)
+        break
+      case 'donationShape':
+        donationShapeLayer?.setVisible(effective.donationShape)
         break
       case 'dynamicPointSize':
         lastAppliedPointSize = -1
@@ -1181,6 +1229,108 @@ document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button)
   button.addEventListener('click', () => setMaskMode(Number(button.dataset.mask)))
 })
 
+// ---------------------------------------------------------------- donation shape
+let donationStyle: DonationShapeStyle = EXPERIENCE_CONFIG.donationShape.defaultStyle
+let donationForm: DonationShapeForm = EXPERIENCE_CONFIG.donationShape.defaultForm
+let donationSmoothness: number = EXPERIENCE_CONFIG.donationShape.smoothness
+let donationSmoothTimer = 0
+
+function setDonationStyle(style: DonationShapeStyle, refit = false): void {
+  donationStyle = style
+  donationShapeLayer?.setStyle(style)
+  document.querySelectorAll<HTMLButtonElement>('#shapeStyleSeg button').forEach((button) =>
+    button.classList.toggle('on', button.dataset.shapeStyle === style))
+  // Re-frame for the new style. A flat footprint framed at the column's
+  // distance is a smudge, and the entrance flight is long over by now — the
+  // reveal gate (entranceFlightPending) has already been cleared, so a second
+  // flight cannot disturb it.
+  if (!refit || !donationShapeLayer || bootLoading) return
+  flyToCloud(reducedMotion ? 400 : EXPERIENCE_CONFIG.donationShape.styleRefitDurationMs)
+}
+
+function setDonationForm(form: DonationShapeForm): void {
+  donationForm = form
+  donationShapeLayer?.setForm(form)
+  document.querySelectorAll<HTMLButtonElement>('#shapeFormSeg button').forEach((button) =>
+    button.classList.toggle('on', button.dataset.shapeForm === form))
+  // The rounding slider only means anything for the organic form.
+  $('#shapeSmoothRow').hidden = form !== 'organic'
+}
+
+function setDonationSmoothness(value: number, immediate = false): void {
+  donationSmoothness = value
+  $('#shapeSmoothv').textContent = value.toFixed(2)
+  // Rebuilding runs a signed-distance field and a marching-squares contour —
+  // tens of milliseconds, so a dragged slider is debounced rather than throttled.
+  window.clearTimeout(donationSmoothTimer)
+  const apply = () => donationShapeLayer?.setSmoothness(value)
+  if (immediate) apply()
+  else donationSmoothTimer = window.setTimeout(apply, 140)
+}
+
+const shapeSmoothEl = $<HTMLInputElement>('#shapeSmooth')
+const onShapeSmoothInput = () => setDonationSmoothness(Number(shapeSmoothEl.value))
+document.querySelectorAll<HTMLButtonElement>('#shapeStyleSeg button').forEach((button) => {
+  button.addEventListener('click', () =>
+    setDonationStyle(button.dataset.shapeStyle as DonationShapeStyle, true))
+})
+document.querySelectorAll<HTMLButtonElement>('#shapeFormSeg button').forEach((button) => {
+  button.addEventListener('click', () => setDonationForm(button.dataset.shapeForm as DonationShapeForm))
+})
+shapeSmoothEl.addEventListener('input', onShapeSmoothInput)
+
+/**
+ * Where the intro arc should end so the donation shape is actually framed.
+ *
+ * Distance comes from the active style's bounding box and the camera frustum:
+ * far enough that both the width and the height fit inside `frameFillFraction`
+ * of the view. Note the hard limit this cannot beat — filling half the screen
+ * *width* with a 14 m parcel needs about 18 m of camera distance, which is
+ * inside the canopy and under the navigation floor that enforceNavigationBounds
+ * pins the camera to. That is why the column style is 200 m tall: the vertical
+ * volume is what fills the frame from a legal viewing height.
+ *
+ * Cesium delta: PerspectiveFrustum#fov is the HORIZONTAL field of view whenever
+ * the viewport is wider than it is tall, unlike Three's always-vertical
+ * camera.fov. The vertical half-angle therefore comes from the read-only
+ * `fovy` accessor, and the horizontal one is derived from it and aspectRatio —
+ * the same two numbers the three.js version uses.
+ */
+function donationFlightOffset(): EnuOffset | null {
+  if (!donationShapeLayer || !cesium) return null
+  const frustum = cesium.camera.frustum
+  if (!(frustum instanceof Cesium.PerspectiveFrustum)) return null
+  const fovy = frustum.fovy
+  const aspectRatio = frustum.aspectRatio
+  if (fovy === undefined || !Number.isFinite(fovy)) return null
+  if (aspectRatio === undefined || !Number.isFinite(aspectRatio) || aspectRatio <= 0) return null
+  const config = EXPERIENCE_CONFIG.donationShape
+  const extent = donationShapeLayer.frameExtent()
+  const halfVertical = fovy * 0.5
+  const halfHorizontal = Math.atan(Math.tan(halfVertical) * aspectRatio)
+  const fill = Math.max(0.1, Math.min(1, config.frameFillFraction))
+  let distance = Math.max(
+    config.minApproachDistanceM,
+    (extent.heightM * 0.5) / Math.tan(halfVertical * fill),
+    extent.radiusM / Math.tan(halfHorizontal * fill),
+  )
+  // Approach from the south, the same heading the survey flight already uses,
+  // at a shallow pitch so the column stands up in frame instead of foreshortening.
+  // The pitch has to put the camera at or above the navigation floor. Ending
+  // below it does not fail loudly: enforceNavigationBounds lifts the camera
+  // afterwards without re-aiming, so the shot silently looks over the parcel
+  // into the distance. Steepening instead keeps the target centred, and a flat
+  // footprint wants the top-down look anyway.
+  const target = donationShapeLayer.flightTargetEnu()
+  const floorRise = navigationFloorZ - target.z
+  if (floorRise > 0) distance = Math.max(distance, floorRise / 0.98)
+  const pitch = Math.max(
+    Cesium.Math.toRadians(config.approachPitchDeg),
+    Math.asin(Cesium.Math.clamp(floorRise / distance, 0, 0.98)),
+  )
+  return [0, -distance * Math.cos(pitch), distance * Math.sin(pitch)]
+}
+
 // ---------------------------------------------------------------- per-frame update
 function updateCameraRange(): void {
   if (!cesium || !enuFrame) return
@@ -1300,6 +1450,7 @@ function onPreUpdate(): void {
   const options = renderOptions.effective()
   updateMaskFollow()
   if (options.fieldModels) fieldModelLayer?.update(now)
+  if (options.donationShape) donationShapeLayer?.update(now)
   if (options.markers && markerLayer && cesium) {
     markerLayer.update(
       now,
@@ -1410,23 +1561,19 @@ async function main(): Promise<void> {
   // WP9 accepts the mask state without inventing WP10's follow controller.
   markerMaskActive = false
 
-  // Stage the camera at the flight destination (same offsets as three).
-  const destination = enuFrame.enuToWorld(new Cesium.Cartesian3(
-    cloudCenterEnu.x + EXPERIENCE_CONFIG.flight.destinationOffsetM[0],
-    cloudCenterEnu.y + EXPERIENCE_CONFIG.flight.destinationOffsetM[1],
-    cloudCenterEnu.z + EXPERIENCE_CONFIG.flight.destinationOffsetM[2],
-  ))
-  const target = enuFrame.enuToWorld(cloudCenterEnu)
-  const direction = Cesium.Cartesian3.normalize(
-    Cesium.Cartesian3.subtract(target, destination, new Cesium.Cartesian3()),
-    new Cesium.Cartesian3(),
-  )
-  cesium.camera.setView({ destination, orientation: { direction, up: enuFrame.up } })
+  // Stage the camera at the flight destination (same offsets as three). Called
+  // again once the donation parcel is known, so the boot pose already frames it.
+  stageBootCamera(cloudCenterEnu, EXPERIENCE_CONFIG.flight.destinationOffsetM)
 
   cameraFlight = createCameraFlight({
     positionEnu: () => enuFrame!.worldToEnu(cesium!.camera.positionWC, cameraPositionEnu),
     directionEnu: () => worldDirectionToEnu(cesium!.camera.directionWC, cameraDirectionEnu),
     cloudCentre: () => cloudCenterEnu,
+    // Evaluated at toCloud() time, so the arc lands on the donation parcel once
+    // its GeoJSON is in and falls back to the survey centre until then.
+    flightTarget: () => donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu,
+    flightDestinationOffset: () =>
+      donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM,
     navigationFloorZ: () => navigationFloorZ,
     applyPose: applyCameraPose,
     setInputsEnabled: (enabled) => {
@@ -1488,6 +1635,60 @@ async function main(): Promise<void> {
   lastAppliedPointSize = -1
   applyPointSize()
   wirePointTilesetLoader(pointTileset)
+
+  const donationSource = await donationShapePromise
+  if (donationSource) {
+    const shapeEcef = new Cesium.Cartesian3()
+    const shapeEnu = new Cesium.Cartesian3()
+    const shapeFrame = enuFrame
+    const shapeTileset = pointTileset
+    donationShapeLayer = createDonationShapeLayer({
+      scene: cesium.scene,
+      overlay: $('#markerOverlay'),
+      enuFrame: shapeFrame,
+      source: donationSource,
+      // lon/lat -> raw ENU. The returned height is discarded — the parcel's z
+      // comes from the depth probe alone.
+      toLocal: (lon, lat, out) => {
+        Cesium.Cartesian3.fromDegrees(lon, lat, 0, undefined, shapeEcef)
+        shapeFrame.worldToEnu(shapeEcef, shapeEnu)
+        out[0] = shapeEnu.x
+        out[1] = shapeEnu.y
+        return out
+      },
+      fallbackGroundZ: areaMinZ,
+      canopyHeightM: manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM,
+      // No vertical correction, unlike the three.js twin. That app renders the
+      // cloud ground-snapped onto the draped imagery and therefore subtracts
+      // its zOffset here; this app adds the tileset with no modelMatrix
+      // override, so sampleGroundZ already reports ENU heights in the manifest
+      // frame that areaMinZ lives in. Verified against the published tileset:
+      // the APH root transform equals manifest.rootTransform and the deepest
+      // tile over the parcel spans z 191.6 … 223.2 there.
+      probe: (centreEnu, radiusM) => shapeTileset.sampleGroundZ(centreEnu, radiusM),
+      reducedMotion,
+    })
+    const info = donationShapeLayer.info()
+    console.info(
+      `[donation-shape] ${info.areaM2.toFixed(2)} m² · ${info.cellCount} cells of `
+      + `${info.cellAreaM2.toFixed(3)} m² · ${info.gridSegmentCount} grid + ${info.rimSegmentCount} rim segments`
+      + ` · lattice ${info.gridExact ? 'exact' : 'rasterised'} · group ${info.group ?? 'n/a'}`,
+    )
+    // Apply the current panel state now: a click during loading must not be lost,
+    // same reason field-model-layer re-applies its flag on arrival.
+    setDonationStyle(donationStyle)
+    setDonationForm(donationForm)
+    setDonationSmoothness(donationSmoothness, true)
+    donationShapeLayer.setVisible(renderOptions.effective().donationShape)
+    // The arc may already be in the air if the JSON was slow; bend its tail.
+    if (cameraFlight.active) cameraFlight.retargetCloud(donationShapeLayer.flightTargetEnu())
+    // Re-stage the boot pose on the parcel now that it — and its framing
+    // distance — are known.
+    stageBootCamera(
+      donationShapeLayer.flightTargetEnu(),
+      donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM,
+    )
+  }
 
   environmentLayer = createEnvironmentLayer({
     scene: cesium.scene,
@@ -1569,6 +1770,7 @@ async function main(): Promise<void> {
     keyboardNavigation,
     environmentLayer,
     markerLayer,
+    donationShapeLayer,
     get fieldModelLayer() { return fieldModelLayer },
     rainLayer,
     audioLayer,
@@ -1615,6 +1817,10 @@ function dispose(): void {
   keyboardNavigation = null
   markerLayer?.dispose()
   markerLayer = null
+  window.clearTimeout(donationSmoothTimer)
+  shapeSmoothEl.removeEventListener('input', onShapeSmoothInput)
+  donationShapeLayer?.dispose()
+  donationShapeLayer = null
   rainLayer?.dispose()
   rainLayer = null
   audioLayer?.dispose()

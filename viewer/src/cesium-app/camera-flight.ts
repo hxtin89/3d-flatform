@@ -31,6 +31,15 @@ export interface CameraFlightDeps {
   directionEnu(): EnuVector3
   /** Survey centre in ENU; configured flight offsets are relative to it. */
   cloudCentre(): EnuVector3
+  /** Where the intro arc lands and looks — the donation parcel once it is
+   * known. Falls back to cloudCentre(), which has seven other consumers
+   * (vignette mask, ground plane, navigation bounds, markers, field models,
+   * environment layer, boot staging) and must not be repurposed. */
+  flightTarget?(): EnuVector3
+  /** Offset from flightTarget() the arc ends at. Computed from the parcel size
+   * and the camera frustum so the shape is actually framed, instead of the
+   * fixed survey-scale offset that leaves a 14 m parcel two pixels wide. */
+  flightDestinationOffset?(): EnuOffset
   /** Lowest ENU altitude a dolly may end at. */
   navigationFloorZ(): number
   /** Apply one sampled position/look-target pair to the real camera. */
@@ -48,6 +57,10 @@ export interface CameraFlightController {
   readonly progress: number
   update(now: number): void
   toCloud(durationMs?: number, fromOverview?: boolean): void
+  /** Re-aim an arc that is already in the air. The Start button can fire before
+   * the parcel GeoJSON lands; this bends only the tail of the curve, so there
+   * is no camera jump. */
+  retargetCloud(target: EnuVector3): void
   toPoint(targetEnu: EnuVector3, endDistanceM: number, durationMs: number): void
   cancel(): void
 }
@@ -158,10 +171,12 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
   let flight: Flight | null = null
   let reportedProgress = 1
 
-  const offsetPoint = (offset: EnuOffset): EnuVector3 => {
-    const centre = deps.cloudCentre()
-    return vector(centre.x + offset[0], centre.y + offset[1], centre.z + offset[2])
-  }
+  const offsetPoint = (offset: EnuOffset, base: EnuVector3 = deps.cloudCentre()): EnuVector3 =>
+    vector(base.x + offset[0], base.y + offset[1], base.z + offset[2])
+
+  const flightTarget = (): EnuVector3 => deps.flightTarget?.() ?? deps.cloudCentre()
+  const destinationOffset = (): EnuOffset =>
+    deps.flightDestinationOffset?.() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
 
   const reportProgress = (progress: number): void => {
     reportedProgress = progress
@@ -195,7 +210,8 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
       durationMs = EXPERIENCE_CONFIG.flight.manualDurationMs,
       fromOverview = false,
     ) {
-      const end = offsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)
+      const target = flightTarget()
+      const end = offsetPoint(destinationOffset(), target)
       let start: EnuVector3
       let control1: EnuVector3
       let control2: EnuVector3
@@ -224,7 +240,7 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
         control1,
         control2,
         end,
-        lookTarget: copy(deps.cloudCentre()),
+        lookTarget: copy(target),
         direction: vector(),
         t0: started,
         duration: Math.max(1, durationMs),
@@ -244,6 +260,21 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
       applyTarget.y = start.y + next.direction.y
       applyTarget.z = start.z + next.direction.z
       deps.applyPose(start, applyTarget)
+    },
+
+    retargetCloud(target) {
+      if (!flight || flight.mode !== 'arc') return
+      const end = offsetPoint(destinationOffset(), target)
+      // Move the end and drag the trailing control point with it; start and
+      // control1 stay put, so the curve bends instead of snapping.
+      const deltaX = end.x - flight.end.x
+      const deltaY = end.y - flight.end.y
+      const deltaZ = end.z - flight.end.z
+      set(flight.end, end)
+      flight.control2.x += deltaX
+      flight.control2.y += deltaY
+      flight.control2.z += deltaZ
+      set(flight.lookTarget, target)
     },
 
     toPoint(targetEnu, endDistanceM, durationMs) {

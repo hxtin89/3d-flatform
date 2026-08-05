@@ -132,6 +132,12 @@
       .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
                           will-change: transform, opacity; transition: opacity .18s ease; }
       .map-marker-label[hidden] { display: none; }
+      .donation-shape-label { display: grid; gap: 3px; min-width: 92px; padding: 6px 9px 7px; margin-top: -10px;
+                              color: #f5f2e8; background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
+                              border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
+                              backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); pointer-events: none; }
+      .donation-shape-area { font: 600 18px/1.05 "Iowan Old Style", Baskerville, serif; }
+      .donation-shape-group { opacity: .58; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .09em; }
       .temperature-marker-label { display: grid; grid-template-columns: auto auto; align-items: center; gap: 2px 8px;
                                   min-width: 126px; padding: 7px 9px 8px; margin-top: -10px; color: #f5f2e8;
                                   background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
@@ -625,6 +631,29 @@
         <label class="h" for="gaussianToggle">3DGS test</label>
         <button class="act" id="gaussianToggle" type="button" aria-pressed="false" aria-describedby="gaussianNote">✦ 3DGS · Off</button>
         <span class="weather-note" id="gaussianNote">Feasibility test: Gaussian-splatting model (Spark) in its own WebGL overlay, 61 MB — click to look around</span>
+      </div>
+      <div class="row">
+        <label class="h">Shape style</label>
+        <div class="seg" id="shapeStyleSeg">
+          <button data-shape-style="column">Column</button>
+          <button data-shape-style="xray">X-ray</button>
+          <button data-shape-style="canopy">Canopy</button>
+          <button data-shape-style="wall" class="on">Wall</button>
+        </div>
+        <span class="weather-note" id="shapeStyleNote">Protected parcel from GeoJSON. Column = light column through the canopy, X-ray = footprint shines through the trees, Canopy = plate on the crowns, Wall = low glowing wall. Switching re-frames the camera</span>
+      </div>
+      <div class="row">
+        <label class="h">Shape form</label>
+        <div class="seg" id="shapeFormSeg">
+          <button data-shape-form="exact" class="on">Exact</button>
+          <button data-shape-form="organic">Organic</button>
+        </div>
+        <span class="weather-note">Exact = the surveyed staircase with every 1 m² cell line — the authoritative boundary. Organic = rounded, area-preserving, a stylised reading of the same parcel</span>
+      </div>
+      <div class="row" id="shapeSmoothRow" hidden>
+        <label class="h" for="shapeSmooth">Rounding · <span class="val" id="shapeSmoothv">0.65</span></label>
+        <input type="range" id="shapeSmooth" min="0" max="1" step="0.05" value="0.65" />
+        <span class="weather-note">Radius of the disc the outline is opened and closed with, 0 = untouched staircase</span>
       </div>
       <div class="row">
         <label class="h">Mask</label>

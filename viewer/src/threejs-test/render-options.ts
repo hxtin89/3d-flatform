@@ -20,6 +20,8 @@ export interface RenderOptions {
   fieldModels: boolean
   /** Interactive hotspot markers (DOM chips + 3D geometry). */
   markers: boolean
+  /** Donation shape: protected-parcel outline, 1 m² grid and area chip. */
+  donationShape: boolean
   /** Camera-height point-size curve; off = fixed base size × slider. */
   dynamicPointSize: boolean
   /** Bench-preset memory budgets; off = fixed high budgets. */
@@ -40,6 +42,7 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   daylightGrading: true,
   fieldModels: true,
   markers: true,
+  donationShape: true,
   dynamicPointSize: true,
   presetBudgets: true,
   pixelRatioCap: true,
@@ -55,6 +58,7 @@ export const COMPARE_PROFILE: RenderOptions = {
   daylightGrading: false,
   fieldModels: false,
   markers: false,
+  donationShape: false,
   dynamicPointSize: false,
   presetBudgets: false,
   pixelRatioCap: false,
@@ -106,6 +110,13 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '📍 Markers · On',
     offText: '📍 Markers · Off',
     note: 'Interactive hotspots (chips + 3D pins)',
+  },
+  {
+    key: 'donationShape',
+    label: 'Donation shape',
+    onText: '🌳 Shape · On',
+    offText: '🌳 Shape · Off',
+    note: 'Protected-parcel outline from GeoJSON — footprint, 1 m² cell grid and area chip',
   },
   {
     key: 'dynamicPointSize',

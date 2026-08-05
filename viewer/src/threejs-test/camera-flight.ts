@@ -28,6 +28,15 @@ export interface CameraFlightDeps {
   enuToWorld(value: THREE.Vector3, target?: THREE.Vector3): THREE.Vector3
   /** Survey centre in ENU; flight offsets are relative to it. */
   cloudCentre(): THREE.Vector3
+  /** Where the intro arc lands and looks — the donation parcel once it is
+   * known. Falls back to cloudCentre(), which has seven other consumers
+   * (vignette mask, ground plane, navigation bounds, markers, field models,
+   * environment layer, boot staging) and must not be repurposed. */
+  flightTarget?(): THREE.Vector3
+  /** Offset from flightTarget() the arc ends at. Computed from the parcel size
+   * and the camera frustum so the shape is actually framed, instead of the
+   * fixed survey-scale offset that leaves a 14 m parcel two pixels wide. */
+  flightDestinationOffset?(): EnuOffset
   /** Lowest altitude a dolly may end at. */
   navigationFloorZ(): number
   /** Toggled so orbit controls cannot fight an in-progress flight. */
@@ -39,6 +48,10 @@ export interface CameraFlightDeps {
 export interface CameraFlightController {
   readonly active: boolean
   toCloud(durationMs?: number, startFromOverview?: boolean): void
+  /** Re-aim an arc that is already in the air. The Start button can fire before
+   * the parcel GeoJSON lands; this bends only the tail of the curve, so there
+   * is no camera jump. */
+  retargetCloud(target: THREE.Vector3): void
   toPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void
   update(now: number): void
 }
@@ -79,10 +92,12 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
   const orientation = new THREE.PerspectiveCamera()
   let flight: Flight | null = null
 
-  const offsetPoint = (offset: EnuOffset): THREE.Vector3 => {
-    const centre = deps.cloudCentre()
-    return new THREE.Vector3(centre.x + offset[0], centre.y + offset[1], centre.z + offset[2])
-  }
+  const offsetPoint = (offset: EnuOffset, base: THREE.Vector3 = deps.cloudCentre()): THREE.Vector3 =>
+    new THREE.Vector3(base.x + offset[0], base.y + offset[1], base.z + offset[2])
+
+  const flightTarget = (): THREE.Vector3 => deps.flightTarget?.() ?? deps.cloudCentre()
+  const destinationOffset = (): EnuOffset =>
+    deps.flightDestinationOffset?.() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
 
   const begin = (next: Flight): void => {
     flight = next
@@ -96,7 +111,8 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
     },
 
     toCloud(durationMs = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false) {
-      const end = offsetPoint(EXPERIENCE_CONFIG.flight.destinationOffsetM)
+      const target = flightTarget()
+      const end = offsetPoint(destinationOffset(), target)
       let start: THREE.Vector3
       let control1: THREE.Vector3
       let control2: THREE.Vector3
@@ -122,7 +138,7 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
       begin({
         mode: 'arc',
         start, control1, control2, end,
-        lookTarget: deps.cloudCentre().clone(),
+        lookTarget: target.clone(),
         t0: started, duration: durationMs, lastUpdate: started,
       })
 
@@ -130,6 +146,21 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
       sample(flight!, 0.025, lookEnu)
       camera.up.copy(enuUp)
       camera.lookAt(enuToWorld(lookEnu, lookWorld))
+    },
+
+    retargetCloud(target) {
+      if (!flight || flight.mode !== 'arc') return
+      const end = offsetPoint(destinationOffset(), target)
+      // Move the end and drag the trailing control point with it; start and
+      // control1 stay put, so the curve bends instead of snapping.
+      const deltaX = end.x - flight.end.x
+      const deltaY = end.y - flight.end.y
+      const deltaZ = end.z - flight.end.z
+      flight.end.copy(end)
+      flight.control2.set(
+        flight.control2.x + deltaX, flight.control2.y + deltaY, flight.control2.z + deltaZ,
+      )
+      flight.lookTarget.copy(target)
     },
 
     toPoint(targetEnu, endDistanceM, durationMs) {

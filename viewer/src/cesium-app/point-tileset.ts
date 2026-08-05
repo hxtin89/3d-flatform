@@ -2,8 +2,36 @@ import * as Cesium from 'cesium'
 import { EXPERIENCE_CONFIG } from './config'
 import type { EnuFrame } from './enu'
 
+export interface GroundSample {
+  /** Low percentile of the sampled surface — the forest floor, in ENU metres
+   * of the manifest rootTransform frame (see sampleGroundZ for why that needs
+   * no correction here, unlike the three.js twin). */
+  groundZ: number
+  /** High percentile — the canopy top. */
+  canopyZ: number
+  samples: number
+  /** Occupied cells of the 5×5 support grid; low values mean a thin sample. */
+  support: number
+}
+
+/** Probe grid over the footprint. Each cell costs one scene.sampleHeight(),
+ * i.e. one offscreen pick render, so the layer above throttles and settles. */
+const PROBE_GRID = 7
+const SUPPORT_GRID = 5
+
 export interface PointTileset {
   tileset: Cesium.Cesium3DTileset
+  /**
+   * Statistical ground/canopy height over a square footprint of side
+   * 2 × radiusM centred on `centreEnu`, in the same ENU frame as the manifest
+   * bboxes. Null while the tileset is still streaming or depth picking is
+   * unsupported.
+   *
+   * Mirrors `StreamingCloud.sampleGroundZ()` on the three.js side, but by a
+   * different route: Cesium exposes no stable API for decoded PNTS positions,
+   * so this samples the depth buffer instead of the point buffers.
+   */
+  sampleGroundZ(centreEnu: Cesium.Cartesian2, radiusM: number): GroundSample | null
   setErrorTarget(sse: number): void
   setPointSizeCss(px: number): void
   setDaylight(colorRgb: [number, number, number], intensity: number, goldenFactor: number): void
@@ -196,10 +224,115 @@ export async function createPointTileset(
   const daylightColor = new Cesium.Cartesian3()
   const maskCenter = new Cesium.Cartesian2()
   const shadowOffset = new Cesium.Cartesian2()
+  // Reused by the ground probe so one sample allocates nothing.
+  const probeEnu = new Cesium.Cartesian3()
+  const probeWorld = new Cesium.Cartesian3()
+  const probeCarto = new Cesium.Cartographic()
   let disposed = false
 
   return {
     tileset,
+    sampleGroundZ(centreEnu, radiusM) {
+      const scene = opts.scene
+      // tilesLoaded alone is not enough: it is true for an empty traversal too,
+      // and each probe costs PROBE_GRID² offscreen pick renders. Without the
+      // point check the probe would hammer a viewer that has not loaded
+      // anything yet — exactly when it is slowest.
+      if (disposed || !scene.sampleHeightSupported || !tileset.tilesLoaded) return null
+      if (!((tileset as any).statistics?.numberOfPointsLoaded > 0)) return null
+      const config = EXPERIENCE_CONFIG.donationShape
+
+      const heights: number[] = []
+      // 5×5 support grid: a candidate height backed by one corner of the
+      // footprint is noise, not ground.
+      const support = new Uint8Array(SUPPORT_GRID * SUPPORT_GRID)
+
+      // Hide the globe for the duration of the probe. sampleHeight reports the
+      // topmost RENDERED surface, and the draped imagery sits on the bare
+      // ellipsoid ~230 m below the survey — a single globe hit would drag the
+      // low percentile down with it. With the globe out, a cell either returns
+      // the point cloud or nothing, which is exactly the three.js semantics
+      // (that probe reads tile position buffers and never sees terrain).
+      // sampleHeight is synchronous, so the flag is restored before any frame
+      // the user can see.
+      const globe = scene.globe
+      const globeWasShown = globe ? globe.show : true
+      if (globe) globe.show = false
+      try {
+        for (let row = 0; row < PROBE_GRID; row++) {
+          for (let column = 0; column < PROBE_GRID; column++) {
+            const dx = (((column + 0.5) / PROBE_GRID) * 2 - 1) * radiusM
+            const dy = (((row + 0.5) / PROBE_GRID) * 2 - 1) * radiusM
+            Cesium.Cartesian3.fromElements(centreEnu.x + dx, centreEnu.y + dy, 0, probeEnu)
+            opts.enuFrame.enuToWorld(probeEnu, probeWorld)
+            const carto = Cesium.Cartographic.fromCartesian(probeWorld, undefined, probeCarto)
+            if (!carto) continue
+
+            // Still the height of the TOPMOST thing under the column, so in
+            // dense forest most cells return canopy, not ground. That is
+            // exactly why groundZ is a low percentile: the gaps between crowns
+            // carry the floor. A residual error of a few metres is expected —
+            // EXPERIENCE_CONFIG.donationShape.groundZOverrideM is the escape
+            // hatch when a site's canopy defeats the probe outright.
+            let height: number | undefined
+            try {
+              height = scene.sampleHeight(carto, undefined, 2)
+            } catch {
+              // Depth picking can be unavailable for a frame while tiles swap.
+              height = undefined
+            }
+            if (height === undefined || !Number.isFinite(height)) continue
+
+            // Vertical frame: the hit goes back through the SAME enuFrame the
+            // tileset is placed by, so the result is already in the manifest
+            // ENU frame that areaBbox / fallbackGroundZ live in. Verified
+            // against the published tileset: the APH root transform is
+            // byte-identical to manifest.rootTransform, and the deepest tile
+            // over the parcel has box z 191.6 … 223.2 in that frame — matching
+            // the three.js measurement of ground 194.8 / canopy 223.8. The
+            // three.js app needs a −zOffset correction only because it renders
+            // the cloud ground-snapped onto the draped imagery; this app adds
+            // the tileset with no modelMatrix override, so there is no lift to
+            // remove.
+            Cesium.Cartesian3.fromRadians(
+              carto.longitude,
+              carto.latitude,
+              height,
+              undefined,
+              probeWorld,
+            )
+            opts.enuFrame.worldToEnu(probeWorld, probeEnu)
+            heights.push(probeEnu.z)
+
+            const cell = Math.min(4, Math.max(0, Math.floor((dx / radiusM + 1) * 2.5)))
+            const band = Math.min(4, Math.max(0, Math.floor((dy / radiusM + 1) * 2.5)))
+            support[band * SUPPORT_GRID + cell] = 1
+          }
+        }
+      } finally {
+        if (globe) globe.show = globeWasShown
+      }
+
+      // probeMinSamples counts point-cloud vertices on the three.js side; this
+      // depth grid can never return more than PROBE_GRID² hits, so the gate is
+      // the smaller of the configured floor and a quarter of the grid.
+      const minimumSamples = Math.min(
+        config.probeMinSamples,
+        Math.ceil(PROBE_GRID * PROBE_GRID * 0.25),
+      )
+      if (heights.length < minimumSamples) return null
+      heights.sort((a, b) => a - b)
+      const at = (fraction: number): number =>
+        heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
+      let occupied = 0
+      for (const cell of support) occupied += cell
+      return {
+        groundZ: at(config.probeGroundPercentile),
+        canopyZ: at(config.probeCanopyPercentile),
+        samples: heights.length,
+        support: occupied,
+      }
+    },
     setErrorTarget(sse) {
       if (Number.isFinite(sse) && sse > 0) tileset.maximumScreenSpaceError = sse
     },

@@ -124,6 +124,106 @@ export const EXPERIENCE_CONFIG = {
     outsideMaskOpacity: 0.5,
     maskEdgeFadeM: 90,
   },
+  donationShape: {
+    // Outline of the protected parcel. Resolved through BASE_URL so the
+    // /livingdashboard/ build finds it; ?shape=<url> overrides it, and an
+    // absolute URL is passed through untouched for a future booking API.
+    sourcePath: 'gps-test-border.json',
+    // Survey cell pitch. Only a starting guess — the real pitch per axis is
+    // measured off the boundary, because a nominal 1 m² cell does not stay
+    // square once the survey's UTM grid is reprojected into the local plane.
+    cellSizeM: 1,
+    // Organic form: 0 leaves the staircase alone, 1 rounds with a 1.25 m disc.
+    // Rounding corners individually cannot work here — every edge is 1 m, so a
+    // fillet is capped at 0.5 m and the staircase survives it.
+    smoothness: 0.65,
+    sdfPixelM: 0.05,
+    defaultStyle: 'wall',
+    defaultForm: 'exact',
+    // Geometric separation from the ground, since WebGPU has no dependable
+    // polygonOffset path.
+    footprintLiftM: 0.08,
+    // Used until the point-cloud probe reports the real canopy top.
+    canopyFallbackM: 74,
+    // The column is deliberately NOT tied to the canopy height. A 14 m parcel
+    // seen from the navigation floor is a few pixels wide, so the vertical
+    // volume is what carries the shape on screen — and a column far taller than
+    // the 74 m canopy also stays readable while the ground probe is still
+    // settling, or if it never gets enough points at all.
+    columnHeightM: 200,
+    // The low wall must still clear the crowns, or it is invisible from every
+    // useful viewing height. It is sized from the measured canopy plus this
+    // clearance and only falls back to the fixed value if nothing was measured.
+    wallHeightM: 12,
+    wallCanopyClearanceM: 9,
+    // Intro-flight framing. The arc ends at the distance where the active
+    // style's bounding box fills this fraction of the vertical field of view.
+    // Note the hard limit: filling half the screen *width* with a 14 m parcel
+    // needs ~18 m of camera distance, which is under the canopy and below the
+    // navigation floor — hence the column.
+    frameFillFraction: 0.82,
+    approachPitchDeg: 18,
+    minApproachDistanceM: 45,
+    // The arc looks at this fraction up the volume rather than at the ground
+    // centroid — aiming at the foot pushes a 200 m column straight out of the
+    // top of the frame.
+    lookHeightFraction: 0.42,
+    // Switching style re-frames the camera. A flat footprint and a 200 m column
+    // need very different distances, and without this the flat styles stay a
+    // 40 × 12 px smudge at the distance the column was framed for.
+    styleRefitDurationMs: 1_400,
+    // The flat styles read against a bright canopy only with more fill than the
+    // column needs, where the wall already carries the shape.
+    flatFillBoost: 1.9,
+    rimWidthM: 0.16,
+    gridWidthM: 0.035,
+    // Floors for the two widths above, in screen pixels. Without these the rim
+    // is 0.8 px and the grid 0.17 px at the distance the intro flight ends at.
+    rimMinPx: 3.4,
+    gridMinPx: 1.3,
+    labelLiftM: 4,
+    colors: {
+      fill: 0xd9f99d,
+      fillOpacity: 0.34,
+      rim: 0xf4ffd8,
+      rimOpacity: 0.92,
+      grid: 0xb7dd58,
+      gridOpacity: 0.5,
+      wall: 0xd9f99d,
+      wallBottomOpacity: 0.55,
+      wallTopOpacity: 0.0,
+      xrayGhostOpacity: 0.3,
+      mote: 0xf4ffd8,
+    },
+    moteCount: 32,
+    moteRiseSeconds: 7,
+    // Ground probe. Raycasting the cloud is impossible — streaming.ts parks the
+    // carrier Points at drawRange 0 — so the height comes from a percentile
+    // over the resident tiles' position buffers. A low percentile, never the
+    // minimum: one stray point below the terrain would bury the parcel.
+    // Wider than the parcel on purpose: at overview density there are only a few
+    // dozen points inside a 14 m disc, far under probeMinSamples, and the probe
+    // would never return anything. The terrain is flat enough over 60 m that the
+    // low percentile is still this parcel's ground.
+    probeRadiusM: 60,
+    probeIntervalMs: 500,
+    probeMinSamples: 400,
+    probeMaxSamplesPerTile: 6_000,
+    probeGroundPercentile: 0.02,
+    probeCanopyPercentile: 0.95,
+    probeSupportCells: 6,
+    // Sanity band around the manifest floor. The published ENU bboxes are
+    // tilted AABBs so they overstate the vertical range, but a probe further
+    // out than this is a bad percentile, not terrain.
+    probeMaxDeviationM: 400,
+    probeSupportBandM: 1.5,
+    probeSmoothingMs: 900,
+    probeSettleEpsilonM: 0.05,
+    probeSettleStreak: 3,
+    probeTimeoutMs: 45_000,
+    // Escape hatch when a site's canopy defeats the probe.
+    groundZOverrideM: null as number | null,
+  },
   environment: {
     // Peru has no daylight-saving change; the slider still uses the IANA zone.
     timeZone: 'America/Lima',
