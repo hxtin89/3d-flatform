@@ -85,6 +85,10 @@ export function createGlobe(opts: {
     shape: 'ellipsoid',
     useRecommendedSettings: true,
     tileDimension: 512,
+    // TilingScheme.generateLevels uses maxLevel = levels - 1, so +1 turns the
+    // configured deepest zoom into a level count. Caps refinement at the depth
+    // where the imagery still holds real detail — see design.basemapMaxZoom.
+    levels: EXPERIENCE_CONFIG.design.basemapMaxZoom + 1,
     // same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer)
     url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))

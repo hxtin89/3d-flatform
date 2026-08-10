@@ -442,6 +442,27 @@ export const EXPERIENCE_CONFIG = {
      * depth-of-field may well be invisible.
      */
     basemapErrorTarget: 1,
+    /**
+     * Deepest imagery zoom level to request. This is a property of the source
+     * data, not a look preference: MapTiler's satellite coverage for this part of
+     * the Amazon carries real detail to about z16-z17 (~1-2 m per pixel) and is
+     * upscaled below that. Measured on one tile column at the survey location,
+     * JPEG size falls once interpolation starts — 52 kB at z16, then 33, 22, 15,
+     * 8.6 kB at z20 — and z20 is visibly just a blur of z17.
+     *
+     * The renderer does not know that, so with errorTarget 1 it kept refining
+     * into empty levels: at the 80 m zoom stop, 78 of 115 requests went to z18
+     * and z19 and bought nothing. Capping here removes them at identical image
+     * quality — the picture is unchanged because those levels held no
+     * information.
+     *
+     * Raise it when the imagery improves (a drone or aerial orthophoto of the
+     * survey area would be the obvious upgrade); the plugin allows up to 19.
+     * Note this does NOT make the basemap sharper: at 80 m altitude a display
+     * pixel is ~0.1 m of ground, so 1-2 m imagery is 10-20x coarser than the
+     * screen regardless of any setting here.
+     */
+    basemapMaxZoom: 17,
     /** Stochastic dissolve band at the vignette edge, as a fraction of the mask
      * radius. 0 reproduces the old hard circular cut. */
     maskFringe: 0.35,
