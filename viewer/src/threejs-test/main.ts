@@ -13,6 +13,11 @@ import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { EXPERIENCE_CONFIG } from './config'
+import {
+  assetUrl as shapeAssetUrl, fetchDonationShape,
+  type DonationShapeForm, type DonationShapeSource, type DonationShapeStyle,
+} from './donation-shape-data'
+import { createDonationShapeLayer, type DonationShapeLayer } from './donation-shape-layer'
 import { createKeyboardNavigation, type KeyboardNavigation } from './keyboard-navigation'
 import {
   classifyTier,
@@ -30,6 +35,14 @@ import { createModelTransformEditor, type ModelTransformEditor } from './model-t
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
+import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
+import {
+  createRenderOptions,
+  RENDER_OPTION_ROWS,
+  type RenderOptionKey,
+  type RenderOptions,
+} from './render-options'
+import type { MemoryBudgetSnapshot } from './streaming'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -39,6 +52,12 @@ const folder = (import.meta.env.VITE_POINTCLOUD_TILES_FOLDER ?? 'pointcloud-tile
 const baseUrl = domain ? `https://${domain}/${folder}` : ''
 const MAPTILER_KEY = (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim()
 const dataset = params.get('dataset') ?? 'peru-b2-globe'
+/** 3DGS-Machbarkeitstest: Spark rendert dieses INRIA-Splat-Modell in einem
+ * eigenen WebGL-Overlay (siehe gaussian-splat-layer.ts). Kleinster ladbarer
+ * Downsample der ply-result-Ablage (61 MB). */
+const GAUSSIAN_SPLAT_URL = baseUrl
+  ? `${baseUrl}/ply-result/point_cloud/iteration_100/point_cloud_5.ply`
+  : ''
 /** Which published point tree to stream. `aph` is the Adaptive Point Hierarchy
  * the Cesium reference viewer uses and the only one carrying real close-range
  * density — the published One LOD chain stops at the p02 overview band.
@@ -50,6 +69,12 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
+/** Cesium comparison: start without the loader benchmark and without the
+ * boot-time pixel-ratio cap, then enable compare mode (all optimisations off,
+ * only the zoom-dependent density ladder remains). Everything else is also
+ * switchable live via the panel — this param covers the construction-time
+ * pieces a running session cannot change. */
+const compareParam = params.get('compare') === '1'
 /** Shows the measured heights in the HUD. Implied by freeorbit, but available
  * on its own so the configured zoom stop can be checked while it still bites. */
 const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
@@ -64,6 +89,15 @@ const presetOverride: BenchPreset | null = (() => {
   return raw === 'strong' || raw === 'medium' || raw === 'constrained' ? raw : null
 })()
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+/** Protected-parcel outline. Started here, before renderer.init(), so the flight
+ * can be aimed at the parcel centroid without the boot sequence ever waiting on
+ * it. `?shape=` accepts an absolute URL for a future booking API. */
+const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
+const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
+  .catch((error) => {
+    console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
+    return null
+  })
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -126,7 +160,11 @@ function exposeBenchDebugState(): void {
 
 // The eagle is a real point cloud whose density follows the load progress —
 // the loading animation quietly benchmarks the device's point pipeline.
-void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
+// Compare mode skips the probe entirely: the preset is forced to 'strong' and
+// every preset-derived cap is disabled anyway.
+if (compareParam) {
+  loaderEagleFillEl.hidden = false
+} else void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
@@ -264,46 +302,58 @@ function applyBenchPreset(): void {
       : 'no measurement (heuristic fallback)'} → preset ${preset}${
       presetOverride ? ' (forced by ?preset)' : ''}`,
   )
-  // The vignette used to be part of the bargain — masked on the weaker presets to
-  // cut drawn points. It is a look decision now, so every preset takes the
-  // configured default and the weaker tiers pay with pixel ratio and view
-  // distance alone. Set design.maskMode to 2 to hand the lever back.
+  // Every preset write below routes through the render-options flags so a
+  // toggled-off optimisation (or active compare mode) is never re-applied.
+  //
+  // The vignette used to be part of the bargain too — masked on the weaker
+  // presets to cut drawn points. It is a look decision now, so every preset
+  // takes the configured default and the weaker tiers pay with pixel ratio and
+  // view distance alone. Set design.maskMode to 2 to hand the lever back.
+  const options = renderOptions.effective()
   if (preset === 'strong') {
-    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
+    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    presetPixelRatioCap = 1.25
     adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
     // A settled Detail p100 view measures ~220 MB. Budgets below that evict
     // tiles the very next frame needs, producing continuous refetching.
-    stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
-    globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+    if (options.presetBudgets) {
+      stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
+      globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+    }
   } else if (preset === 'medium') {
-    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.1))
+    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    presetPixelRatioCap = 1.1
     adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
-    stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
-    globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
+    if (options.presetBudgets) {
+      stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
+      // Imagery working set at errorTarget 1 exceeds 64 MiB on deep zooms —
+      // thrash there shows up as a permanently blurry basemap.
+      globe?.setMemoryBudget(96 * 1024 * 1024, 64 * 1024 * 1024)
+    }
   } else {
-    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
-    renderer.setPixelRatio(1)
+    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    presetPixelRatioCap = 1
     adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.constrained
     // Previously left at the library default of 96 MB, which thrashes for the
     // same reason, with less headroom to recover.
-    stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
-    globe?.setMemoryBudget(48 * 1024 * 1024, 32 * 1024 * 1024)
-    // Larger points keep the canopy readable at a lower pixel ratio.
-    pointSizeScale = 1.3
-    sizeEl.value = String(pointSizeScale)
-    applyPointSize()
+    if (options.presetBudgets) {
+      stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
+      globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
+    }
+    if (!renderOptions.isCompareMode()) {
+      // Larger points keep the canopy readable at a lower pixel ratio.
+      pointSizeScale = 1.3
+      sizeEl.value = String(pointSizeScale)
+      applyPointSize()
+    }
   }
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  globe?.setResolution()
-  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  applyPixelRatio()
 }
 
 const onLoaderStart = () => {
@@ -323,8 +373,10 @@ const onLoaderStart = () => {
   // Park the cloud until the flight has closed most of the distance. The loader
   // staged the camera at the flight's destination, so the tiles the reveal needs
   // are already resident — pausing the streamer keeps them, because unloading
-  // also only happens inside tiles.update().
-  entranceFlightPending = EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
+  // also only happens inside tiles.update(). With the SSE brakes toggled off
+  // the reveal gating is off too — the cloud joins from the first metre.
+  entranceFlightPending = renderOptions.effective().sseBrakes
+    && EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
   if (entranceFlightPending) setPointCloudRevealed(false)
   flyToCloud(
     reducedMotion
@@ -358,7 +410,7 @@ const canvas = $<HTMLCanvasElement>('#view')
 const renderer = new WebGPURenderer({ canvas, antialias: false, forceWebGL } as any)
 // A device-independent cap avoids allocating a native 3x iPhone backbuffer while
 // preserving supersampling on ordinary displays. It is never resized per frame.
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
+renderer.setPixelRatio(compareParam ? window.devicePixelRatio : Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
 // Daylight sky above the globe horizon. The matching distance fog hides the
 // finite map edge without another mesh, texture sample or post-process pass.
@@ -417,7 +469,11 @@ function basePointSizeForHeight(heightM: number): number {
 }
 
 function applyPointSize(): void {
-  const base = basePointSizeForHeight(cameraAltitude)
+  // Curve off (compare mode): one fixed base like Cesium's pointSize, so the
+  // comparison shows raw density instead of size-masked holes.
+  const base = renderOptions.effective().dynamicPointSize
+    ? basePointSizeForHeight(cameraAltitude)
+    : EXPERIENCE_CONFIG.lod.fixedPointSizePx
   const pixels = base * EXPERIENCE_CONFIG.lod.pointSizeMultiplier * pointSizeScale
   // The uniform is read by every tile material each frame; skip sub-pixel churn.
   if (Math.abs(pixels - lastAppliedPointSize) < 0.02) return
@@ -429,6 +485,7 @@ function applyPointSize(): void {
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
+let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
 let environmentLayer: EnvironmentLayer | null = null
@@ -567,27 +624,295 @@ const liftToggleEl = $<HTMLButtonElement>('#liftToggle')
 let highPrecisionMatrices = true
 let heightOffsetEnabled = true
 
+// 3DGS-Machbarkeitstest — eigenes WebGL-Overlay, lazy erzeugt beim ersten Klick.
+const gaussianToggleEl = $<HTMLButtonElement>('#gaussianToggle')
+const gaussianNoteEl = $('#gaussianNote')
+let gaussianSplatLayer: GaussianSplatLayer | null = null
+
+const onGaussianToggle = () => {
+  if (!GAUSSIAN_SPLAT_URL) { gaussianNoteEl.textContent = 'CloudFront domain missing — 3DGS test unavailable'; return }
+  if (!gaussianSplatLayer) {
+    gaussianSplatLayer = createGaussianSplatLayer({
+      url: GAUSSIAN_SPLAT_URL,
+      onStateChange: (splatState) => { gaussianNoteEl.textContent = splatState.message },
+    })
+  }
+  const next = !gaussianSplatLayer.isEnabled()
+  gaussianSplatLayer.setEnabled(next)
+  gaussianToggleEl.classList.toggle('on', next)
+  gaussianToggleEl.setAttribute('aria-pressed', String(next))
+  gaussianToggleEl.textContent = `✦ 3DGS · ${next ? 'On' : 'Off'}`
+  setSplatSolo(next)
+}
+
+// Solo-Modus: die 3DGS-Ansicht ist eine eigenständige App. Ist sie an, wird die
+// gesamte Hauptszene stummgeschaltet — der Loop zweigt früh ab (kein WebGPU-Draw
+// der Punktwolke, keine Wolken/Regen/Streaming) und die Haupt-Canvas wird
+// verborgen. Die übrigen Panel-Regler werden ausgegraut, damit klar ist, dass
+// sie im Solo-Modus nichts tun.
+const highlightSplatKey = (event: KeyboardEvent, on: boolean) => {
+  $(`#splatHint .keycap[data-key="${event.code}"]`)?.classList.toggle('is-active', on)
+}
+const onSplatKeyDown = (event: KeyboardEvent) => highlightSplatKey(event, true)
+const onSplatKeyUp = (event: KeyboardEvent) => highlightSplatKey(event, false)
+
+function setSplatSolo(on: boolean): void {
+  canvas.style.display = on ? 'none' : ''
+  $('#panel').classList.toggle('splat-solo', on)
+  // Blendet die Karten-Overlays (Marker-Chips, HUD, Uhr, Tastatur-Guide …) aus,
+  // damit die 3DGS-Ansicht für sich steht.
+  document.body.classList.toggle('splat-solo', on)
+  // WASD-Tasten im Hinweis live mitleuchten lassen.
+  if (on) {
+    document.addEventListener('keydown', onSplatKeyDown)
+    document.addEventListener('keyup', onSplatKeyUp)
+  } else {
+    document.removeEventListener('keydown', onSplatKeyDown)
+    document.removeEventListener('keyup', onSplatKeyUp)
+    document.querySelectorAll('#splatHint .keycap.is-active').forEach((el) => el.classList.remove('is-active'))
+  }
+}
+
 const onPrecisionToggle = () => {
   highPrecisionMatrices = !highPrecisionMatrices
   // The loop owns the actual switch — it also has to suppress it during the
   // loader and the flight.
   updateMatrixPrecision(performance.now())
-  precisionToggleEl.classList.toggle('on', highPrecisionMatrices)
-  precisionToggleEl.setAttribute('aria-pressed', String(highPrecisionMatrices))
-  precisionToggleEl.textContent = `◈ Präzision · ${highPrecisionMatrices ? 'High' : 'Medium'}`
+  syncPrecisionToggle()
 }
 const onLiftToggle = () => {
   heightOffsetEnabled = !heightOffsetEnabled
   applyHeightOffset()
   liftToggleEl.classList.toggle('on', heightOffsetEnabled)
   liftToggleEl.setAttribute('aria-pressed', String(heightOffsetEnabled))
-  liftToggleEl.textContent = `⇅ Offset · ${heightOffsetEnabled ? 'An' : 'Aus'}`
+  liftToggleEl.textContent = `⇅ Offset · ${heightOffsetEnabled ? 'On' : 'Off'}`
 }
+
+function syncPrecisionToggle(): void {
+  precisionToggleEl.classList.toggle('on', highPrecisionMatrices)
+  precisionToggleEl.setAttribute('aria-pressed', String(highPrecisionMatrices))
+  precisionToggleEl.textContent = `◈ Precision · ${highPrecisionMatrices ? 'High' : 'Medium'}`
+}
+
+// ------------------------------------------------- render options / compare
+// Jede Optimierung einzeln abschaltbar (render-options.ts); der Vergleichs-
+// modus für den Cesium-Vergleich überschreibt alles auf einmal, ohne die
+// Einzelwahl des Nutzers zu verlieren. Übrig bleibt nur die Punktwolke mit
+// der zoomabhängigen Dichte (SSE-Bandleiter) plus Navigation und Basemap.
+const MIB = 1024 * 1024
+/** Fixed high budgets while presetBudgets is off — matching the Cesium
+ * reference residency (APH values from the stream limits below), deliberately
+ * bounded rather than unlimited. */
+const COMPARE_STREAM_BUDGET = { cacheBytes: 768 * MIB, gpuBytes: 384 * MIB }
+const COMPARE_GLOBE_BUDGET = { cacheBytes: 128 * MIB, gpuBytes: 96 * MIB }
+/** Cap the bench preset chose; applyPixelRatio re-applies it flag-aware. */
+let presetPixelRatioCap = 1.25
+let compareBudgetSnapshot: {
+  stream: MemoryBudgetSnapshot | null
+  globe: MemoryBudgetSnapshot | null
+} | null = null
+
+function applyPixelRatio(): void {
+  renderer.setPixelRatio(renderOptions.effective().pixelRatioCap
+    ? Math.min(window.devicePixelRatio, presetPixelRatioCap)
+    : window.devicePixelRatio)
+  // Resolution feeds the SSE pixel measure — all three must follow every cap
+  // change or refinement targets are computed against a stale backbuffer size.
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  globe?.setResolution()
+  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+}
+
+function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderOptionKey[]): void {
+  for (const key of changed) {
+    switch (key) {
+      case 'sseBrakes':
+        if (!effective.sseBrakes) {
+          // The entrance reveal is a boot-time event: release it now, but never
+          // re-park the cloud when the brakes come back on mid-session.
+          entranceFlightPending = false
+          setPointCloudRevealed(true)
+        }
+        // Invalidate the 0.25 hysteresis so the next streaming update pushes
+        // the new target immediately.
+        sseAuto = -1
+        break
+      case 'fogAtmosphere':
+        scene.fog = effective.fogAtmosphere ? distanceFog : null
+        if (effective.fogAtmosphere) {
+          // Snap instead of lerping down from the comparison far plane.
+          updateAtmosphere(performance.now(), true)
+        } else {
+          atmosphereFar = EXPERIENCE_CONFIG.atmosphere.maximumFarM
+          camera.far = atmosphereFar
+          camera.updateProjectionMatrix()
+        }
+        break
+      case 'daylightGrading':
+        environmentLayer?.setGradingEnabled(effective.daylightGrading)
+        break
+      case 'fieldModels':
+        fieldModelLayer?.setVisible(effective.fieldModels)
+        break
+      case 'markers':
+        markerLayer?.setVisible(effective.markers)
+        if (!effective.markers) setAimMode(false, false)
+        break
+      case 'donationShape':
+        donationShapeLayer?.setVisible(effective.donationShape)
+        break
+      case 'dynamicPointSize':
+        lastAppliedPointSize = -1
+        applyPointSize()
+        break
+      case 'presetBudgets':
+        if (!effective.presetBudgets) {
+          compareBudgetSnapshot = {
+            stream: stream?.getMemoryBudget() ?? null,
+            globe: globe?.getMemoryBudget() ?? null,
+          }
+          stream?.setMemoryBudget(COMPARE_STREAM_BUDGET.cacheBytes, COMPARE_STREAM_BUDGET.gpuBytes)
+          globe?.setMemoryBudget(COMPARE_GLOBE_BUDGET.cacheBytes, COMPARE_GLOBE_BUDGET.gpuBytes)
+        } else {
+          // setMemoryBudget only grows tile counts — restore needs exact values.
+          if (compareBudgetSnapshot?.stream) stream?.setMemoryBudgetExact(compareBudgetSnapshot.stream)
+          if (compareBudgetSnapshot?.globe) globe?.setMemoryBudgetExact(compareBudgetSnapshot.globe)
+          compareBudgetSnapshot = null
+        }
+        break
+      case 'pixelRatioCap':
+        applyPixelRatio()
+        break
+      case 'flightPrecisionDrop':
+        appliedHighPrecision = null
+        updateMatrixPrecision(performance.now())
+        break
+      case 'basemapImagery':
+        if (globe) globe.tiles.group.visible = effective.basemapImagery
+        break
+    }
+  }
+  syncOptionButtons()
+}
+
+const renderOptions = createRenderOptions(applyRenderOptions)
+
+const compareToggleEl = $<HTMLButtonElement>('#compareToggle')
+const compareReloadEl = $<HTMLButtonElement>('#compareReload')
+const compareRowsEl = $<HTMLDivElement>('#compareRows')
+const optionButtons = new Map<RenderOptionKey, HTMLButtonElement>()
+const onOptionClick = (key: RenderOptionKey) => {
+  renderOptions.setOption(key, !renderOptions.requested()[key])
+  syncOptionButtons()
+}
+for (const rowDef of RENDER_OPTION_ROWS) {
+  const row = document.createElement('div')
+  row.className = 'row opt-row'
+  const label = document.createElement('label')
+  label.className = 'h'
+  label.htmlFor = `opt-${rowDef.key}`
+  label.textContent = rowDef.label
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'act on'
+  button.id = `opt-${rowDef.key}`
+  button.setAttribute('aria-pressed', 'true')
+  button.textContent = rowDef.onText
+  button.addEventListener('click', () => onOptionClick(rowDef.key))
+  const note = document.createElement('span')
+  note.className = 'weather-note'
+  note.textContent = rowDef.note
+  row.append(label, button, note)
+  compareRowsEl.appendChild(row)
+  optionButtons.set(rowDef.key, button)
+}
+
+function syncOptionButtons(): void {
+  const requested = renderOptions.requested()
+  for (const rowDef of RENDER_OPTION_ROWS) {
+    const button = optionButtons.get(rowDef.key)
+    if (!button) continue
+    const on = requested[rowDef.key]
+    button.classList.toggle('on', on)
+    button.setAttribute('aria-pressed', String(on))
+    button.textContent = on ? rowDef.onText : rowDef.offText
+  }
+}
+
+/** Pre-compare state of the toggles that live outside render-options (they
+ * already had their own controls). Restored verbatim on exit; the cloud intent
+ * bypasses localStorage so the stored user preference survives compare mode. */
+let compareLegacySnapshot: {
+  maskMode: number
+  cloudIntent: boolean
+  rainCycle: boolean
+  audioOn: boolean
+  highPrecision: boolean
+} | null = null
+
+function setCompareMode(on: boolean): void {
+  if (on === renderOptions.isCompareMode()) return
+  if (on) {
+    compareLegacySnapshot = {
+      maskMode: uniforms.maskMode.value,
+      cloudIntent: environmentLayer?.getCloudState().intent ?? false,
+      rainCycle: rainCycleEnabled,
+      audioOn: soundToggleEl.classList.contains('is-on'),
+      highPrecision: highPrecisionMatrices,
+    }
+    setMaskMode(0)
+    environmentLayer?.setCloudIntent(false, false)
+    rainCycleEnabled = false
+    rainRequested = false
+    rainVisualActive = false
+    rainLayer?.setEnabled(false)
+    updateRainToggle()
+    void audioLayer?.setEnabled(false)
+    // The comparison wants jitter-free geometry throughout.
+    highPrecisionMatrices = true
+    syncPrecisionToggle()
+  }
+  renderOptions.setCompareMode(on)
+  if (!on && compareLegacySnapshot) {
+    const snapshot = compareLegacySnapshot
+    compareLegacySnapshot = null
+    setMaskMode(snapshot.maskMode)
+    environmentLayer?.setCloudIntent(snapshot.cloudIntent, false)
+    rainCycleEnabled = snapshot.rainCycle
+    rainCycleStartedAt = performance.now()
+    updateRainToggle()
+    if (snapshot.audioOn) void audioLayer?.setEnabled(true)
+    highPrecisionMatrices = snapshot.highPrecision
+    syncPrecisionToggle()
+    appliedHighPrecision = null
+    updateMatrixPrecision(performance.now())
+  }
+  document.body.classList.toggle('compare-mode', on)
+  $('#panel').classList.toggle('compare-mode', on)
+  compareToggleEl.classList.toggle('on', on)
+  compareToggleEl.setAttribute('aria-pressed', String(on))
+  compareToggleEl.textContent = `⚖ Compare mode · ${on ? 'On' : 'Off'}`
+}
+
+const onCompareToggle = () => setCompareMode(!renderOptions.isCompareMode())
+/** Reload with/without ?compare=1 so nobody has to remember the parameter —
+ * this also covers the construction-time pieces (pixel-ratio start value,
+ * skipped loader benchmark) a live toggle cannot reach. */
+const onCompareReload = () => {
+  const url = new URL(location.href)
+  if (compareParam) url.searchParams.delete('compare')
+  else url.searchParams.set('compare', '1')
+  location.href = url.toString()
+}
+compareReloadEl.textContent = compareParam ? '⟳ Restart · Normal' : '⟳ Restart in compare mode'
+compareToggleEl.addEventListener('click', onCompareToggle)
+compareReloadEl.addEventListener('click', onCompareReload)
 
 cloudToggleEl.disabled = true
 soundToggleEl.disabled = true
 precisionToggleEl.addEventListener('click', onPrecisionToggle)
 liftToggleEl.addEventListener('click', onLiftToggle)
+gaussianToggleEl.addEventListener('click', onGaussianToggle)
 cloudToggleEl.addEventListener('click', onCloudToggle)
 timeDockToggleEl.addEventListener('click', onTimeDockToggle)
 timeSliderEl.addEventListener('input', onTimeInput)
@@ -887,6 +1212,44 @@ function setMaskMode(mode: number): void {
     button.classList.toggle('on', Number(button.dataset.mask) === mode))
 }
 
+// ---------------------------------------------------------------- donation shape
+let donationStyle: DonationShapeStyle = EXPERIENCE_CONFIG.donationShape.defaultStyle
+let donationForm: DonationShapeForm = EXPERIENCE_CONFIG.donationShape.defaultForm
+let donationSmoothness: number = EXPERIENCE_CONFIG.donationShape.smoothness
+let donationSmoothTimer = 0
+
+function setDonationStyle(style: DonationShapeStyle, refit = false): void {
+  donationStyle = style
+  donationShapeLayer?.setStyle(style)
+  document.querySelectorAll<HTMLButtonElement>('#shapeStyleSeg button').forEach((button) =>
+    button.classList.toggle('on', button.dataset.shapeStyle === style))
+  // Re-frame for the new style. A flat footprint framed at the column's
+  // distance is a smudge, and the entrance flight is long over by now, so
+  // updateCloudReveal() cannot be disturbed by a second flight.
+  if (!refit || !donationShapeLayer || bootLoading) return
+  flyToCloud(reducedMotion ? 400 : EXPERIENCE_CONFIG.donationShape.styleRefitDurationMs)
+}
+
+function setDonationForm(form: DonationShapeForm): void {
+  donationForm = form
+  donationShapeLayer?.setForm(form)
+  document.querySelectorAll<HTMLButtonElement>('#shapeFormSeg button').forEach((button) =>
+    button.classList.toggle('on', button.dataset.shapeForm === form))
+  // The rounding slider only means anything for the organic form.
+  $('#shapeSmoothRow').hidden = form !== 'organic'
+}
+
+function setDonationSmoothness(value: number, immediate = false): void {
+  donationSmoothness = value
+  $('#shapeSmoothv').textContent = value.toFixed(2)
+  // Rebuilding runs a signed-distance field and a marching-squares contour —
+  // tens of milliseconds, so a dragged slider is debounced rather than throttled.
+  window.clearTimeout(donationSmoothTimer)
+  const apply = () => donationShapeLayer?.setSmoothness(value)
+  if (immediate) apply()
+  else donationSmoothTimer = window.setTimeout(apply, 140)
+}
+
 function smooth01(edge0: number, edge1: number, value: number): number {
   const t = THREE.MathUtils.clamp((value - edge0) / (edge1 - edge0), 0, 1)
   return t * t * (3 - 2 * t)
@@ -1002,8 +1365,11 @@ function updateMaskFollow(): void {
  * to the current viewing height. Updating at 8 Hz avoids projection-matrix
  * churn while still following zoom and the cinematic flight smoothly.
  */
-function updateAtmosphere(now: number): void {
-  if (now - lastAtmosphereUpdate < EXPERIENCE_CONFIG.atmosphere.updateIntervalMs) return
+function updateAtmosphere(now: number, snap = false): void {
+  // Toggled off: fog is detached and the far plane pinned to the maximum by
+  // the options applicator — nothing to follow here.
+  if (!renderOptions.effective().fogAtmosphere) return
+  if (!snap && now - lastAtmosphereUpdate < EXPERIENCE_CONFIG.atmosphere.updateIntervalMs) return
   lastAtmosphereUpdate = now
 
   const range = Number.isFinite(cameraGroundRange)
@@ -1014,7 +1380,9 @@ function updateAtmosphere(now: number): void {
     EXPERIENCE_CONFIG.atmosphere.minimumFarM,
     EXPERIENCE_CONFIG.atmosphere.maximumFarM * atmosphereFarScale,
   )
-  atmosphereFar = THREE.MathUtils.lerp(
+  // On re-enable the far plane snaps to its target instead of lerping down
+  // from the comparison distance over several seconds.
+  atmosphereFar = snap ? targetFar : THREE.MathUtils.lerp(
     atmosphereFar,
     targetFar,
     EXPERIENCE_CONFIG.atmosphere.distanceSmoothing,
@@ -1037,10 +1405,54 @@ const cameraFlight = createCameraFlight({
   worldToEnu,
   enuToWorld,
   cloudCentre: () => cloudCenterEnu,
+  // Evaluated at toCloud() time, so the arc lands on the donation parcel once
+  // its GeoJSON is in and falls back to the survey centre until then.
+  flightTarget: () => donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu,
+  flightDestinationOffset: () => donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM,
   navigationFloorZ: () => navigationFloorZ,
   setControlsEnabled: (enabled) => { if (globe) globe.controls.enabled = enabled },
   onProgress: (progress) => { cinematicFlightProgress = progress },
 })
+
+/**
+ * Where the intro arc should end so the donation shape is actually framed.
+ *
+ * Distance comes from the active style's bounding box and the camera frustum:
+ * far enough that both the width and the height fit inside `frameFillFraction`
+ * of the view. Note the hard limit this cannot beat — filling half the screen
+ * *width* with a 14 m parcel needs about 18 m of camera distance, which is
+ * inside the canopy and under the navigation floor that enforceNavigationBounds
+ * pins the camera to. That is why the column style is 200 m tall: the vertical
+ * volume is what fills the frame from a legal viewing height.
+ */
+function donationFlightOffset(): EnuOffset | null {
+  if (!donationShapeLayer) return null
+  const config = EXPERIENCE_CONFIG.donationShape
+  const extent = donationShapeLayer.frameExtent()
+  const halfVertical = THREE.MathUtils.degToRad(camera.fov) * 0.5
+  const halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect)
+  const fill = Math.max(0.1, Math.min(1, config.frameFillFraction))
+  let distance = Math.max(
+    config.minApproachDistanceM,
+    (extent.heightM * 0.5) / Math.tan(halfVertical * fill),
+    extent.radiusM / Math.tan(halfHorizontal * fill),
+  )
+  // Approach from the south, the same heading the survey flight already uses,
+  // at a shallow pitch so the column stands up in frame instead of foreshortening.
+  // The pitch has to put the camera at or above the navigation floor. Ending
+  // below it does not fail loudly: enforceNavigationBounds lifts the camera
+  // afterwards without re-aiming, so the shot silently looks over the parcel
+  // into the distance. Steepening instead keeps the target centred, and a
+  // flat footprint wants the top-down look anyway.
+  const target = donationShapeLayer.flightTargetEnu()!
+  const floorRise = navigationFloorZ - target.z
+  if (floorRise > 0) distance = Math.max(distance, floorRise / 0.98)
+  const pitch = Math.max(
+    THREE.MathUtils.degToRad(config.approachPitchDeg),
+    Math.asin(THREE.MathUtils.clamp(floorRise / distance, 0, 0.98)),
+  )
+  return [0, -distance * Math.cos(pitch), distance * Math.sin(pitch)]
+}
 
 function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
   return new THREE.Vector3(
@@ -1065,6 +1477,15 @@ const sizeEl = $<HTMLInputElement>('#size')
 
 document.querySelectorAll<HTMLButtonElement>('#maskSeg button').forEach((button) => {
   button.addEventListener('click', () => setMaskMode(Number(button.dataset.mask)))
+})
+document.querySelectorAll<HTMLButtonElement>('#shapeStyleSeg button').forEach((button) => {
+  button.addEventListener('click', () => setDonationStyle(button.dataset.shapeStyle as DonationShapeStyle, true))
+})
+document.querySelectorAll<HTMLButtonElement>('#shapeFormSeg button').forEach((button) => {
+  button.addEventListener('click', () => setDonationForm(button.dataset.shapeForm as DonationShapeForm))
+})
+$<HTMLInputElement>('#shapeSmooth').addEventListener('input', (event) => {
+  setDonationSmoothness(Number((event.target as HTMLInputElement).value))
 })
 sizeEl.addEventListener('input', () => {
   pointSizeScale = Number(sizeEl.value)
@@ -1338,6 +1759,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
   globe?.setResolution()
   stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  gaussianSplatLayer?.resize()
 })
 
 // ---------------------------------------------------------------- streaming / HUD / loop
@@ -1379,7 +1801,8 @@ function updateMatrixPrecision(now: number): void {
   if (wasFlying && !cameraFlight.active) flightEndedAt = now
   wasFlying = cameraFlight.active
 
-  const want = highPrecisionMatrices && !bootLoading && !cameraFlight.active
+  const flightSuppressed = renderOptions.effective().flightPrecisionDrop && cameraFlight.active
+  const want = highPrecisionMatrices && !bootLoading && !flightSuppressed
   if (want === appliedHighPrecision) return
   appliedHighPrecision = want
   stream?.setHighPrecision(want)
@@ -1399,16 +1822,20 @@ function updateStreaming(now: number): StreamingStats | null {
     visiblePoints: lastStreamStats?.points ?? 0,
     cameraGroundRange: cameraCloudRange,
   })
-  const targetSse = Math.max(
-    quality.sse,
-    bootLoading
-      ? EXPERIENCE_CONFIG.lod.bootSse
-      : flightSseFloor({
-        flying: cameraFlight.active,
-        msSinceLanding: now - flightEndedAt,
-        targetSse: quality.sse,
-      }),
-  )
+  // With the brakes toggled off the density ladder speaks alone — the
+  // comparison subject against the Cesium viewer.
+  const targetSse = renderOptions.effective().sseBrakes
+    ? Math.max(
+      quality.sse,
+      bootLoading
+        ? EXPERIENCE_CONFIG.lod.bootSse
+        : flightSseFloor({
+          flying: cameraFlight.active,
+          msSinceLanding: now - flightEndedAt,
+          targetSse: quality.sse,
+        }),
+    )
+    : quality.sse
   if (Math.abs(targetSse - sseAuto) > 0.25) {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
@@ -1471,6 +1898,9 @@ function updateHud(stats: StreamingStats | null): void {
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
+  // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
+  // WebGPU-Punktwolke, Wolken-Raymarch, Streaming). Eigener WebGL-Renderer.
+  if (gaussianSplatLayer?.isEnabled()) { gaussianSplatLayer.update(); return }
   cameraFlight.update(now)
   updateCloudReveal()
   updateMatrixPrecision(now)
@@ -1501,16 +1931,20 @@ function loop(now: number): void {
     lastFieldTier = nextFieldTier
     fieldModelLayer?.setPerformanceTier(nextFieldTier)
   }
-  fieldModelLayer?.update(now)
-  markerLayer?.update(
-    now,
-    camera,
-    cameraGroundRange,
-    uniforms.maskCenter.value,
-    uniforms.maskRadius.value,
-    uniforms.maskMode.value === 2 && uniforms.vignetteStrength.value > 0.01,
-  )
-  updateAimTarget()
+  const options = renderOptions.effective()
+  if (options.fieldModels) fieldModelLayer?.update(now)
+  if (options.donationShape) donationShapeLayer?.update(now, camera)
+  if (options.markers) {
+    markerLayer?.update(
+      now,
+      camera,
+      cameraGroundRange,
+      uniforms.maskCenter.value,
+      uniforms.maskRadius.value,
+      uniforms.maskMode.value === 2 && uniforms.vignetteStrength.value > 0.01,
+    )
+    updateAimTarget()
+  }
   updateRainCycle(now)
   const nextRainActive = rainLayer?.update(now, camera, cameraGroundRange) ?? false
   if (nextRainActive !== rainVisualActive) {
@@ -1544,6 +1978,14 @@ async function main(): Promise<void> {
   const badge = $('#backend')
   badge.textContent = isWebGPU ? 'WebGPU' : 'WebGL2'
   badge.classList.toggle('webgl', !isWebGPU)
+  // Which GPU did the browser actually hand us? On Windows dual-GPU machines
+  // Chrome can silently pick the integrated GPU — then every benchmark verdict
+  // is about the wrong card. One log line makes tester reports diagnosable.
+  try {
+    const adapterInfo = backend?.adapter?.info ?? backend?.device?.adapterInfo
+    console.info(`[graphics] backend=${isWebGPU ? 'WebGPU' : 'WebGL2'}`
+      + (adapterInfo ? ` adapter=${adapterInfo.vendor ?? '?'} ${adapterInfo.architecture ?? ''} ${adapterInfo.description ?? ''}`.trimEnd() : ''))
+  } catch { /* adapter info is best-effort diagnostics */ }
   installGraphicsRecovery(backend)
 
   // One shared density volume drives both the volumetric clouds and the drifting
@@ -1709,6 +2151,65 @@ async function main(): Promise<void> {
       ),
     })
   }
+  const donationSource = await donationShapePromise
+  if (donationSource && globe) {
+    const ellipsoid = (globe as any).ellipsoid
+    const shapeEcef = new THREE.Vector3()
+    const shapeEnu = new THREE.Vector3()
+    donationShapeLayer = createDonationShapeLayer({
+      scene,
+      overlay: $('#markerOverlay'),
+      enuFrame,
+      zOffset,
+      source: donationSource,
+      // lon/lat -> raw ENU. The ellipsoid wants (lat, lon) in radians, the
+      // opposite order and unit of the GeoJSON, and the returned height is
+      // discarded — the parcel's z comes from the point-cloud probe alone.
+      toLocal: (lon, lat, out) => {
+        ellipsoid.getCartographicToPosition(
+          THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lon), 0, shapeEcef,
+        )
+        shapeEnu.copy(shapeEcef).applyMatrix4(enuInverse)
+        out[0] = shapeEnu.x
+        out[1] = shapeEnu.y
+        return out
+      },
+      fallbackGroundZ: areaMinZ,
+      canopyHeightM: manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM,
+      probe: (centreEnu, radiusM) => {
+        const sample = stream?.sampleGroundZ(centreEnu, radiusM, enuInverse)
+        if (!sample) return null
+        // sampleGroundZ reports the tiles' own ENU height, straight out of
+        // enuFrame⁻¹. Everything else here — areaMinZ, the ground plane, the
+        // layer root, enuToWorld/worldToEnu — works in the ground-snapped frame
+        // that carries zOffset, so the lift is removed exactly once, here.
+        // Measured on the Peru site: raw −25.2 m − (−219.95 m) = 194.8 m, which
+        // is where a hand scan of the tile buffers under the parcel puts the
+        // forest floor.
+        return {
+          ...sample,
+          groundZ: sample.groundZ - zOffset,
+          canopyZ: sample.canopyZ - zOffset,
+        }
+      },
+      reducedMotion,
+    })
+    const info = donationShapeLayer.info()
+    console.info(
+      `[donation-shape] ${info.areaM2.toFixed(2)} m² · ${info.cellCount} cells of `
+      + `${info.cellAreaM2.toFixed(3)} m² · ${info.gridSegmentCount} grid + ${info.rimSegmentCount} rim segments`
+      + ` · lattice ${info.gridExact ? 'exact' : 'rasterised'} · group ${info.group ?? 'n/a'}`,
+    )
+    // Apply the current panel state now: a click during loading must not be lost,
+    // same reason field-model-layer re-applies its flag on arrival.
+    setDonationStyle(donationStyle)
+    setDonationForm(donationForm)
+    setDonationSmoothness(donationSmoothness, true)
+    donationShapeLayer.setVisible(renderOptions.effective().donationShape)
+    // The arc may already be in the air if the JSON was slow; bend its tail.
+    if (cameraFlight.active) cameraFlight.retargetCloud(donationShapeLayer.flightTargetEnu()!)
+  }
+
   rainLayer = createRainLayer(scene)
   rainLayer.setEnabled(rainRequested)
   setLoadProgress(0.35, 'Lade erste Kronendach-Punktwolken …')
@@ -1716,9 +2217,15 @@ async function main(): Promise<void> {
   // Bootstrap close enough to request real point tiles. The fullscreen loader
   // conceals this staging position; once both data layers are visible we jump
   // to the overview and begin the user-facing flight.
-  camera.position.copy(enuToWorld(cloudOffsetEnu(EXPERIENCE_CONFIG.flight.destinationOffsetM)))
+  const stagingTarget = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
+  const stagingOffset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
+  camera.position.copy(enuToWorld(new THREE.Vector3(
+    stagingTarget.x + stagingOffset[0],
+    stagingTarget.y + stagingOffset[1],
+    stagingTarget.z + stagingOffset[2],
+  )))
   camera.up.copy(enuUp)
-  camera.lookAt(cloudCenterEcef)
+  camera.lookAt(enuToWorld(stagingTarget.clone()))
 
   setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
   setStatus('Adaptive streaming · loading tiles…')
@@ -1742,6 +2249,9 @@ async function main(): Promise<void> {
     if (disposed) layer.dispose()
     else {
       fieldModelLayer = layer
+      // The GLTFs load lazily — apply the flag that is effective right now,
+      // not the one from when loading started.
+      layer.setVisible(renderOptions.effective().fieldModels)
       if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
       layer.setDaylightPhase(environmentLayer?.getDaylightState().phase ?? 'day')
       if (modelEditorEnabled) {
@@ -1759,9 +2269,14 @@ async function main(): Promise<void> {
     }
   }).catch((error) => console.warn('[field-models] optional layer failed', error))
 
+  // ?compare=1: everything above is created normally, then compare mode
+  // switches the optimisations off in one atomic pass — same code path as the
+  // panel master toggle, so live and boot behaviour cannot drift apart.
+  if (compareParam) setCompareMode(true)
+
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
-    rainLayer, environmentLayer, fieldModelLayer, loop,
+    rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
@@ -1790,6 +2305,7 @@ function dispose(): void {
   audioLayer?.dispose()
   keyboardNavigation?.dispose()
   markerLayer?.dispose()
+  donationShapeLayer?.dispose()
   modelTransformEditor?.dispose()
   fieldModelLayer?.dispose()
   environmentLayer?.dispose()
@@ -1803,10 +2319,16 @@ function dispose(): void {
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
   delete loaderEagleCanvasEl.dataset.benchState
   rainToggleEl.removeEventListener('click', onRainToggle)
+  compareToggleEl.removeEventListener('click', onCompareToggle)
+  compareReloadEl.removeEventListener('click', onCompareReload)
   precisionToggleEl.removeEventListener('click', onPrecisionToggle)
   liftToggleEl.removeEventListener('click', onLiftToggle)
   dofToggleEl.removeEventListener('click', onDofToggle)
   dofAutoFocusEl.removeEventListener('click', onDofAutoFocus)
+  gaussianToggleEl.removeEventListener('click', onGaussianToggle)
+  document.removeEventListener('keydown', onSplatKeyDown)
+  document.removeEventListener('keyup', onSplatKeyUp)
+  gaussianSplatLayer?.dispose()
   cloudToggleEl.removeEventListener('click', onCloudToggle)
   timeDockToggleEl.removeEventListener('click', onTimeDockToggle)
   timeSliderEl.removeEventListener('input', onTimeInput)

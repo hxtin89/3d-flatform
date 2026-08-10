@@ -7,6 +7,8 @@ import type { DaylightPhase, PerformanceTier } from './environment-layer'
 
 export interface FieldModelLayer {
   update(now: number): void
+  /** Hide/show all props at once (compare mode); skip update() while hidden. */
+  setVisible(visible: boolean): void
   setPerformanceTier(tier: PerformanceTier): void
   setDaylightPhase(phase: DaylightPhase): void
   getEditTargets(): FieldModelEditTargets
@@ -361,6 +363,9 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   onStatus?.('Field models ready')
 
   return {
+    setVisible(visible) {
+      root.visible = visible
+    },
     update(now) {
       if (reducedMotion) {
         flock.visible = false

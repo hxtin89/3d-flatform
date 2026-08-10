@@ -25,6 +25,81 @@ z0 p001 overview
 - Cesium uses `refine: "ADD"` at p001 and adaptive nodes. When refining, ancestors remain visible while selected child content is added. Therefore visible-point totals must be analysed as `p001 + internal + leaf`, not as leaves alone.
 - `geometricError` controls when Cesium requests/refines content. It does not create density; point density is limited by source observations and the emitted node content.
 
+## Simple explanation for users
+
+Use this short framing when presenting APH: the dataset is first divided into large map cells. Each cell has a lightweight overview, then a data-driven tree which adds detail only where the camera needs it. A leaf is the most detailed part of a branch and contains the residual points owned by that small area.
+
+```text
+Whole point-cloud dataset
+|
++-- z0 map cell: z0_x000002_y000004
+    |
+    +-- p001 overview                         always the first, light layer
+    |
+    +-- adaptive tree inside this z0 cell
+        |
+        +-- d0 root representatives            broad local detail
+            |
+            +-- d1_q0 representatives
+            |   |
+            |   +-- d2_q0 representatives
+            |       |
+            |       +-- leaf d3_q0             all residual points in this area
+            |
+            +-- d1_q1 representatives
+                |
+                +-- leaf d2_q1                 all residual points in this area
+```
+
+The tree is additive, rather than a sequence of replacements:
+
+```text
+What is visible = z0 overview
+                + representative points from opened internal nodes
+                + residual points from selected leaves
+```
+
+Each point belongs to exactly one emitted layer. Internal nodes contribute a small representative sample; leaves contribute every remaining point they own. This keeps the overview stable while more detail appears, without drawing the same point twice.
+
+### What the camera loads
+
+Cesium evaluates which tiles need more detail from the camera view, distance, screen-space error, and tile bounds. It follows only the useful branches; it does not load every leaf in a z0 cell.
+
+```text
+Camera far away
+    |
+    +-- load p001 overview
+        Result: fast, complete context
+
+Camera moves closer to one area
+    |
+    +-- keep p001 overview
+    +-- add d0 and d1 representative nodes on the relevant branch
+        Result: the selected area becomes clearer
+
+Camera is close to a small feature
+    |
+    +-- keep overview and already-open representatives
+    +-- add the matching detailed leaf or leaves
+        Result: highest available detail where the user is looking
+```
+
+```text
+Top view of one z0 cell                         Camera view
++---------------------------+                   _____________
+|          |                |                         \\
+|   leaf A |     leaf B     |                          \\
+|----------+----------------|                           vvv
+|          |                |                  branch B is refined
+|   leaf C |     leaf D     |                  and its leaf points load
++---------------------------+
+
+Only the branch intersecting the useful view is opened deeply.
+The rest remains represented by the overview or shallower nodes.
+```
+
+Suggested user-facing wording: "Start with a complete lightweight view. As you move closer, the viewer adds detail only for the area you are inspecting. The parent view stays on screen, so the transition is smooth; leaf tiles provide the finest points only where they are useful."
+
 ## Build and publish stages
 
 ### Task 2 — durable content builder

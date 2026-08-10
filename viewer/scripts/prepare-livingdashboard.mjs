@@ -4,9 +4,15 @@ import { resolve } from 'node:path'
 const output = resolve('dist')
 const viewerEntry = resolve(output, 'threejs-test.html')
 const indexEntry = resolve(output, 'index.html')
+const cesiumEntry = resolve(output, 'cesium.html')
 const cesiumPluginOutput = resolve(output, 'livingdashboard', 'cesium')
 const cesiumOutput = resolve(output, 'cesium')
 
+// Preserve CesiumJS viewer under cesium.html before overwriting index.html
+await copyFile(indexEntry, cesiumEntry)
+
+// Default landing page stays the Three.js app; threejs-test.html and
+// cesium-test.html survive as their own URLs so the variants can cross-link.
 await copyFile(viewerEntry, indexEntry)
 
 // vite-plugin-cesium includes Vite's public base in its filesystem path.
@@ -15,11 +21,13 @@ await rm(cesiumOutput, { recursive: true, force: true })
 await rename(cesiumPluginOutput, cesiumOutput)
 await rm(resolve(output, 'livingdashboard'), { recursive: true, force: true })
 
-const html = await readFile(indexEntry, 'utf8')
-const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
-  ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
-if (invalidRootPath) {
-  throw new Error(`production entry still contains a root-relative asset: ${invalidRootPath[0]}`)
+for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html', 'cesium.html']) {
+  const html = await readFile(resolve(output, entry), 'utf8')
+  const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
+    ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
+  if (invalidRootPath) {
+    throw new Error(`${entry} still contains a root-relative asset: ${invalidRootPath[0]}`)
+  }
 }
 
 const htaccess = `Options -Indexes

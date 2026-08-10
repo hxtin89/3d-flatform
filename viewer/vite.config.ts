@@ -28,9 +28,10 @@ export default defineConfig({
     chunkSizeWarningLimit: 5000,
     rollupOptions: {
       input: {
-        // Cesium viewer (default entry) + Three.js/WebGPU point-cloud render test
+        // Legacy Cesium viewer + Three.js/WebGPU map app + full Cesium variant
         main: resolve(__dirname, 'index.html'),
         'threejs-test': resolve(__dirname, 'threejs-test.html'),
+        'cesium-test': resolve(__dirname, 'cesium-test.html'),
       },
     },
   },

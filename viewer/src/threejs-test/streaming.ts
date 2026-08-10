@@ -23,6 +23,13 @@ export interface StreamingStats {
   missingTiles: number
 }
 
+export interface MemoryBudgetSnapshot {
+  maxBytesSize: number
+  minBytesSize: number
+  maxSize: number
+  gpuBytesTarget: number
+}
+
 export interface StreamingCloud {
   tiles: TilesRenderer
   group: THREE.Object3D
@@ -36,13 +43,31 @@ export interface StreamingCloud {
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
+  /** Exact cache/GPU values for snapshot & restore (compare mode) — the
+   * regular setter above is intentionally monotonic and cannot restore. */
+  getMemoryBudget(): MemoryBudgetSnapshot
+  setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
   /** Diagnostic A/B: CPU-computed (float64) vs in-shader (float32) model-view
    * matrices. Off makes the ECEF rounding jitter visible again. */
   setHighPrecision(enabled: boolean): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
+  /** Ground and canopy height under a footprint, from the resident tiles.
+   * Null until enough points are loaded there. See sampleGroundZ() below for
+   * why this is a statistic and not a raycast. */
+  sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4): GroundSample | null
   stats(): StreamingStats
   dispose(): void
+}
+
+export interface GroundSample {
+  /** Low percentile of point height — the forest floor, in raw ENU metres. */
+  groundZ: number
+  /** High percentile — the canopy top. */
+  canopyZ: number
+  samples: number
+  /** Occupied cells of the 5×5 support grid; low values mean a thin sample. */
+  support: number
 }
 
 export interface StreamingLimits {
@@ -58,6 +83,10 @@ export interface StreamingLimits {
 }
 
 const MIB = 1024 * 1024
+
+// Reused by the ground probe so a per-frame sample allocates nothing.
+const scratchMatrix = new THREE.Matrix4()
+const scratchVector = new THREE.Vector3()
 
 const DEFAULT_LIMITS: StreamingLimits = {
   cacheMinTiles: 48,
@@ -248,6 +277,22 @@ export function createStreamingCloud(opts: {
       tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (600 * 1024)))
       ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
     },
+    getMemoryBudget() {
+      return {
+        maxBytesSize: tiles.lruCache.maxBytesSize,
+        minBytesSize: tiles.lruCache.minBytesSize,
+        maxSize: tiles.lruCache.maxSize,
+        gpuBytesTarget: (unloadPlugin as any).bytesTarget as number,
+      }
+    },
+    setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
+      // setMemoryBudget() only ever grows maxSize / shrinks minBytesSize, so a
+      // snapshot restore (compare mode off) needs plain assignment.
+      tiles.lruCache.maxBytesSize = budget.maxBytesSize
+      tiles.lruCache.minBytesSize = budget.minBytesSize
+      tiles.lruCache.maxSize = budget.maxSize
+      ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
+    },
     setHighPrecision(enabled: boolean) {
       setHighPrecisionMatrices(enabled)
       // The scene graph is the registry — every live tile material hangs under
@@ -264,6 +309,75 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.center.copy(centerWorld)
       tiles.group.worldToLocal(maskRegion.sphere.center)
       maskRegion.sphere.radius = radius
+    },
+    sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
+      // Deliberately not a raycast. The load-model handler above parks every
+      // carrier Points at drawRange 0 and hangs instanced quads underneath, so
+      // THREE.Points.raycast clamps its loop to zero vertices and the instanced
+      // child only carries four corner offsets in `position` — a raycast here
+      // finds nothing, silently, whatever threshold it is given. The raw tile
+      // positions do survive, as the instanced attribute the quads read, so we
+      // sample those directly.
+      const heights: number[] = []
+      // 5×5 support grid: a candidate height backed by one corner of the
+      // footprint is noise, not ground.
+      const support = new Uint8Array(25)
+      const local = scratchMatrix
+      const point = scratchVector
+
+      for (const tile of tiles.visibleTiles) {
+        const tileScene = (tile as any)?.engineData?.scene
+        if (!tileScene) continue
+        tileScene.traverse((object: any) => {
+          const attribute = object.geometry?.getAttribute?.(POINT_POSITION_ATTRIBUTE)
+            ?? (object.isPoints ? object.geometry?.getAttribute?.('position') : null)
+          if (!attribute || attribute.count === 0) return
+          object.updateWorldMatrix(true, false)
+          local.multiplyMatrices(enuInverse, object.matrixWorld)
+
+          // Cheap reject: the tile's bounds in ENU versus the footprint disc.
+          const geometry = object.geometry
+          if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+          const bounds = geometry.boundingSphere
+          if (bounds) {
+            point.copy(bounds.center).applyMatrix4(local)
+            // The instanced quads keep their bounds around the 4 corner offsets,
+            // so only a real point bound (radius over a metre) can be trusted.
+            if (bounds.radius > 1) {
+              const dx = point.x - centreEnu.x
+              const dy = point.y - centreEnu.y
+              if (Math.hypot(dx, dy) > radiusM + bounds.radius) return
+            }
+          }
+
+          const limit = EXPERIENCE_CONFIG.donationShape.probeMaxSamplesPerTile
+          const stride = Math.max(1, Math.floor(attribute.count / limit))
+          for (let index = 0; index < attribute.count; index += stride) {
+            point.set(attribute.getX(index), attribute.getY(index), attribute.getZ(index))
+            point.applyMatrix4(local)
+            const dx = point.x - centreEnu.x
+            const dy = point.y - centreEnu.y
+            if (Math.abs(dx) > radiusM || Math.abs(dy) > radiusM) continue
+            heights.push(point.z)
+            const column = Math.min(4, Math.max(0, Math.floor(((dx / radiusM) + 1) * 2.5)))
+            const row = Math.min(4, Math.max(0, Math.floor(((dy / radiusM) + 1) * 2.5)))
+            support[row * 5 + column] = 1
+          }
+        })
+      }
+
+      if (heights.length < EXPERIENCE_CONFIG.donationShape.probeMinSamples) return null
+      heights.sort((a, b) => a - b)
+      const at = (fraction: number): number =>
+        heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
+      let occupied = 0
+      for (const cell of support) occupied += cell
+      return {
+        groundZ: at(EXPERIENCE_CONFIG.donationShape.probeGroundPercentile),
+        canopyZ: at(EXPERIENCE_CONFIG.donationShape.probeCanopyPercentile),
+        samples: heights.length,
+        support: occupied,
+      }
     },
     stats() {
       let points = 0

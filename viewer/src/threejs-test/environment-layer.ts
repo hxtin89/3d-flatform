@@ -38,7 +38,11 @@ export interface CloudState {
 export interface EnvironmentLayer {
   getDaylightState(): DaylightState
   getCloudState(): CloudState
-  setCloudIntent(enabled: boolean): void
+  /** persist=false leaves the stored user preference untouched (compare mode). */
+  setCloudIntent(enabled: boolean, persist?: boolean): void
+  /** Off = neutral white light/sky, no golden rim, no cloud shadows — the Peru
+   * clock keeps running for the time dock. */
+  setGradingEnabled(enabled: boolean): void
   /** Override the heuristic tier with a measured one (loader benchmark). */
   applyMeasuredTier(tier: PerformanceTier): void
   setPeruMinutes(minutes: number | null): void
@@ -184,6 +188,11 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let cloudMode: CloudMode = 'off'
   let cloudReason = cloudIntent ? 'Adaptive cloud quality' : 'Clouds are off'
   let lowFpsSince = 0
+  // Guard-demotion bookkeeping: only demotions by the fps guard earn a
+  // recovery attempt — a measured 'medium' bench verdict stays authoritative.
+  let guardDemotedFromVolume = false
+  let highFpsSince = 0
+  let promotionsLeft = EXPERIENCE_CONFIG.clouds.maxPromotions
   let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
   let lastDaylightUpdate = -Infinity
   let lastLiveRefresh = -Infinity
@@ -482,6 +491,25 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     return activeTier === 'strong' ? 'volume' : 'soft'
   }
 
+  /** Compare mode: keep the Peru clock/state ticking (the time dock reads it)
+   * but stop every visual write — points, imagery, sky and lights stay neutral
+   * so both viewers grade colours identically. */
+  let gradingEnabled = true
+
+  function applyNeutralGrading(): void {
+    uniforms.daylightColor.value.set(0xffffff)
+    uniforms.daylightIntensity.value = 1
+    uniforms.goldenFactor.value = 0
+    uniforms.cloudShadowStrength.value = 0
+    renderer.setClearColor(daySky, 1)
+    fog.color.copy(dayFog)
+    hemisphere.color.copy(daySky).lerp(whiteAmbient, 0.4)
+    hemisphere.groundColor.set(0x163a2d)
+    hemisphere.intensity = 1.1
+    sunlight.color.set(0xffffff)
+    sunlight.intensity = 1.75
+  }
+
   function updateDaylight(now: number): void {
     if (now - lastDaylightUpdate < EXPERIENCE_CONFIG.environment.updateIntervalMs
       && !(manualMinutes === null && now - lastLiveRefresh >= EXPERIENCE_CONFIG.environment.liveRefreshMs)) return
@@ -509,6 +537,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       .lerp(warmLight, golden * EXPERIENCE_CONFIG.pointLighting.goldenGradeBoost)
     state.intensity = THREE.MathUtils.lerp(EXPERIENCE_CONFIG.environment.minimumSceneLight, 1, daylight)
     state.ambientIntensity = THREE.MathUtils.lerp(0.44, 1.1, daylight)
+    // State (clock, phase, sun position) keeps updating above; everything below
+    // writes colours/lights and is suppressed while grading is off.
+    if (!gradingEnabled) return
     uniforms.daylightColor.value.copy(state.daylightColor)
     uniforms.daylightIntensity.value = state.intensity
     uniforms.sunDirectionEnu.value.copy(state.sunDirectionEnu)
@@ -570,11 +601,24 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   return {
     getDaylightState: () => state,
     getCloudState: () => ({ mode: cloudMode, tier: activeTier, intent: cloudIntent, reason: cloudReason }),
-    setCloudIntent(enabled) {
+    setCloudIntent(enabled, persist = true) {
       cloudIntent = enabled
       lowFpsSince = 0
-      try { localStorage.setItem(CLOUD_PREFERENCE_KEY, enabled ? 'on' : 'off') } catch { /* private mode */ }
+      if (persist) {
+        try { localStorage.setItem(CLOUD_PREFERENCE_KEY, enabled ? 'on' : 'off') } catch { /* private mode */ }
+      }
       setMode(enabled ? preferredMode() : 'off', enabled ? 'Clouds enabled by user' : 'Clouds disabled by user')
+    },
+    setGradingEnabled(enabled) {
+      if (gradingEnabled === enabled) return
+      gradingEnabled = enabled
+      if (enabled) {
+        // Force the next update to repaint everything the neutral pass overwrote.
+        lastDaylightUpdate = -Infinity
+        updateDaylight(performance.now())
+      } else {
+        applyNeutralGrading()
+      }
     },
     applyMeasuredTier(tier) {
       activeTier = tier
@@ -679,6 +723,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
           if (now - lowFpsSince >= EXPERIENCE_CONFIG.clouds.lowFpsDurationMs) {
             if (cloudMode === 'volume') {
               activeTier = 'balanced'
+              guardDemotedFromVolume = true
+              console.info('[clouds] volumetric → soft: fps held below '
+                + `${threshold} for ${EXPERIENCE_CONFIG.clouds.lowFpsDurationMs} ms`)
               setMode('soft', 'Cloud detail reduced to protect frame rate')
             } else {
               activeTier = 'constrained'
@@ -688,7 +735,24 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
             lowFpsSince = 0
           }
         } else lowFpsSince = 0
-      } else lowFpsSince = 0
+
+        // Recovery: a guard demotion is a moment-in-time verdict (tile-upload
+        // burst, compositor hitch), not a device measurement. Once the frame
+        // rate has held comfortably, give volumetric another try — bounded, so
+        // borderline hardware settles on soft instead of ping-ponging.
+        if (guardDemotedFromVolume && cloudMode === 'soft' && promotionsLeft > 0
+          && fps >= EXPERIENCE_CONFIG.clouds.promoteFps) {
+          if (!highFpsSince) highFpsSince = now
+          if (now - highFpsSince >= EXPERIENCE_CONFIG.clouds.promoteDurationMs) {
+            promotionsLeft--
+            guardDemotedFromVolume = false
+            highFpsSince = 0
+            activeTier = 'strong'
+            console.info(`[clouds] soft → volumetric: fps recovered (${promotionsLeft} retries left)`)
+            setMode('volume', 'Volumetric clouds restored — frame rate recovered')
+          }
+        } else highFpsSince = 0
+      } else { lowFpsSince = 0; highFpsSince = 0 }
       return state
     },
     dispose() {
