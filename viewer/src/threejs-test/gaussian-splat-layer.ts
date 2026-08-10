@@ -119,7 +119,7 @@ export function createGaussianSplatLayer(opts: {
     camera.position.y = walkHeight
   }
 
-  const state: GaussianSplatState = { status: 'idle', message: 'aus', splats: 0, loadMs: 0 }
+  const state: GaussianSplatState = { status: 'idle', message: 'off', splats: 0, loadMs: 0 }
   function setState(patch: Partial<GaussianSplatState>): void {
     Object.assign(state, patch)
     opts.onStateChange?.({ ...state })
@@ -161,7 +161,7 @@ export function createGaussianSplatLayer(opts: {
   async function load(): Promise<void> {
     loadStarted = true
     const startedAt = performance.now()
-    setState({ status: 'loading', message: 'lädt 3DGS-Modell …' })
+    setState({ status: 'loading', message: 'loading 3DGS model …' })
     try {
       // Dynamischer Import: Spark landet in einem eigenen Chunk, nicht im
       // Haupt-Bundle, und wird erst beim ersten Einschalten geladen.
@@ -189,7 +189,7 @@ export function createGaussianSplatLayer(opts: {
         const n = spark?.activeSplats ?? 0
         setState({
           status: 'ready',
-          message: n > 0 ? `bereit · ${n.toLocaleString('de-DE')} Splats` : 'bereit',
+          message: n > 0 ? `ready · ${n.toLocaleString('en-US')} splats` : 'ready',
           splats: n,
           loadMs: Math.round(performance.now() - startedAt),
         })
@@ -219,7 +219,7 @@ export function createGaussianSplatLayer(opts: {
       }
     } catch (error) {
       console.error('[gaussian-splat] load failed', error)
-      setState({ status: 'error', message: `Fehler: ${(error as Error)?.message ?? error}` })
+      setState({ status: 'error', message: `Error: ${(error as Error)?.message ?? error}` })
     }
   }
 

@@ -11,6 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import { applyMatrixPrecision, maskDimNode, type CloudUniforms } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
+import type { MemoryBudgetSnapshot } from './streaming'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -22,6 +23,9 @@ export interface Globe {
   update(constrainCamera?: () => void): void
   setResolution(): void
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
+  /** Exact snapshot & restore — setMemoryBudget never shrinks maxSize. */
+  getMemoryBudget(): MemoryBudgetSnapshot
+  setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
   /** Re-apply the current matrix precision mode to already-loaded imagery. */
   refreshMatrixPrecision(): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
@@ -45,11 +49,15 @@ export function createGlobe(opts: {
   // cache exists in addition to point-cloud geometry and was the largest
   // unbounded allocation in the mobile path.
   tiles.lruCache.minSize = 24
-  tiles.lruCache.maxSize = 96
-  tiles.lruCache.minBytesSize = 24 * 1024 * 1024
-  tiles.lruCache.maxBytesSize = 48 * 1024 * 1024
-  tiles.downloadQueue.maxJobs = 4
-  tiles.parseQueue.maxJobs = 2
+  tiles.lruCache.maxSize = 160
+  tiles.lruCache.minBytesSize = 32 * 1024 * 1024
+  tiles.lruCache.maxBytesSize = 96 * 1024 * 1024
+  // The XYZ plugin targets errorTarget = 1 (sharp imagery), which needs many
+  // tiles per view. Four parallel downloads made deep zooms sharpen visibly
+  // slowly and small caches thrashed below the working set — the "extremely
+  // blurry basemap" reports. JPEG tiles are cheap next to point geometry.
+  tiles.downloadQueue.maxJobs = 10
+  tiles.parseQueue.maxJobs = 4
   tiles.processNodeQueue.maxJobs = 4
   tiles.maxTilesProcessed = 80
   tiles.registerPlugin(new XYZTilesPlugin({
@@ -60,7 +68,7 @@ export function createGlobe(opts: {
     url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
   tiles.registerPlugin(new UpdateOnChangePlugin())
-  const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 32 * 1024 * 1024 })
+  const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 64 * 1024 * 1024 })
   tiles.registerPlugin(unloadPlugin as any)
   tiles.setCamera(camera)
   scene.add(tiles.group)
@@ -121,6 +129,20 @@ export function createGlobe(opts: {
     controls,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget,
+    getMemoryBudget() {
+      return {
+        maxBytesSize: tiles.lruCache.maxBytesSize,
+        minBytesSize: tiles.lruCache.minBytesSize,
+        maxSize: tiles.lruCache.maxSize,
+        gpuBytesTarget: (unloadPlugin as any).bytesTarget as number,
+      }
+    },
+    setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
+      tiles.lruCache.maxBytesSize = budget.maxBytesSize
+      tiles.lruCache.minBytesSize = budget.minBytesSize
+      tiles.lruCache.maxSize = budget.maxSize
+      ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
+    },
     update(constrainCamera) {
       controls.update()
       constrainCamera?.()
