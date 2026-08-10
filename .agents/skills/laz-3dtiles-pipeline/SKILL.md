@@ -64,7 +64,7 @@ npm run viewer:dev
 Open:
 
 ```text
-http://localhost:5173/?dataset=wi-1
+http://localhost:5177/?dataset=wi-1
 ```
 
 ## Viewer Rules

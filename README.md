@@ -294,13 +294,13 @@ Run the tiles server and the Vite viewer in separate terminals:
 
 ```bash
 npm run pipeline:serve       # http://localhost:8081
-npm run viewer:dev           # http://localhost:5173
+npm run viewer:dev           # http://localhost:5177
 ```
 
 Open the standard APH quality baseline:
 
 ```text
-http://localhost:5173/?lod=adaptive-point-hierarchy&aphController=simple&aphVrv=none&aphRender=raw
+http://localhost:5177/?lod=adaptive-point-hierarchy&aphController=simple&aphVrv=none&aphRender=raw
 ```
 
 To inspect one published z0 or the request-volume experiment:

@@ -40,7 +40,7 @@ comparison, but the viewer never loads it.
 Open:
 
 ```text
-http://localhost:5173/?dataset=peru-b2-globe&lod=one-lod-tree
+http://localhost:5177/?dataset=peru-b2-globe&lod=one-lod-tree
 ```
 
 The viewer loads the sidecar entry once. Overview, Explore, and Detail only

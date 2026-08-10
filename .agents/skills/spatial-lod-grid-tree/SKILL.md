@@ -179,7 +179,7 @@ Use these numbers as sanity checks, not universal requirements.
 Load one logical Spatial LOD tileset:
 
 ```text
-http://localhost:5173/?dataset=peru-b2-globe&lod=spatial-lod
+http://localhost:5177/?dataset=peru-b2-globe&lod=spatial-lod
 ```
 
 Spatial LOD uses one adaptive runtime over one dataset identity. The

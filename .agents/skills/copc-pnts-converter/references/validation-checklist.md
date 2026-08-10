@@ -25,7 +25,7 @@ npm run viewer:dev
 Open the debug viewer:
 
 ```text
-http://localhost:5173/?dataset=wi-1-copc&debugTiles=1
+http://localhost:5177/?dataset=wi-1-copc&debugTiles=1
 ```
 
 ## Static Tileset Checks
@@ -86,7 +86,7 @@ Expected:
 Confirm the viewer dev server is serving the page:
 
 ```sh
-curl -I 'http://localhost:5173/?dataset=wi-1-copc&debugTiles=1'
+curl -I 'http://localhost:5177/?dataset=wi-1-copc&debugTiles=1'
 ```
 
 Expected:
@@ -99,7 +99,7 @@ Expected:
 Open:
 
 ```text
-http://localhost:5173/?dataset=wi-1-copc&debugTiles=1
+http://localhost:5177/?dataset=wi-1-copc&debugTiles=1
 ```
 
 Verify:

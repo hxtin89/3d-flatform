@@ -204,7 +204,7 @@ if [ -f "$OUTPUT_DIR/tileset.json" ]; then
   echo ""
   echo "  → Start tile server: npm run pipeline:serve"
   echo "  → Open viewer:       npm run viewer:dev"
-  echo "  → Dataset URL:       http://localhost:5173/?dataset=$DATASET"
+  echo "  → Dataset URL:       http://localhost:5177/?dataset=$DATASET"
 else
   echo "✗ Error: tileset.json was not created."
   echo "  Check py3dtiles output above for errors."

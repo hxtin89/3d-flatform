@@ -4,7 +4,7 @@ import cesium from 'vite-plugin-cesium';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 // HTTPS is opt-in (npm run dev:https): WebGPU needs a secure context, so testing
-// WebGPU on a phone over LAN requires https://<ip>:5173 (self-signed cert — accept
+// WebGPU on a phone over LAN requires https://<ip>:5177 (self-signed cert — accept
 // the one-time warning on the device). Plain http stays the default for the Mac.
 const useHttps = process.env.VITE_HTTPS === '1';
 

@@ -85,7 +85,7 @@ npm run viewer:dev
 Open:
 
 ```text
-http://localhost:5173/?dataset=peru-b2-globe&lod=one-lod-tree
+http://localhost:5177/?dataset=peru-b2-globe&lod=one-lod-tree
 ```
 
 Restart the tile server after generation when a previously missing sidecar still returns 404.

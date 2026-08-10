@@ -289,7 +289,7 @@ UI rule:
 Open the logical dataset, not the internal full root:
 
 ```text
-http://localhost:5173/?dataset=2404PeruB2
+http://localhost:5177/?dataset=2404PeruB2
 ```
 
 Area selection currently comes from `area-manifest.json`, not from geocoding or a map service:

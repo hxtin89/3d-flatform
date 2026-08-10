@@ -102,7 +102,7 @@ Warnings should not fail conversion. Warn for:
 Open:
 
 ```text
-http://localhost:5173/?dataset=<dataset>-copc&debugTiles=1
+http://localhost:5177/?dataset=<dataset>-copc&debugTiles=1
 ```
 
 Debug mode should enable:
