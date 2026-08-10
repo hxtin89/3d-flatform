@@ -40,6 +40,12 @@ export interface Globe {
    * unaffected: controls and the camera constraint still run every frame.
    */
   setImageryEnabled(enabled: boolean): void
+  /**
+   * Screen-space error budget in pixels — how sharply the imagery refines, and
+   * the main lever on how many tiles one view costs. See
+   * `design.basemapErrorTarget` for the measured trade-off.
+   */
+  setErrorTarget(pixels: number): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
@@ -83,6 +89,9 @@ export function createGlobe(opts: {
     url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
   tiles.registerPlugin(new UpdateOnChangePlugin())
+  // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
+  // configured value has to land afterwards to win.
+  tiles.errorTarget = Math.max(EXPERIENCE_CONFIG.design.basemapErrorTarget, 0.5)
   const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 64 * 1024 * 1024 })
   tiles.registerPlugin(unloadPlugin as any)
   tiles.setCamera(camera)
@@ -180,6 +189,13 @@ export function createGlobe(opts: {
       if (enabled === imageryEnabled) return
       imageryEnabled = enabled
       tiles.group.visible = enabled
+    },
+    setErrorTarget(pixels) {
+      tiles.errorTarget = Math.max(pixels, 0.5)
+      // UpdateOnChangePlugin skips update() unless a camera moved or this event
+      // fired, so without it the new budget only takes effect on the next camera
+      // move — the slider would look broken while standing still.
+      tiles.dispatchEvent({ type: 'needs-update' })
     },
     stats() {
       return {

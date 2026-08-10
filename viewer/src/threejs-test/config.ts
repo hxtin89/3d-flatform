@@ -426,6 +426,22 @@ export const EXPERIENCE_CONFIG = {
      * Dialled far down so the imagery sits back as a dark ground plane and the
      * canopy reads on top of it. */
     mapBrightness: 0.1,
+    /**
+     * Screen-space error budget for the basemap, in pixels: the renderer keeps
+     * refining imagery until a tile's projected error drops below this. 1 is what
+     * the XYZ plugin's `useRecommendedSettings` picks — effectively pixel-perfect,
+     * and the reason a single view needs so many tiles. Imagery is a quadtree, so
+     * each halving costs another level; measured on one view: 23 visible tiles at
+     * 1, 16 at 2, 9 at 4, 5 at 8. For scale, the point cloud itself runs at 8.
+     *
+     * Raise it to cut tile requests, but do so by eye. Earlier "extremely blurry
+     * basemap" reports came from a different cause — tiles arriving too slowly and
+     * a cache too small to hold the working set, fixed with more parallel
+     * downloads and a bigger LRU. This value trades sharpness away permanently
+     * rather than transiently, which at mapBrightness 0.1 under fog and
+     * depth-of-field may well be invisible.
+     */
+    basemapErrorTarget: 1,
     /** Stochastic dissolve band at the vignette edge, as a fraction of the mask
      * radius. 0 reproduces the old hard circular cut. */
     maskFringe: 0.35,

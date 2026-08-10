@@ -1507,6 +1507,7 @@ function applyGroundFogBase(): void {
 
 const asPercent = (value: number) => `${Math.round(value * 100)}%`
 const asMetres = (value: number) => `${Math.round(value)} m`
+const asPixels = (value: number) => `${value} px`
 
 /** The slider's starting position comes from config, not from the HTML `value`
  * attribute — otherwise the markup and EXPERIENCE_CONFIG.design drift apart. */
@@ -1554,6 +1555,11 @@ function bindDesignColor(id: string, initial: number, apply: (hex: string) => vo
 const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
+// Goes through the globe because changing it has to force a re-traversal; see
+// Globe.setErrorTarget. Higher = fewer tiles per view = softer imagery.
+bindDesignSlider('basemapErrorTarget', DESIGN.basemapErrorTarget, asPixels, (v) => {
+  globe?.setErrorTarget(v)
+})
 bindDesignSlider('fogStrength', DESIGN.groundFog.strength, asPercent, (v) => { uniforms.groundFogStrength.value = v })
 // Distance fog: fractions of the far plane, applied in updateAtmosphere. Forcing
 // an immediate pass so the slider does not wait out the smoothing.
@@ -1678,6 +1684,7 @@ designCopyEl.addEventListener('click', async () => {
     maskMode: uniforms.maskMode.value,
     mapSaturation: uniforms.mapSaturation.value,
     mapBrightness: uniforms.mapBrightness.value,
+    basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     maskFringe: uniforms.maskFringe.value,
     maskFringeCurve: uniforms.maskFringeCurve.value,
     surroundColor: $<HTMLInputElement>('#surroundColor').value.replace('#', '0x'),
