@@ -271,6 +271,14 @@ export const EXPERIENCE_CONFIG = {
     nightBlendStartDeg: 2,
     nightBlendEndDeg: -8,
   },
+  loader: {
+    /** How long the loader waits for the first basemap tile after the point cloud
+     * is ready, before starting the scene without it. The point cloud is the
+     * payload and the basemap only context, so an unreachable tile provider —
+     * rejected key, exhausted quota, no network — must not hold the app hostage.
+     * Long enough that a slow-but-working provider still wins the race. */
+    basemapGraceMs: 12_000,
+  },
   atmosphere: {
     // Bring humid tropical and boreal haze into the mid-distance.
     minimumFarM: 24_000,

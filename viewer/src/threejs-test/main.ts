@@ -103,6 +103,10 @@ let loaderFinishAt = 0
 let loaderFlightStarted = false
 let loaderStalled = false
 let loaderFailed = false
+/** When the point cloud finished and the loader began waiting on the basemap. */
+let basemapWaitStartedAt = 0
+/** True once the loader gave up on the basemap and started without it. */
+let basemapMissing = false
 
 function paintLoaderProgress(progress: number): void {
   const percentage = Math.min(100, Math.floor(progress * 100))
@@ -189,13 +193,32 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
 
   // After the ready hand-off the status line must not flip back to "loading":
   // streaming keeps refining in the background and its progress oscillates.
+  // The stall notice is excluded for the same reason — it is written once by the
+  // stall timer and would otherwise be overwritten on the very next frame.
   if (stats) {
-    setLoadProgress(0.35 + 0.6 * stats.progress, loaderDataReady ? undefined : 'Lade erste Kronendach-Punktwolken …')
+    setLoadProgress(
+      0.35 + 0.6 * stats.progress,
+      loaderDataReady || loaderStalled ? undefined : 'Lade erste Kronendach-Punktwolken …',
+    )
   }
-  const ready = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999 && visibleMapTiles > 0)
-  if (ready && !loaderDataReady) {
+
+  // The point cloud is the payload; the basemap is context. Waiting on both used
+  // to mean an unreachable tile provider (dead key, quota, offline) pinned the
+  // loader at 95% forever — 0.35 + 0.6 is that ceiling — while the cloud sat
+  // fully loaded behind it. So the basemap gets a grace period and then the
+  // scene starts without it.
+  const pointsReady = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999)
+  if (pointsReady && basemapWaitStartedAt === 0) basemapWaitStartedAt = now
+  const basemapReady = visibleMapTiles > 0
+  const basemapGaveUp = basemapWaitStartedAt > 0
+    && now - basemapWaitStartedAt >= EXPERIENCE_CONFIG.loader.basemapGraceMs
+  if (pointsReady && (basemapReady || basemapGaveUp) && !loaderDataReady) {
     loaderDataReady = true
-    setLoadProgress(1, 'Feldsystem bereit.')
+    basemapMissing = !basemapReady
+    if (basemapMissing) {
+      console.warn('[loader] Basemap unreachable — starting without it. Check VITE_MAPTILER_API_KEY.')
+    }
+    setLoadProgress(1, basemapMissing ? 'Feldsystem bereit · ohne Basemap.' : 'Feldsystem bereit.')
   }
 
   if (loaderFinishAt > 0 && now >= loaderFinishAt) {
@@ -204,7 +227,11 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
     cancelAnimationFrame(loaderProgressRaf)
     loaderProgressRaf = 0
     window.clearInterval(loaderStallTimer)
-    setStatus('Adaptive streaming · ready')
+    // Carried into the HUD, not just the loader that is about to disappear —
+    // otherwise a missing basemap silently reads as "the map is just very dark".
+    setStatus(basemapMissing
+      ? 'Adaptive streaming · ready · keine Basemap'
+      : 'Adaptive streaming · ready')
   }
 }
 
@@ -1501,7 +1528,13 @@ function loop(now: number): void {
 // ---------------------------------------------------------------- boot
 async function main(): Promise<void> {
   if (!baseUrl) { showLoadError('CloudFront-Domain fehlt in der Umgebung.'); return }
-  if (!MAPTILER_KEY) { showLoadError('MapTiler-Schlüssel fehlt in der Umgebung.'); return }
+  // A missing basemap key is no longer fatal, for the same reason the loader no
+  // longer waits on the basemap: the point cloud is the payload. The globe still
+  // gets built and simply fails its tile requests, which the loader's grace
+  // period absorbs.
+  if (!MAPTILER_KEY) {
+    console.warn('[boot] VITE_MAPTILER_API_KEY missing — continuing without a basemap.')
+  }
 
   setLoadProgress(0.06, 'Initialisiere GPU und Kartensystem …')
   await renderer.init()
