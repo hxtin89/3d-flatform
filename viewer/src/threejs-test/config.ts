@@ -443,26 +443,36 @@ export const EXPERIENCE_CONFIG = {
      */
     basemapErrorTarget: 1,
     /**
-     * Deepest imagery zoom level to request. This is a property of the source
-     * data, not a look preference: MapTiler's satellite coverage for this part of
-     * the Amazon carries real detail to about z16-z17 (~1-2 m per pixel) and is
-     * upscaled below that. Measured on one tile column at the survey location,
-     * JPEG size falls once interpolation starts — 52 kB at z16, then 33, 22, 15,
-     * 8.6 kB at z20 — and z20 is visibly just a blur of z17.
+     * Deepest imagery zoom level to request. 19 matches the plugin's own default
+     * (levels 20, maxLevel = levels - 1), so this value changes nothing — it
+     * exists to hold the measurement below, because the obvious optimisation here
+     * is a trap.
      *
-     * The renderer does not know that, so with errorTarget 1 it kept refining
-     * into empty levels: at the 80 m zoom stop, 78 of 115 requests went to z18
-     * and z19 and bought nothing. Capping here removes them at identical image
-     * quality — the picture is unchanged because those levels held no
-     * information.
+     * MapTiler's satellite coverage for this part of the Amazon carries real
+     * ground detail to about z16-z17 (~1-2 m per pixel). Beyond that it is
+     * upscaled: down one tile column at the survey location, JPEG size falls once
+     * interpolation starts — 52 kB at z16, then 33, 22, 15, 8.6 kB at z20. So
+     * z18/z19 add no information, and at the 80 m zoom stop 68 of 127 requests go
+     * to exactly those levels. Capping at 17 cuts them to ~12.
      *
-     * Raise it when the imagery improves (a drone or aerial orthophoto of the
-     * survey area would be the obvious upgrade); the plugin allows up to 19.
-     * Note this does NOT make the basemap sharper: at 80 m altitude a display
-     * pixel is ~0.1 m of ground, so 1-2 m imagery is 10-20x coarser than the
-     * screen regardless of any setting here.
+     * That was tried and reverted, because "no new information" is not the same
+     * as "looks the same". MapTiler's server-side resampling beats magnifying a
+     * z17 texture on the GPU. Same ground patch, mean |Laplacian| as a detail
+     * measure: 0.856 for z17 upscaled 4x, 1.405 for z19 as served — same content
+     * (mean luminance differs by 1.94/255), visibly crisper. The canvas upscale
+     * used for that measurement is sharper than GPU texture filtering, so in the
+     * app the gap is if anything wider.
+     *
+     * So: lowering this saves requests at a real cost in sharpness. Only do it if
+     * someone decides that trade is worth it, and expect a softer basemap. Raising
+     * it past 19 only helps once better imagery exists — a drone or aerial
+     * orthophoto of the survey area would be the obvious upgrade.
+     *
+     * Either way it cannot make the basemap sharp at close range: at 80 m
+     * altitude a display pixel is ~0.1 m of ground, so 1-2 m source imagery stays
+     * 10-20x coarser than the screen no matter what is configured here.
      */
-    basemapMaxZoom: 17,
+    basemapMaxZoom: 19,
     /** Stochastic dissolve band at the vignette edge, as a fraction of the mask
      * radius. 0 reproduces the old hard circular cut. */
     maskFringe: 0.35,
