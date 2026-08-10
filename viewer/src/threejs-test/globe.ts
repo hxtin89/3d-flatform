@@ -31,6 +31,15 @@ export interface Globe {
   setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
   /** Re-apply the current matrix precision mode to already-loaded imagery. */
   refreshMatrixPrecision(): void
+  /**
+   * Stop or resume imagery traversal. Hiding `tiles.group` is not enough to stop
+   * the network cost: the renderer keeps traversing and downloading whatever the
+   * camera moves over, so a hidden basemap still spends the tile provider's
+   * request quota — which is what suspended our MapTiler account. Skipping
+   * `tiles.update()` is what actually stops the fetching. Navigation is
+   * unaffected: controls and the camera constraint still run every frame.
+   */
+  setImageryEnabled(enabled: boolean): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
@@ -46,6 +55,9 @@ export function createGlobe(opts: {
   uniforms: CloudUniforms
 }): Globe {
   const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms } = opts
+
+  /** Gates traversal in update(); see setImageryEnabled for why hiding is not enough. */
+  let imageryEnabled = true
 
   const tiles = new TilesRenderer()
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
@@ -157,11 +169,17 @@ export function createGlobe(opts: {
       // remove it before rendering; touch controls already hide it themselves.
       ;(controls as any).pivotMesh?.removeFromParent()
       camera.updateMatrixWorld()
-      tiles.update()
+      // Navigation above always runs; only traversal and downloads are gated.
+      if (imageryEnabled) tiles.update()
     },
     setResolution,
     refreshMatrixPrecision() {
       tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+    },
+    setImageryEnabled(enabled) {
+      if (enabled === imageryEnabled) return
+      imageryEnabled = enabled
+      tiles.group.visible = enabled
     },
     stats() {
       return {

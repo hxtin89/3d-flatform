@@ -247,7 +247,9 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
   // scene starts without it.
   const pointsReady = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999)
   if (pointsReady && basemapWaitStartedAt === 0) basemapWaitStartedAt = now
-  const basemapReady = visibleMapTiles > 0
+  // Switching the basemap off is a decision, not a failure: there is nothing to
+  // wait for, so the grace period is skipped rather than served out in silence.
+  const basemapReady = visibleMapTiles > 0 || !renderOptions.effective().basemapImagery
   const basemapGaveUp = basemapWaitStartedAt > 0
     && now - basemapWaitStartedAt >= EXPERIENCE_CONFIG.loader.basemapGraceMs
   if (pointsReady && (basemapReady || basemapGaveUp) && !loaderDataReady) {
@@ -788,7 +790,10 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         updateMatrixPrecision(performance.now())
         break
       case 'basemapImagery':
-        if (globe) globe.tiles.group.visible = effective.basemapImagery
+        // Not just group.visible: that hid the imagery while the renderer kept
+        // traversing and downloading, so the provider's request quota was spent
+        // on tiles nobody saw. setImageryEnabled owns the visibility too.
+        globe?.setImageryEnabled(effective.basemapImagery)
         break
     }
   }
