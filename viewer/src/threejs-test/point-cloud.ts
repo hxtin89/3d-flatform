@@ -4,7 +4,7 @@
 import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
-  Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
+  Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
   vec2, vec3, vec4, float, mix, smoothstep, length, max, abs, exp, hash,
   cameraPosition, context, highpModelViewMatrix,
 } from 'three/tsl'
@@ -28,6 +28,23 @@ export interface CloudUniforms {
   /** Basemap-only grading (the point cloud has its own). */
   mapSaturation: any
   mapBrightness: any
+  /**
+   * Flat ground patch that replaces the satellite imagery inside the survey
+   * footprint, so the map is only visible where there is no point-cloud data.
+   * Replacing rather than hiding: the imagery is the only thing drawn on the
+   * globe there, so cutting it out would show the sky through the ground.
+   * 0 = off, 1 = fully replaced.
+   */
+  groundPatchAmount: any
+  groundPatchColor: any
+  /** ENU rectangle the coverage mask spans — used to map position into mask UV. */
+  groundPatchCenter: any
+  groundPatchHalfExtent: any
+  /** Threshold on the blurred mask. Raising it erodes the patch inward, which is
+   * how the flat colour is kept from spilling past the point data. */
+  groundPatchShrink: any
+  /** Width of the threshold ramp — the soft edge. */
+  groundPatchSoftness: any
   /** Analytic ground fog, shared by points and imagery. */
   groundFogColor: any
   groundFogStrength: any
@@ -61,6 +78,14 @@ export interface CloudUniforms {
 }
 
 let cloudShadowTextureNode: any = null
+let groundPatchMaskNode: any = null
+
+/** Register the ground-patch coverage mask BEFORE the first basemap material is
+ * created. The texture is refilled in place once the point tileset loads, so the
+ * same object stays bound — see ground-patch-mask.ts. */
+export function setGroundPatchMask(mask: THREE.Texture): void {
+  groundPatchMaskNode = texture(mask)
+}
 
 /** Register the shared cloud-density volume BEFORE the first tile material is
  * created; the same texture drives the volumetric clouds overhead. */
@@ -79,6 +104,13 @@ export function createUniforms(): CloudUniforms {
     maskSurroundColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.surroundColor)),
     maskSurroundAmount: uniform(EXPERIENCE_CONFIG.design.surroundTint),
     pointSize: uniform(2),
+    groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
+      ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),
+    groundPatchColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.groundPatch.color)),
+    groundPatchCenter: uniform(new THREE.Vector2(0, 0)),
+    groundPatchHalfExtent: uniform(new THREE.Vector2(1, 1)),
+    groundPatchShrink: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrink),
+    groundPatchSoftness: uniform(EXPERIENCE_CONFIG.design.groundPatch.softness),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
@@ -191,6 +223,40 @@ export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
       .clamp(0, 1),
     color: u.groundFogColor,
   }
+}
+
+/**
+ * Replace the basemap with a flat colour where the point cloud has data, so the
+ * satellite imagery only shows where it does not.
+ *
+ * Applied to the imagery material only — the point cloud must keep drawing on
+ * top. And it replaces rather than discards: the draped imagery is the only
+ * surface the globe has there, so cutting it would leave a hole with the sky
+ * behind it.
+ *
+ * The shape comes from a coverage mask rather than a rectangle. The survey bbox
+ * looked like a reasonable stand-in and is not: this dataset spans 12.8 x 8.5 km
+ * but fills it with 27 irregular cells, so a rectangle paints solid colour across
+ * large empty areas. See ground-patch-mask.ts for how the mask is rasterised.
+ *
+ * `shrink` thresholds the blurred mask, which erodes the shape inward. That is
+ * the safe direction: a patch pulled slightly inside the data leaves a little
+ * basemap visible at the edge, while one that spills past it reads as a wedge of
+ * flat colour sitting on the map.
+ */
+export function applyGroundPatch(u: CloudUniforms, color: any): any {
+  // No mask registered (or no point tileset yet) means nothing to replace.
+  if (!groundPatchMaskNode) return color
+  // Annotated `any` like the rest of this file's node plumbing: the uniforms are
+  // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
+  const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
+  const maskUv: any = enu.xy.sub(u.groundPatchCenter)
+    .div((u.groundPatchHalfExtent as any).mul(2)).add(vec2(0.5))
+  const sample: any = groundPatchMaskNode.sample(maskUv).r
+  const shrink: any = u.groundPatchShrink
+  const coverage: any = smoothstep(shrink, shrink.add(max(u.groundPatchSoftness, float(0.001))), sample)
+    .mul(u.groundPatchAmount)
+  return mix(color, vec3(u.groundPatchColor), coverage)
 }
 
 /** Desaturate + darken the basemap only, so the imagery can sit back without

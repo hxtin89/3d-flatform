@@ -789,6 +789,35 @@
         </details>
 
         <details class="design-section">
+          <summary>Fläche unter der Punktwolke</summary>
+          <div class="row">
+            <label class="h" for="groundPatchToggle">Effekt</label>
+            <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchNote">▦ Fläche · An</button>
+            <span class="weather-note" id="groundPatchNote">Ersetzt das Satellitenbild dort durch eine Vollfläche, wo Punktdaten liegen — die Form folgt einer Abdeckungsmaske aus den Tileset-Zellen, nicht dem Vermessungsrechteck</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchColor">Farbe</label>
+            <input type="color" id="groundPatchColor" />
+            <span class="weather-note">Wird nicht vom Tageslicht eingefärbt, Nebel und Vignette wirken aber darauf</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchAmount">Deckung · <span class="val" id="groundPatchAmountVal">—</span></label>
+            <input type="range" id="groundPatchAmount" min="0" max="1" step="0.01" />
+            <span class="weather-note">100% = Satellitenbild vollständig ersetzt · darunter scheint das Gelände durch</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchShrink">Schrumpfung · <span class="val" id="groundPatchShrinkVal">—</span></label>
+            <input type="range" id="groundPatchShrink" min="0" max="0.95" step="0.01" />
+            <span class="weather-note">Zieht die Fläche nach innen. Höher = mehr Basemap bleibt am Rand sichtbar. Niedrig kann die Fläche über die Punkte hinausragen lassen</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchSoftness">Rand-Weichheit · <span class="val" id="groundPatchSoftnessVal">—</span></label>
+            <input type="range" id="groundPatchSoftness" min="0.01" max="1" step="0.01" />
+            <span class="weather-note">Breite des Übergangs. 1 % = harte Kante, hoch = weicher Verlauf über etwa 50 m Maskenauflösung</span>
+          </div>
+        </details>
+
+        <details class="design-section">
           <summary>Distanz-Nebel</summary>
           <div class="row">
             <label class="h" for="distanceFogNear">Beginn · <span class="val" id="distanceFogNearVal">—</span></label>

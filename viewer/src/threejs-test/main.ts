@@ -3,7 +3,7 @@
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
-import { createUniforms, setCloudShadowTexture } from './point-cloud'
+import { createUniforms, setCloudShadowTexture, setGroundPatchMask } from './point-cloud'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
@@ -35,6 +35,7 @@ import { createModelTransformEditor, type ModelTransformEditor } from './model-t
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
+import { createGroundPatchMask } from './ground-patch-mask'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
 import {
   createRenderOptions,
@@ -520,6 +521,17 @@ let lastAtmosphereUpdate = -Infinity
 // Distance-fog ends as fractions of the far plane — see updateAtmosphere.
 let distanceFogNearFactor: number = EXPERIENCE_CONFIG.atmosphere.fogNearFactor
 let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
+// Coverage mask for the flat ground under the point cloud. Created and registered
+// before any basemap material exists, then filled once the point tileset root
+// arrives — the materials bind the texture object, so it must not be replaced.
+const groundPatchMask = createGroundPatchMask()
+setGroundPatchMask(groundPatchMask.texture)
+
+/** Copy the mask's ENU rectangle into the uniforms the material maps UV with. */
+function applyGroundPatchExtent(): void {
+  uniforms.groundPatchCenter.value.copy(groundPatchMask.center)
+  uniforms.groundPatchHalfExtent.value.copy(groundPatchMask.halfExtent)
+}
 let lastFieldTier: PerformanceTier | null = null
 let disposed = false
 
@@ -1584,6 +1596,37 @@ bindDesignSlider('maskFringe', DESIGN.maskFringe, asPercent, (v) => { uniforms.m
 bindDesignSlider('maskFringeCurve', DESIGN.maskFringeCurve, asFactor, (v) => { uniforms.maskFringeCurve.value = v })
 bindDesignSlider('surroundTint', DESIGN.surroundTint, asPercent, (v) => { uniforms.maskSurroundAmount.value = v })
 
+// Ground patch under the point cloud. The toggle only gates the amount, so
+// switching it back on restores whatever the slider was left at.
+const GROUND_PATCH = DESIGN.groundPatch
+let groundPatchEnabled: boolean = GROUND_PATCH.enabled
+let groundPatchAmount: number = GROUND_PATCH.amount
+const groundPatchToggleEl = $<HTMLButtonElement>('#groundPatchToggle')
+const applyGroundPatchAmount = () => {
+  uniforms.groundPatchAmount.value = groundPatchEnabled ? groundPatchAmount : 0
+}
+const syncGroundPatchToggle = () => {
+  groundPatchToggleEl.classList.toggle('on', groundPatchEnabled)
+  groundPatchToggleEl.setAttribute('aria-pressed', String(groundPatchEnabled))
+  groundPatchToggleEl.textContent = `▦ Fläche · ${groundPatchEnabled ? 'An' : 'Aus'}`
+  applyGroundPatchAmount()
+}
+const onGroundPatchToggle = () => { groundPatchEnabled = !groundPatchEnabled; syncGroundPatchToggle() }
+groundPatchToggleEl.addEventListener('click', onGroundPatchToggle)
+syncGroundPatchToggle()
+bindDesignColor('groundPatchColor', GROUND_PATCH.color, (hex) => {
+  uniforms.groundPatchColor.value.set(hex)
+})
+bindDesignSlider('groundPatchAmount', GROUND_PATCH.amount, asPercent, (v) => {
+  groundPatchAmount = v; applyGroundPatchAmount()
+})
+bindDesignSlider('groundPatchShrink', GROUND_PATCH.shrink, asPercent, (v) => {
+  uniforms.groundPatchShrink.value = v
+})
+bindDesignSlider('groundPatchSoftness', GROUND_PATCH.softness, asPercent, (v) => {
+  uniforms.groundPatchSoftness.value = v
+})
+
 const asDegrees = (value: number) => `${Math.round(value)}°`
 const VIGNETTE_POSITION_DESIGN = DESIGN.vignettePosition
 bindDesignSlider(
@@ -1685,6 +1728,13 @@ designCopyEl.addEventListener('click', async () => {
     mapSaturation: uniforms.mapSaturation.value,
     mapBrightness: uniforms.mapBrightness.value,
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
+    groundPatch: {
+      enabled: groundPatchEnabled,
+      color: $<HTMLInputElement>('#groundPatchColor').value.replace('#', '0x'),
+      amount: groundPatchAmount,
+      shrink: uniforms.groundPatchShrink.value,
+      softness: uniforms.groundPatchSoftness.value,
+    },
     maskFringe: uniforms.maskFringe.value,
     maskFringeCurve: uniforms.maskFringeCurve.value,
     surroundColor: $<HTMLInputElement>('#surroundColor').value.replace('#', '0x'),
@@ -2108,6 +2158,18 @@ async function main(): Promise<void> {
     debugVolume: showDiagnostics,
   })
   applyHeightOffset()
+  // The mask can only be built once the root tileset lists its cells, which is
+  // well after the basemap materials exist — hence the fill-in-place texture.
+  stream.tiles.addEventListener('load-root-tileset' as any, () => {
+    const cells = groundPatchMask.buildFrom((stream as any).tiles.rootTileSet, enuInverse)
+    if (!cells) {
+      console.warn('[ground-patch] no cell boxes in the tileset — patch stays off')
+      uniforms.groundPatchAmount.value = 0
+      return
+    }
+    applyGroundPatchExtent()
+    console.info(`[ground-patch] coverage mask built from ${cells} cells`)
+  })
   // Debug handle for streaming diagnosis in the console.
   ;(window as any).__wild = {
     stream,
@@ -2337,6 +2399,7 @@ function dispose(): void {
   liftToggleEl.removeEventListener('click', onLiftToggle)
   dofToggleEl.removeEventListener('click', onDofToggle)
   dofAutoFocusEl.removeEventListener('click', onDofAutoFocus)
+  groundPatchToggleEl.removeEventListener('click', onGroundPatchToggle)
   gaussianToggleEl.removeEventListener('click', onGaussianToggle)
   document.removeEventListener('keydown', onSplatKeyDown)
   document.removeEventListener('keyup', onSplatKeyUp)

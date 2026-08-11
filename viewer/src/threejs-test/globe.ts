@@ -10,7 +10,7 @@ import { texture, mix } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
-  applyMatrixPrecision, applyMaskSurround, groundFogNode, gradeImageryNode,
+  applyMatrixPrecision, applyMaskSurround, groundFogNode, gradeImageryNode, applyGroundPatch,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -127,8 +127,12 @@ export function createGlobe(opts: {
       const graded = gradeImageryNode(uniforms, texture(map).rgb)
         .mul(uniforms.daylightColor)
         .mul(uniforms.daylightIntensity)
+      // After the daylight multiply so the configured colour stays exactly that,
+      // but before fog and the vignette so the patch sits in the same atmosphere
+      // as everything else. Imagery only — the point cloud draws on top.
+      const patched = applyGroundPatch(uniforms, graded)
       const fog = groundFogNode(uniforms)
-      mat.colorNode = applyMaskSurround(uniforms, mix(graded, fog.color, fog.amount), 0.50)
+      mat.colorNode = applyMaskSurround(uniforms, mix(patched, fog.color, fog.amount), 0.50)
       o.material.dispose()
       o.material = mat
     })

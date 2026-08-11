@@ -420,6 +420,41 @@ export const EXPERIENCE_CONFIG = {
      * loader benchmark no longer switches it on for weaker presets either. Set
      * this to 2 to restore the old behaviour of masking on medium/constrained. */
     maskMode: 0,
+    /**
+     * Flat ground under the point cloud: where the cloud has data the satellite
+     * imagery is replaced by a solid colour, so the map is only visible where it
+     * does not.
+     *
+     * Replacing, not hiding. The draped imagery is the only surface the globe has
+     * there, so cutting it out would leave a hole with the sky showing through —
+     * which is why this is a colour and not a switch to nothing.
+     *
+     * The shape comes from a rasterised coverage mask, not the survey bbox. The
+     * bbox seemed like a fair stand-in and is not: this dataset spans 12.8 x 8.5 km
+     * but fills it with 27 irregular cells, so a rectangle paints flat colour over
+     * large empty areas. See ground-patch-mask.ts.
+     *
+     * Fog and the vignette still apply on top, so the patch sits in the same
+     * atmosphere as the rest of the scene. Daylight grading deliberately does not:
+     * the chosen colour stays the chosen colour around the clock.
+     */
+    groundPatch: {
+      enabled: true,
+      /** Dark by default — the point cloud reads against it, not with it. */
+      color: 0x0a1410,
+      /** How far the imagery is replaced. 1 = fully, below that the satellite
+       * texture shows through, which can help the cloud sit on real terrain. */
+      amount: 1,
+      /** Threshold on the blurred mask, so higher values erode the patch inward.
+       * Measured from above with the patch in a contrast colour: at 0.6 a rim of
+       * flat colour still stood outside the point edge, because a cell's bounding
+       * box is larger than the points inside it. 0.85 pulls it under the data,
+       * which is the safe direction — a little basemap at the edge reads far
+       * better than colour lying on the map. */
+      shrink: 0.85,
+      /** Width of the threshold ramp — the soft edge. */
+      softness: 0.12,
+    },
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,
     /** Multiplies the basemap only — the point cloud keeps its own grading.
