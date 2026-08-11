@@ -479,7 +479,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   function syncLabelText(): void {
     areaElement.textContent = `${Math.round(data.areaM2)} m²`
     const cells = data.gridExact ? ` · ${data.cellCount} × 1 m²` : ''
-    groupElement.textContent = `${(options.source.group ?? 'geschützte Fläche').toUpperCase()}${cells}`
+    groupElement.textContent = `${(options.source.group ?? 'protected parcel').toUpperCase()}${cells}`
   }
   syncLabelText()
   let labelWidth = 0

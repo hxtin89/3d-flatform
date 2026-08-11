@@ -237,7 +237,7 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
   if (stats) {
     setLoadProgress(
       0.35 + 0.6 * stats.progress,
-      loaderDataReady || loaderStalled ? undefined : 'Lade erste Kronendach-Punktwolken …',
+      loaderDataReady || loaderStalled ? undefined : 'Loading first canopy point clouds …',
     )
   }
 
@@ -259,7 +259,7 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
     if (basemapMissing) {
       console.warn('[loader] Basemap unreachable — starting without it. Check VITE_MAPTILER_API_KEY.')
     }
-    setLoadProgress(1, basemapMissing ? 'Feldsystem bereit · ohne Basemap.' : 'Feldsystem bereit.')
+    setLoadProgress(1, basemapMissing ? 'Field system ready · no basemap.' : 'Field system ready.')
   }
 
   if (loaderFinishAt > 0 && now >= loaderFinishAt) {
@@ -271,7 +271,7 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
     // Carried into the HUD, not just the loader that is about to disappear —
     // otherwise a missing basemap silently reads as "the map is just very dark".
     setStatus(basemapMissing
-      ? 'Adaptive streaming · ready · keine Basemap'
+      ? 'Adaptive streaming · ready · no basemap'
       : 'Adaptive streaming · ready')
   }
 }
@@ -281,7 +281,7 @@ loaderRetryEl.addEventListener('click', onLoaderRetry)
 const onLoaderSoundOpt = () => {
   startWithSound = !startWithSound
   loaderSoundOptEl.setAttribute('aria-pressed', String(startWithSound))
-  loaderSoundOptLabelEl.textContent = startWithSound ? 'Mit Naturklängen' : 'Ohne Naturklänge'
+  loaderSoundOptLabelEl.textContent = startWithSound ? 'With ambient sound' : 'Without ambient sound'
 }
 loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 /** Turn the loader benchmark into start settings: strong devices skip the
@@ -393,7 +393,7 @@ const loaderStallTimer = window.setInterval(() => {
   if (!bootLoading || loaderFailed || loaderDataReady || loaderReadyShown || loaderFinishAt > 0
     || performance.now() - loaderLastAdvance < 20_000) return
   loaderStalled = true
-  loaderStatusEl.textContent = 'Die Datenverbindung antwortet ungewöhnlich langsam.'
+  loaderStatusEl.textContent = 'The data connection is responding unusually slowly.'
   loaderRetryEl.hidden = false
 }, 1000)
 
@@ -998,12 +998,12 @@ function setAimMode(active: boolean, announce = true): void {
     aimTarget = null
     markerLayer?.setFocusedAction(null)
     aimReticleEl.classList.remove('has-target')
-    aimReticleLabelEl.textContent = 'Ziel suchen'
+    aimReticleLabelEl.textContent = 'Find target'
   }
   if (announce) {
     announceInteraction(active
-      ? 'Fokusmodus aktiviert. Bewege die Kamera, bis ein Ziel einrastet. Mit Enter öffnen, mit C oder Escape beenden.'
-      : 'Fokusmodus beendet.')
+      ? 'Focus mode on. Move the camera until a target locks on. Enter opens it, C or Escape leaves.'
+      : 'Focus mode off.')
   }
 }
 
@@ -1015,7 +1015,7 @@ function toggleAimMode(): void {
 function activateAimTarget(): boolean {
   if (!aimMode || !videoModalEl.hidden) return false
   if (!aimTarget) {
-    announceInteraction('Kein interaktives Ziel im Fadenkreuz.')
+    announceInteraction('No interactive target in the crosshair.')
     return true
   }
   const target = aimTarget
@@ -1039,7 +1039,7 @@ function updateAimTarget(): void {
   markerLayer?.setFocusedAction(nextTarget?.id ?? null)
   aimReticleEl.classList.toggle('has-target', Boolean(nextTarget))
   aimReticleLabelEl.textContent = nextTarget ? `${nextTarget.label} · Enter` : 'Ziel suchen'
-  if (nextTarget) announceInteraction(`${nextTarget.label} im Fokus. Mit Enter öffnen.`)
+  if (nextTarget) announceInteraction(`${nextTarget.label} in focus. Press Enter to open.`)
 }
 
 function openFieldVideo(): void {
@@ -1049,7 +1049,7 @@ function openFieldVideo(): void {
   videoModalEl.hidden = false
   for (const element of modalBackgroundElements) element.inert = true
   videoModalEl.classList.remove('is-ready', 'is-playing')
-  videoStatusEl.textContent = 'Video wird geladen …'
+  videoStatusEl.textContent = 'Loading video …'
   if (globe) globe.controls.enabled = false
 
   // Stop the map render loop while the native video decoder is active. The
@@ -1058,7 +1058,7 @@ function openFieldVideo(): void {
   fieldVideoEl.src = FIELD_VIDEO_URL
   fieldVideoEl.load()
   void fieldVideoEl.play().catch(() => {
-    videoStatusEl.textContent = 'Zum Starten bitte Play antippen.'
+    videoStatusEl.textContent = 'Tap play to start.'
   })
   videoCloseEl.focus()
 }
@@ -1079,22 +1079,22 @@ function closeFieldVideo(resumeRenderer = true): void {
 
 const onVideoCanPlay = () => {
   videoModalEl.classList.add('is-ready')
-  if (fieldVideoEl.paused) videoStatusEl.textContent = 'Zum Starten bitte Play antippen.'
+  if (fieldVideoEl.paused) videoStatusEl.textContent = 'Tap play to start.'
 }
 const onVideoPlaying = () => videoModalEl.classList.add('is-ready', 'is-playing')
 const onVideoWaiting = () => {
   videoModalEl.classList.remove('is-playing')
-  videoStatusEl.textContent = 'Video wird geladen …'
+  videoStatusEl.textContent = 'Loading video …'
 }
 const onVideoPause = () => {
   if (videoModalEl.hidden || fieldVideoEl.ended) return
   videoModalEl.classList.remove('is-playing')
-  videoStatusEl.textContent = 'Zum Fortsetzen bitte Play antippen.'
+  videoStatusEl.textContent = 'Tap play to resume.'
 }
 const onVideoClose = () => closeFieldVideo()
 const onVideoError = () => {
   videoModalEl.classList.remove('is-ready', 'is-playing')
-  videoStatusEl.textContent = 'Video konnte nicht geladen werden.'
+  videoStatusEl.textContent = 'The video could not be loaded.'
 }
 const onVideoBackdrop = (event: MouseEvent) => {
   if (event.target === videoModalEl) closeFieldVideo()
@@ -1608,7 +1608,7 @@ const applyGroundPatchAmount = () => {
 const syncGroundPatchToggle = () => {
   groundPatchToggleEl.classList.toggle('on', groundPatchEnabled)
   groundPatchToggleEl.setAttribute('aria-pressed', String(groundPatchEnabled))
-  groundPatchToggleEl.textContent = `▦ Fläche · ${groundPatchEnabled ? 'An' : 'Aus'}`
+  groundPatchToggleEl.textContent = `▦ Ground patch · ${groundPatchEnabled ? 'On' : 'Off'}`
   applyGroundPatchAmount()
 }
 const onGroundPatchToggle = () => { groundPatchEnabled = !groundPatchEnabled; syncGroundPatchToggle() }
@@ -1660,11 +1660,11 @@ const syncDofToggles = () => {
   const on = depthOfField.isEnabled()
   dofToggleEl.classList.toggle('on', on)
   dofToggleEl.setAttribute('aria-pressed', String(on))
-  dofToggleEl.textContent = `◉ Depth of Field · ${on ? 'An' : 'Aus'}`
+  dofToggleEl.textContent = `◉ Depth of field · ${on ? 'On' : 'Off'}`
   const auto = depthOfField.isAutoFocus()
   dofAutoFocusEl.classList.toggle('on', auto)
   dofAutoFocusEl.setAttribute('aria-pressed', String(auto))
-  dofAutoFocusEl.textContent = `⊙ Autofokus · ${auto ? 'An' : 'Aus'}`
+  dofAutoFocusEl.textContent = `⊙ Autofocus · ${auto ? 'On' : 'Off'}`
   // The focus slider means "offset from the aimed point" with autofocus on and
   // "absolute distance" with it off. Relabel rather than offer two sliders.
   dofFocusRowEl.dataset.mode = auto ? 'offset' : 'absolute'
@@ -1777,12 +1777,12 @@ depthOfField: ${JSON.stringify({
   }, null, 2)}`
   try {
     await navigator.clipboard.writeText(snippet)
-    designCopyEl.textContent = '✓ Kopiert'
+    designCopyEl.textContent = '✓ Copied'
   } catch {
     console.info(`[design]\n${snippet}`)
-    designCopyEl.textContent = '⧉ In Konsole'
+    designCopyEl.textContent = '⧉ To console'
   }
-  setTimeout(() => { designCopyEl.textContent = '⧉ Werte kopieren' }, 1600)
+  setTimeout(() => { designCopyEl.textContent = '⧉ Copy values' }, 1600)
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(
   reducedMotion
@@ -2023,7 +2023,7 @@ function loop(now: number): void {
 
 // ---------------------------------------------------------------- boot
 async function main(): Promise<void> {
-  if (!baseUrl) { showLoadError('CloudFront-Domain fehlt in der Umgebung.'); return }
+  if (!baseUrl) { showLoadError('CloudFront domain missing from the environment.'); return }
   // A missing basemap key is no longer fatal, for the same reason the loader no
   // longer waits on the basemap: the point cloud is the payload. The globe still
   // gets built and simply fails its tile requests, which the loader's grace
@@ -2032,9 +2032,9 @@ async function main(): Promise<void> {
     console.warn('[boot] VITE_MAPTILER_API_KEY missing — continuing without a basemap.')
   }
 
-  setLoadProgress(0.06, 'Initialisiere GPU und Kartensystem …')
+  setLoadProgress(0.06, 'Initialising GPU and map system …')
   await renderer.init()
-  setLoadProgress(0.16, 'Grafiksystem bereit. Verbinde Feldstation …')
+  setLoadProgress(0.16, 'Graphics ready. Connecting to the field station …')
   const backend: any = (renderer as any).backend
   const isWebGPU = Boolean(backend?.isWebGPUBackend ?? (backend && /WebGPU/i.test(backend.constructor?.name)))
   const badge = $('#backend')
@@ -2061,9 +2061,9 @@ async function main(): Promise<void> {
   setCloudShadowTexture(cloudNoiseTexture)
 
   setStatus('Loading adaptive point-cloud tree…')
-  setLoadProgress(0.22, 'Lade Fluggebiet und Koordinaten …')
+  setLoadProgress(0.22, 'Loading survey area and coordinates …')
   const manifest = await fetchGlobeManifest(baseUrl, dataset)
-  setLoadProgress(0.28, 'Fluggebiet lokalisiert. Baue Szene …')
+  setLoadProgress(0.28, 'Survey area located. Building the scene …')
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()
   uniforms.enuInverse.value.copy(enuInverse)
@@ -2286,7 +2286,7 @@ async function main(): Promise<void> {
 
   rainLayer = createRainLayer(scene)
   rainLayer.setEnabled(rainRequested)
-  setLoadProgress(0.35, 'Lade erste Kronendach-Punktwolken …')
+  setLoadProgress(0.35, 'Loading first canopy point clouds …')
 
   // Bootstrap close enough to request real point tiles. The fullscreen loader
   // conceals this staging position; once both data layers are visible we jump
@@ -2440,5 +2440,5 @@ window.addEventListener('pageshow', onPageShow)
 main().catch((error: any) => {
   console.error('[threejs-test] fatal', error)
   setStatus(`Error: ${error?.message ?? error}`)
-  showLoadError(`Laden fehlgeschlagen: ${error?.message ?? error}`)
+  showLoadError(`Loading failed: ${error?.message ?? error}`)
 })

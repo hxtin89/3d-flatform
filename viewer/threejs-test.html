@@ -559,10 +559,10 @@
     <div id="interactionStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="aimReticle" aria-hidden="true">
       <span class="aim-reticle-core"></span>
-      <span id="aimReticleLabel">Ziel suchen</span>
+      <span id="aimReticleLabel">Find target</span>
     </div>
 
-    <div id="loader" role="progressbar" aria-label="Point Cloud wird geladen" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
+    <div id="loader" role="progressbar" aria-label="Loading point cloud" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
       <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
       <div class="loader-content">
         <div class="loader-eagle-frame" aria-hidden="true">
@@ -570,19 +570,19 @@
           <div class="loader-eagle loader-eagle-fill" id="loaderEagleFill" hidden></div>
         </div>
         <p class="loader-system">Flight preparation / point cloud</p>
-        <p id="loaderStatus" aria-live="polite">Initialisiere Feldsystem …</p>
+        <p id="loaderStatus" aria-live="polite">Initialising field system …</p>
         <div class="loader-meter"><span id="loaderPercent">00</span><small>%</small></div>
         <div class="loader-actions" id="loaderActions" hidden>
           <button id="loaderSoundOpt" type="button" aria-pressed="true">
             <span class="loader-eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-            <span id="loaderSoundOptLabel">Mit Naturklängen</span>
+            <span id="loaderSoundOptLabel">With ambient sound</span>
           </button>
           <button id="loaderStart" type="button">
-            <span class="loader-start-kicker">Feldsystem bereit</span>
-            <strong>Expedition starten</strong>
+            <span class="loader-start-kicker">Field system ready</span>
+            <strong>Start expedition</strong>
           </button>
         </div>
-        <button class="loader-retry" id="loaderRetry" type="button" hidden>Erneut versuchen</button>
+        <button class="loader-retry" id="loaderRetry" type="button" hidden>Try again</button>
       </div>
       <canvas id="loaderEagleCanvas" aria-hidden="true" hidden></canvas>
     </div>
@@ -596,7 +596,7 @@
       <div class="keyboard-guide-head">
         <span id="keyboardGuideTitle">Field navigation</span>
         <span class="keyboard-guide-context">Physical keyboard</span>
-        <button id="keyboardGuideClose" class="keyboard-guide-close" type="button" aria-label="Field Navigation ausblenden">×</button>
+        <button id="keyboardGuideClose" class="keyboard-guide-close" type="button" aria-label="Hide field navigation">×</button>
       </div>
       <div class="wasd-pad" aria-label="W A S D for directional movement">
         <kbd class="keycap" data-key="KeyW" data-nav-task="KeyW">W</kbd>
@@ -637,10 +637,10 @@
       </div>
       <!-- Filled and revealed only with ?freeorbit, to read off a zoom stop. -->
       <div class="stats" id="diagStats" hidden>
-        <span class="k">Höhe über Grund</span><span class="v" id="diagAltitude">—</span>
-        <span class="k">LOD-Distanz</span><span class="v" id="diagRange">—</span>
-        <span class="k">Zoom-Anschlag</span><span class="v" id="diagStop">—</span>
-        <span class="k">Fehlende Kacheln</span><span class="v" id="diagMissing">0</span>
+        <span class="k">Height above ground</span><span class="v" id="diagAltitude">—</span>
+        <span class="k">LOD distance</span><span class="v" id="diagRange">—</span>
+        <span class="k">Zoom stop</span><span class="v" id="diagStop">—</span>
+        <span class="k">Missing tiles</span><span class="v" id="diagMissing">0</span>
       </div>
     </div>
 
@@ -740,9 +740,9 @@
             <input type="range" id="mapBrightness" min="0.1" max="1.4" step="0.01" />
           </div>
           <div class="row">
-            <label class="h" for="basemapErrorTarget">Schärfe-Budget · <span class="val" id="basemapErrorTargetVal">—</span></label>
+            <label class="h" for="basemapErrorTarget">Sharpness budget · <span class="val" id="basemapErrorTargetVal">—</span></label>
             <input type="range" id="basemapErrorTarget" min="1" max="16" step="0.5" />
-            <span class="weather-note">Zulässiger Fehler in Bildschirm-Pixeln. 1 = pixelgenau und teuer, höher = weicher und deutlich weniger Kacheln (gemessen: 23 Kacheln bei 1, 16 bei 2, 9 bei 4). Die Punktwolke selbst läuft auf 8</span>
+            <span class="weather-note">Allowed error in screen pixels. 1 = pixel-perfect and expensive, higher = softer and far fewer tiles (measured: 23 tiles at 1, 16 at 2, 9 at 4). The point cloud itself runs at 8</span>
           </div>
         </details>
 
@@ -751,199 +751,199 @@
           <div class="row">
             <label class="h" for="fogStrength">Strength · <span class="val" id="fogStrengthVal">—</span></label>
             <input type="range" id="fogStrength" min="0" max="3" step="0.01" />
-            <span class="weather-note">Über 100% sättigt der Nebel früher, statt über die Nebelfarbe hinauszuschießen — die Deckung selbst ist bei 100% gekappt</span>
+            <span class="weather-note">Past 100% the fog saturates earlier instead of overshooting its colour — the coverage itself is capped at 100%</span>
           </div>
           <div class="row">
             <label class="h" for="fogHeight">Slab height · <span class="val" id="fogHeightVal">—</span></label>
             <input type="range" id="fogHeight" min="10" max="600" step="5" />
-            <span class="weather-note">Ausblendung nach oben ab der Basis (1/e-Höhe)</span>
+            <span class="weather-note">Falloff upward from the base (1/e height)</span>
           </div>
           <div class="row">
-            <label class="h" for="fogFadeBelow">Ausblendung nach unten · <span class="val" id="fogFadeBelowVal">—</span></label>
+            <label class="h" for="fogFadeBelow">Falloff downward · <span class="val" id="fogFadeBelowVal">—</span></label>
             <input type="range" id="fogFadeBelow" min="0" max="300" step="5" />
-            <span class="weather-note">0 = Nebel reicht in voller Dichte bis zum Boden · größer = Band, das in den Bäumen hängt, mit klarer Luft darunter</span>
+            <span class="weather-note">0 = fog reaches the ground at full density · higher = a band hanging in the canopy with clear air beneath</span>
           </div>
           <div class="row">
             <label class="h" for="fogCurve">Falloff curve · <span class="val" id="fogCurveVal">—</span></label>
             <input type="range" id="fogCurve" min="0.25" max="4" step="0.05" />
-            <span class="weather-note">1 = physikalisch (Beer-Lambert) · &lt;1 Nebel setzt früh ein · &gt;1 Nahfeld bleibt klar, Dichte wandert in die Ferne</span>
+            <span class="weather-note">1 = physical (Beer-Lambert) · &lt;1 fog starts early · &gt;1 the near field stays clear and density moves into the distance</span>
           </div>
           <div class="row">
-            <label class="h" for="fogDistance">Dichte-Distanz · <span class="val" id="fogDistanceVal">—</span></label>
+            <label class="h" for="fogDistance">Density distance · <span class="val" id="fogDistanceVal">—</span></label>
             <input type="range" id="fogDistance" min="0" max="12000" step="25" />
-            <span class="weather-note">Kleiner = dichter. e-Faltungslänge entlang der Nebelbasis, kein Cutoff. 0 = sofort volle Deckung</span>
+            <span class="weather-note">Smaller = denser. e-folding distance along the fog base, not a cutoff. 0 = full coverage immediately</span>
           </div>
           <div class="row">
-            <label class="h" for="fogBase">Basis-Offset · <span class="val" id="fogBaseVal">—</span></label>
+            <label class="h" for="fogBase">Base offset · <span class="val" id="fogBaseVal">—</span></label>
             <input type="range" id="fogBase" min="-150" max="400" step="5" />
           </div>
           <div class="row">
-            <label class="h" for="fogColor">Farbe</label>
+            <label class="h" for="fogColor">Colour</label>
             <input type="color" id="fogColor" />
           </div>
           <div class="row">
-            <label class="h" for="fogTint">Farb-Anteil · <span class="val" id="fogTintVal">—</span></label>
+            <label class="h" for="fogTint">Colour amount · <span class="val" id="fogTintVal">—</span></label>
             <input type="range" id="fogTint" min="0" max="1" step="0.01" />
-            <span class="weather-note">0 = folgt dem Tageslicht automatisch · 1 = feste Farbe rund um die Uhr</span>
+            <span class="weather-note">0 = follows the daylight automatically · 1 = a fixed colour around the clock</span>
           </div>
         </details>
 
         <details class="design-section">
-          <summary>Fläche unter der Punktwolke</summary>
+          <summary>Ground under the point cloud</summary>
           <div class="row">
-            <label class="h" for="groundPatchToggle">Effekt</label>
-            <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchNote">▦ Fläche · An</button>
-            <span class="weather-note" id="groundPatchNote">Ersetzt das Satellitenbild dort durch eine Vollfläche, wo Punktdaten liegen — die Form folgt einer Abdeckungsmaske aus den Tileset-Zellen, nicht dem Vermessungsrechteck</span>
+            <label class="h" for="groundPatchToggle">Effect</label>
+            <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchNote">▦ Ground patch · On</button>
+            <span class="weather-note" id="groundPatchNote">Replaces the satellite imagery with a solid colour where point data exists — the shape follows a coverage mask built from the tileset cells, not the survey rectangle</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchColor">Farbe</label>
+            <label class="h" for="groundPatchColor">Colour</label>
             <input type="color" id="groundPatchColor" />
-            <span class="weather-note">Wird nicht vom Tageslicht eingefärbt, Nebel und Vignette wirken aber darauf</span>
+            <span class="weather-note">Not graded by daylight, but fog and the vignette still apply to it</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchAmount">Deckung · <span class="val" id="groundPatchAmountVal">—</span></label>
+            <label class="h" for="groundPatchAmount">Coverage · <span class="val" id="groundPatchAmountVal">—</span></label>
             <input type="range" id="groundPatchAmount" min="0" max="1" step="0.01" />
-            <span class="weather-note">100% = Satellitenbild vollständig ersetzt · darunter scheint das Gelände durch</span>
+            <span class="weather-note">100% = imagery fully replaced · below that the terrain shows through</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchShrink">Schrumpfung · <span class="val" id="groundPatchShrinkVal">—</span></label>
+            <label class="h" for="groundPatchShrink">Shrink · <span class="val" id="groundPatchShrinkVal">—</span></label>
             <input type="range" id="groundPatchShrink" min="0" max="0.95" step="0.01" />
-            <span class="weather-note">Zieht die Fläche nach innen. Höher = mehr Basemap bleibt am Rand sichtbar. Niedrig kann die Fläche über die Punkte hinausragen lassen</span>
+            <span class="weather-note">Pulls the patch inward. Higher = more basemap stays visible at the edge. Low can let it spill past the points</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchSoftness">Rand-Weichheit · <span class="val" id="groundPatchSoftnessVal">—</span></label>
+            <label class="h" for="groundPatchSoftness">Edge softness · <span class="val" id="groundPatchSoftnessVal">—</span></label>
             <input type="range" id="groundPatchSoftness" min="0.01" max="1" step="0.01" />
-            <span class="weather-note">Breite des Übergangs. 1 % = harte Kante, hoch = weicher Verlauf über etwa 50 m Maskenauflösung</span>
+            <span class="weather-note">Width of the transition. 1% = hard edge, higher = a soft ramp across roughly the 50 m mask resolution</span>
           </div>
         </details>
 
         <details class="design-section">
-          <summary>Distanz-Nebel</summary>
+          <summary>Distance fog</summary>
           <div class="row">
-            <label class="h" for="distanceFogNear">Beginn · <span class="val" id="distanceFogNearVal">—</span></label>
+            <label class="h" for="distanceFogNear">Onset · <span class="val" id="distanceFogNearVal">—</span></label>
             <input type="range" id="distanceFogNear" min="0" max="1" step="0.01" />
-            <span class="weather-note">Anteil der Sichtweite, ab dem der Dunst einsetzt. Klein = Dunst beginnt direkt vor der Kamera</span>
+            <span class="weather-note">Fraction of the view distance where the haze starts. Small = haze begins right at the camera</span>
           </div>
           <div class="row">
-            <label class="h" for="distanceFogFar">Volle Deckung · <span class="val" id="distanceFogFarVal">—</span></label>
+            <label class="h" for="distanceFogFar">Full coverage · <span class="val" id="distanceFogFarVal">—</span></label>
             <input type="range" id="distanceFogFar" min="0" max="1" step="0.01" />
-            <span class="weather-note">Anteil der Sichtweite, ab dem alles in Himmelsfarbe übergeht — kaschiert die Kartenkante. Wird immer über „Beginn" gehalten</span>
+            <span class="weather-note">Fraction of the view distance where everything turns sky-coloured — this hides the map edge. Always kept above the onset</span>
           </div>
           <div class="row">
-            <span class="weather-note">Beides sind Anteile der aktuellen Sichtweite, nicht Meter — der Dunst behält so dieselben Proportionen über der Krone wie 90 km draußen. Farbe folgt dem Tageslicht.</span>
+            <span class="weather-note">Both are fractions of the current view distance, not metres — so the haze keeps the same proportions over the canopy as it does 90 km out. Colour follows the daylight.</span>
           </div>
         </details>
 
         <details class="design-section">
-          <summary>Wolkenschatten</summary>
+          <summary>Cloud shadows</summary>
           <div class="row">
-            <label class="h" for="cloudShadowStrength">Stärke · <span class="val" id="cloudShadowStrengthVal">—</span></label>
+            <label class="h" for="cloudShadowStrength">Strength · <span class="val" id="cloudShadowStrengthVal">—</span></label>
             <input type="range" id="cloudShadowStrength" min="0" max="1" step="0.01" />
-            <span class="weather-note">Grundtiefe der Schatten. Wird zusätzlich mit dem Tageslicht multipliziert und halbiert, wenn die Wolkenschicht aus ist</span>
+            <span class="weather-note">Base depth of the shadows. Additionally multiplied by daylight, and halved when the cloud layer is off</span>
           </div>
           <div class="row">
-            <label class="h" for="cloudShadowScale">Körnung · <span class="val" id="cloudShadowScaleVal">—</span></label>
+            <label class="h" for="cloudShadowScale">Grain · <span class="val" id="cloudShadowScaleVal">—</span></label>
             <input type="range" id="cloudShadowScale" min="200" max="12000" step="100" />
-            <span class="weather-note">Meter pro Noise-Periode. Klein = feines, kleinteiliges Geflecht · groß = weite, kontinentale Schatten</span>
+            <span class="weather-note">Metres per noise period. Small = fine, busy dappling · large = broad continental shadows</span>
           </div>
           <div class="row">
-            <label class="h" for="cloudShadowContrast">Kontrast · <span class="val" id="cloudShadowContrastVal">—</span></label>
+            <label class="h" for="cloudShadowContrast">Contrast · <span class="val" id="cloudShadowContrastVal">—</span></label>
             <input type="range" id="cloudShadowContrast" min="0" max="1" step="0.01" />
-            <span class="weather-note">Schnürt den Noise-Übergang zusammen. 0 = weiche, verwaschene Flecken · hoch = klar abgegrenzte Wolkenlücken</span>
+            <span class="weather-note">Tightens the noise ramp. 0 = soft, washed blotches · high = clearly defined cloud gaps</span>
           </div>
         </details>
 
         <details class="design-section">
-          <summary>Vignette &amp; Umfeld</summary>
+          <summary>Vignette &amp; surround</summary>
           <div class="row">
-            <label class="h" for="maskFringe">Fringe-Breite · <span class="val" id="maskFringeVal">—</span></label>
+            <label class="h" for="maskFringe">Fringe width · <span class="val" id="maskFringeVal">—</span></label>
             <input type="range" id="maskFringe" min="0" max="0.9" step="0.01" />
-            <span class="weather-note">0 = harte Schnittkante, hoch = Punkte lösen sich zum Rand hin auf</span>
+            <span class="weather-note">0 = a hard cut, higher = points dissolve toward the edge</span>
           </div>
           <div class="row">
-            <label class="h" for="maskFringeCurve">Fringe-Kurve · <span class="val" id="maskFringeCurveVal">—</span></label>
+            <label class="h" for="maskFringeCurve">Fringe curve · <span class="val" id="maskFringeCurveVal">—</span></label>
             <input type="range" id="maskFringeCurve" min="0.25" max="4" step="0.05" />
-            <span class="weather-note">&gt;1 dünnt früh aus (weit gestreut) · &lt;1 hält die Dichte bis zum Rand</span>
+            <span class="weather-note">&gt;1 thins out early (widely scattered) · &lt;1 holds density up to the edge</span>
           </div>
           <div class="row">
-            <label class="h" for="surroundColor">Umfeld-Farbe</label>
+            <label class="h" for="surroundColor">Surround colour</label>
             <input type="color" id="surroundColor" />
           </div>
           <div class="row">
-            <label class="h" for="surroundOpacity">Umfeld-Deckkraft · <span class="val" id="surroundOpacityVal">—</span></label>
+            <label class="h" for="surroundOpacity">Surround opacity · <span class="val" id="surroundOpacityVal">—</span></label>
             <input type="range" id="surroundOpacity" min="0" max="1" step="0.01" />
           </div>
           <div class="row">
-            <label class="h" for="surroundTint">Umfeld-Einfärbung · <span class="val" id="surroundTintVal">—</span></label>
+            <label class="h" for="surroundTint">Surround tint · <span class="val" id="surroundTintVal">—</span></label>
             <input type="range" id="surroundTint" min="0" max="1" step="0.01" />
-            <span class="weather-note">Färbt Punkte und Karte selbst ein, nicht nur das Overlay</span>
+            <span class="weather-note">Tints the points and the map themselves, not just the overlay</span>
           </div>
         </details>
 
         <details class="design-section">
-          <summary>Vignette-Position</summary>
+          <summary>Vignette position</summary>
           <div class="row">
-            <label class="h" for="vignetteSideAngle">Seiten-Winkel · <span class="val" id="vignetteSideAngleVal">—</span></label>
+            <label class="h" for="vignetteSideAngle">Side angle · <span class="val" id="vignetteSideAngleVal">—</span></label>
             <input type="range" id="vignetteSideAngle" min="0" max="45" step="1" />
-            <span class="weather-note">Blickwinkel unterhalb dessen die Vignette voll an der Kamera hängt (Seitenansicht)</span>
+            <span class="weather-note">Pitch below which the vignette is fully pinned to the camera (side view)</span>
           </div>
           <div class="row">
-            <label class="h" for="vignetteTopAngle">Draufsicht-Winkel · <span class="val" id="vignetteTopAngleVal">—</span></label>
+            <label class="h" for="vignetteTopAngle">Top-down angle · <span class="val" id="vignetteTopAngleVal">—</span></label>
             <input type="range" id="vignetteTopAngle" min="45" max="90" step="1" />
-            <span class="weather-note">Blickwinkel ab dem die Vignette voll dem Bodenpunkt in Bildmitte folgt (Draufsicht)</span>
+            <span class="weather-note">Pitch above which the vignette fully follows the ground point at screen centre (top-down)</span>
           </div>
           <div class="row">
-            <label class="h" for="vignetteForwardOffset">Vorwärts-Versatz · <span class="val" id="vignetteForwardOffsetVal">—</span></label>
+            <label class="h" for="vignetteForwardOffset">Forward offset · <span class="val" id="vignetteForwardOffsetVal">—</span></label>
             <input type="range" id="vignetteForwardOffset" min="-50" max="100" step="1" />
-            <span class="weather-note">Verschiebt den Anker in der Seitenansicht vor die Kamera; 0 = genau auf der Kamera</span>
+            <span class="weather-note">Moves the side-view anchor ahead of the camera; 0 = exactly on the camera</span>
           </div>
           <div class="row">
-            <label class="h" for="vignetteSideMinRadius">Mindestradius (Seite) · <span class="val" id="vignetteSideMinRadiusVal">—</span></label>
+            <label class="h" for="vignetteSideMinRadius">Minimum radius (side) · <span class="val" id="vignetteSideMinRadiusVal">—</span></label>
             <input type="range" id="vignetteSideMinRadius" min="0" max="500" step="10" />
-            <span class="weather-note">Verhindert, dass die Vignette in Seitenansicht nahe Punkte anschneidet</span>
+            <span class="weather-note">Stops the vignette from clipping nearby points in side view</span>
           </div>
           <div class="row">
-            <label class="h" for="vignetteSideMaxStrength">Max. Stärke (Seite) · <span class="val" id="vignetteSideMaxStrengthVal">—</span></label>
+            <label class="h" for="vignetteSideMaxStrength">Max strength (side) · <span class="val" id="vignetteSideMaxStrengthVal">—</span></label>
             <input type="range" id="vignetteSideMaxStrength" min="0" max="1" step="0.01" />
-            <span class="weather-note">Unter 95% verschwinden Punkte nie hart, nur über den Nebel im Hintergrund</span>
+            <span class="weather-note">Below 95% points never vanish abruptly, only through the fog in the distance</span>
           </div>
         </details>
 
         <details class="design-section">
           <summary>Depth of Field</summary>
           <div class="row">
-            <label class="h" for="dofToggle">Effekt</label>
-            <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofNote">◉ Depth of Field · An</button>
-            <span class="weather-note" id="dofNote">Echter Post-Pass mit Unschärfe-Pyramide — der einzige Effekt, der nicht im Shader läuft. Aus = null Kosten</span>
+            <label class="h" for="dofToggle">Effect</label>
+            <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofNote">◉ Depth of field · On</button>
+            <span class="weather-note" id="dofNote">A real post pass with a blur pyramid — the only effect that does not run in the shader. Off = no cost</span>
           </div>
           <div class="row">
-            <label class="h" for="dofAutoFocus">Fokus-Modus</label>
-            <button class="act on" id="dofAutoFocus" type="button" aria-pressed="true" aria-describedby="dofAutoFocusNote">⊙ Autofokus · An</button>
-            <span class="weather-note" id="dofAutoFocusNote">An = Fokusebene folgt dem Punkt in der Bildmitte · Aus = feste Distanz zur Kamera</span>
+            <label class="h" for="dofAutoFocus">Focus mode</label>
+            <button class="act on" id="dofAutoFocus" type="button" aria-pressed="true" aria-describedby="dofAutoFocusNote">⊙ Autofocus · On</button>
+            <span class="weather-note" id="dofAutoFocusNote">On = the focal plane follows the point at screen centre · Off = a fixed distance from the camera</span>
           </div>
           <div class="row" id="dofFocusRow" data-mode="offset">
-            <label class="h" for="dofFocusDistance">Fokus-Distanz · <span class="val" id="dofFocusDistanceVal">—</span></label>
+            <label class="h" for="dofFocusDistance">Focus distance · <span class="val" id="dofFocusDistanceVal">—</span></label>
             <input type="range" id="dofFocusDistance" min="-500" max="3000" step="10" />
-            <span class="weather-note">Bei Autofokus ein Versatz zum angepeilten Punkt (negativ = Fokus davor), sonst die absolute Distanz</span>
+            <span class="weather-note">With autofocus an offset from the aimed point (negative pulls focus nearer), otherwise the absolute distance</span>
           </div>
           <div class="row">
-            <label class="h" for="dofFocalLength">Schärfentiefe · <span class="val" id="dofFocalLengthVal">—</span></label>
+            <label class="h" for="dofFocalLength">Depth of field · <span class="val" id="dofFocalLengthVal">—</span></label>
             <input type="range" id="dofFocalLength" min="50" max="4000" step="25" />
-            <span class="weather-note">Distanz hinter der Fokusebene bis zur vollen Unschärfe. Klein = flach und filmisch, groß = fast alles scharf</span>
+            <span class="weather-note">Distance past the focal plane to full blur. Small = shallow and cinematic, large = almost everything sharp</span>
           </div>
           <div class="row">
-            <label class="h" for="dofBokehScale">Bokeh-Größe · <span class="val" id="dofBokehScaleVal">—</span></label>
+            <label class="h" for="dofBokehScale">Bokeh size · <span class="val" id="dofBokehScaleVal">—</span></label>
             <input type="range" id="dofBokehScale" min="0" max="8" step="0.1" />
-            <span class="weather-note">Breite des Unschärfe-Kerns — zugleich der Haupt-Kostenfaktor</span>
+            <span class="weather-note">Width of the blur kernel — also the main cost driver</span>
           </div>
           <div class="row">
-            <label class="h" for="dofFocusSmoothing">Fokus-Trägheit · <span class="val" id="dofFocusSmoothingVal">—</span></label>
+            <label class="h" for="dofFocusSmoothing">Focus inertia · <span class="val" id="dofFocusSmoothingVal">—</span></label>
             <input type="range" id="dofFocusSmoothing" min="0.01" max="1" step="0.01" />
-            <span class="weather-note">Klein = Fokusebene zieht sanft nach, groß = springt sofort</span>
+            <span class="weather-note">Small = the focal plane eases in, large = it snaps</span>
           </div>
         </details>
       </div>
-      <button class="act" id="designCopy" type="button">⧉ Werte kopieren</button>
+      <button class="act" id="designCopy" type="button">⧉ Copy values</button>
     </div>
 
     <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">
@@ -954,7 +954,7 @@
             <span class="peru-time-copy"><span id="peruTimeMode" class="is-live">LIVE · PET</span><strong id="peruTimeValue">12:00</strong></span>
             <span class="peru-time-chevron" aria-hidden="true">⌃</span>
           </button>
-          <button id="soundToggle" type="button" aria-pressed="false" aria-label="Naturklänge einschalten">
+          <button id="soundToggle" type="button" aria-pressed="false" aria-label="Enable ambient sound">
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 10v4h3l4 3V7l-4 3H4Z" />
               <path class="sound-wave" d="M14.5 9.2a4 4 0 0 1 0 5.6M17 6.8a7.2 7.2 0 0 1 0 10.4" />
@@ -966,8 +966,8 @@
           <div class="peru-time-panel-inner">
             <div class="peru-time-control">
               <label class="peru-time-label" for="peruTimeSlider">Field light · Peru time</label>
-              <button id="peruTimeNow" type="button" hidden>Jetzt</button>
-              <input id="peruTimeSlider" type="range" min="0" max="1439" step="5" value="720" aria-label="Tageszeit in Peru" aria-valuetext="12:00 Uhr, Peru" />
+              <button id="peruTimeNow" type="button" hidden>Now</button>
+              <input id="peruTimeSlider" type="range" min="0" max="1439" step="5" value="720" aria-label="Time of day in Peru" aria-valuetext="12:00, Peru" />
               <div class="peru-time-ticks" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
             </div>
           </div>
@@ -983,13 +983,13 @@
         <header class="video-card-header">
           <div>
             <p class="video-eyebrow">Wilderness International · Field Film</p>
-            <h2 id="videoTitle">Der Wald ist unser stärkster Verbündeter.</h2>
+            <h2 id="videoTitle">The forest is our strongest ally.</h2>
           </div>
-          <button id="videoClose" class="video-close" type="button" aria-label="Video schließen">×</button>
+          <button id="videoClose" class="video-close" type="button" aria-label="Close video">×</button>
         </header>
         <div class="video-frame">
-          <video id="fieldVideo" controls playsinline preload="none" aria-label="Wilderness International Imagefilm"></video>
-          <p id="videoStatus">Video wird geladen …</p>
+          <video id="fieldVideo" controls playsinline preload="none" aria-label="Wilderness International field film"></video>
+          <p id="videoStatus">Loading video …</p>
         </div>
       </section>
     </div>

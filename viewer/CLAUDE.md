@@ -55,7 +55,10 @@ URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-glo
 
 - Layer modules export a `createXxxLayer(...)` factory returning an interface with `update(...)` / `dispose()`; `main.ts` calls `update` each frame and `dispose` on teardown. Follow that shape for new layers.
 - WebGPU is primary (`three/webgpu`, `three/tsl`); code must degrade to WebGL (`?webgl` and automatic fallback). Don't assume WebGPU-only features without a fallback.
-- German UI strings are intentional (status/loader text is user-facing German).
+- UI strings are English throughout — loader, HUD, panel labels and their
+  descriptions, status and ARIA text. They used to be German; if you find a German
+  string in user-facing text it is a leftover, not a decision. Source comments are
+  a separate matter and some are still German.
 
 ## Deployment
 

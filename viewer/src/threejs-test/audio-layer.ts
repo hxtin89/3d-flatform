@@ -67,8 +67,8 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
   function paintButton(message?: string): void {
     toggle.classList.toggle('is-on', enabled)
     toggle.setAttribute('aria-pressed', String(enabled))
-    toggle.setAttribute('aria-label', enabled ? 'Naturklänge ausschalten' : 'Naturklänge einschalten')
-    status.textContent = message ?? (enabled ? 'Naturklänge aktiviert' : 'Naturklänge stumm')
+    toggle.setAttribute('aria-label', enabled ? 'Mute ambient sound' : 'Enable ambient sound')
+    status.textContent = message ?? (enabled ? 'Ambient sound on' : 'Ambient sound muted')
   }
 
   function initialize(): void {
@@ -108,7 +108,7 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
   async function setEnabled(nextEnabled: boolean): Promise<void> {
     if (disposed || nextEnabled === enabled) return
     if (!AudioContextClass) {
-      status.textContent = 'Web Audio wird von diesem Browser nicht unterstützt.'
+      status.textContent = 'This browser does not support Web Audio.'
       toggle.disabled = true
       return
     }
@@ -118,7 +118,7 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
 
     if (nextEnabled) {
       enabled = true
-      paintButton('Naturklänge werden gestartet …')
+      paintButton('Starting ambient sound …')
       try {
         const resume = context.resume()
         const plays = tracks.map((track) => track.element.play())
@@ -137,7 +137,7 @@ export function createAudioLayer(options: AudioLayerOptions): AudioLayer {
         enabled = false
         for (const track of tracks) track.element.pause()
         const reason = error instanceof DOMException ? error.name : 'PlaybackError'
-        paintButton(`Naturklänge konnten nicht starten (${reason}).`)
+        paintButton(`Ambient sound could not start (${reason}).`)
       }
       return
     }
