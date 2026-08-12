@@ -124,15 +124,17 @@ export function createGlobe(opts: {
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
       // .rgb, not the raw vec4: gradeImageryNode mixes against a vec3 luma.
-      const graded = gradeImageryNode(uniforms, texture(map).rgb)
+      const raw = texture(map).rgb
+      const graded = gradeImageryNode(uniforms, raw)
         .mul(uniforms.daylightColor)
         .mul(uniforms.daylightIntensity)
-      // After the daylight multiply so the configured colour stays exactly that,
-      // but before fog and the vignette so the patch sits in the same atmosphere
-      // as everything else. Imagery only — the point cloud draws on top.
-      const patched = applyGroundPatch(uniforms, graded)
       const fog = groundFogNode(uniforms)
-      mat.colorNode = applyMaskSurround(uniforms, mix(patched, fog.color, fog.amount), 0.50)
+      const atmospheric = applyMaskSurround(uniforms, mix(graded, fog.color, fog.amount), 0.50)
+      // Last, on purpose: fog and the vignette are atmosphere for the map, and under
+      // the point cloud there is no map to give atmosphere to. Applying the patch
+      // after them is what makes the chosen colour or brightness the thing you
+      // actually see — see applyGroundPatch.
+      mat.colorNode = applyGroundPatch(uniforms, atmospheric, raw)
       o.material.dispose()
       o.material = mat
     })

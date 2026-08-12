@@ -793,12 +793,22 @@
           <div class="row">
             <label class="h" for="groundPatchToggle">Effect</label>
             <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchNote">▦ Ground patch · On</button>
-            <span class="weather-note" id="groundPatchNote">Replaces the satellite imagery with a solid colour where point data exists — the shape follows a coverage mask built from the tileset cells, not the survey rectangle</span>
+            <span class="weather-note" id="groundPatchNote">Replaces the satellite imagery with a solid colour where point data exists — the shape follows a coverage mask splatted from the points themselves, so gaps in the survey — the river, the missing strip — keep showing the map</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchColorMix">Flat colour vs basemap · <span class="val" id="groundPatchColorMixVal">—</span></label>
+            <input type="range" id="groundPatchColorMix" min="0" max="1" step="0.01" />
+            <span class="weather-note">0% = the basemap at its own brightness below · 100% = the flat colour · in between blends the two</span>
           </div>
           <div class="row">
             <label class="h" for="groundPatchColor">Colour</label>
             <input type="color" id="groundPatchColor" />
-            <span class="weather-note">Not graded by daylight, but fog and the vignette still apply to it</span>
+            <span class="weather-note">Shown exactly as picked — no daylight grading, no fog, no vignette on the patch</span>
+          </div>
+          <div class="row">
+            <label class="h" for="groundPatchBrightness">Basemap brightness here · <span class="val" id="groundPatchBrightnessVal">—</span></label>
+            <input type="range" id="groundPatchBrightness" min="0" max="1.5" step="0.01" />
+            <span class="weather-note">Independent of the global basemap brightness, and free of fog and vignette</span>
           </div>
           <div class="row">
             <label class="h" for="groundPatchAmount">Coverage · <span class="val" id="groundPatchAmountVal">—</span></label>

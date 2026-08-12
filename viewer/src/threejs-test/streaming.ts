@@ -112,6 +112,12 @@ export function createStreamingCloud(opts: {
   /** The Adaptive Point Hierarchy is one continuous quadtree without request
    * volumes or density bands, so the One-LOD-Tree machinery must stay out of it. */
   requestVolumes?: boolean
+  /**
+   * Called once per loaded point tile, with the object that carries its positions.
+   * The ground-patch mask uses it to accumulate coverage from the same tiles the
+   * renderer was going to download anyway — see ground-patch-mask.
+   */
+  onPointTile?: (object: THREE.Object3D) => void
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
   const useRequestVolumes = opts.requestVolumes !== false
@@ -221,6 +227,9 @@ export function createStreamingCloud(opts: {
     })
     for (const source of sources) {
       points += source.geometry?.getAttribute('position')?.count ?? 0
+      // Before setDrawRange(0, 0) below parks the carrier — the positions stay
+      // readable either way, but taking the tile here keeps the handoff obvious.
+      opts.onPointTile?.(source)
       const mesh = buildPointQuads(source)
       if (!mesh) continue
 

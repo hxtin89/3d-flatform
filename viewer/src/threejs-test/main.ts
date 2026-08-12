@@ -522,9 +522,13 @@ let lastAtmosphereUpdate = -Infinity
 let distanceFogNearFactor: number = EXPERIENCE_CONFIG.atmosphere.fogNearFactor
 let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
 // Coverage mask for the flat ground under the point cloud. Created and registered
-// before any basemap material exists, then filled once the point tileset root
-// arrives — the materials bind the texture object, so it must not be replaced.
-const groundPatchMask = createGroundPatchMask()
+// before any basemap material exists — the materials bind the texture object, so it
+// must not be replaced — then filled from the point tiles as they load.
+const groundPatchMask = createGroundPatchMask({
+  size: EXPERIENCE_CONFIG.design.groundPatch.maskSize,
+  splatRadiusPx: EXPERIENCE_CONFIG.design.groundPatch.maskSplatRadiusPx,
+  pointsPerFrame: EXPERIENCE_CONFIG.design.groundPatch.maskPointsPerFrame,
+})
 setGroundPatchMask(groundPatchMask.texture)
 
 /** Copy the mask's ENU rectangle into the uniforms the material maps UV with. */
@@ -532,6 +536,8 @@ function applyGroundPatchExtent(): void {
   uniforms.groundPatchCenter.value.copy(groundPatchMask.center)
   uniforms.groundPatchHalfExtent.value.copy(groundPatchMask.halfExtent)
 }
+/** Guards the one-shot extent fix — the survey rectangle never changes. */
+let groundPatchMaskBuilt = false
 let lastFieldTier: PerformanceTier | null = null
 let disposed = false
 
@@ -1620,6 +1626,12 @@ bindDesignColor('groundPatchColor', GROUND_PATCH.color, (hex) => {
 bindDesignSlider('groundPatchAmount', GROUND_PATCH.amount, asPercent, (v) => {
   groundPatchAmount = v; applyGroundPatchAmount()
 })
+bindDesignSlider('groundPatchColorMix', GROUND_PATCH.colorMix, asPercent, (v) => {
+  uniforms.groundPatchColorMix.value = v
+})
+bindDesignSlider('groundPatchBrightness', GROUND_PATCH.brightness, asPercent, (v) => {
+  uniforms.groundPatchBrightness.value = v
+})
 bindDesignSlider('groundPatchShrink', GROUND_PATCH.shrink, asPercent, (v) => {
   uniforms.groundPatchShrink.value = v
 })
@@ -1732,6 +1744,8 @@ designCopyEl.addEventListener('click', async () => {
       enabled: groundPatchEnabled,
       color: $<HTMLInputElement>('#groundPatchColor').value.replace('#', '0x'),
       amount: groundPatchAmount,
+      colorMix: uniforms.groundPatchColorMix.value,
+      brightness: uniforms.groundPatchBrightness.value,
       shrink: uniforms.groundPatchShrink.value,
       softness: uniforms.groundPatchSoftness.value,
     },
@@ -2017,6 +2031,10 @@ function loop(now: number): void {
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
+  // Spends a fixed point budget on whatever tiles have arrived and returns
+  // immediately once the queue is empty, which it is for all but the first
+  // seconds after a tile loads.
+  groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
   depthOfField.render()
 }
@@ -2139,10 +2157,13 @@ async function main(): Promise<void> {
     onActivateAim: activateAimTarget,
     onDismissAim: dismissAimMode,
   })
+  // Lifted out of the call because the ground-patch mask resolves the per-cell
+  // subtree links relative to it.
+  const pointTilesetUrl = pointTree === 'aph'
+    ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
+    : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`
   stream = createStreamingCloud({
-    tilesetUrl: pointTree === 'aph'
-      ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
-      : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`,
+    tilesetUrl: pointTilesetUrl,
     requestVolumes: pointTree !== 'aph',
     // The APH quadtree only pays off with residency to match: the Cesium
     // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
@@ -2156,19 +2177,34 @@ async function main(): Promise<void> {
     uniforms,
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
+    onPointTile: (object) => groundPatchMask.addTile(object),
   })
   applyHeightOffset()
-  // The mask can only be built once the root tileset lists its cells, which is
-  // well after the basemap materials exist — hence the fill-in-place texture.
+  // The rectangle is settled exactly once, off the critical path: the survey never
+  // moves. Coverage then accumulates from the point tiles the renderer loads anyway
+  // — see ground-patch-mask for why the points, and not the node boxes, are the only
+  // source fine enough to leave the river showing.
   stream.tiles.addEventListener('load-root-tileset' as any, () => {
-    const cells = groundPatchMask.buildFrom((stream as any).tiles.rootTileSet, enuInverse)
-    if (!cells) {
-      console.warn('[ground-patch] no cell boxes in the tileset — patch stays off')
+    if (groundPatchMaskBuilt) return
+    groundPatchMaskBuilt = true
+    const patch = EXPERIENCE_CONFIG.design.groundPatch
+    void groundPatchMask.setExtent({
+      tilesetUrl: pointTilesetUrl,
+      rootTileSet: (stream as any).tiles.rootTileSet,
+      enuInverse,
+      maxDepth: patch.maskMaxDepth,
+    }).then((boxes) => {
+      if (!boxes) {
+        console.warn('[ground-patch] tileset carried no usable node boxes — patch stays off')
+        uniforms.groundPatchAmount.value = 0
+        return
+      }
+      applyGroundPatchExtent()
+      console.info(`[ground-patch] extent from ${boxes} node boxes`)
+      }).catch((error) => {
+      console.warn('[ground-patch] extent failed — patch stays off', error)
       uniforms.groundPatchAmount.value = 0
-      return
-    }
-    applyGroundPatchExtent()
-    console.info(`[ground-patch] coverage mask built from ${cells} cells`)
+    })
   })
   // Debug handle for streaming diagnosis in the console.
   ;(window as any).__wild = {
@@ -2351,6 +2387,7 @@ async function main(): Promise<void> {
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
+    groundPatchMask,
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()

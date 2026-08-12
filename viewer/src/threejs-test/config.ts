@@ -440,20 +440,50 @@ export const EXPERIENCE_CONFIG = {
      */
     groundPatch: {
       enabled: true,
-      /** Dark by default — the point cloud reads against it, not with it. */
-      color: 0x0a1410,
-      /** How far the imagery is replaced. 1 = fully, below that the satellite
-       * texture shows through, which can help the cloud sit on real terrain. */
+      /** How much of the patch is applied at all. 1 = fully. */
       amount: 1,
+      /** 0 = the raw basemap at `brightness` below, 1 = the flat `color`. Anything
+       * between blends the two, so one control covers both requests: dim the map
+       * only there, or replace it outright. */
+      colorMix: 1,
+      /** Brightness of the raw imagery inside the patch, independent of the global
+       * basemap grading — the point being to see exactly this, not this plus fog. */
+      brightness: 0.25,
+      /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
+      color: 0x0a1410,
       /** Threshold on the blurred mask, so higher values erode the patch inward.
-       * Measured from above with the patch in a contrast colour: at 0.6 a rim of
-       * flat colour still stood outside the point edge, because a cell's bounding
-       * box is larger than the points inside it. 0.85 pulls it under the data,
-       * which is the safe direction — a little basemap at the edge reads far
-       * better than colour lying on the map. */
-      shrink: 0.85,
+       * Erring inward is the safe direction — a little basemap at the edge reads
+       * far better than flat colour lying on the map. */
+      shrink: 0.5,
       /** Width of the threshold ramp — the soft edge. */
-      softness: 0.12,
+      softness: 0.2,
+      /**
+       * How deep to walk each cell's node hierarchy when bounding the mask. Only
+       * the rectangle comes from the boxes — coverage comes from the points, which
+       * are the only source fine enough for the river. The measured subtree bottoms
+       * out at depth 7, so anything past that costs nothing and changes nothing.
+       */
+      maskMaxDepth: 16,
+      /**
+       * Mask resolution. 2048 over the ~12.8 km survey is about 6.9 x 4.6 m per
+       * pixel, which the overview LOD already saturates at roughly one point per
+       * pixel — so this, not the LOD, is what limits how crisply the river reads.
+       * Raise both together if it needs to be sharper; the texture is size^2 bytes.
+       */
+      maskSize: 2048,
+      /**
+       * Pixels each splatted point is grown by. 1 fills the Poisson gaps in the
+       * overview LOD's sampling, at the price of a pixel on each river bank; 0
+       * keeps the banks exact and leaves roughly a tenth of the interior speckled
+       * until finer tiles arrive.
+       */
+      maskSplatRadiusPx: 1,
+      /**
+       * Points splatted per frame — the cap on how much the mask can ever cost in
+       * one frame. At 80k the work is well under a millisecond and the ~3 M point
+       * overview still completes within a couple of seconds of load.
+       */
+      maskPointsPerFrame: 80_000,
     },
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,

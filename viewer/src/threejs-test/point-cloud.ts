@@ -40,8 +40,13 @@ export interface CloudUniforms {
   /** ENU rectangle the coverage mask spans — used to map position into mask UV. */
   groundPatchCenter: any
   groundPatchHalfExtent: any
+  /** 0 = the raw basemap at groundPatchBrightness, 1 = a flat colour. */
+  groundPatchColorMix: any
+  /** Brightness applied to the raw imagery inside the patch, independent of the
+   * global basemap grading. */
+  groundPatchBrightness: any
   /** Threshold on the blurred mask. Raising it erodes the patch inward, which is
-   * how the flat colour is kept from spilling past the point data. */
+   * how the patch is kept from spilling past the point data. */
   groundPatchShrink: any
   /** Width of the threshold ramp — the soft edge. */
   groundPatchSoftness: any
@@ -109,6 +114,8 @@ export function createUniforms(): CloudUniforms {
     groundPatchColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.groundPatch.color)),
     groundPatchCenter: uniform(new THREE.Vector2(0, 0)),
     groundPatchHalfExtent: uniform(new THREE.Vector2(1, 1)),
+    groundPatchColorMix: uniform(EXPERIENCE_CONFIG.design.groundPatch.colorMix),
+    groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
     groundPatchShrink: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrink),
     groundPatchSoftness: uniform(EXPERIENCE_CONFIG.design.groundPatch.softness),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
@@ -226,27 +233,29 @@ export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
 }
 
 /**
- * Replace the basemap with a flat colour where the point cloud has data, so the
- * satellite imagery only shows where it does not.
+ * Treat the basemap differently where the point cloud has data, so the map only
+ * shows as-is where the cloud is not.
  *
- * Applied to the imagery material only — the point cloud must keep drawing on
- * top. And it replaces rather than discards: the draped imagery is the only
- * surface the globe has there, so cutting it would leave a hole with the sky
- * behind it.
+ * Imagery material only — the point cloud keeps drawing on top. And it replaces
+ * rather than discards: the draped imagery is the only surface the globe has
+ * there, so cutting it would leave a hole with the sky behind it.
  *
- * The shape comes from a coverage mask rather than a rectangle. The survey bbox
- * looked like a reasonable stand-in and is not: this dataset spans 12.8 x 8.5 km
- * but fills it with 27 irregular cells, so a rectangle paints solid colour across
- * large empty areas. See ground-patch-mask.ts for how the mask is rasterised.
+ * Deliberately the LAST step in the imagery chain, after fog and the vignette.
+ * Those are atmosphere for the map, and under the cloud there is no map to give
+ * atmosphere to — the point is to see exactly the colour that was chosen, or the
+ * basemap at exactly the brightness that was chosen. Anything layered on before
+ * this, a high-resolution overlay included, is covered by it for free.
  *
- * `shrink` thresholds the blurred mask, which erodes the shape inward. That is
- * the safe direction: a patch pulled slightly inside the data leaves a little
- * basemap visible at the edge, while one that spills past it reads as a wedge of
- * flat colour sitting on the map.
+ * `colorMix` runs the target from one end to the other: 0 is the raw imagery at
+ * its own brightness, 1 is a flat colour, in between blends the two.
+ *
+ * `shrink` thresholds the blurred mask and so erodes the shape inward. That is the
+ * safe direction: pulled slightly inside the data it leaves a little basemap at the
+ * edge, while spilling past it reads as flat colour lying on the map.
  */
-export function applyGroundPatch(u: CloudUniforms, color: any): any {
-  // No mask registered (or no point tileset yet) means nothing to replace.
-  if (!groundPatchMaskNode) return color
+export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
+  // No mask built yet (or none registered) means nothing to change.
+  if (!groundPatchMaskNode) return finished
   // Annotated `any` like the rest of this file's node plumbing: the uniforms are
   // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
   const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
@@ -256,7 +265,11 @@ export function applyGroundPatch(u: CloudUniforms, color: any): any {
   const shrink: any = u.groundPatchShrink
   const coverage: any = smoothstep(shrink, shrink.add(max(u.groundPatchSoftness, float(0.001))), sample)
     .mul(u.groundPatchAmount)
-  return mix(color, vec3(u.groundPatchColor), coverage)
+  // From the raw texture, not the graded result, so neither the global basemap
+  // grading nor the daylight ramp leaks into the chosen appearance.
+  const ownBrightness: any = rawImagery.mul(u.groundPatchBrightness)
+  const target: any = mix(ownBrightness, vec3(u.groundPatchColor), u.groundPatchColorMix)
+  return mix(finished, target, coverage)
 }
 
 /** Desaturate + darken the basemap only, so the imagery can sit back without
