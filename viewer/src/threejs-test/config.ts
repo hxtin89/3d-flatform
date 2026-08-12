@@ -480,10 +480,18 @@ export const EXPERIENCE_CONFIG = {
       maskSplatRadiusPx: 1,
       /**
        * Points splatted per frame — the cap on how much the mask can ever cost in
-       * one frame. At 80k the work is well under a millisecond and the ~3 M point
-       * overview still completes within a couple of seconds of load.
+       * one frame. Measured at roughly 50 ns per point, so this is about 1 ms; the
+       * ~3 M point overview then takes a couple of seconds of load to fill in, which
+       * is invisible because the cloud covers that ground anyway.
        */
-      maskPointsPerFrame: 80_000,
+      maskPointsPerFrame: 20_000,
+      /**
+       * Shortest gap between mask uploads while coverage is still arriving. The
+       * upload is the expensive half — the whole 4.2 MB texture, measured at 10.7 ms,
+       * against ~1 ms of splatting — so batching it is what keeps the fill invisible.
+       * The final upload is never delayed.
+       */
+      maskUploadIntervalMs: 400,
     },
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,

@@ -528,6 +528,7 @@ const groundPatchMask = createGroundPatchMask({
   size: EXPERIENCE_CONFIG.design.groundPatch.maskSize,
   splatRadiusPx: EXPERIENCE_CONFIG.design.groundPatch.maskSplatRadiusPx,
   pointsPerFrame: EXPERIENCE_CONFIG.design.groundPatch.maskPointsPerFrame,
+  uploadIntervalMs: EXPERIENCE_CONFIG.design.groundPatch.maskUploadIntervalMs,
 })
 setGroundPatchMask(groundPatchMask.texture)
 
