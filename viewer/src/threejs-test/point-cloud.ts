@@ -5,8 +5,8 @@ import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
-  vec2, vec3, vec4, float, int, mix, smoothstep, length, max, abs, exp, floor, hash,
-  cameraPosition, context, highpModelViewMatrix,
+  vec2, vec3, vec4, float, int, mix, smoothstep, length, max, min, abs, exp, floor, hash,
+  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -53,6 +53,12 @@ export interface CloudUniforms {
   groundPatchShrink: any
   /** Width of the threshold ramp — the soft edge. */
   groundPatchSoftness: any
+  /**
+   * Radius, in metres, over which coverage is averaged before thresholding. This is
+   * what gives `shrink` and `softness` something to act on: the splatted mask itself
+   * is hard 0/1. Sets how far the edge can be pulled in and how wide the fade is.
+   */
+  groundPatchFeatherM: any
   /** Analytic ground fog, shared by points and imagery. */
   groundFogColor: any
   groundFogStrength: any
@@ -129,6 +135,7 @@ export function createUniforms(): CloudUniforms {
     groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
     groundPatchShrink: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrink),
     groundPatchSoftness: uniform(EXPERIENCE_CONFIG.design.groundPatch.softness),
+    groundPatchFeatherM: uniform(EXPERIENCE_CONFIG.design.groundPatch.featherM),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
@@ -264,15 +271,30 @@ export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
  * safe direction: pulled slightly inside the data it leaves a little basemap at the
  * edge, while spilling past it reads as flat colour lying on the map.
  */
-export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
-  // No mask built yet (or none registered) means nothing to change.
-  if (!groundPatchMaskNode || !groundPatchIndexNode) return finished
-  // Annotated `any` like the rest of this file's node plumbing: the uniforms are
-  // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
-  const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
-  // Position within the lattice, in cells. The integer part picks the cell, the
-  // fraction is the UV inside it.
-  const gridPos: any = enu.xy.sub(u.groundPatchOrigin).div(u.groundPatchCellSizeM)
+/**
+ * Disc of offsets, in units of the feather radius, used to soften the patch edge.
+ * Two rings of six plus the centre: enough taps that a wide feather reads as a ramp
+ * instead of banding, and the second ring is rotated so the two do not line up.
+ */
+const GROUND_PATCH_TAPS: Array<[number, number]> = (() => {
+  const taps: Array<[number, number]> = [[0, 0]]
+  for (const [radius, phase] of [[0.55, 0], [1, Math.PI / 6]] as const) {
+    for (let i = 0; i < 6; i++) {
+      const angle = phase + (i * Math.PI) / 3
+      taps.push([Math.cos(angle) * radius, Math.sin(angle) * radius])
+    }
+  }
+  return taps
+})()
+
+/**
+ * Coverage at one lattice position, as 0 or 1.
+ *
+ * The cell and the UV inside it both come from the same position, so offsetting the
+ * position is all it takes to sample across a cell boundary — no special case at the
+ * seams, which is what makes the feather below work at all.
+ */
+function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
   const cellXY: any = floor(gridPos)
   const withinCell: any = gridPos.sub(cellXY)
   // Which layer holds this cell. The index map stores layer + 1 so that 0 can mean
@@ -285,9 +307,60 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   // layer and multiplied away instead, because a branch here would be per-fragment.
   const present: any = smoothstep(float(0.5), float(1.5), slot)
   const layer: any = int(max(slot, float(1)).sub(1))
-  const sample: any = groundPatchMaskNode.sample(withinCell).depth(layer).r.mul(present)
+  return groundPatchMaskNode.sample(withinCell).depth(layer).r.mul(present)
+}
+
+export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
+  // No mask built yet (or none registered) means nothing to change.
+  if (!groundPatchMaskNode || !groundPatchIndexNode) return finished
+  // Annotated `any` like the rest of this file's node plumbing: the uniforms are
+  // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
+  const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
+  // Position within the lattice, in cells. The integer part picks the cell, the
+  // fraction is the UV inside it.
+  const gridPos: any = enu.xy.sub(u.groundPatchOrigin).div(u.groundPatchCellSizeM)
+
+  // Averaging the disc turns the mask's hard 0/1 coverage into a ramp across the
+  // feather width, which is what `shrink` then thresholds. Without it there is
+  // nothing between "point data" and "no point data" to slide along, and shrink has
+  // no effect at all — the splatted mask has no blur of its own.
+  //
+  // Done here rather than on the CPU because the mask is stored per cell: blurring it
+  // in place would need each cell to read its neighbours, and would have to be redone
+  // on every change. Here it costs taps on basemap fragments only, and lets the
+  // feather width be a live control.
+  const radiusCells: any = u.groundPatchFeatherM.div(u.groundPatchCellSizeM)
+  // 13 taps only quantise coverage into thirteenths, which would show as bands
+  // stepping inward from the edge. Rotating and rescaling the disc per fragment
+  // scatters those steps into fine noise instead, which reads as a smooth ramp — far
+  // cheaper than the tap count it would otherwise take, since it adds arithmetic
+  // rather than texture reads.
+  const noise: any = hash(screenCoordinate.x.mul(97.13).add(screenCoordinate.y.mul(31.7)))
+  const angle: any = noise.mul(6.2831853)
+  const sa: any = sin(angle)
+  const ca: any = cos(angle)
+  const jitteredRadius: any = radiusCells.mul(noise.mul(0.3).add(0.85))
+  let sum: any = groundPatchCoverageAt(u, gridPos)
+  for (let i = 1; i < GROUND_PATCH_TAPS.length; i++) {
+    const [ox, oy] = GROUND_PATCH_TAPS[i]
+    const rotated: any = vec2(
+      ca.mul(ox).sub(sa.mul(oy)),
+      sa.mul(ox).add(ca.mul(oy)),
+    )
+    sum = sum.add(groundPatchCoverageAt(u, gridPos.add(rotated.mul(jitteredRadius))))
+  }
+  const feathered: any = sum.div(float(GROUND_PATCH_TAPS.length))
+
+  // Thresholding above 0.5 pulls the edge inward: at the outer fringe of the cloud
+  // the points are sparse and the patch would otherwise show through them as a dark
+  // rim. Eroding it leaves the basemap there instead, so the cloud fades into the map.
+  // Centred on `shrink` and clamped at 1, both deliberately. A ramp running upward
+  // *from* shrink would never reach full coverage: at shrink 0.8 with a 0.45 wide
+  // ramp the interior — where the disc is completely covered — would top out at 0.42
+  // and the patch would sit half-transparent everywhere, not just at its edge.
+  const half: any = max(u.groundPatchSoftness, float(0.001)).mul(0.5)
   const shrink: any = u.groundPatchShrink
-  const coverage: any = smoothstep(shrink, shrink.add(max(u.groundPatchSoftness, float(0.001))), sample)
+  const coverage: any = smoothstep(shrink.sub(half), min(shrink.add(half), float(1)), feathered)
     .mul(u.groundPatchAmount)
   // From the raw texture, not the graded result, so neither the global basemap
   // grading nor the daylight ramp leaks into the chosen appearance.

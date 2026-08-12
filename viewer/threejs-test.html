@@ -816,14 +816,19 @@
             <span class="weather-note">100% = imagery fully replaced · below that the terrain shows through</span>
           </div>
           <div class="row">
+            <label class="h" for="groundPatchFeatherM">Edge feather · <span class="val" id="groundPatchFeatherMVal">—</span></label>
+            <input type="range" id="groundPatchFeatherM" min="0" max="120" step="1" />
+            <span class="weather-note">Distance the edge is averaged over. Set this first — at 0 m the coverage is hard on/off and the two sliders below do nothing</span>
+          </div>
+          <div class="row">
             <label class="h" for="groundPatchShrink">Shrink · <span class="val" id="groundPatchShrinkVal">—</span></label>
             <input type="range" id="groundPatchShrink" min="0" max="0.95" step="0.01" />
-            <span class="weather-note">Pulls the patch inward. Higher = more basemap stays visible at the edge. Low can let it spill past the points</span>
+            <span class="weather-note">Where in the feather the edge sits. 50% = on the outline, higher pulls it inward so the cloud's thin outer fringe falls onto basemap instead of a dark rim</span>
           </div>
           <div class="row">
             <label class="h" for="groundPatchSoftness">Edge softness · <span class="val" id="groundPatchSoftnessVal">—</span></label>
             <input type="range" id="groundPatchSoftness" min="0.01" max="1" step="0.01" />
-            <span class="weather-note">Width of the transition. 1% = hard edge, higher = a soft ramp across roughly the 50 m mask resolution</span>
+            <span class="weather-note">How much of the feather the fade spans, centred on the shrink point. 1% = hard cut, higher = a wider ramp</span>
           </div>
         </details>
 

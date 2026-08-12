@@ -1641,6 +1641,9 @@ bindDesignSlider('groundPatchBrightness', GROUND_PATCH.brightness, asPercent, (v
 bindDesignSlider('groundPatchShrink', GROUND_PATCH.shrink, asPercent, (v) => {
   uniforms.groundPatchShrink.value = v
 })
+bindDesignSlider('groundPatchFeatherM', GROUND_PATCH.featherM, asMetres, (v) => {
+  uniforms.groundPatchFeatherM.value = v
+})
 bindDesignSlider('groundPatchSoftness', GROUND_PATCH.softness, asPercent, (v) => {
   uniforms.groundPatchSoftness.value = v
 })
@@ -1754,6 +1757,7 @@ designCopyEl.addEventListener('click', async () => {
       brightness: uniforms.groundPatchBrightness.value,
       shrink: uniforms.groundPatchShrink.value,
       softness: uniforms.groundPatchSoftness.value,
+      featherM: uniforms.groundPatchFeatherM.value,
     },
     maskFringe: uniforms.maskFringe.value,
     maskFringeCurve: uniforms.maskFringeCurve.value,

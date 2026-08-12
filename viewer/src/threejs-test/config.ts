@@ -451,12 +451,33 @@ export const EXPERIENCE_CONFIG = {
       brightness: 0.25,
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
-      /** Threshold on the blurred mask, so higher values erode the patch inward.
-       * Erring inward is the safe direction — a little basemap at the edge reads
-       * far better than flat colour lying on the map. */
-      shrink: 0.5,
-      /** Width of the threshold ramp — the soft edge. */
-      softness: 0.2,
+      /**
+       * Threshold on the feathered coverage. 0.5 sits on the mask's own outline;
+       * above that the patch erodes inward, which is the safe direction — a little
+       * basemap at the edge reads far better than flat colour lying on the map.
+       *
+       * Deliberately well above 0.5: at the cloud's outer fringe the points thin out,
+       * and the patch showing between them read as a hard black rim against the map.
+       * Pulling the edge inside that fringe puts basemap there instead, so the cloud
+       * fades into the map rather than ending on a dark border.
+       */
+      shrink: 0.8,
+      /**
+       * Width of the transition, as a fraction of the feather, centred on `shrink`.
+       * Kept at or below 2 x (1 - shrink) so the ramp still reaches full coverage:
+       * the interior must end up opaque, only the edge should fade.
+       */
+      softness: 0.4,
+      /**
+       * Radius in metres over which coverage is averaged before `shrink` thresholds
+       * it. Nothing else gives the edge a gradient — the splatted mask is hard 0/1 —
+       * so at 0 both shrink and softness do nothing at all.
+       *
+       * Sets how far the edge can be pulled inward and how wide the fade is. 30 m is
+       * roughly two canopy crowns, the scale the cloud's own outer fringe thins out
+       * over.
+       */
+      featherM: 30,
       /**
        * How deep to walk each cell's node hierarchy when bounding the mask. Only
        * the rectangle comes from the boxes — coverage comes from the points, which
