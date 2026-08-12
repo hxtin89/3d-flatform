@@ -525,17 +525,22 @@ let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
 // before any basemap material exists — the materials bind the texture object, so it
 // must not be replaced — then filled from the point tiles as they load.
 const groundPatchMask = createGroundPatchMask({
-  size: EXPERIENCE_CONFIG.design.groundPatch.maskSize,
+  cellPx: EXPERIENCE_CONFIG.design.groundPatch.maskCellPx,
+  metresPerPixel: EXPERIENCE_CONFIG.design.groundPatch.maskMetresPerPixel,
+  maxCells: EXPERIENCE_CONFIG.design.groundPatch.maskMaxCells,
+  indexSize: EXPERIENCE_CONFIG.design.groundPatch.maskIndexSize,
   splatRadiusPx: EXPERIENCE_CONFIG.design.groundPatch.maskSplatRadiusPx,
   pointsPerFrame: EXPERIENCE_CONFIG.design.groundPatch.maskPointsPerFrame,
   uploadIntervalMs: EXPERIENCE_CONFIG.design.groundPatch.maskUploadIntervalMs,
 })
-setGroundPatchMask(groundPatchMask.texture)
+setGroundPatchMask(groundPatchMask.texture, groundPatchMask.index)
 
-/** Copy the mask's ENU rectangle into the uniforms the material maps UV with. */
+/** Copy the mask's lattice layout into the uniforms the material addresses it with. */
 function applyGroundPatchExtent(): void {
-  uniforms.groundPatchCenter.value.copy(groundPatchMask.center)
-  uniforms.groundPatchHalfExtent.value.copy(groundPatchMask.halfExtent)
+  const { cellSizeM, originX, originY, indexSize } = groundPatchMask.grid
+  uniforms.groundPatchOrigin.value.set(originX, originY)
+  uniforms.groundPatchCellSizeM.value = cellSizeM
+  uniforms.groundPatchIndexSize.value = indexSize
 }
 /** Guards the one-shot extent fix — the survey rectangle never changes. */
 let groundPatchMaskBuilt = false
@@ -2201,7 +2206,7 @@ async function main(): Promise<void> {
         return
       }
       applyGroundPatchExtent()
-      console.info(`[ground-patch] extent from ${boxes} node boxes`)
+      console.info(`[ground-patch] lattice sized from ${boxes} node boxes`)
       }).catch((error) => {
       console.warn('[ground-patch] extent failed — patch stays off', error)
       uniforms.groundPatchAmount.value = 0

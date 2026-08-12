@@ -15,44 +15,73 @@
 //                  boxes have a median width of ~31 m, so a 30 m river is at best
 //                  a dashed line and mostly solid cover.
 //
-// The cost is arranged so there is none to speak of:
+// TILED, and that is the load-bearing decision. One texture stretched over the
+// whole survey ties resolution to total area: every square kilometre added makes
+// every pixel coarser, and the first thing lost is the river, which is only a few
+// pixels wide to begin with. Surveys in Canada are coming, and no texture size
+// fixes that — a single ENU plane with one bounding rectangle would have to span
+// the gap between continents.
+//
+// So the mask is a lattice of fixed-resolution cells instead:
+//   - metres per pixel is a constant. Area changes the number of cells, never the
+//     detail, so the river survives any amount of growth.
+//   - cells sit on a global lattice anchored at the ENU origin, not on the current
+//     bounding box. New data therefore never shifts an existing cell, which is what
+//     makes growth cheap and, later, makes per-area masks line up.
+//   - layers are handed out only to cells that actually contain points. The survey
+//     footprint is a diagonal strip, so most of its bounding box costs nothing.
+//   - only the cells that changed are uploaded (DataArrayTexture.layerUpdates).
+//     This is the big one: re-uploading one whole 4.2 MB mask measured 10.7 ms,
+//     which was ten times the cost of the splatting that filled it. A cell is
+//     256 kB.
+//
+// The cost is otherwise arranged so there is none to speak of:
 //   - no extra downloads. Tiles are splatted as the renderer loads them anyway.
-//   - no per-frame cost once quiet. Work happens only while a queue is non-empty.
-//   - the texture upload batched. Re-uploading the whole 4.2 MB mask measured at
-//     10.7 ms, ten times the splatting that fills it, so it goes up a few times a
-//     second at most rather than on every dirty frame.
+//   - no per-frame cost once quiet. Work happens only while the queue is non-empty.
 //   - no hitches while busy. Each frame spends a fixed point budget and stops, so
 //     the ~3 M point overview spreads over a couple of seconds instead of locking up
-//     one frame. Measured at ~50 ns per point, so the budget is what sets the cost:
-//     20k works out around 1 ms. An earlier attempt splatted on the GPU every time
+//     one frame. Measured at ~50 ns per point, so the budget sets the cost: 20k
+//     works out around 1 ms. An earlier attempt splatted on the GPU every time
 //     tiles changed and cost 26 s per frame; this is the same idea on the CPU.
 //   - no growth over the session. Refinement tiles keep arriving as the camera
-//     moves, but nearly all of them land on ground their ancestors already covered,
-//     and those are dropped after a 64 point probe — see isRedundant.
+//     moves, but nearly all land on ground their ancestors already covered, and
+//     those are dropped after a 64 point probe — see isRedundant.
 //   - coverage only ever grows, so unloading a tile never takes it away and the
 //     mask cannot flicker.
 //
-// Because it accumulates, the mask also sharpens by itself: the overview LOD
-// covers the whole footprint at ~4 m sampling within a second or two, and every
-// finer tile the camera pulls in refines the edges for free.
+// Because it accumulates, the mask also sharpens by itself: the overview LOD covers
+// the whole footprint at ~4 m sampling within a second or two, and every finer tile
+// the camera pulls in refines the edges for free.
 import * as THREE from 'three'
 
 export interface GroundPatchMask {
-  /** Coverage field, 0 where the cloud has no data and 1 where it does. */
-  texture: THREE.DataTexture
-  /** ENU rectangle the texture spans; the material maps ENU xy into UV with it. */
-  center: THREE.Vector2
-  halfExtent: THREE.Vector2
+  /** Coverage per cell, one array layer each. 0 outside the data, 1 inside. */
+  texture: THREE.DataArrayTexture
   /**
-   * Fix the ENU rectangle from the tileset's node boxes, and keep the ENU frame
-   * for splatting. Resolves to the number of boxes the extent was derived from, or
-   * 0 when the tileset carries nothing usable — callers should treat 0 as "leave
-   * the patch off" rather than as an error.
+   * Which layer holds each lattice cell, as layer + 1, with 0 meaning "no data
+   * here". Nearest-filtered and read as integers — this is a lookup table, not an
+   * image, so any interpolation between neighbours would be meaningless.
+   */
+  index: THREE.DataTexture
+  /**
+   * Lattice shape the material needs to turn a position into a cell. `indexSize` is
+   * the index map's fixed edge length, which is what the shader divides by — not
+   * cols/rows, because the map is allocated once at full size and only partly used.
+   */
+  grid: {
+    cols: number; rows: number; cellSizeM: number
+    originX: number; originY: number; indexSize: number
+  }
+  /**
+   * Size the lattice from the tileset's node boxes and keep the ENU frame for
+   * splatting. Resolves to the number of boxes it was derived from, or 0 when the
+   * tileset carries nothing usable — callers should treat 0 as "leave the patch
+   * off" rather than as an error.
    *
    * Only the extent, not the coverage: the boxes are far too coarse for that (see
-   * the note above), but they bound the survey exactly and cost 27 small JSON
-   * fetches. The rectangle has to be settled before any point can be placed in it,
-   * so tiles that arrive first are queued and drained once this resolves.
+   * above), but they bound the survey exactly and cost 27 small JSON fetches. The
+   * lattice has to be settled before any point can be placed in it, so tiles that
+   * arrive first are queued and drained once this resolves.
    */
   setExtent(opts: {
     tilesetUrl: string
@@ -68,8 +97,10 @@ export interface GroundPatchMask {
    * world matrix has not been composed yet.
    */
   addTile(object: THREE.Object3D): void
-  /** Spend this frame's budget on the queue and upload if anything changed. */
+  /** Spend this frame's budget on the queue and upload whatever changed. */
   update(): void
+  /** Cells in use, of those available — for diagnostics and the console report. */
+  stats(): { cellsUsed: number; cellsAvailable: number; metresPerPixel: number }
   dispose(): void
 }
 
@@ -105,7 +136,28 @@ function collectDeepest(node: any, localToEnu: THREE.Matrix4, maxDepth: number, 
 }
 
 export function createGroundPatchMask(opts: {
-  size: number
+  /** Pixels per cell edge. A cell is cellPx^2 bytes — 512 is 256 kB. */
+  cellPx: number
+  /**
+   * Ground resolution, held constant no matter how large the surveyed area grows.
+   * The river is the binding constraint: it runs 30 m wide in places, and needs to
+   * stay several pixels across to read as a channel rather than a dotted line.
+   */
+  metresPerPixel: number
+  /**
+   * How many cells may hold data at once. Cells are handed out on demand, so this
+   * is a ceiling on memory (cellPx^2 x maxCells) rather than an allocation of it —
+   * but the array texture itself is sized from it, so it is not free either.
+   */
+  maxCells: number
+  /**
+   * Edge length of the index map, in cells, and so the largest lattice this can
+   * address. Fixed up front and never resized: the basemap materials bind the
+   * texture object, and three keys the GPU texture to that object, so growing it
+   * later would not reach the GPU. It costs indexSize^2 bytes — 64 is 4 kB and spans
+   * 164 km at the default cell size, which is a whole area with room to spare.
+   */
+  indexSize: number
   /**
    * Pixels each point is grown by. The overview LOD samples about one point per
    * pixel, and Poisson gaps in that leave roughly a tenth of the interior speckled
@@ -120,32 +172,50 @@ export function createGroundPatchMask(opts: {
    */
   pointsPerFrame: number
   /**
-   * Shortest gap between texture uploads while coverage is still arriving. The
-   * upload, not the splatting, is what this module actually costs — measured at
-   * 10.7 ms for a 4.2 MB mask — so it is worth batching hard. The last upload is
-   * never delayed: an empty queue publishes immediately.
+   * Shortest gap between uploads while coverage is still arriving. Far less critical
+   * than it was before tiling — a changed cell is 256 kB, not the whole mask — but
+   * still worth batching, since a burst of tiles usually touches the same few cells.
+   * The last upload is never delayed: an empty queue publishes immediately.
    */
   uploadIntervalMs: number
 }): GroundPatchMask {
-  const { size, splatRadiusPx, pointsPerFrame, uploadIntervalMs } = opts
-  const data = new Uint8Array(size * size)
-  // Allocated and registered up front, then filled in place. The basemap materials
-  // bind this texture object before the tileset is even fetched, so replacing the
-  // object later would leave them on an empty mask.
-  const texture = new THREE.DataTexture(data, size, size, THREE.RedFormat, THREE.UnsignedByteType)
+  const {
+    cellPx, metresPerPixel, maxCells, indexSize, splatRadiusPx, pointsPerFrame, uploadIntervalMs,
+  } = opts
+  const cellSizeM = cellPx * metresPerPixel
+
+  // One flat buffer, addressed as maxCells layers of cellPx^2. Allocated and
+  // registered up front, then filled in place: the basemap materials bind these
+  // texture objects before the tileset is even fetched, so replacing them later
+  // would leave the materials on an empty mask.
+  const cells = new Uint8Array(cellPx * cellPx * maxCells)
+  const texture = new THREE.DataArrayTexture(cells, cellPx, cellPx, maxCells)
+  texture.format = THREE.RedFormat
+  texture.type = THREE.UnsignedByteType
   texture.minFilter = THREE.LinearFilter
   texture.magFilter = THREE.LinearFilter
   texture.wrapS = THREE.ClampToEdgeWrapping
   texture.wrapT = THREE.ClampToEdgeWrapping
   texture.needsUpdate = true
 
-  const center = new THREE.Vector2(0, 0)
-  const halfExtent = new THREE.Vector2(1, 1)
+  // Full size from the start, and only partly used: see indexSize. Zero everywhere
+  // means "no data", so this is already a valid mask before the tileset arrives.
+  const indexData = new Uint8Array(indexSize * indexSize)
+  const index = new THREE.DataTexture(indexData, indexSize, indexSize, THREE.RedFormat, THREE.UnsignedByteType)
+  index.minFilter = THREE.NearestFilter
+  index.magFilter = THREE.NearestFilter
+  index.wrapS = THREE.ClampToEdgeWrapping
+  index.wrapT = THREE.ClampToEdgeWrapping
+  index.needsUpdate = true
+
+  const grid = { cols: 0, rows: 0, cellSizeM, originX: 0, originY: 0, indexSize }
 
   let enuInverse: THREE.Matrix4 | null = null
-  let minX = 0, minY = 0, metresPerPixelX = 1, metresPerPixelY = 1
-  let dirty = false
+  let cellsUsed = 0
+  let indexDirty = false
   let lastUploadMs = -Infinity
+  /** Layers touched since the last upload — exactly what gets sent. */
+  const dirtyCells = new Set<number>()
 
   /** Tiles waiting for the extent, or for their turn at the frame budget. */
   const queue: THREE.Object3D[] = []
@@ -164,30 +234,21 @@ export function createGroundPatchMask(opts: {
   }
 
   /**
-   * True when a spread sample of the tile lands entirely on covered pixels.
-   *
-   * This is what keeps the cost from growing with the session. Refinement tiles
-   * arrive constantly as the camera moves, and almost all of them sit inside ground
-   * their ancestors already covered, so splatting them changes nothing. Skipping
-   * them is safe in both directions: coverage only ever grows, so a skipped tile can
-   * only cost extra growth, never take any away — and the river stays open because
-   * it is defined by the *absence* of points, which no tile can undo.
+   * Layer holding this lattice cell, allocating one if the cell is new, or -1 when
+   * the budget is spent. Returning -1 rather than growing keeps the failure to a
+   * missing patch in one corner instead of a reallocation mid-frame; the console
+   * report says when it happens.
    */
-  function isRedundant(position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): boolean {
-    const array = position.array as ArrayLike<number>
-    const stride = (position as any).itemSize ?? 3
-    const e = localToEnu.elements as unknown as number[]
-    const probes = 64
-    if (position.count < probes * 4) return false // too small to judge from a sample
-    const step = Math.floor(position.count / probes)
-    for (let p = 0; p < probes; p++) {
-      const o = p * step * stride
-      const px = ((enuX(array, o, e) - minX) / metresPerPixelX) | 0
-      const py = ((enuY(array, o, e) - minY) / metresPerPixelY) | 0
-      if (px < 0 || py < 0 || px >= size || py >= size) return false
-      if (data[py * size + px] !== 255) return false
-    }
-    return true
+  function layerFor(col: number, row: number): number {
+    if (col < 0 || row < 0 || col >= grid.cols || row >= grid.rows) return -1
+    const slot = row * indexSize + col
+    const existing = indexData[slot]
+    if (existing !== 0) return existing - 1
+    if (cellsUsed >= maxCells || cellsUsed >= 255) return -1
+    const layer = cellsUsed++
+    indexData[slot] = layer + 1
+    indexDirty = true
+    return layer
   }
 
   /**
@@ -199,34 +260,77 @@ export function createGroundPatchMask(opts: {
                  from: number, budget: number): number {
     const array = position.array as ArrayLike<number>
     const stride = (position as any).itemSize ?? 3
-    const e = localToEnu.elements
+    const e = localToEnu.elements as unknown as number[]
     const end = Math.min(position.count, from + budget)
     const r = splatRadiusPx
+    const layerStride = cellPx * cellPx
     for (let i = from; i < end; i++) {
       const o = i * stride
       // Only x and y are needed — the mask is a plan view — so the z row of the
       // multiply is skipped entirely.
-      const px = ((enuX(array, o, e as unknown as number[]) - minX) / metresPerPixelX) | 0
-      const py = ((enuY(array, o, e as unknown as number[]) - minY) / metresPerPixelY) | 0
-      const x0 = px - r < 0 ? 0 : px - r
-      const x1 = px + r > size - 1 ? size - 1 : px + r
-      const y0 = py - r < 0 ? 0 : py - r
-      const y1 = py + r > size - 1 ? size - 1 : py + r
-      if (x1 < x0 || y1 < y0) continue
-      for (let y = y0; y <= y1; y++) {
-        const row = y * size
-        for (let x = x0; x <= x1; x++) {
-          if (data[row + x] !== 255) { data[row + x] = 255; dirty = true }
+      const gx = (enuX(array, o, e) - grid.originX) / metresPerPixel
+      const gy = (enuY(array, o, e) - grid.originY) / metresPerPixel
+      // Lattice-wide pixel coordinates, then split into cell and pixel-within-cell.
+      // The grow radius can push a point over a cell edge, so each written pixel is
+      // resolved on its own rather than assuming one cell per point.
+      const px0 = (gx | 0) - r, px1 = (gx | 0) + r
+      const py0 = (gy | 0) - r, py1 = (gy | 0) + r
+      for (let py = py0; py <= py1; py++) {
+        const row = (py / cellPx) | 0
+        const inRow = py - row * cellPx
+        if (py < 0 || row >= grid.rows) continue
+        for (let px = px0; px <= px1; px++) {
+          const col = (px / cellPx) | 0
+          if (px < 0 || col >= grid.cols) continue
+          const layer = layerFor(col, row)
+          if (layer < 0) continue
+          const at = layer * layerStride + inRow * cellPx + (px - col * cellPx)
+          if (cells[at] !== 255) { cells[at] = 255; dirtyCells.add(layer) }
         }
       }
     }
     return end - from
   }
 
+  /**
+   * True when a spread sample of the tile lands entirely on covered pixels.
+   *
+   * This is what keeps the cost from growing with the session. Refinement tiles
+   * arrive constantly as the camera moves, and almost all sit inside ground their
+   * ancestors already covered, so splatting them changes nothing. Skipping them is
+   * safe in both directions: coverage only ever grows, so a skipped tile can only
+   * cost extra growth, never take any away — and the river stays open because it is
+   * defined by the *absence* of points, which no tile can undo.
+   */
+  function isRedundant(position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): boolean {
+    const array = position.array as ArrayLike<number>
+    const stride = (position as any).itemSize ?? 3
+    const e = localToEnu.elements as unknown as number[]
+    const probes = 64
+    if (position.count < probes * 4) return false // too small to judge from a sample
+    const step = Math.floor(position.count / probes)
+    const layerStride = cellPx * cellPx
+    for (let p = 0; p < probes; p++) {
+      const o = p * step * stride
+      const px = ((enuX(array, o, e) - grid.originX) / metresPerPixel) | 0
+      const py = ((enuY(array, o, e) - grid.originY) / metresPerPixel) | 0
+      if (px < 0 || py < 0) return false
+      const col = (px / cellPx) | 0, row = (py / cellPx) | 0
+      if (col >= grid.cols || row >= grid.rows) return false
+      // Reads the index directly rather than through layerFor: probing must not
+      // allocate, or a tile that turns out redundant would still claim a cell.
+      const slot = indexData[row * indexSize + col]
+      if (slot === 0) return false
+      const at = (slot - 1) * layerStride + (py - row * cellPx) * cellPx + (px - col * cellPx)
+      if (cells[at] !== 255) return false
+    }
+    return true
+  }
+
   return {
     texture,
-    center,
-    halfExtent,
+    index,
+    grid,
 
     async setExtent({ tilesetUrl, rootTileSet, enuInverse: inverse, maxDepth }) {
       const root = rootTileSet?.root
@@ -244,7 +348,7 @@ export function createGroundPatchMask(opts: {
       const scratch = new THREE.Vector3()
       // Each cell links to its own subtree. Fetched in parallel: they are small and
       // independent, and this runs off the critical path anyway.
-      const cells = await Promise.all(children.map(async (child) => {
+      const subtrees = await Promise.all(children.map(async (child) => {
         const uri: string | undefined = child?.content?.uri
         if (!uri) return null
         try {
@@ -256,7 +360,7 @@ export function createGroundPatchMask(opts: {
         }
       }))
 
-      for (const subtree of cells) {
+      for (const subtree of subtrees) {
         const subRoot = subtree?.root
         if (!subRoot) continue
         // The child's transform (if any) composes with the root's.
@@ -267,46 +371,50 @@ export function createGroundPatchMask(opts: {
         collectDeepest(subRoot, cellToEnu, maxDepth, boxes)
       }
       // Any cell whose subtree could not be read still bounds real data, so fall
-      // back to its top-level box rather than cropping the rectangle short of it.
+      // back to its top-level box rather than cropping the lattice short of it.
       for (let i = 0; i < children.length; i++) {
-        if (cells[i]) continue
+        if (subtrees[i]) continue
         const box = readBox(children[i], rootToEnu, scratch)
         if (box) boxes.push(box)
       }
       if (!boxes.length) return 0
 
-      let maxX = -Infinity, maxY = -Infinity
-      minX = Infinity; minY = Infinity
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
       for (const b of boxes) {
         minX = Math.min(minX, b.cx - b.hx); maxX = Math.max(maxX, b.cx + b.hx)
         minY = Math.min(minY, b.cy - b.hy); maxY = Math.max(maxY, b.cy + b.hy)
       }
-      // Margin so the edge of the coverage is never the edge of the texture, where
+      // A margin of one cell, so coverage never reaches the lattice edge, where
       // clamped sampling would turn it into a hard straight line.
-      const marginX = (maxX - minX) * 0.05
-      const marginY = (maxY - minY) * 0.05
-      minX -= marginX; maxX += marginX; minY -= marginY; maxY += marginY
-      center.set((minX + maxX) / 2, (minY + maxY) / 2)
-      halfExtent.set((maxX - minX) / 2, (maxY - minY) / 2)
-      metresPerPixelX = (maxX - minX) / size
-      metresPerPixelY = (maxY - minY) / size
+      //
+      // Snapped outward to the lattice: cell boundaries are multiples of cellSizeM
+      // from the ENU origin, never relative to this bounding box. That is what makes
+      // the layout stable — a later, larger survey adds cells around these instead
+      // of renumbering them, and two areas sharing an origin agree on the lattice.
+      grid.originX = Math.floor(minX / cellSizeM - 1) * cellSizeM
+      grid.originY = Math.floor(minY / cellSizeM - 1) * cellSizeM
+      grid.cols = Math.min(indexSize, Math.ceil((maxX + cellSizeM - grid.originX) / cellSizeM))
+      grid.rows = Math.min(indexSize, Math.ceil((maxY + cellSizeM - grid.originY) / cellSizeM))
 
-      // One texture stretched over the whole survey, so resolution is whatever the
-      // extent leaves — and the extent comes from the data. Adding survey area
-      // silently coarsens every pixel, and the first thing lost is the river, which
-      // is only a handful of pixels wide to begin with. Say so rather than let a
-      // future upload quietly undo this. Past roughly 12 m the river is gone, and a
-      // second survey on another continent cannot work at any size: the ENU plane and
-      // its bounding rectangle would have to span the gap between them. That needs a
-      // mask per area, tiled within it — not a bigger texture.
-      const worst = Math.max(metresPerPixelX, metresPerPixelY)
-      const report = `${metresPerPixelX.toFixed(1)} x ${metresPerPixelY.toFixed(1)} m per pixel`
-      if (worst > 12) {
-        console.warn(`[ground-patch] mask is ${report} over ${((maxX - minX) / 1000).toFixed(1)} x `
-          + `${((maxY - minY) / 1000).toFixed(1)} km — too coarse to keep narrow gaps like the river `
-          + `open. Raise design.groundPatch.maskSize, or move to a mask per area.`)
+      indexData.fill(0)
+      index.needsUpdate = true
+      cellsUsed = 0
+
+      const footprintCells = Math.ceil((maxX - minX) / cellSizeM) * Math.ceil((maxY - minY) / cellSizeM)
+      const report = `${grid.cols}x${grid.rows} cells of ${cellPx}px at ${metresPerPixel} m/px`
+        + ` (${(cellSizeM / 1000).toFixed(1)} km each) over `
+        + `${((maxX - minX) / 1000).toFixed(1)}x${((maxY - minY) / 1000).toFixed(1)} km`
+      if (grid.cols >= indexSize || grid.rows >= indexSize) {
+        console.warn(`[ground-patch] ${report} — the lattice hit the ${indexSize}x${indexSize} index `
+          + `limit and is cropped. Raise design.groundPatch.maskIndexSize.`)
+      } else if (footprintCells > maxCells) {
+        // Not fatal: cells are handed out until the budget runs out, so the patch
+        // simply stops somewhere. Worth being loud about, because the symptom —
+        // basemap showing under points in one corner — looks like a shader bug.
+        console.warn(`[ground-patch] ${report} — the footprint could need up to ${footprintCells} cells `
+          + `but only ${maxCells} are available. Raise design.groundPatch.maskMaxCells.`)
       } else {
-        console.info(`[ground-patch] mask ${size}^2 at ${report}`)
+        console.info(`[ground-patch] ${report}`)
       }
 
       enuInverse = inverse
@@ -318,7 +426,7 @@ export function createGroundPatchMask(opts: {
     },
 
     update() {
-      if (!enuInverse || (!queue.length && !dirty)) return
+      if (!enuInverse || (!queue.length && !dirtyCells.size && !indexDirty)) return
       let budget = pointsPerFrame
       while (budget > 0 && queue.length) {
         const object = queue[0]
@@ -334,23 +442,34 @@ export function createGroundPatchMask(opts: {
         cursor += done
         if (cursor >= position.count) { queue.shift(); cursor = 0 }
       }
-      if (!dirty) return
-      // Throttled, because this is by far the most expensive part: re-uploading the
-      // whole texture measured at 10.7 ms for 4.2 MB, ten times the splatting it
-      // publishes. Uploading on every dirty frame would cost more than the rest of
-      // the frame put together. Waiting instead means the mask lands a fraction of a
-      // second late, which nobody can see — the cloud covers that ground anyway.
-      // Once the queue is empty there is nothing more coming, so it goes up at once.
+
+      if (!dirtyCells.size && !indexDirty) return
+      // Batched while coverage is still arriving, then published at once when the
+      // queue drains. A burst of tiles usually touches the same few cells, so
+      // waiting collapses many uploads into one. The mask landing a fraction of a
+      // second late is invisible — the cloud covers that ground anyway.
       const now = performance.now()
       if (queue.length && now - lastUploadMs < uploadIntervalMs) return
-      texture.needsUpdate = true
-      dirty = false
+      if (dirtyCells.size) {
+        // Only the cells that changed. This is what tiling buys: the whole array is
+        // maxCells x 256 kB, and sending all of it was the single most expensive
+        // thing this module did.
+        for (const layer of dirtyCells) texture.addLayerUpdate(layer)
+        texture.needsUpdate = true
+        dirtyCells.clear()
+      }
+      if (indexDirty) { index.needsUpdate = true; indexDirty = false }
       lastUploadMs = now
+    },
+
+    stats() {
+      return { cellsUsed, cellsAvailable: maxCells, metresPerPixel }
     },
 
     dispose() {
       queue.length = 0
       texture.dispose()
+      index.dispose()
     },
   }
 }

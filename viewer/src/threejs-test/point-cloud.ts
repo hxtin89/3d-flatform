@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
-  vec2, vec3, vec4, float, mix, smoothstep, length, max, abs, exp, hash,
+  vec2, vec3, vec4, float, int, mix, smoothstep, length, max, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
@@ -37,9 +37,12 @@ export interface CloudUniforms {
    */
   groundPatchAmount: any
   groundPatchColor: any
-  /** ENU rectangle the coverage mask spans — used to map position into mask UV. */
-  groundPatchCenter: any
-  groundPatchHalfExtent: any
+  /** ENU position of the lattice's lower-left corner. */
+  groundPatchOrigin: any
+  /** Ground size of one cell, in metres — constant, independent of survey size. */
+  groundPatchCellSizeM: any
+  /** Index map edge length in cells — the divisor for addressing it. */
+  groundPatchIndexSize: any
   /** 0 = the raw basemap at groundPatchBrightness, 1 = a flat colour. */
   groundPatchColorMix: any
   /** Brightness applied to the raw imagery inside the patch, independent of the
@@ -84,12 +87,19 @@ export interface CloudUniforms {
 
 let cloudShadowTextureNode: any = null
 let groundPatchMaskNode: any = null
+let groundPatchIndexNode: any = null
 
 /** Register the ground-patch coverage mask BEFORE the first basemap material is
- * created. The texture is refilled in place once the point tileset loads, so the
- * same object stays bound — see ground-patch-mask.ts. */
-export function setGroundPatchMask(mask: THREE.Texture): void {
-  groundPatchMaskNode = texture(mask)
+ * created. Both textures are refilled in place once the point tileset loads, so the
+ * same objects stay bound — see ground-patch-mask.ts.
+ *
+ * Two textures because the mask is a lattice of fixed-resolution cells rather than
+ * one stretched image: `index` says which array layer holds a given cell, `cells`
+ * holds the coverage. That is what keeps detail independent of how large the
+ * surveyed area grows. */
+export function setGroundPatchMask(cells: THREE.DataArrayTexture, indexMap: THREE.Texture): void {
+  groundPatchMaskNode = texture(cells)
+  groundPatchIndexNode = texture(indexMap)
 }
 
 /** Register the shared cloud-density volume BEFORE the first tile material is
@@ -112,8 +122,9 @@ export function createUniforms(): CloudUniforms {
     groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
       ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),
     groundPatchColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.groundPatch.color)),
-    groundPatchCenter: uniform(new THREE.Vector2(0, 0)),
-    groundPatchHalfExtent: uniform(new THREE.Vector2(1, 1)),
+    groundPatchOrigin: uniform(new THREE.Vector2(0, 0)),
+    groundPatchCellSizeM: uniform(1),
+    groundPatchIndexSize: uniform(1),
     groundPatchColorMix: uniform(EXPERIENCE_CONFIG.design.groundPatch.colorMix),
     groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
     groundPatchShrink: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrink),
@@ -255,13 +266,26 @@ export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
  */
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
   // No mask built yet (or none registered) means nothing to change.
-  if (!groundPatchMaskNode) return finished
+  if (!groundPatchMaskNode || !groundPatchIndexNode) return finished
   // Annotated `any` like the rest of this file's node plumbing: the uniforms are
   // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
   const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
-  const maskUv: any = enu.xy.sub(u.groundPatchCenter)
-    .div((u.groundPatchHalfExtent as any).mul(2)).add(vec2(0.5))
-  const sample: any = groundPatchMaskNode.sample(maskUv).r
+  // Position within the lattice, in cells. The integer part picks the cell, the
+  // fraction is the UV inside it.
+  const gridPos: any = enu.xy.sub(u.groundPatchOrigin).div(u.groundPatchCellSizeM)
+  const cellXY: any = floor(gridPos)
+  const withinCell: any = gridPos.sub(cellXY)
+  // Which layer holds this cell. The index map stores layer + 1 so that 0 can mean
+  // "no data here" — a cell that was never allocated because no point fell in it.
+  // Sampled at cell centres, and nearest-filtered, so no interpolation between
+  // neighbouring entries can invent a layer that does not exist.
+  const indexUv: any = cellXY.add(vec2(0.5)).div(u.groundPatchIndexSize)
+  const slot: any = groundPatchIndexNode.sample(indexUv).r.mul(255).add(0.5)
+  // An unallocated cell reads 0, which would address layer -1. Clamped to a valid
+  // layer and multiplied away instead, because a branch here would be per-fragment.
+  const present: any = smoothstep(float(0.5), float(1.5), slot)
+  const layer: any = int(max(slot, float(1)).sub(1))
+  const sample: any = groundPatchMaskNode.sample(withinCell).depth(layer).r.mul(present)
   const shrink: any = u.groundPatchShrink
   const coverage: any = smoothstep(shrink, shrink.add(max(u.groundPatchSoftness, float(0.001))), sample)
     .mul(u.groundPatchAmount)

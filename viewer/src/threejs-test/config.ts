@@ -465,18 +465,37 @@ export const EXPERIENCE_CONFIG = {
        */
       maskMaxDepth: 16,
       /**
-       * Mask resolution. 2048 over the ~12.8 km survey is about 6.9 x 4.6 m per
-       * pixel, which the overview LOD already saturates at roughly one point per
-       * pixel — so this, not the LOD, is what limits how crisply the river reads.
-       * Raise both together if it needs to be sharper; the texture is size^2 bytes.
+       * Pixels per mask cell edge. One cell costs cellPx^2 bytes — 512 is 256 kB —
+       * and is also the unit that gets re-uploaded when coverage changes, which is
+       * the expensive part. Smaller cells mean cheaper uploads and less waste around
+       * the footprint's diagonal edge, at the cost of more index lookups.
        */
-      maskSize: 2048,
+      maskCellPx: 512,
       /**
-       * Pixels each splatted point is grown by. 1 fills the Poisson gaps in the
-       * overview LOD's sampling, at the price of a pixel on each river bank; 0
-       * keeps the banks exact and leaves roughly a tenth of the interior speckled
-       * until finer tiles arrive.
+       * Ground resolution of the mask, held constant however large the surveyed area
+       * grows — that independence is the whole point of tiling it. 5 m keeps the
+       * river open: it runs about 30 m wide, so roughly 6 pixels across.
+       *
+       * The single-texture version had this as a consequence rather than a setting,
+       * and it drifted with the extent: 6.9 x 4.6 m for Peru, and it would have gone
+       * past the ~12 m where the river disappears as soon as more area was added.
        */
+      maskMetresPerPixel: 5,
+      /**
+       * Cells that may hold data at once — a ceiling on mask memory of
+       * maskCellPx^2 x this, so 512px x 64 is 16 MB. Cells are handed out only where
+       * points actually land, and the Peru footprint is a diagonal strip, so it needs
+       * far fewer than its bounding box suggests. The console reports what was used;
+       * it warns rather than fails if the budget runs out.
+       */
+      maskMaxCells: 64,
+      /**
+       * Edge length of the cell index map, and so the largest lattice addressable:
+       * 64 cells is 164 km at the default cell size. Fixed at startup and never
+       * resized, because the basemap materials bind the texture object. Costs
+       * maskIndexSize^2 bytes.
+       */
+      maskIndexSize: 64,
       maskSplatRadiusPx: 1,
       /**
        * Points splatted per frame — the cap on how much the mask can ever cost in
