@@ -8,8 +8,42 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 // the one-time warning on the device). Plain http stays the default for the Mac.
 const useHttps = process.env.VITE_HTTPS === '1';
 
+/**
+ * Serve the Three.js app at `/` in dev, the way the built site already does.
+ *
+ * `prepare-livingdashboard.mjs` copies threejs-test.html over index.html and moves
+ * the CesiumJS viewer to cesium.html, so in production the root IS this app. Only
+ * the dev server disagreed: there `/` served the legacy Cesium viewer, which needs
+ * the local tile server on :8081 and shows "tileset.json not found" without it.
+ *
+ * That mismatch is a recurring trap rather than a cosmetic one. Anything that
+ * opens the origin without a path — an embedded preview pane, a bookmark, a
+ * pasted "localhost:5177" — lands on an app that cannot work locally, and it
+ * reads as the dev server being broken.
+ *
+ * A redirect rather than a rewrite so the address bar shows where you actually
+ * are, and the query string is carried over because `?preset=` and friends are
+ * how this app is driven. The Cesium viewer stays reachable at /index.html.
+ */
+function serveThreeJsAtRoot() {
+  return {
+    name: 'sbb:serve-threejs-at-root',
+    configureServer(server: { middlewares: { use(fn: (req: any, res: any, next: () => void) => void): void } }) {
+      server.middlewares.use((req, res, next) => {
+        const url: string = req.url ?? '/';
+        if (url === '/' || url.startsWith('/?')) {
+          res.writeHead(302, { Location: `/threejs-test.html${url.slice(1)}` });
+          res.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [cesium(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [cesium(), serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     port: 5177,
     // Fail instead of silently moving to 5178 when the port is taken (usually a
