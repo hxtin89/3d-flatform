@@ -91,10 +91,16 @@ export const EXPERIENCE_CONFIG = {
     // band stops engaging at full zoom.
     zoomStopHeightM: 80,
     // Lifts the whole point cloud above the draped basemap imagery. Ground
-    // snapping lands the cloud floor exactly on the ellipsoid, which reads as
-    // sunk into the terrain wherever the imagery bulges. Second tuning knob
-    // next to lod.pointSizeMultiplier; metres, 0 = pure ground snap.
-    pointCloudLiftM: 8,
+    // snapping lands the *bounding box* floor on the ellipsoid, and the box does not
+    // reach the lowest terrain here — measured, the deepest points sit about 36 m
+    // below where areaBbox puts the floor — so without a lift the river bed and the
+    // gravel bars end up behind the imagery and invisible.
+    //
+    // 20 m, chosen by eye on the Lift slider. Clearing the imagery completely takes
+    // about 46 m, but lifting that far floats the whole canopy with it, so this is a
+    // deliberate middle: the banks come out, the deepest channel stays tucked under.
+    // Adjustable live — see the Lift slider under Height offset.
+    pointCloudLiftM: 20,
     // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
     maximumOrbitDegrees: 72,
