@@ -54,8 +54,12 @@ export interface CloudUniforms {
    * the threshold are derived from it so that this number means what it says.
    */
   groundPatchShrinkM: any
-  /** Width of the fade, as a fraction of the shrink distance. */
-  groundPatchSoftness: any
+  /**
+   * Width of the fade in metres, independent of the shrink distance. Independent on
+   * purpose: as a fraction it grew with the shrink, and past ~80 m the band was wider
+   * than the river and tinted the whole channel — see applyGroundPatch.
+   */
+  groundPatchFadeM: any
   /** Analytic ground fog, shared by points and imagery. */
   groundFogColor: any
   groundFogStrength: any
@@ -131,7 +135,7 @@ export function createUniforms(): CloudUniforms {
     groundPatchColorMix: uniform(EXPERIENCE_CONFIG.design.groundPatch.colorMix),
     groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
     groundPatchShrinkM: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrinkM),
-    groundPatchSoftness: uniform(EXPERIENCE_CONFIG.design.groundPatch.softness),
+    groundPatchFadeM: uniform(EXPERIENCE_CONFIG.design.groundPatch.fadeM),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
@@ -315,6 +319,13 @@ function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
  */
 const GROUND_PATCH_RADIUS_FACTOR = 1.5
 const GROUND_PATCH_THRESHOLD = 0.8904
+/**
+ * How fast the covered fraction changes with distance at the threshold, per unit of
+ * radius: `df/du = 2*sqrt(1-u^2)/PI` at u = 2/3. Converts a fade width in metres into
+ * the threshold width that produces it, which is what keeps the fade from scaling
+ * with the shrink distance.
+ */
+const GROUND_PATCH_SLOPE_AT_THRESHOLD = 0.4744
 
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
   // Switched off, or no mask built yet, means nothing to change.
@@ -367,17 +378,31 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   }
   const feathered: any = sum.div(float(GROUND_PATCH_TAPS.length))
 
-  // The ramp straddles the threshold and reaches exactly 1 at softness 1, so the
-  // interior stays fully opaque at every setting. A ramp running upward *from* the
-  // threshold would never get there: the interior, where the disc is completely
-  // covered, would top out partway and the patch would sit half transparent
-  // everywhere rather than only at its edge.
-  const halfWidth: any = max(u.groundPatchSoftness, float(0.001)).mul(1 - GROUND_PATCH_THRESHOLD)
+  // Fade width converted from metres into threshold units, so it stays the width it
+  // says instead of growing with the shrink distance. That coupling was a real bug:
+  // the band scaled with the sampling radius, so at 130 m of shrink it was ~140 m
+  // wide, the whole river sat inside the ramp, and the patch tinted the channel it
+  // had just been widened to clear.
+  //
+  // Capped at 1 - threshold, which is the disc's own limit: a wider band could not
+  // reach full coverage, and the interior would go half transparent. In metres that
+  // ceiling is about a third of the shrink distance.
+  const radiusM: any = max(u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR), float(1))
+  const halfWidth: any = min(
+    u.groundPatchFadeM.mul(GROUND_PATCH_SLOPE_AT_THRESHOLD).div(radiusM),
+    float(1 - GROUND_PATCH_THRESHOLD),
+  )
   const threshold: any = float(GROUND_PATCH_THRESHOLD)
   const coverage: any = smoothstep(threshold.sub(halfWidth), min(threshold.add(halfWidth), float(1)), feathered)
     .mul(u.groundPatchAmount)
   // From the raw texture, not the graded result, so neither the global basemap
   // grading nor the daylight ramp leaks into the chosen appearance.
+  //
+  // The ground fog and the vignette are excluded by running after them. Three's own
+  // scene fog is not, because it is applied after the colour node — measured, a patch
+  // picked as (0,255,136) renders as (42,251,149) at 1.8 km with distance fog on.
+  // Left as is on purpose: that haze is aerial perspective, and exempting the ground
+  // from it would make it float away from everything around it.
   const ownBrightness: any = rawImagery.mul(u.groundPatchBrightness)
   const target: any = mix(ownBrightness, vec3(u.groundPatchColor), u.groundPatchColorMix)
   return mix(finished, target, coverage)

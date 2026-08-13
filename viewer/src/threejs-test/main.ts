@@ -1700,8 +1700,8 @@ bindDesignSlider('groundPatchBrightness', GROUND_PATCH.brightness, asPercent, (v
 bindDesignSlider('groundPatchShrinkM', GROUND_PATCH.shrinkM, asMetres, (v) => {
   uniforms.groundPatchShrinkM.value = v
 })
-bindDesignSlider('groundPatchSoftness', GROUND_PATCH.softness, asPercent, (v) => {
-  uniforms.groundPatchSoftness.value = v
+bindDesignSlider('groundPatchFadeM', GROUND_PATCH.fadeM, asMetres, (v) => {
+  uniforms.groundPatchFadeM.value = v
 })
 
 const asDegrees = (value: number) => `${Math.round(value)}°`
@@ -1812,7 +1812,7 @@ designCopyEl.addEventListener('click', async () => {
       colorMix: uniforms.groundPatchColorMix.value,
       brightness: uniforms.groundPatchBrightness.value,
       shrinkM: uniforms.groundPatchShrinkM.value,
-      softness: uniforms.groundPatchSoftness.value,
+      fadeM: uniforms.groundPatchFadeM.value,
     },
     maskFringe: uniforms.maskFringe.value,
     maskFringeCurve: uniforms.maskFringeCurve.value,

@@ -466,11 +466,15 @@ export const EXPERIENCE_CONFIG = {
        */
       shrinkM: 40,
       /**
-       * Width of the fade, as a fraction of the shrink distance — so 40 m of shrink at
-       * 0.5 fades over about 20 m. Reaches full opacity at every setting, so the
-       * interior is never left half transparent.
+       * Width of the fade in metres. Absolute, not a share of the shrink distance:
+       * as a share it grew with the shrink, and past about 80 m the band was wider
+       * than the river, so the whole channel sat inside the ramp and got tinted by
+       * the patch that the shrink had just cleared away.
+       *
+       * The disc can only carry a band up to about a third of the shrink distance —
+       * beyond that full coverage becomes unreachable — so this is capped there.
        */
-      softness: 0.5,
+      fadeM: 12,
       /**
        * How deep to walk each cell's node hierarchy when bounding the mask. Only
        * the rectangle comes from the boxes — coverage comes from the points, which

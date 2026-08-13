@@ -809,7 +809,7 @@
           <div class="row">
             <label class="h" for="groundPatchColor">Colour</label>
             <input type="color" id="groundPatchColor" />
-            <span class="weather-note">Shown exactly as picked — no daylight grading, no fog, no vignette on the patch</span>
+            <span class="weather-note">No daylight grading, no ground fog, no vignette — those are applied before the patch. Distance fog is not: three applies it after, so at range the colour is tinted toward the haze</span>
           </div>
           <div class="row">
             <label class="h" for="groundPatchBrightness">Basemap brightness here · <span class="val" id="groundPatchBrightnessVal">—</span></label>
@@ -827,9 +827,9 @@
             <span class="weather-note">Metres the patch edge is pulled inward from the point data. Raise it until the river reads as basemap all the way to its banks</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchSoftness">Edge softness · <span class="val" id="groundPatchSoftnessVal">—</span></label>
-            <input type="range" id="groundPatchSoftness" min="0.01" max="1" step="0.01" />
-            <span class="weather-note">Width of the fade, as a share of the shrink distance. At 0 m shrink there is nothing to fade across and the edge is hard</span>
+            <label class="h" for="groundPatchFadeM">Edge fade · <span class="val" id="groundPatchFadeMVal">—</span></label>
+            <input type="range" id="groundPatchFadeM" min="0" max="60" step="1" />
+            <span class="weather-note">Width of the transition in metres, independent of the shrink. Capped at about a third of the shrink distance — beyond that the patch could not stay solid inside</span>
           </div>
         </details>
 
