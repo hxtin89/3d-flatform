@@ -452,32 +452,25 @@ export const EXPERIENCE_CONFIG = {
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
       /**
-       * Threshold on the feathered coverage. 0.5 sits on the mask's own outline;
-       * above that the patch erodes inward, which is the safe direction — a little
-       * basemap at the edge reads far better than flat colour lying on the map.
+       * Metres the patch edge is pulled inward from the mask outline.
        *
-       * Deliberately well above 0.5: at the cloud's outer fringe the points thin out,
-       * and the patch showing between them read as a hard black rim against the map.
-       * Pulling the edge inside that fringe puts basemap there instead, so the cloud
-       * fades into the map rather than ending on a dark border.
-       */
-      shrink: 0.8,
-      /**
-       * Width of the transition, as a fraction of the feather, centred on `shrink`.
-       * Kept at or below 2 x (1 - shrink) so the ramp still reaches full coverage:
-       * the interior must end up opaque, only the edge should fade.
-       */
-      softness: 0.4,
-      /**
-       * Radius in metres over which coverage is averaged before `shrink` thresholds
-       * it. Nothing else gives the edge a gradient — the splatted mask is hard 0/1 —
-       * so at 0 both shrink and softness do nothing at all.
+       * A distance, not a threshold. The previous version was a fraction of a
+       * separate feather radius, which meant the two controls only worked together —
+       * with the feather at 0 the shrink did nothing at all, and the reachable erosion
+       * was capped at the feather width. Both were surprising.
        *
-       * Sets how far the edge can be pulled inward and how wide the fade is. 30 m is
-       * roughly two canopy crowns, the scale the cloud's own outer fringe thins out
-       * over.
+       * Wanted well above zero: the mask's coverage runs a little over the river banks
+       * and leaves specks on the water, and the cloud's outermost points are sparse
+       * enough that the patch between them read as a hard dark rim against the map.
+       * Pulling the edge inside all of that puts basemap there instead.
        */
-      featherM: 30,
+      shrinkM: 40,
+      /**
+       * Width of the fade, as a fraction of the shrink distance — so 40 m of shrink at
+       * 0.5 fades over about 20 m. Reaches full opacity at every setting, so the
+       * interior is never left half transparent.
+       */
+      softness: 0.5,
       /**
        * How deep to walk each cell's node hierarchy when bounding the mask. Only
        * the rectangle comes from the boxes — coverage comes from the points, which

@@ -48,17 +48,14 @@ export interface CloudUniforms {
   /** Brightness applied to the raw imagery inside the patch, independent of the
    * global basemap grading. */
   groundPatchBrightness: any
-  /** Threshold on the blurred mask. Raising it erodes the patch inward, which is
-   * how the patch is kept from spilling past the point data. */
-  groundPatchShrink: any
-  /** Width of the threshold ramp — the soft edge. */
-  groundPatchSoftness: any
   /**
-   * Radius, in metres, over which coverage is averaged before thresholding. This is
-   * what gives `shrink` and `softness` something to act on: the splatted mask itself
-   * is hard 0/1. Sets how far the edge can be pulled in and how wide the fade is.
+   * Metres the patch edge is pulled inward from the mask outline. Directly a
+   * distance, not a threshold — see applyGroundPatch for how the sampling radius and
+   * the threshold are derived from it so that this number means what it says.
    */
-  groundPatchFeatherM: any
+  groundPatchShrinkM: any
+  /** Width of the fade, as a fraction of the shrink distance. */
+  groundPatchSoftness: any
   /** Analytic ground fog, shared by points and imagery. */
   groundFogColor: any
   groundFogStrength: any
@@ -133,9 +130,8 @@ export function createUniforms(): CloudUniforms {
     groundPatchIndexSize: uniform(1),
     groundPatchColorMix: uniform(EXPERIENCE_CONFIG.design.groundPatch.colorMix),
     groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
-    groundPatchShrink: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrink),
+    groundPatchShrinkM: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrinkM),
     groundPatchSoftness: uniform(EXPERIENCE_CONFIG.design.groundPatch.softness),
-    groundPatchFeatherM: uniform(EXPERIENCE_CONFIG.design.groundPatch.featherM),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
@@ -310,6 +306,15 @@ function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
   return groundPatchMaskNode.sample(withinCell).depth(layer).r.mul(present)
 }
 
+/**
+ * Radius to sample at, as a multiple of the wanted shrink distance, and the covered
+ * fraction that then marks the wanted edge. 1.5 puts the edge at 2/3 of the radius;
+ * 0.8904 is the disc's covered fraction there, from
+ * `1 - (acos(u) - u*sqrt(1-u^2)) / PI` at u = 2/3.
+ */
+const GROUND_PATCH_RADIUS_FACTOR = 1.5
+const GROUND_PATCH_THRESHOLD = 0.8904
+
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
   // No mask built yet (or none registered) means nothing to change.
   if (!groundPatchMaskNode || !groundPatchIndexNode) return finished
@@ -329,7 +334,17 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   // in place would need each cell to read its neighbours, and would have to be redone
   // on every change. Here it costs taps on basemap fragments only, and lets the
   // feather width be a live control.
-  const radiusCells: any = u.groundPatchFeatherM.div(u.groundPatchCellSizeM)
+  // Sampling radius, and the threshold that turns the sampled fraction back into a
+  // distance. Both derive from one number in metres, so the control means what it
+  // says instead of being a threshold the user has to translate.
+  //
+  // For a disc straddling a straight edge, the covered fraction is a known function
+  // of how far the centre sits inside it. Reading that function backwards gives the
+  // threshold for any wanted erosion: sampling at 1.5x the shrink distance puts the
+  // wanted edge at 2/3 of the radius, where the covered fraction is 0.8904. Measured
+  // against the real tap pattern, the 50% line then lands at 1.05-1.09x the shrink
+  // distance whatever the softness — accurate enough to put metres on the slider.
+  const radiusCells: any = u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR).div(u.groundPatchCellSizeM)
   // 13 taps only quantise coverage into thirteenths, which would show as bands
   // stepping inward from the edge. Rotating and rescaling the disc per fragment
   // scatters those steps into fine noise instead, which reads as a smooth ramp — far
@@ -351,16 +366,14 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   }
   const feathered: any = sum.div(float(GROUND_PATCH_TAPS.length))
 
-  // Thresholding above 0.5 pulls the edge inward: at the outer fringe of the cloud
-  // the points are sparse and the patch would otherwise show through them as a dark
-  // rim. Eroding it leaves the basemap there instead, so the cloud fades into the map.
-  // Centred on `shrink` and clamped at 1, both deliberately. A ramp running upward
-  // *from* shrink would never reach full coverage: at shrink 0.8 with a 0.45 wide
-  // ramp the interior — where the disc is completely covered — would top out at 0.42
-  // and the patch would sit half-transparent everywhere, not just at its edge.
-  const half: any = max(u.groundPatchSoftness, float(0.001)).mul(0.5)
-  const shrink: any = u.groundPatchShrink
-  const coverage: any = smoothstep(shrink.sub(half), min(shrink.add(half), float(1)), feathered)
+  // The ramp straddles the threshold and reaches exactly 1 at softness 1, so the
+  // interior stays fully opaque at every setting. A ramp running upward *from* the
+  // threshold would never get there: the interior, where the disc is completely
+  // covered, would top out partway and the patch would sit half transparent
+  // everywhere rather than only at its edge.
+  const halfWidth: any = max(u.groundPatchSoftness, float(0.001)).mul(1 - GROUND_PATCH_THRESHOLD)
+  const threshold: any = float(GROUND_PATCH_THRESHOLD)
+  const coverage: any = smoothstep(threshold.sub(halfWidth), min(threshold.add(halfWidth), float(1)), feathered)
     .mul(u.groundPatchAmount)
   // From the raw texture, not the graded result, so neither the global basemap
   // grading nor the daylight ramp leaks into the chosen appearance.
