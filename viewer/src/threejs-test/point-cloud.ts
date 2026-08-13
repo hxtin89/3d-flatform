@@ -6,7 +6,6 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, length, max, min, abs, exp, floor, hash,
-  acos, sqrt, clamp,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
@@ -49,18 +48,10 @@ export interface CloudUniforms {
   /** Brightness applied to the raw imagery inside the patch, independent of the
    * global basemap grading. */
   groundPatchBrightness: any
-  /**
-   * Metres the patch edge is pulled inward from the mask outline. Directly a
-   * distance, not a threshold — see applyGroundPatch for how the sampling radius and
-   * the threshold are derived from it so that this number means what it says.
-   */
-  groundPatchShrinkM: any
-  /**
-   * Width of the fade in metres, independent of the shrink distance. Independent on
-   * purpose: as a fraction it grew with the shrink, and past ~80 m the band was wider
-   * than the river and tinted the whole channel — see applyGroundPatch.
-   */
-  groundPatchFadeM: any
+  /** Radius in metres the coverage is averaged over before thresholding. */
+  groundPatchBlurM: any
+  /** Cut level on the blurred coverage. Above 0.5 erodes, below it dilates. */
+  groundPatchThreshold: any
   /** Analytic ground fog, shared by points and imagery. */
   groundFogColor: any
   groundFogStrength: any
@@ -135,8 +126,8 @@ export function createUniforms(): CloudUniforms {
     groundPatchIndexSize: uniform(1),
     groundPatchColorMix: uniform(EXPERIENCE_CONFIG.design.groundPatch.colorMix),
     groundPatchBrightness: uniform(EXPERIENCE_CONFIG.design.groundPatch.brightness),
-    groundPatchShrinkM: uniform(EXPERIENCE_CONFIG.design.groundPatch.shrinkM),
-    groundPatchFadeM: uniform(EXPERIENCE_CONFIG.design.groundPatch.fadeM),
+    groundPatchBlurM: uniform(EXPERIENCE_CONFIG.design.groundPatch.blurM),
+    groundPatchThreshold: uniform(EXPERIENCE_CONFIG.design.groundPatch.threshold),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
@@ -313,11 +304,11 @@ function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
 }
 
 /**
- * Radius to sample at, as a multiple of the wanted shrink distance. The fade raises it
- * further when it needs more room — see applyGroundPatch, where the threshold and the
- * metres-to-fraction slope are then derived from the ratio the two settle on.
+ * Half-width of the threshold ramp. Not a design control — just enough to antialias the
+ * cut, which would otherwise stair-step along mask pixels. The shape's smoothness comes
+ * from the blur; this only keeps its edge from being jagged.
  */
-const GROUND_PATCH_RADIUS_FACTOR = 1.5
+const GROUND_PATCH_THRESHOLD_AA = 0.02
 
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
   // Switched off, or no mask built yet, means nothing to change.
@@ -338,32 +329,19 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   // in place would need each cell to read its neighbours, and would have to be redone
   // on every change. Here it costs taps on basemap fragments only, and lets the
   // feather width be a live control.
-  // Sampling radius, from the shrink alone.
+  // Blur, then threshold. Two primitives instead of the shrink/fade pair they used to
+  // be dressed up as: that version derived the radius from one control and the cut
+  // level from the other, which coupled them, capped the fade, and cost two rounds of
+  // bugs. Here the disc radius *is* the blur and the cut *is* the threshold.
   //
-  // Letting the fade raise it too was tried and reverted: it does widen the band, but
-  // the disc then reaches across the river, and a disc wider than a gap cannot see the
-  // gap. Measured on a scanline over the channel, a 120 m fade lifted the river from
-  // near-black to 185-255 — the patch closed over the water the shrink had cleared.
-  // Fade width and gap preservation pull against each other here, and the gap wins.
-  const radiusM: any = max(u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR), float(1))
-  // Where the wanted edge falls inside the disc, and the disc's own response there.
-  // For a disc across a straight edge the covered fraction is
-  // `1 - (acos(u) - u*sqrt(1-u^2)) / PI` with slope `2*sqrt(1-u^2)/PI`, so both the
-  // threshold and the metres-to-fraction conversion follow from the ratio. With the
-  // radius fixed at 1.5x the shrink the ratio is always 2/3, so these evaluate to the
-  // 0.8904 and 0.4744 they used to be hard-coded as — kept derived because it states
-  // where those numbers come from, and holds if the factor is ever retuned.
-  const ratio: any = clamp(u.groundPatchShrinkM.div(radiusM), 0, 0.999)
-  const root: any = sqrt(float(1).sub(ratio.mul(ratio)))
-  const threshold: any = float(1).sub(acos(ratio).sub(ratio.mul(root)).div(Math.PI))
-  const slope: any = root.mul(2 / Math.PI)
-
+  // Eroding and dilating both come out of the threshold: above 0.5 the edge pulls
+  // inward, below it pushes out, and how far either goes is set by the blur radius.
+  const radiusCells: any = u.groundPatchBlurM.div(u.groundPatchCellSizeM)
   // 13 taps only quantise coverage into thirteenths, which would show as bands
   // stepping inward from the edge. Rotating and rescaling the disc per fragment
   // scatters those steps into fine noise instead, which reads as a smooth ramp — far
   // cheaper than the tap count it would otherwise take, since it adds arithmetic
   // rather than texture reads.
-  const radiusCells: any = radiusM.div(u.groundPatchCellSizeM)
   const noise: any = hash(screenCoordinate.x.mul(97.13).add(screenCoordinate.y.mul(31.7)))
   const angle: any = noise.mul(6.2831853)
   const sa: any = sin(angle)
@@ -378,19 +356,12 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
     )
     sum = sum.add(groundPatchCoverageAt(u, gridPos.add(rotated.mul(jitteredRadius))))
   }
-  const feathered: any = sum.div(float(GROUND_PATCH_TAPS.length))
+  const blurred: any = sum.div(float(GROUND_PATCH_TAPS.length))
 
-  // Fade width in metres converted into threshold units, so it stays the width it says
-  // rather than scaling with the shrink. Capped at 1 - threshold: a wider ramp could not
-  // reach full coverage and would leave the interior half transparent. In metres that
-  // ceiling is 0.69x the shrink distance, so a wide fade needs a large shrink to sit in
-  // — which is the honest limit of averaging a disc, not a tuning choice.
-  const halfWidth: any = min(
-    u.groundPatchFadeM.mul(slope).div(radiusM.mul(2)),
-    float(1).sub(threshold),
-  )
-  const coverage: any = smoothstep(threshold.sub(halfWidth), min(threshold.add(halfWidth), float(1)), feathered)
-    .mul(u.groundPatchAmount)
+  const threshold: any = u.groundPatchThreshold
+  const coverage: any = smoothstep(
+    threshold.sub(GROUND_PATCH_THRESHOLD_AA), threshold.add(GROUND_PATCH_THRESHOLD_AA), blurred,
+  ).mul(u.groundPatchAmount)
   // From the raw texture, not the graded result, so neither the global basemap
   // grading nor the daylight ramp leaks into the chosen appearance.
   //

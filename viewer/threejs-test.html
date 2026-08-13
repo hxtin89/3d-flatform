@@ -827,14 +827,14 @@
             <span class="weather-note">100% = imagery fully replaced · below that the terrain shows through</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchShrinkM">Shrink · <span class="val" id="groundPatchShrinkMVal">—</span></label>
-            <input type="range" id="groundPatchShrinkM" min="0" max="200" step="1" />
-            <span class="weather-note">Metres the patch edge is pulled inward from the point data. Raise it until the river reads as basemap all the way to its banks</span>
+            <label class="h" for="groundPatchBlurM">Blur · <span class="val" id="groundPatchBlurMVal">—</span></label>
+            <input type="range" id="groundPatchBlurM" min="0" max="200" step="1" />
+            <span class="weather-note">Radius in metres the coverage is averaged over. Smooths the outline and gives the threshold room to move the edge. Too wide and it stops seeing gaps — past about half the river's width the patch closes back over it</span>
           </div>
           <div class="row">
-            <label class="h" for="groundPatchFadeM">Edge fade · <span class="val" id="groundPatchFadeMVal">—</span></label>
-            <input type="range" id="groundPatchFadeM" min="0" max="120" step="1" />
-            <span class="weather-note">Width of the transition in metres, independent of the shrink. Capped at about a third of the shrink distance — beyond that the patch could not stay solid inside</span>
+            <label class="h" for="groundPatchThreshold">Threshold · <span class="val" id="groundPatchThresholdVal">—</span></label>
+            <input type="range" id="groundPatchThreshold" min="0.02" max="0.98" step="0.01" />
+            <span class="weather-note">Where to cut the blurred coverage. 50% sits on the outline, higher pulls the edge inward, lower pushes it out</span>
           </div>
         </details>
 

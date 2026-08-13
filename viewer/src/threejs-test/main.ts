@@ -1744,11 +1744,11 @@ bindDesignSlider('groundPatchColorMix', GROUND_PATCH.colorMix, asPercent, (v) =>
 bindDesignSlider('groundPatchBrightness', GROUND_PATCH.brightness, asPercent, (v) => {
   uniforms.groundPatchBrightness.value = v
 })
-bindDesignSlider('groundPatchShrinkM', GROUND_PATCH.shrinkM, asMetres, (v) => {
-  uniforms.groundPatchShrinkM.value = v
+bindDesignSlider('groundPatchBlurM', GROUND_PATCH.blurM, asMetres, (v) => {
+  uniforms.groundPatchBlurM.value = v
 })
-bindDesignSlider('groundPatchFadeM', GROUND_PATCH.fadeM, asMetres, (v) => {
-  uniforms.groundPatchFadeM.value = v
+bindDesignSlider('groundPatchThreshold', GROUND_PATCH.threshold, asPercent, (v) => {
+  uniforms.groundPatchThreshold.value = v
 })
 
 const asDegrees = (value: number) => `${Math.round(value)}°`
@@ -1858,8 +1858,8 @@ designCopyEl.addEventListener('click', async () => {
       amount: groundPatchAmount,
       colorMix: uniforms.groundPatchColorMix.value,
       brightness: uniforms.groundPatchBrightness.value,
-      shrinkM: uniforms.groundPatchShrinkM.value,
-      fadeM: uniforms.groundPatchFadeM.value,
+      blurM: uniforms.groundPatchBlurM.value,
+      threshold: uniforms.groundPatchThreshold.value,
     },
     maskFringe: uniforms.maskFringe.value,
     maskFringeCurve: uniforms.maskFringeCurve.value,

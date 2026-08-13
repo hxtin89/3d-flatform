@@ -458,29 +458,28 @@ export const EXPERIENCE_CONFIG = {
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
       /**
-       * Metres the patch edge is pulled inward from the mask outline.
+       * Radius in metres the coverage is averaged over before the threshold cuts it.
        *
-       * A distance, not a threshold. The previous version was a fraction of a
-       * separate feather radius, which meant the two controls only worked together —
-       * with the feather at 0 the shrink did nothing at all, and the reachable erosion
-       * was capped at the feather width. Both were surprising.
+       * Blur and threshold are the two primitives the old shrink/fade pair was dressed
+       * up as — that version derived the sampling radius from one control and the cut
+       * level from the other, which coupled them, put a ceiling on the fade, and cost
+       * two rounds of bugs. These two are independent.
        *
-       * Wanted well above zero: the mask's coverage runs a little over the river banks
-       * and leaves specks on the water, and the cloud's outermost points are sparse
-       * enough that the patch between them read as a hard dark rim against the map.
-       * Pulling the edge inside all of that puts basemap there instead.
+       * Bigger blurs smooth the outline and let the threshold move the edge further,
+       * but a disc wider than a gap cannot see the gap: measured, a 240 m radius closed
+       * the patch back over a ~100 m river. Keep it well under the narrowest feature
+       * worth preserving.
        */
-      shrinkM: 40,
+      blurM: 60,
       /**
-       * Width of the fade in metres. Absolute, not a share of the shrink distance:
-       * as a share it grew with the shrink, and past about 80 m the band was wider
-       * than the river, so the whole channel sat inside the ramp and got tinted by
-       * the patch that the shrink had just cleared away.
+       * Cut level on the blurred coverage. 0.5 sits on the outline; above it the edge
+       * erodes inward, below it dilates outward.
        *
-       * The disc can only carry a band up to about a third of the shrink distance —
-       * beyond that full coverage becomes unreachable — so this is capped there.
+       * 0.89 with a 60 m blur pulls the edge in about 40 m, which is what it takes to
+       * clear the fringes the coverage leaves over the river banks and the specks it
+       * leaves on the water.
        */
-      fadeM: 12,
+      threshold: 0.89,
       /**
        * How deep to walk each cell's node hierarchy when bounding the mask. Only
        * the rectangle comes from the boxes — coverage comes from the points, which
