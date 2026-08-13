@@ -58,8 +58,9 @@ export const EXPERIENCE_CONFIG = {
       [1088, 2.5],
     ] as const,
     // The one knob for overall point fatness. Everything above is multiplied by
-    // it, the UI slider multiplies on top. 1 = the measured preference.
-    pointSizeMultiplier: 1.0,
+    // it, the UI slider multiplies on top. Dialled in on the slider at 0.8x, which
+    // lands the close-range size around 3.1 px.
+    pointSizeMultiplier: 0.8,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,
@@ -454,7 +455,7 @@ export const EXPERIENCE_CONFIG = {
       colorMix: 1,
       /** Brightness of the raw imagery inside the patch, independent of the global
        * basemap grading — the point being to see exactly this, not this plus fog. */
-      brightness: 0.25,
+      brightness: 0.3,
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
       /**
@@ -468,18 +469,18 @@ export const EXPERIENCE_CONFIG = {
        * Bigger blurs smooth the outline and let the threshold move the edge further,
        * but a disc wider than a gap cannot see the gap: measured, a 240 m radius closed
        * the patch back over a ~100 m river. Keep it well under the narrowest feature
-       * worth preserving.
+       * worth preserving — 40 m is comfortably clear of that here.
        */
-      blurM: 60,
+      blurM: 40,
       /**
        * Cut level on the blurred coverage. 0.5 sits on the outline; above it the edge
        * erodes inward, below it dilates outward.
        *
-       * 0.89 with a 60 m blur pulls the edge in about 40 m, which is what it takes to
-       * clear the fringes the coverage leaves over the river banks and the specks it
-       * leaves on the water.
+       * 0.65 with a 40 m blur is a gentle erosion — enough to take the fringe off the
+       * banks without eating into the footprint, now that the cloud is lifted clear of
+       * the imagery and the patch no longer has to compensate for hidden points.
        */
-      threshold: 0.89,
+      threshold: 0.65,
       /**
        * How deep to walk each cell's node hierarchy when bounding the mask. Only
        * the rectangle comes from the boxes — coverage comes from the points, which
@@ -560,9 +561,10 @@ export const EXPERIENCE_CONFIG = {
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,
     /** Multiplies the basemap only — the point cloud keeps its own grading.
-     * Dialled far down so the imagery sits back as a dark ground plane and the
-     * canopy reads on top of it. */
-    mapBrightness: 0.1,
+     * Pushed above 1 so the map reads as daylight ground where it shows through: the
+     * river and the survey gaps are the whole point of the ground patch, and at the
+     * old 0.1 they sat as near-black holes rather than as water and sand. */
+    mapBrightness: 1.4,
     /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
