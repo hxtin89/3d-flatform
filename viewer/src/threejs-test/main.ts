@@ -712,6 +712,20 @@ const onPrecisionToggle = () => {
   updateMatrixPrecision(performance.now())
   syncPrecisionToggle()
 }
+const liftValueEl = $<HTMLInputElement>('#liftValue')
+const liftValueValEl = $<HTMLSpanElement>('#liftValueVal')
+/** Show the lift, and what it actually buys over the map surface. */
+function syncLiftReadout(): void {
+  liftValueValEl.textContent = `${Math.round(pointCloudLiftM)} m`
+  liftValueEl.value = String(Math.round(pointCloudLiftM))
+}
+const onLiftValue = () => {
+  pointCloudLiftM = Number(liftValueEl.value)
+  applyPointCloudLift()
+  syncLiftReadout()
+}
+liftValueEl.addEventListener('input', onLiftValue)
+
 const onLiftToggle = () => {
   heightOffsetEnabled = !heightOffsetEnabled
   applyHeightOffset()
@@ -974,6 +988,25 @@ let zOffset = 0
 /** Lift the streamed cloud off the draped imagery. Diagnostic only when off:
  * the canopy and cloud-deck uniforms keep the offset they were bound with, so
  * the height grading no longer lines up. */
+/**
+ * Recompute the cloud's vertical placement and everything measured from it.
+ *
+ * All of it has to move together: the shader's ENU frame carries zOffset, so the
+ * canopy grading, the virtual cloud deck and the fog floor are expressed in lifted
+ * coordinates. Changing the lift without these is exactly the desync the Offset
+ * toggle warns about, so the slider goes through here rather than nudging the group.
+ */
+function applyPointCloudLift(): void {
+  if (!areaHeightsKnown) return
+  zOffset = groundSnap ? -(areaMinZ + areaOriginHeight) + pointCloudLiftM : 0
+  uniforms.canopyBaseZ.value = areaMinZ + zOffset + 8
+  uniforms.canopyTopZ.value = areaMinZ + zOffset + areaSpan
+  uniforms.cloudDeckHeight.value = areaMinZ + zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+  groundFogFloorZ = areaMinZ + zOffset
+  applyGroundFogBase()
+  applyHeightOffset()
+}
+
 function applyHeightOffset(): void {
   stream?.group.position.copy(enuUp).multiplyScalar(heightOffsetEnabled ? zOffset : 0)
 }
@@ -1191,6 +1224,20 @@ const maskSphereWorld = new THREE.Vector3()
 let maskWorldActive = false
 let maskWorldRadius = 0
 let areaMinZ = 0
+/**
+ * Metres the cloud is lifted above the basemap, live from the panel.
+ *
+ * Ground snapping puts the *bbox floor* on the map surface, which is only right if the
+ * bbox actually bounds the data. Measured here it does not: at the river bend the
+ * points reach ENU z -90 while the map sits at -55, so the lowest ~35 m of terrain —
+ * the river bed, the gravel bars, the low inner bends — ends up behind the imagery and
+ * invisible. Hence a knob rather than a constant.
+ */
+let pointCloudLiftM: number = EXPERIENCE_CONFIG.navigation.pointCloudLiftM
+/** Manifest-derived inputs the lift recomputes from; unset until the manifest lands. */
+let areaOriginHeight = 0
+let areaSpan = 0
+let areaHeightsKnown = false
 /** Survey floor in the shader's ENU frame (zOffset included) — the ground-fog
  * base slider is an offset from here. */
 let groundFogFloorZ = 0
@@ -2158,10 +2205,8 @@ async function main(): Promise<void> {
     // height 0. Dropping by the bbox floor alone lands the cloud on the ENU
     // origin, which itself sits enuOriginLonLat[2] above that — hence both.
     const originHeight = manifest.enuOriginLonLat?.[2] ?? 0
-    zOffset = groundSnap
-      ? -(minZ + originHeight) + EXPERIENCE_CONFIG.navigation.pointCloudLiftM
-      : 0
     areaMinZ = minZ
+    areaOriginHeight = originHeight
     // The ENU AABB is tilted and therefore overstates vertical height, so the
     // canopy height comes from the source Z span (about 74 m for Peru).
     const configuredStop = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
@@ -2176,12 +2221,10 @@ async function main(): Promise<void> {
     navigationFloorZ = minZ + navigationClearance
     // The shader's ENU frame still carries zOffset, so ground-relative heights
     // for the golden rim and the virtual cloud deck must add it back.
-    const span = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
-    uniforms.canopyBaseZ.value = minZ + zOffset + 8
-    uniforms.canopyTopZ.value = minZ + zOffset + span
-    uniforms.cloudDeckHeight.value = minZ + zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
-    groundFogFloorZ = minZ + zOffset
-    applyGroundFogBase()
+    areaSpan = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
+    areaHeightsKnown = true
+    applyPointCloudLift()
+    syncLiftReadout()
   }
 
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox

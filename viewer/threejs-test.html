@@ -663,7 +663,12 @@
       <div class="row">
         <label class="h" for="liftToggle">Height offset</label>
         <button class="act on" id="liftToggle" type="button" aria-pressed="true" aria-describedby="liftNote">⇅ Offset · On</button>
-        <span class="weather-note" id="liftNote">Diagnostics only: off lowers the cloud, the height uniforms do not follow</span>
+        <span class="weather-note" id="liftNote">Off drops the lift to zero. The height uniforms do follow the slider below, but not this button</span>
+      </div>
+      <div class="row">
+        <label class="h" for="liftValue">Lift · <span class="val" id="liftValueVal">—</span></label>
+        <input type="range" id="liftValue" min="0" max="200" step="1" />
+        <span class="weather-note" id="liftValueNote">Metres the cloud is raised above the draped imagery. Ground snapping only puts the <em>bounding box</em> floor on the map surface, and the box does not reach the lowest terrain here — raise this until the river bed stops disappearing behind the map</span>
       </div>
       <div class="row splat-row">
         <label class="h" for="gaussianToggle">3DGS test</label>
