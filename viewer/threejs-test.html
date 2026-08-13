@@ -749,6 +749,11 @@
         <details class="design-section">
           <summary>Ground fog</summary>
           <div class="row">
+            <label class="h" for="groundFogToggle">Effect</label>
+            <button class="act on" id="groundFogToggle" type="button" aria-pressed="true" aria-describedby="groundFogToggleNote">≡ Ground fog · On</button>
+            <span class="weather-note" id="groundFogToggleNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
+          </div>
+          <div class="row">
             <label class="h" for="fogStrength">Strength · <span class="val" id="fogStrengthVal">—</span></label>
             <input type="range" id="fogStrength" min="0" max="3" step="0.01" />
             <span class="weather-note">Past 100% the fog saturates earlier instead of overshooting its colour — the coverage itself is capped at 100%</span>
@@ -792,7 +797,8 @@
           <summary>Ground under the point cloud</summary>
           <div class="row">
             <label class="h" for="groundPatchToggle">Effect</label>
-            <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchNote">▦ Ground patch · On</button>
+            <button class="act on" id="groundPatchToggle" type="button" aria-pressed="true" aria-describedby="groundPatchOffNote">▦ Ground patch · On</button>
+            <span class="weather-note" id="groundPatchOffNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
             <span class="weather-note" id="groundPatchNote">Replaces the satellite imagery with a solid colour where point data exists — the shape follows a coverage mask splatted from the points themselves, so gaps in the survey — the river, the missing strip — keep showing the map</span>
           </div>
           <div class="row">
@@ -830,6 +836,11 @@
         <details class="design-section">
           <summary>Distance fog</summary>
           <div class="row">
+            <label class="h" for="distanceFogToggle">Effect</label>
+            <button class="act on" id="distanceFogToggle" type="button" aria-pressed="true" aria-describedby="distanceFogToggleNote">≋ Distance fog · On</button>
+            <span class="weather-note" id="distanceFogToggleNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
+          </div>
+          <div class="row">
             <label class="h" for="distanceFogNear">Onset · <span class="val" id="distanceFogNearVal">—</span></label>
             <input type="range" id="distanceFogNear" min="0" max="1" step="0.01" />
             <span class="weather-note">Fraction of the view distance where the haze starts. Small = haze begins right at the camera</span>
@@ -846,6 +857,11 @@
 
         <details class="design-section">
           <summary>Cloud shadows</summary>
+          <div class="row">
+            <label class="h" for="cloudShadowToggle">Effect</label>
+            <button class="act on" id="cloudShadowToggle" type="button" aria-pressed="true" aria-describedby="cloudShadowToggleNote">☁ Cloud shadows · On</button>
+            <span class="weather-note" id="cloudShadowToggleNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
+          </div>
           <div class="row">
             <label class="h" for="cloudShadowStrength">Strength · <span class="val" id="cloudShadowStrengthVal">—</span></label>
             <input type="range" id="cloudShadowStrength" min="0" max="1" step="0.01" />
@@ -923,7 +939,8 @@
           <summary>Depth of Field</summary>
           <div class="row">
             <label class="h" for="dofToggle">Effect</label>
-            <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofNote">◉ Depth of field · On</button>
+            <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofOffNote">◉ Depth of field · On</button>
+            <span class="weather-note" id="dofOffNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
             <span class="weather-note" id="dofNote">A real post pass with a blur pyramid — the only effect that does not run in the shader. Off = no cost</span>
           </div>
           <div class="row">

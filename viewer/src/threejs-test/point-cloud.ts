@@ -208,7 +208,8 @@ export function applyMaskSurround(u: CloudUniforms, color: any, floor = 0): any 
  * crossed — so the band reads correctly looking at it, and softens rather than
  * layering properly when the camera sits inside its lower edge.
  */
-export function groundFogNode(u: CloudUniforms): { amount: any; color: any } {
+export function groundFogNode(u: CloudUniforms): { amount: any; color: any } | null {
+  if (!effects.groundFog) return null
   const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
   const cameraEnu = u.enuInverse.mul(vec4(cameraPosition, 1)).xyz
   const surfaceZ = enu.z.sub(u.groundFogBaseZ)
@@ -316,8 +317,8 @@ const GROUND_PATCH_RADIUS_FACTOR = 1.5
 const GROUND_PATCH_THRESHOLD = 0.8904
 
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
-  // No mask built yet (or none registered) means nothing to change.
-  if (!groundPatchMaskNode || !groundPatchIndexNode) return finished
+  // Switched off, or no mask built yet, means nothing to change.
+  if (!effects.groundPatch || !groundPatchMaskNode || !groundPatchIndexNode) return finished
   // Annotated `any` like the rest of this file's node plumbing: the uniforms are
   // untyped, so TSL's overloads would otherwise collapse this vec2 work to float.
   const enu: any = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
@@ -419,6 +420,44 @@ export function setHighPrecisionMatrices(enabled: boolean): void {
   highPrecisionMatrices = enabled
 }
 
+/**
+ * Effects that can be compiled out entirely rather than turned down to zero.
+ *
+ * A uniform at 0 still costs whatever the shader does to reach it — the ground fog
+ * still integrates its optical depth, the patch still takes its 13 taps — and the
+ * point of these switches is to measure and reclaim exactly that. Turning one off
+ * therefore rebuilds the affected materials without the code, which is why they live
+ * here as build-time flags and not as uniforms.
+ */
+const effects = { groundFog: true, groundPatch: true, cloudShadows: true }
+export type CloudEffect = keyof typeof effects
+
+/**
+ * Flip an effect. Returns true when the value actually changed, so callers know
+ * whether they need to pay for a material rebuild.
+ */
+export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): boolean {
+  if (effects[effect] === enabled) return false
+  effects[effect] = enabled
+  return true
+}
+
+export function isCloudEffectEnabled(effect: CloudEffect): boolean {
+  return effects[effect]
+}
+
+/**
+ * Rebuild one material's colour graph under the current flags. Materials record how
+ * to rebuild themselves at creation, because the graph is built from things only the
+ * creator has — the tile's own texture, its colour item size.
+ */
+export function rebuildEffectMaterial(material: any): void {
+  const rebuild = material?.userData?.rebuildColorNode
+  if (typeof rebuild !== 'function') return
+  rebuild()
+  material.needsUpdate = true
+}
+
 /** Apply the current precision mode to one already-built material. */
 export function applyMatrixPrecision(material: any): void {
   if (!material) return
@@ -453,7 +492,7 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
     : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
 
-  material.colorNode = Fn(() => {
+  const buildColorNode = () => Fn(() => {
     // Round dots instead of squares. The mask discard below already costs this
     // material its early-z, so the extra rejection is effectively free.
     If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
@@ -481,7 +520,7 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     // Directional cues without normals: project each point up the sun ray onto
     // a virtual cloud deck and shade it by the drifting cloud density there.
     const cloudShadow = float(1).toVar()
-    if (cloudShadowTextureNode) {
+    if (effects.cloudShadows && cloudShadowTextureNode) {
       const sunZ = max(u.sunDirectionEnu.z, float(0.15))
       const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
       const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))
@@ -514,8 +553,13 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     // Fog before the vignette dim, so the mask still darkens the fogged result
     // rather than the fog re-lighting the vignette edge.
     const fog = groundFogNode(u)
-    return applyMaskSurround(u, mix(graded, fog.color, fog.amount), 0.30)
+    const atmospheric = fog ? mix(graded, fog.color, fog.amount) : graded
+    return applyMaskSurround(u, atmospheric, 0.30)
   })()
+  material.colorNode = buildColorNode()
+  // Recorded so an effect toggle can rebuild this graph later without the caller
+  // having to remember the tile's colour item size.
+  material.userData.rebuildColorNode = () => { material.colorNode = buildColorNode() }
 
   return material
 }

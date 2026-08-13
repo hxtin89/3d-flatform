@@ -3,7 +3,10 @@
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
-import { createUniforms, setCloudShadowTexture, setGroundPatchMask } from './point-cloud'
+import {
+  createUniforms, setCloudShadowTexture, setGroundPatchMask,
+  setCloudEffectEnabled, type CloudEffect,
+} from './point-cloud'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
@@ -519,6 +522,9 @@ let atmosphereFar = camera.far
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
 // Distance-fog ends as fractions of the far plane — see updateAtmosphere.
+/** Design switch, and the device tier's own veto — the scene keeps fog only if both agree. */
+let distanceFogEnabled = true
+let distanceFogAllowedByTier = true
 let distanceFogNearFactor: number = EXPERIENCE_CONFIG.atmosphere.fogNearFactor
 let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
 // Coverage mask for the flat ground under the point cloud. Created and registered
@@ -764,7 +770,8 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         sseAuto = -1
         break
       case 'fogAtmosphere':
-        scene.fog = effective.fogAtmosphere ? distanceFog : null
+        distanceFogAllowedByTier = effective.fogAtmosphere
+        scene.fog = distanceFogAllowedByTier && distanceFogEnabled ? distanceFog : null
         if (effective.fogAtmosphere) {
           // Snap instead of lerping down from the comparison far plane.
           updateAtmosphere(performance.now(), true)
@@ -1608,8 +1615,56 @@ bindDesignSlider('maskFringe', DESIGN.maskFringe, asPercent, (v) => { uniforms.m
 bindDesignSlider('maskFringeCurve', DESIGN.maskFringeCurve, asFactor, (v) => { uniforms.maskFringeCurve.value = v })
 bindDesignSlider('surroundTint', DESIGN.surroundTint, asPercent, (v) => { uniforms.maskSurroundAmount.value = v })
 
-// Ground patch under the point cloud. The toggle only gates the amount, so
-// switching it back on restores whatever the slider was left at.
+/**
+ * Effect switches that compile the effect out instead of turning it down.
+ *
+ * A uniform at zero still pays for everything the shader does to reach it, so these
+ * are the only way to read off what an effect actually costs in fps — which is what
+ * they are for. The price of that is a shader rebuild on every flip, so they are
+ * diagnostics, not something to animate.
+ */
+function bindEffectToggle(
+  id: string, label: string, initial: boolean, apply: (enabled: boolean) => void,
+): void {
+  const button = $<HTMLButtonElement>(`#${id}`)
+  let enabled = initial
+  const sync = () => {
+    button.classList.toggle('on', enabled)
+    button.setAttribute('aria-pressed', String(enabled))
+    button.textContent = `${label} · ${enabled ? 'On' : 'Off'}`
+    apply(enabled)
+  }
+  button.addEventListener('click', () => { enabled = !enabled; sync() })
+  sync()
+}
+
+/** Rebuild every loaded tile shader. Both layers may still be null during boot. */
+function refreshEffectShaders(): void {
+  stream?.refreshEffects()
+  globe?.refreshEffects()
+}
+
+/** One switch for an effect that lives in the tile shaders. */
+function bindShaderEffectToggle(id: string, label: string, effect: CloudEffect): void {
+  bindEffectToggle(id, label, true, (enabled) => {
+    if (setCloudEffectEnabled(effect, enabled)) refreshEffectShaders()
+  })
+}
+
+bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog')
+bindShaderEffectToggle('cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows')
+// Distance fog is three's own scene fog, so switching it off is a matter of taking
+// it off the scene — with no fog there, the node materials build without it. The
+// device tier can also disable it (see the fogAtmosphere case), and that still wins.
+bindEffectToggle('distanceFogToggle', '≋ Distance fog', true, (enabled) => {
+  distanceFogEnabled = enabled
+  scene.fog = enabled && distanceFogAllowedByTier ? distanceFog : null
+  refreshEffectShaders()
+})
+
+// Ground patch under the point cloud. Off both zeroes the amount and compiles the
+// patch out of the tile shaders, so it costs nothing; switching it back on restores
+// whatever the slider was left at.
 const GROUND_PATCH = DESIGN.groundPatch
 let groundPatchEnabled: boolean = GROUND_PATCH.enabled
 let groundPatchAmount: number = GROUND_PATCH.amount
@@ -1623,7 +1678,11 @@ const syncGroundPatchToggle = () => {
   groundPatchToggleEl.textContent = `▦ Ground patch · ${groundPatchEnabled ? 'On' : 'Off'}`
   applyGroundPatchAmount()
 }
-const onGroundPatchToggle = () => { groundPatchEnabled = !groundPatchEnabled; syncGroundPatchToggle() }
+const onGroundPatchToggle = () => {
+  groundPatchEnabled = !groundPatchEnabled
+  syncGroundPatchToggle()
+  if (setCloudEffectEnabled('groundPatch', groundPatchEnabled)) refreshEffectShaders()
+}
 groundPatchToggleEl.addEventListener('click', onGroundPatchToggle)
 syncGroundPatchToggle()
 bindDesignColor('groundPatchColor', GROUND_PATCH.color, (hex) => {

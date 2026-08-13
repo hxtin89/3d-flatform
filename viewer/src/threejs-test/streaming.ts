@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { TilesRenderer } from '3d-tiles-renderer'
 import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
-  applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices,
+  applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
   POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
@@ -50,6 +50,8 @@ export interface StreamingCloud {
   /** Diagnostic A/B: CPU-computed (float64) vs in-shader (float32) model-view
    * matrices. Off makes the ECEF rounding jitter visible again. */
   setHighPrecision(enabled: boolean): void
+  /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
+  refreshEffects(): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
@@ -307,6 +309,11 @@ export function createStreamingCloud(opts: {
       // The scene graph is the registry — every live tile material hangs under
       // the tiles group, and UnloadTilesPlugin keeps disposing them itself.
       tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+    },
+    refreshEffects() {
+      // Same registry as setHighPrecision: the scene graph holds every live tile
+      // material, and UnloadTilesPlugin keeps disposing them itself.
+      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (!centerWorld || !(radius > 0)) {

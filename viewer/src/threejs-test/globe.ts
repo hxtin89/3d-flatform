@@ -11,6 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyMatrixPrecision, applyMaskSurround, groundFogNode, gradeImageryNode, applyGroundPatch,
+  rebuildEffectMaterial,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -31,6 +32,8 @@ export interface Globe {
   setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
   /** Re-apply the current matrix precision mode to already-loaded imagery. */
   refreshMatrixPrecision(): void
+  /** Rebuild loaded imagery shaders after an effect switch — see setCloudEffectEnabled. */
+  refreshEffects(): void
   /**
    * Stop or resume imagery traversal. Hiding `tiles.group` is not enough to stop
    * the network cost: the renderer keeps traversing and downloading whatever the
@@ -124,17 +127,24 @@ export function createGlobe(opts: {
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
       // .rgb, not the raw vec4: gradeImageryNode mixes against a vec3 luma.
-      const raw = texture(map).rgb
-      const graded = gradeImageryNode(uniforms, raw)
-        .mul(uniforms.daylightColor)
-        .mul(uniforms.daylightIntensity)
-      const fog = groundFogNode(uniforms)
-      const atmospheric = applyMaskSurround(uniforms, mix(graded, fog.color, fog.amount), 0.50)
-      // Last, on purpose: fog and the vignette are atmosphere for the map, and under
-      // the point cloud there is no map to give atmosphere to. Applying the patch
-      // after them is what makes the chosen colour or brightness the thing you
-      // actually see — see applyGroundPatch.
-      mat.colorNode = applyGroundPatch(uniforms, atmospheric, raw)
+      // Rebuilt rather than parameterised, because the effect switches compile their
+      // code out entirely instead of turning it down — see setCloudEffectEnabled.
+      const buildColorNode = () => {
+        const raw = texture(map).rgb
+        const graded = gradeImageryNode(uniforms, raw)
+          .mul(uniforms.daylightColor)
+          .mul(uniforms.daylightIntensity)
+        const fog = groundFogNode(uniforms)
+        const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
+        const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)
+        // Last, on purpose: fog and the vignette are atmosphere for the map, and under
+        // the point cloud there is no map to give atmosphere to. Applying the patch
+        // after them is what makes the chosen colour or brightness the thing you
+        // actually see — see applyGroundPatch.
+        return applyGroundPatch(uniforms, atmospheric, raw)
+      }
+      mat.colorNode = buildColorNode()
+      mat.userData.rebuildColorNode = () => { mat.colorNode = buildColorNode() }
       o.material.dispose()
       o.material = mat
     })
@@ -194,6 +204,9 @@ export function createGlobe(opts: {
     setResolution,
     refreshMatrixPrecision() {
       tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+    },
+    refreshEffects() {
+      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
     },
     setImageryEnabled(enabled) {
       if (enabled === imageryEnabled) return
