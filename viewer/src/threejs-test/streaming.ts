@@ -37,6 +37,9 @@ export interface StreamingCloud {
   debugVolume: { blockedByCeiling: number[]; inside: number[]; outside: number[]; noVolume: number[] }
   update(): void
   setErrorTarget(v: number): void
+  /** Diagnostic mode: no mask gate and large resident/worker limits so every
+   * APH leaf selected by the camera frustum can finish loading. */
+  setLeafLoading(enabled: boolean): void
   /** 0 = p02, 1 = p10, 2 = p100. */
   setDensityCeiling(level: number): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
@@ -159,6 +162,18 @@ export function createStreamingCloud(opts: {
   const maskRegion = new FrustumMaskRegion({ mask: true, errorTarget })
   maskRegion.calculateError = () => 0
   let maskActive = false
+  let leafLoading = false
+  let leafLoadingSnapshot: {
+    minSize: number
+    maxSize: number
+    minBytesSize: number
+    maxBytesSize: number
+    maxDownloads: number
+    maxParses: number
+    maxProcesses: number
+    maxTilesProcessed: number
+    gpuBytesTarget: number
+  } | null = null
   tiles.registerPlugin(regionPlugin as any)
 
   const unloadPlugin = new UnloadTilesPlugin({
@@ -268,6 +283,47 @@ export function createStreamingCloud(opts: {
     setErrorTarget(value: number) {
       tiles.errorTarget = value
     },
+    setLeafLoading(enabled: boolean) {
+      if (enabled === leafLoading) return
+      leafLoading = enabled
+      if (enabled) {
+        leafLoadingSnapshot = {
+          minSize: tiles.lruCache.minSize,
+          maxSize: tiles.lruCache.maxSize,
+          minBytesSize: tiles.lruCache.minBytesSize,
+          maxBytesSize: tiles.lruCache.maxBytesSize,
+          maxDownloads: tiles.downloadQueue.maxJobs,
+          maxParses: tiles.parseQueue.maxJobs,
+          maxProcesses: tiles.processNodeQueue.maxJobs,
+          maxTilesProcessed: tiles.maxTilesProcessed,
+          gpuBytesTarget: (unloadPlugin as any).bytesTarget,
+        }
+        if (maskActive) { regionPlugin.removeRegion(maskRegion); maskActive = false }
+        // This is intentionally a diagnostic, not a general performance preset:
+        // preserve every tile selected while inspecting a close-range canopy.
+        tiles.lruCache.minSize = 20_000
+        tiles.lruCache.maxSize = 20_000
+        tiles.lruCache.minBytesSize = 16 * 1024 * MIB
+        tiles.lruCache.maxBytesSize = 16 * 1024 * MIB
+        tiles.downloadQueue.maxJobs = 24
+        tiles.parseQueue.maxJobs = 8
+        tiles.processNodeQueue.maxJobs = 16
+        tiles.maxTilesProcessed = 10_000
+        ;(unloadPlugin as any).bytesTarget = 16 * 1024 * MIB
+      } else if (leafLoadingSnapshot) {
+        const snapshot = leafLoadingSnapshot
+        tiles.lruCache.minSize = snapshot.minSize
+        tiles.lruCache.maxSize = snapshot.maxSize
+        tiles.lruCache.minBytesSize = snapshot.minBytesSize
+        tiles.lruCache.maxBytesSize = snapshot.maxBytesSize
+        tiles.downloadQueue.maxJobs = snapshot.maxDownloads
+        tiles.parseQueue.maxJobs = snapshot.maxParses
+        tiles.processNodeQueue.maxJobs = snapshot.maxProcesses
+        tiles.maxTilesProcessed = snapshot.maxTilesProcessed
+        ;(unloadPlugin as any).bytesTarget = snapshot.gpuBytesTarget
+        leafLoadingSnapshot = null
+      }
+    },
     setDensityCeiling(level: number) {
       requestVolumePlugin?.setDensityCeiling(level)
     },
@@ -300,6 +356,10 @@ export function createStreamingCloud(opts: {
       tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
+      if (leafLoading) {
+        if (maskActive) { regionPlugin.removeRegion(maskRegion); maskActive = false }
+        return
+      }
       if (!centerWorld || !(radius > 0)) {
         if (maskActive) { regionPlugin.removeRegion(maskRegion); maskActive = false }
         return

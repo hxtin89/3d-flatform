@@ -668,6 +668,14 @@ function applyPixelRatio(): void {
 function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderOptionKey[]): void {
   for (const key of changed) {
     switch (key) {
+      case 'leafLoading':
+        // Leaf loading changes only traversal/residency. The existing point-size
+        // slider and camera-height curve remain exactly as the user configured.
+        stream?.setLeafLoading(effective.leafLoading)
+        // Invalidate the SSE hysteresis so diagnostic refinement begins on the
+        // next frame, rather than waiting for a camera move.
+        sseAuto = -1
+        break
       case 'sseBrakes':
         if (!effective.sseBrakes) {
           // The entrance reveal is a boot-time event: release it now, but never
@@ -768,6 +776,9 @@ for (const rowDef of RENDER_OPTION_ROWS) {
   compareRowsEl.appendChild(row)
   optionButtons.set(rowDef.key, button)
 }
+// Buttons are created before any option transition occurs, so initialise their
+// visual state from the defaults instead of the generic "On" construction.
+syncOptionButtons()
 
 function syncOptionButtons(): void {
   const requested = renderOptions.requested()
@@ -1210,7 +1221,7 @@ function updateMaskFollow(): void {
     const outside = Math.max(
       0,
       Math.hypot(cloudRangeEnu.x - cloudCenterEnu.x, cloudRangeEnu.y - cloudCenterEnu.y)
-        - navigationBoundsRadius,
+      - navigationBoundsRadius,
     )
     cameraCloudRange = Math.hypot(altitude, outside)
     cameraAltitude = altitude
@@ -1470,18 +1481,22 @@ function updateStreaming(now: number): StreamingStats | null {
   })
   // With the brakes toggled off the density ladder speaks alone — the
   // comparison subject against the Cesium viewer.
-  const targetSse = renderOptions.effective().sseBrakes
-    ? Math.max(
-      quality.sse,
-      bootLoading
-        ? EXPERIENCE_CONFIG.lod.bootSse
-        : flightSseFloor({
-          flying: cameraFlight.active,
-          msSinceLanding: now - flightEndedAt,
-          targetSse: quality.sse,
-        }),
-    )
-    : quality.sse
+  const targetSse = renderOptions.effective().leafLoading
+    // Low SSE forces the selected APH branches through to their leaves. It is
+    // deliberately scoped to the current camera frustum by TilesRenderer.
+    ? 0.25
+    : renderOptions.effective().sseBrakes
+      ? Math.max(
+        quality.sse,
+        bootLoading
+          ? EXPERIENCE_CONFIG.lod.bootSse
+          : flightSseFloor({
+            flying: cameraFlight.active,
+            msSinceLanding: now - flightEndedAt,
+            targetSse: quality.sse,
+          }),
+      )
+      : quality.sse
   if (Math.abs(targetSse - sseAuto) > 0.25) {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
@@ -1732,15 +1747,17 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
   })
+  // Options can be selected before the async boot sequence creates the stream.
+  stream.setLeafLoading(renderOptions.effective().leafLoading)
   applyHeightOffset()
-  // Debug handle for streaming diagnosis in the console.
-  ;(window as any).__wild = {
-    stream,
-    camera,
-    get flight() { return cameraFlight.active },
-    get sse() { return sseAuto },
-    get range() { return rangeDebug },
-  }
+    // Debug handle for streaming diagnosis in the console.
+    ; (window as any).__wild = {
+      stream,
+      camera,
+      get flight() { return cameraFlight.active },
+      get sse() { return sseAuto },
+      get range() { return rangeDebug },
+    }
 
   environmentLayer = createEnvironmentLayer({
     scene,
@@ -1907,23 +1924,23 @@ async function main(): Promise<void> {
   // panel master toggle, so live and boot behaviour cannot drift apart.
   if (compareParam) setCompareMode(true)
 
-  ;(window as any).__three = {
-    renderer, scene, camera, uniforms, globe, stream, markerLayer,
-    rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-  }
-  ;(window as any).__bench = async (frames = 60) => {
-    const started = performance.now()
-    for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
-    const ms = (performance.now() - started) / frames
-    return {
-      frames,
-      msPerFrame: Number(ms.toFixed(2)),
-      fps: Number((1000 / ms).toFixed(1)),
-      density: lastStreamStats?.density,
-      visiblePoints: lastStreamStats?.points,
-      sse: sseAuto,
+    ; (window as any).__three = {
+      renderer, scene, camera, uniforms, globe, stream, markerLayer,
+      rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     }
-  }
+    ; (window as any).__bench = async (frames = 60) => {
+      const started = performance.now()
+      for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
+      const ms = (performance.now() - started) / frames
+      return {
+        frames,
+        msPerFrame: Number(ms.toFixed(2)),
+        fps: Number((1000 / ms).toFixed(1)),
+        density: lastStreamStats?.density,
+        visiblePoints: lastStreamStats?.points,
+        sse: sseAuto,
+      }
+    }
 }
 
 function dispose(): void {
