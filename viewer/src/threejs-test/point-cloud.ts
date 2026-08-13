@@ -6,6 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, length, max, min, abs, exp, floor, hash,
+  acos, sqrt, clamp,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
@@ -312,20 +313,11 @@ function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
 }
 
 /**
- * Radius to sample at, as a multiple of the wanted shrink distance, and the covered
- * fraction that then marks the wanted edge. 1.5 puts the edge at 2/3 of the radius;
- * 0.8904 is the disc's covered fraction there, from
- * `1 - (acos(u) - u*sqrt(1-u^2)) / PI` at u = 2/3.
+ * Radius to sample at, as a multiple of the wanted shrink distance. The fade raises it
+ * further when it needs more room — see applyGroundPatch, where the threshold and the
+ * metres-to-fraction slope are then derived from the ratio the two settle on.
  */
 const GROUND_PATCH_RADIUS_FACTOR = 1.5
-const GROUND_PATCH_THRESHOLD = 0.8904
-/**
- * How fast the covered fraction changes with distance at the threshold, per unit of
- * radius: `df/du = 2*sqrt(1-u^2)/PI` at u = 2/3. Converts a fade width in metres into
- * the threshold width that produces it, which is what keeps the fade from scaling
- * with the shrink distance.
- */
-const GROUND_PATCH_SLOPE_AT_THRESHOLD = 0.4744
 
 export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: any): any {
   // Switched off, or no mask built yet, means nothing to change.
@@ -346,22 +338,32 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   // in place would need each cell to read its neighbours, and would have to be redone
   // on every change. Here it costs taps on basemap fragments only, and lets the
   // feather width be a live control.
-  // Sampling radius, and the threshold that turns the sampled fraction back into a
-  // distance. Both derive from one number in metres, so the control means what it
-  // says instead of being a threshold the user has to translate.
+  // Sampling radius, from the shrink alone.
   //
-  // For a disc straddling a straight edge, the covered fraction is a known function
-  // of how far the centre sits inside it. Reading that function backwards gives the
-  // threshold for any wanted erosion: sampling at 1.5x the shrink distance puts the
-  // wanted edge at 2/3 of the radius, where the covered fraction is 0.8904. Measured
-  // against the real tap pattern, the 50% line then lands at 1.05-1.09x the shrink
-  // distance whatever the softness — accurate enough to put metres on the slider.
-  const radiusCells: any = u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR).div(u.groundPatchCellSizeM)
+  // Letting the fade raise it too was tried and reverted: it does widen the band, but
+  // the disc then reaches across the river, and a disc wider than a gap cannot see the
+  // gap. Measured on a scanline over the channel, a 120 m fade lifted the river from
+  // near-black to 185-255 — the patch closed over the water the shrink had cleared.
+  // Fade width and gap preservation pull against each other here, and the gap wins.
+  const radiusM: any = max(u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR), float(1))
+  // Where the wanted edge falls inside the disc, and the disc's own response there.
+  // For a disc across a straight edge the covered fraction is
+  // `1 - (acos(u) - u*sqrt(1-u^2)) / PI` with slope `2*sqrt(1-u^2)/PI`, so both the
+  // threshold and the metres-to-fraction conversion follow from the ratio. With the
+  // radius fixed at 1.5x the shrink the ratio is always 2/3, so these evaluate to the
+  // 0.8904 and 0.4744 they used to be hard-coded as — kept derived because it states
+  // where those numbers come from, and holds if the factor is ever retuned.
+  const ratio: any = clamp(u.groundPatchShrinkM.div(radiusM), 0, 0.999)
+  const root: any = sqrt(float(1).sub(ratio.mul(ratio)))
+  const threshold: any = float(1).sub(acos(ratio).sub(ratio.mul(root)).div(Math.PI))
+  const slope: any = root.mul(2 / Math.PI)
+
   // 13 taps only quantise coverage into thirteenths, which would show as bands
   // stepping inward from the edge. Rotating and rescaling the disc per fragment
   // scatters those steps into fine noise instead, which reads as a smooth ramp — far
   // cheaper than the tap count it would otherwise take, since it adds arithmetic
   // rather than texture reads.
+  const radiusCells: any = radiusM.div(u.groundPatchCellSizeM)
   const noise: any = hash(screenCoordinate.x.mul(97.13).add(screenCoordinate.y.mul(31.7)))
   const angle: any = noise.mul(6.2831853)
   const sa: any = sin(angle)
@@ -378,21 +380,15 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   }
   const feathered: any = sum.div(float(GROUND_PATCH_TAPS.length))
 
-  // Fade width converted from metres into threshold units, so it stays the width it
-  // says instead of growing with the shrink distance. That coupling was a real bug:
-  // the band scaled with the sampling radius, so at 130 m of shrink it was ~140 m
-  // wide, the whole river sat inside the ramp, and the patch tinted the channel it
-  // had just been widened to clear.
-  //
-  // Capped at 1 - threshold, which is the disc's own limit: a wider band could not
-  // reach full coverage, and the interior would go half transparent. In metres that
-  // ceiling is about a third of the shrink distance.
-  const radiusM: any = max(u.groundPatchShrinkM.mul(GROUND_PATCH_RADIUS_FACTOR), float(1))
+  // Fade width in metres converted into threshold units, so it stays the width it says
+  // rather than scaling with the shrink. Capped at 1 - threshold: a wider ramp could not
+  // reach full coverage and would leave the interior half transparent. In metres that
+  // ceiling is 0.69x the shrink distance, so a wide fade needs a large shrink to sit in
+  // — which is the honest limit of averaging a disc, not a tuning choice.
   const halfWidth: any = min(
-    u.groundPatchFadeM.mul(GROUND_PATCH_SLOPE_AT_THRESHOLD).div(radiusM),
-    float(1 - GROUND_PATCH_THRESHOLD),
+    u.groundPatchFadeM.mul(slope).div(radiusM.mul(2)),
+    float(1).sub(threshold),
   )
-  const threshold: any = float(GROUND_PATCH_THRESHOLD)
   const coverage: any = smoothstep(threshold.sub(halfWidth), min(threshold.add(halfWidth), float(1)), feathered)
     .mul(u.groundPatchAmount)
   // From the raw texture, not the graded result, so neither the global basemap
