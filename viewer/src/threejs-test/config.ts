@@ -514,7 +514,29 @@ export const EXPERIENCE_CONFIG = {
        * maskIndexSize^2 bytes.
        */
       maskIndexSize: 64,
-      maskSplatRadiusPx: 1,
+      /**
+       * Pixels each splatted point is grown by. Zero, and that matters more than it
+       * looks.
+       *
+       * At 1 a single point marked 3x3 pixels — 225 m2 of "there is data here" from one
+       * return. Over water that is badly wrong: the river and its gravel bars give
+       * scattered returns off the surface, wet sand and driftwood, and a handful of
+       * those made the whole area read as solid coverage. The patch then sat over the
+       * river as an unbroken block while the point cloud drew almost nothing there.
+       * That asymmetry — mask says full, render says empty — was the visible bug.
+       *
+       * The growth was there to fill Poisson gaps in the overview LOD's sampling, and
+       * it is not needed for that any more: the shader averages coverage over a disc,
+       * which fills those gaps itself.
+       *
+       * Measured cost, sampling full discs deep inside the footprint: the covered
+       * fraction has a median of 0.98, a 5th percentile of 0.83, and 2-3% of interior
+       * spots fall below the ramp and lose the patch. An acceptable place to pay it —
+       * the interior patch sits under the canopy where thin spots barely show, while
+       * the water is open to view. Set back to 1 if the interior has to be airtight
+       * and the river does not matter.
+       */
+      maskSplatRadiusPx: 0,
       /**
        * Points splatted per frame — the cap on how much the mask can ever cost in
        * one frame. Measured at roughly 50 ns per point, so this is about 1 ms; the
