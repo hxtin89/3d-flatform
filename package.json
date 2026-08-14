@@ -14,6 +14,7 @@
     "pipeline:tiles:copc": "bash pipeline/copc-tiles.sh",
     "pipeline:tiles:copc:chunks": "bash pipeline/copc-tiles-chunks.sh",
     "pipeline:area:manifest": "bash pipeline/area-manifest.sh",
+  "pipeline:ground-mask": "bash pipeline/ground-mask.sh",
     "pipeline:area:one-lod-tree": "bash pipeline/area-one-lod-tree.sh",
     "pipeline:one-lod-tree:pack": "bash pipeline/one-lod-tree-pack.sh",
     "pipeline:spatial-lod": "bash pipeline/spatial-lod.sh",
