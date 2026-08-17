@@ -3,14 +3,14 @@ import { PRESETS, type OverviewPointSizeBand, type PresetName } from './presets'
 export const ONE_LOD_TREE_TILESET_FILE = 'tileset-one-lod-tree.json';
 
 export const ONE_LOD_TREE_SSE: Readonly<Record<PresetName, number>> = {
-  low: 256,
-  medium: 124,
+  low: 512,
+  medium: 128,
   high: 64,
 };
 
 const SAFE_TILESET_FILE = /^[a-zA-Z0-9_-]+\.json$/;
-const ONE_LOD_TREE_BAND_NEAR_MEDIUM = 0.15;
-const ONE_LOD_TREE_BAND_MEDIUM_FAR = 2.5;
+const ONE_LOD_TREE_BAND_NEAR_MEDIUM = 0.20;
+const ONE_LOD_TREE_BAND_MEDIUM_FAR = 1.0;
 const ONE_LOD_TREE_BAND_HYSTERESIS = 0.1;
 
 export function oneLodTreeDataset(logicalDataset: string): string {

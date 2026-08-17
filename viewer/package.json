@@ -9,6 +9,7 @@
     "audio:prepare": "node scripts/prepare-sounds.mjs",
     "bench:verify": "node --experimental-strip-types --test src/threejs-test/*.test.ts",
     "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
+    "test": "vitest run",
     "preview": "vite preview --base=/livingdashboard/"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@types/three": "^0.185.0",
     "@vitejs/plugin-basic-ssl": "^1.2.0",
     "typescript": "^5.4.0",
+    "vitest": "^2.1.9",
     "vite": "^5.4.0",
     "vite-plugin-cesium": "^1.2.23"
   }

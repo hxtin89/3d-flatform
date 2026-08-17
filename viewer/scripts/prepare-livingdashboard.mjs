@@ -4,8 +4,12 @@ import { resolve } from 'node:path'
 const output = resolve('dist')
 const viewerEntry = resolve(output, 'threejs-test.html')
 const indexEntry = resolve(output, 'index.html')
+const cesiumEntry = resolve(output, 'cesium.html')
 const cesiumPluginOutput = resolve(output, 'livingdashboard', 'cesium')
 const cesiumOutput = resolve(output, 'cesium')
+
+// Preserve CesiumJS viewer under cesium.html before overwriting index.html
+await copyFile(indexEntry, cesiumEntry)
 
 // Default landing page stays the Three.js app; threejs-test.html and
 // cesium-test.html survive as their own URLs so the variants can cross-link.
@@ -17,7 +21,7 @@ await rm(cesiumOutput, { recursive: true, force: true })
 await rename(cesiumPluginOutput, cesiumOutput)
 await rm(resolve(output, 'livingdashboard'), { recursive: true, force: true })
 
-for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html']) {
+for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html', 'cesium.html']) {
   const html = await readFile(resolve(output, entry), 'utf8')
   const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
     ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
