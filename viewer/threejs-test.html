@@ -325,7 +325,8 @@
       /* Vergleichsmodus (Cesium-Vergleich): Master überschreibt alle Optimierungen —
          die überschriebenen Regler sind sichtbar ausgegraut, nur die Vergleichs-
          zeilen bleiben bedienbar. */
-      #panel.compare-mode .row:not(.compare-row) { opacity: .38; pointer-events: none; }
+      /* .zoom-row ist ausgenommen: die Punktquelle ist Vergleichsgegenstand, keine Optimierung. */
+      #panel.compare-mode .row:not(.compare-row):not(.zoom-row) { opacity: .38; pointer-events: none; }
       body.compare-mode #markerOverlay { display: none !important; }
       #markerOverlay.markers-hidden { display: none !important; }
       .opt-head { margin: 4px 0 0; color: rgba(232,234,237,.72); font: 700 10px/1.3 ui-monospace, SFMono-Regular, monospace;
@@ -370,6 +371,17 @@
       #cloudToggle.is-protected { color: #f0c674; border-color: rgba(240,198,116,.42); }
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
+      /* Zoomstufen-Sektion — die einzigen <select> im Panel. */
+      #panel select { width: 100%; padding: 7px 8px; color: #e8eaed; background: #21262d;
+                      border: 1px solid #2d333b; border-radius: 8px; font: inherit; font-size: 12px; cursor: pointer; }
+      #panel select:focus-visible { outline: 2px solid #1f6feb; outline-offset: 1px; }
+      #panel select:disabled { opacity: .45; cursor: default; }
+      #panel select option { background: #161b22; color: #e8eaed; }
+      #panel select option:disabled { color: #8b949e; }
+      #zoomStatusRow .stats { margin-top: 2px; font-size: 10px; }
+      #zoomStatusRow .stats .v { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #zoomPackRows { display: flex; flex-direction: column; gap: 11px; }
+      .zoom-row.is-active > label.h { opacity: .95; color: #9ec5ff; }
       button.act.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
@@ -603,11 +615,24 @@
         <span class="k">LOD-Distanz</span><span class="v" id="diagRange">—</span>
         <span class="k">Zoom-Anschlag</span><span class="v" id="diagStop">—</span>
         <span class="k">Fehlende Kacheln</span><span class="v" id="diagMissing">0</span>
+        <span class="k">Origin-Abstand</span><span class="v" id="diagOrigin">—</span>
       </div>
     </div>
 
     <div id="panel" class="card">
       <button class="close" data-close="panel">×</button>
+      <p class="opt-head">Zoom levels · point source</p>
+      <div class="row zoom-row" id="zoomStatusRow">
+        <label class="h">Current zoom level</label>
+        <div class="stats">
+          <span class="k">Level</span><span class="v" id="zoomBandValue">—</span>
+          <span class="k">LOD range</span><span class="v" id="zoomRangeValue">—</span>
+          <span class="k">SSE</span><span class="v" id="zoomSseValue">—</span>
+        </div>
+        <span class="weather-note" id="zoomDatasetValue">Reading area manifest…</span>
+      </div>
+      <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
+      <p class="opt-head">View</p>
       <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
       <div class="row">
         <button class="act" id="variantSwitch" type="button" aria-describedby="variantNote">⇄ Switch to Cesium variant</button>
@@ -620,7 +645,7 @@
       <div class="row">
         <label class="h" for="precisionToggle">Matrix precision</label>
         <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Precision · High</button>
-        <span class="weather-note" id="precisionNote">Off = model-view in the shader (float32); tiles jitter on ECEF rounding. Automatically off during loader and flight</span>
+        <span class="weather-note" id="precisionNote">Point cloud only. Off = model-view in the shader (float32); tiles jitter on ECEF rounding. Automatically off during loader and flight</span>
       </div>
       <div class="row">
         <label class="h" for="liftToggle">Height offset</label>

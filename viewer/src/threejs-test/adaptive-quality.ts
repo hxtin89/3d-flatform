@@ -30,6 +30,9 @@ const BAND_SSE = [
   EXPERIENCE_CONFIG.lod.exploreSse,
   EXPERIENCE_CONFIG.lod.overviewSse,
 ]
+/** Same ladder under its public name — a swapped-in single-density pack carries
+ * the p02/p10/p100 nodes and needs these targets, not the APH ones. */
+export const ONE_LOD_BAND_SSE: readonly number[] = BAND_SSE
 /** Same bands against the Adaptive Point Hierarchy, whose nodes are far denser. */
 export const APH_BAND_SSE = [
   EXPERIENCE_CONFIG.lod.aphDetailSse,
@@ -54,12 +57,22 @@ export class AdaptiveQualityController {
   private lastUpdate = 0
   private sse = 256
   private band: number
-  private readonly ladder: number[]
+  private ladder: readonly number[]
 
-  constructor(ladder: number[] = BAND_SSE) {
+  constructor(ladder: readonly number[] = BAND_SSE) {
     this.ladder = ladder
     this.band = ladder.length - 1
     this.sse = ladder[this.band]
+  }
+
+  /** The ladder belongs to the streamed tree, not to the session: a live pack
+   * swap moves between the APH targets (4/8/16) and the One-LOD ones (64/124/256).
+   * Band edges and hysteresis are untouched — the band stays a pure function of
+   * camera distance. */
+  setLadder(ladder: readonly number[]): void {
+    if (ladder.length === 0) return
+    this.ladder = ladder
+    this.band = Math.min(this.band, ladder.length - 1)
   }
 
   /** Sticky: a band is only left once the range is a clear margin past its

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { EXPERIENCE_CONFIG } from './config'
+import { applyHighPrecisionAlways } from './point-cloud'
 
 const MIN_TEMPERATURE = 28.6
 const MAX_TEMPERATURE = 34.2
@@ -18,7 +19,8 @@ interface ScreenBox {
 }
 
 interface MarkerLayerOptions {
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   overlay: HTMLElement
   enuFrame: THREE.Matrix4
   zOffset: number
@@ -93,6 +95,9 @@ function createRandom(seed: number): () => number {
 
 function createMaterial(color: number, opacity = 1): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial()
+  // Markers sit on the same ECEF root as the point cloud and jitter with it
+  // unless the model-view matrix is composed on the CPU. See point-cloud.ts.
+  applyHighPrecisionAlways(material)
   material.color.setHex(color)
   material.transparent = opacity < 1
   material.opacity = opacity

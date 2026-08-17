@@ -46,7 +46,10 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   dynamicPointSize: true,
   presetBudgets: true,
   pixelRatioCap: true,
-  flightPrecisionDrop: true,
+  // Off by default: motion is exactly when jitter is noticed, and each switch
+  // sets needsUpdate on every live tile material — a pipeline rebuild for
+  // hundreds of materials at the start and end of every flight.
+  flightPrecisionDrop: false,
   basemapImagery: true,
 }
 

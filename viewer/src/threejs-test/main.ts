@@ -42,6 +42,14 @@ import {
   type RenderOptions,
 } from './render-options'
 import type { MemoryBudgetSnapshot } from './streaming'
+import {
+  AUTO, ZOOM_BAND_ROWS, createPointSource,
+  type PointSourceController, type ResolvedSource, type ZoomBand,
+} from './point-source'
+import {
+  attachOrigin, ecefToRenderMatrix, getEcefRoot, onRebase, originStats,
+  rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
+} from './origin'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -271,10 +279,8 @@ function applyBenchPreset(): void {
     adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
-    // A settled Detail p100 view measures ~220 MB. Budgets below that evict
-    // tiles the very next frame needs, producing continuous refetching.
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
+      applyStreamMemoryBudget()
       globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
     }
   } else if (preset === 'medium') {
@@ -284,7 +290,7 @@ function applyBenchPreset(): void {
     environmentLayer?.applyMeasuredTier('balanced')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
+      applyStreamMemoryBudget()
       // Imagery working set at errorTarget 1 exceeds 64 MiB on deep zooms —
       // thrash there shows up as a permanently blurry basemap.
       globe?.setMemoryBudget(96 * 1024 * 1024, 64 * 1024 * 1024)
@@ -298,7 +304,7 @@ function applyBenchPreset(): void {
     // Previously left at the library default of 96 MB, which thrashes for the
     // same reason, with less headroom to recover.
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
+      applyStreamMemoryBudget()
       globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
     }
     if (!renderOptions.isCompareMode()) {
@@ -372,6 +378,8 @@ const DAYLIGHT_SKY = 0x8bc9ec
 renderer.setClearColor(DAYLIGHT_SKY, 1)
 
 const scene = new THREE.Scene()
+setOriginEnabled(!params.has('noorigin'))
+attachOrigin(scene)
 const distanceFog = new THREE.Fog(
   DAYLIGHT_SKY,
   EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,
@@ -440,6 +448,21 @@ let modelTransformEditor: ModelTransformEditor | null = null
 let cloudNoiseTexture: THREE.Data3DTexture | null = null
 let lastStreamStats: StreamingStats | null = null
 let sseAuto = 256
+/** Which density pack is streaming, and the panel state that decides it. */
+let pointSource: PointSourceController | null = null
+let activeSource: ResolvedSource | null = null
+let lastBand: ZoomBand = 2
+let pendingSourceKey: string | null = null
+let pendingSince = 0
+let lastSwapAt = -Infinity
+/** A panel pick skips the dwell — the user is waiting for the comparison. */
+let userSwapRequested = false
+/** How long a new zoom level has to hold before its pack is fetched. */
+const SWAP_DWELL_MS = 900
+/** Floor between two rebuilds, whatever the camera does. */
+const SWAP_COOLDOWN_MS = 2_500
+/** Settle time after a camera flight before a swap may start. */
+const SWAP_LANDING_MS = 600
 let cameraGroundRange = Infinity
 /** Refinement distance. Kept apart from cameraGroundRange, which measures the
  * screen-centre look-at point and runs to kilometres near the horizon. */
@@ -647,6 +670,24 @@ const MIB = 1024 * 1024
  * bounded rather than unlimited. */
 const COMPARE_STREAM_BUDGET = { cacheBytes: 768 * MIB, gpuBytes: 384 * MIB }
 const COMPARE_GLOBE_BUDGET = { cacheBytes: 128 * MIB, gpuBytes: 96 * MIB }
+/** Cache and GPU residency per measured device tier. A settled Detail p100 view
+ * measures ~220 MB; budgets below that evict tiles the very next frame needs. */
+const STREAM_BUDGET_BY_PRESET: Record<BenchPreset, { cacheBytes: number; gpuBytes: number }> = {
+  strong: { cacheBytes: 384 * MIB, gpuBytes: 256 * MIB },
+  medium: { cacheBytes: 256 * MIB, gpuBytes: 176 * MIB },
+  constrained: { cacheBytes: 160 * MIB, gpuBytes: 112 * MIB },
+}
+/** Single place the stream budget comes from, so a rebuilt streamer (density-pack
+ * swap) never silently falls back to its construction defaults. */
+function applyStreamMemoryBudget(): void {
+  if (!stream) return
+  if (!renderOptions.effective().presetBudgets) {
+    stream.setMemoryBudget(COMPARE_STREAM_BUDGET.cacheBytes, COMPARE_STREAM_BUDGET.gpuBytes)
+    return
+  }
+  const budget = STREAM_BUDGET_BY_PRESET[benchPreset]
+  stream.setMemoryBudget(budget.cacheBytes, budget.gpuBytes)
+}
 /** Cap the bench preset chose; applyPixelRatio re-applies it flag-aware. */
 let presetPixelRatioCap = 1.25
 let compareBudgetSnapshot: {
@@ -713,7 +754,7 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
             stream: stream?.getMemoryBudget() ?? null,
             globe: globe?.getMemoryBudget() ?? null,
           }
-          stream?.setMemoryBudget(COMPARE_STREAM_BUDGET.cacheBytes, COMPARE_STREAM_BUDGET.gpuBytes)
+          applyStreamMemoryBudget()
           globe?.setMemoryBudget(COMPARE_GLOBE_BUDGET.cacheBytes, COMPARE_GLOBE_BUDGET.gpuBytes)
         } else {
           // setMemoryBudget only grows tile counts — restore needs exact values.
@@ -767,6 +808,81 @@ for (const rowDef of RENDER_OPTION_ROWS) {
   row.append(label, button, note)
   compareRowsEl.appendChild(row)
   optionButtons.set(rowDef.key, button)
+}
+
+// ---------------------------------------------------------------- zoom levels
+// Which density pack streams at which zoom level. The options come from the area
+// manifest, so packs the pipeline publishes later appear without a code change.
+const zoomBandValueEl = $('#zoomBandValue')
+const zoomRangeValueEl = $('#zoomRangeValue')
+const zoomSseValueEl = $('#zoomSseValue')
+const zoomDatasetValueEl = $('#zoomDatasetValue')
+const zoomPackRowsEl = $<HTMLDivElement>('#zoomPackRows')
+const packSelects = new Map<ZoomBand, HTMLSelectElement>()
+
+function buildZoomPackRows(controller: PointSourceController): void {
+  zoomPackRowsEl.replaceChildren()
+  packSelects.clear()
+  for (const rowDef of ZOOM_BAND_ROWS) {
+    const row = document.createElement('div')
+    row.className = 'row zoom-row'
+    const label = document.createElement('label')
+    label.className = 'h'
+    label.htmlFor = `zoomPack-${rowDef.band}`
+    label.textContent = rowDef.label
+    const select = document.createElement('select')
+    select.id = `zoomPack-${rowDef.band}`
+    select.append(new Option('Auto · session tree', AUTO))
+    for (const pack of controller.packs()) {
+      // Packs that are not built yet stay visible but unselectable — the panel
+      // is also the place to see what the pipeline has published so far.
+      const option = new Option(pack.available ? pack.label : `${pack.label} — ${pack.status}`, pack.id)
+      option.disabled = !pack.available
+      select.append(option)
+    }
+    select.value = controller.assignment(rowDef.band)
+    select.addEventListener('change', () => {
+      controller.setAssignment(rowDef.band, select.value)
+      userSwapRequested = true
+    })
+    const note = document.createElement('span')
+    note.className = 'weather-note'
+    note.textContent = rowDef.note
+    row.append(label, select, note)
+    zoomPackRowsEl.appendChild(row)
+    packSelects.set(rowDef.band, select)
+  }
+}
+
+/** Re-read the controller after it changed state on its own (failed pack). */
+function syncPackSelects(): void {
+  if (!pointSource) return
+  const packs = pointSource.packs()
+  for (const [band, select] of packSelects) {
+    select.value = pointSource.assignment(band)
+    for (const option of Array.from(select.options)) {
+      const pack = packs.find((entry) => entry.id === option.value)
+      if (pack) option.disabled = !pack.available
+    }
+  }
+}
+
+let lastZoomPanelUpdate = -Infinity
+function updateZoomPanel(now: number): void {
+  if (now - lastZoomPanelUpdate < 250 || !document.body.classList.contains('panel-open')) return
+  lastZoomPanelUpdate = now
+  const rowDef = ZOOM_BAND_ROWS.find((entry) => entry.band === lastBand)
+  zoomBandValueEl.textContent = rowDef ? rowDef.label.split(' · ')[0] : String(lastBand)
+  zoomRangeValueEl.textContent = Number.isFinite(cameraCloudRange) ? `${fmtInt(cameraCloudRange)} m` : '—'
+  zoomSseValueEl.textContent = sseAuto.toFixed(0)
+  if (activeSource) {
+    const text = `${activeSource.label}${activeSource.areaId ? ` · ${activeSource.areaId}` : ''}`
+    zoomDatasetValueEl.textContent = text
+    zoomDatasetValueEl.title = activeSource.datasetPath
+  }
+  for (const [band, select] of packSelects) {
+    select.parentElement?.classList.toggle('is-active', band === lastBand)
+  }
 }
 
 function syncOptionButtons(): void {
@@ -869,11 +985,19 @@ function updateRainCycle(now: number): void {
   updateRainToggle()
 }
 
-// ENU -> ECEF frame of the survey.
+// ENU -> ECEF frame of the survey. Absolute, straight from the manifest: this
+// pair stays in the logical ECEF frame and is only ever used to derive the two
+// render-space matrices below, plus the one genuinely absolute conversion
+// (lon/lat -> ENU for the parcel outline).
 const enuFrame = new THREE.Matrix4()
 const enuInverse = new THREE.Matrix4()
+/** Same frames shifted by the floating origin — what the scene graph, the
+ * camera and the shaders speak. Refreshed on every rebase. */
+const enuFrameRender = new THREE.Matrix4()
+const enuInverseRender = new THREE.Matrix4()
 const cloudCenterEnu = new THREE.Vector3()
-const cloudCenterEcef = new THREE.Vector3()
+/** Survey centre in render space — follows the origin. */
+const cloudCenterRender = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
 let zOffset = 0
 
@@ -884,15 +1008,71 @@ function applyHeightOffset(): void {
   stream?.group.position.copy(enuUp).multiplyScalar(heightOffsetEnabled ? zOffset : 0)
 }
 
+/** ENU -> render space. Every caller (camera flights, navigation bounds, mask
+ * sphere, boot staging, double-click) works in render space, so this is the one
+ * place the origin enters. */
 function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
-  return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrame)
+  return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrameRender)
 }
 
 function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
-  target.copy(value).applyMatrix4(enuInverse)
+  target.copy(value).applyMatrix4(enuInverseRender)
   target.z -= zOffset
   return target
 }
+
+/** Everything derived from the origin, in one place: the two render-space ENU
+ * matrices, the shader's ENU uniform, and the two world values that are cached
+ * across frames instead of living in the scene graph. */
+function refreshOriginDerived(): void {
+  ecefToRenderMatrix(enuFrame, enuFrameRender)
+  renderToEcefMatrix(enuInverse, enuInverseRender)
+  uniforms.enuInverse.value.copy(enuInverseRender)
+  if (!enuFrameReady) return
+  enuToWorld(cloudCenterEnu, cloudCenterRender)
+  groundPlane.setFromNormalAndCoplanarPoint(enuUp, enuToWorld(groundPlanePointEnu, groundPlanePointWorld))
+}
+
+/**
+ * Move the origin to the camera once it has drifted far enough. The threshold
+ * scales with viewing range because pan and zoom speed do the same
+ * (`keyboard.panRangeFactor`): a fixed one would fire once every few seconds
+ * down at the canopy and dozens of times per second on the entrance flight.
+ * At the floor of 500 m the float32 step is 6e-5 m against 4 cm per screen
+ * pixel at the closest camera range — four orders of magnitude of headroom.
+ */
+function originThreshold(): number {
+  const range = Number.isFinite(cameraGroundRange)
+    ? cameraGroundRange
+    : EXPERIENCE_CONFIG.atmosphere.fallbackRangeM
+  return THREE.MathUtils.clamp(
+    range * EXPERIENCE_CONFIG.navigation.originRebaseRangeFactor,
+    EXPERIENCE_CONFIG.navigation.originRebaseMinM,
+    EXPERIENCE_CONFIG.navigation.originRebaseMaxM,
+  )
+}
+
+/** Rebasing to the camera exactly makes the post-rebase distance zero, so no
+ * hysteresis is needed — it cannot flap. `force` covers teleports (flight
+ * starts, boot staging), which are not bounded by any per-frame speed. */
+function updateOrigin(force = false): void {
+  if (!enuFrameReady) return
+  const threshold = originThreshold()
+  if (!force && camera.position.lengthSq() < threshold * threshold) return
+  rebaseTo(renderToEcef(camera.position, originAnchorEcef))
+}
+
+onRebase((delta) => {
+  camera.position.add(delta)
+  camera.updateMatrixWorld()
+  // GlobeControls persists three world points across frames; without this the
+  // orbit centre would teleport on the first frame after a rebase.
+  const controls = globe?.controls as any
+  controls?.pivotPoint?.add(delta)
+  controls?.zoomPoint?.add(delta)
+  controls?.rotationInertiaPivot?.add(delta)
+  refreshOriginDerived()
+})
 
 // ---------------------------------------------------------------- on-demand field film
 const videoModalEl = $<HTMLDivElement>('#videoModal')
@@ -1074,9 +1254,19 @@ function installGraphicsRecovery(backend: any): void {
 
 // ---------------------------------------------------------------- mask and camera range
 const groundPlane = new THREE.Plane()
+/** The plane is not part of the scene graph, so it has to be rebuilt whenever
+ * the origin moves — these keep the ENU point it is built from. */
+const groundPlanePointEnu = new THREE.Vector3()
+const groundPlanePointWorld = new THREE.Vector3()
+/** Scratch for choosing a new origin, always in absolute ECEF. */
+const originAnchorEcef = new THREE.Vector3()
+/** Everything ECEF-anchored hangs under this group, whose matrix is T(-origin).
+ * Only the rain layer (which follows the camera) and the editor gizmo stay
+ * direct scene children. */
+const ecefRoot = getEcefRoot()
 const ray = new THREE.Raycaster()
 const ndc = new THREE.Vector2()
-const hitEcef = new THREE.Vector3()
+const hitRender = new THREE.Vector3()
 const hitEnu = new THREE.Vector3()
 const hit2d = new THREE.Vector2()
 const followEnu = new THREE.Vector2()
@@ -1189,15 +1379,15 @@ function updateMaskFollow(): void {
   ray.setFromCamera(ndc, camera)
 
   let missedGround = false
-  if (ray.ray.intersectPlane(groundPlane, hitEcef)) {
-    cameraGroundRange = camera.position.distanceTo(hitEcef)
-    hitEnu.copy(hitEcef).applyMatrix4(enuInverse)
+  if (ray.ray.intersectPlane(groundPlane, hitRender)) {
+    cameraGroundRange = camera.position.distanceTo(hitRender)
+    hitEnu.copy(hitRender).applyMatrix4(enuInverseRender)
     hit2d.set(hitEnu.x, hitEnu.y)
     if (!followInit) { followEnu.copy(hit2d); followInit = true }
     else followEnu.lerp(hit2d, 0.2)
     uniforms.maskCenter.value.copy(followEnu)
   } else {
-    cameraGroundRange = camera.position.distanceTo(cloudCenterEcef)
+    cameraGroundRange = camera.position.distanceTo(cloudCenterRender)
     missedGround = true
   }
 
@@ -1342,11 +1532,15 @@ function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
 function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false): void {
   setAimMode(false, false)
   cameraFlight.toCloud(duration, startFromOverview)
+  // `startFromOverview` snaps the camera 130 km out in one step, far past any
+  // per-frame threshold — rebase now rather than letting the loop catch up.
+  updateOrigin(true)
 }
 
 function flyToPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void {
   setAimMode(false, false)
   cameraFlight.toPoint(targetEnu, endDistanceM, durationMs)
+  updateOrigin(true)
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -1384,8 +1578,8 @@ const onCanvasDblClick = (event: MouseEvent) => {
     -(event.clientY / window.innerHeight) * 2 + 1,
   )
   ray.setFromCamera(dblClickNdc, camera)
-  if (!ray.ray.intersectPlane(groundPlane, hitEcef)) return
-  const targetEnu = worldToEnu(hitEcef)
+  if (!ray.ray.intersectPlane(groundPlane, hitRender)) return
+  const targetEnu = worldToEnu(hitRender)
   const endDistance = THREE.MathUtils.clamp(
     cameraGroundRange * 0.38,
     EXPERIENCE_CONFIG.flight.dblClickMinRangeM,
@@ -1451,8 +1645,96 @@ function updateMatrixPrecision(now: number): void {
   const want = highPrecisionMatrices && !bootLoading && !flightSuppressed
   if (want === appliedHighPrecision) return
   appliedHighPrecision = want
+  // Point cloud only — the basemap is pinned to high precision in globe.ts.
   stream?.setHighPrecision(want)
-  globe?.refreshMatrixPrecision()
+}
+
+/**
+ * Build (or rebuild) the streamed point cloud from one resolved density pack.
+ * Used for the initial build too, so the boot path and the panel swap cannot
+ * drift apart — every piece of stream-local state below has to be re-applied,
+ * because `requestVolumes` and the cache limits are construction-time only and
+ * a fresh TilesRenderer starts at its defaults.
+ */
+function rebuildStream(source: ResolvedSource, reason: string): void {
+  // Ladder first: the seed error target must already belong to the new tree,
+  // otherwise a p02 tileset traverses at the APH target of 4.
+  adaptiveQuality.setLadder(source.ladder)
+  sseAuto = source.ladder[lastBand] ?? sseAuto
+
+  stream?.dispose()
+  stream = null
+  lastStreamStats = null
+
+  stream = createStreamingCloud({
+    tilesetUrl: source.url,
+    requestVolumes: source.requestVolumes,
+    limits: source.limits,
+    camera,
+    renderer,
+    scene: ecefRoot,
+    uniforms,
+    errorTarget: sseAuto,
+    debugVolume: showDiagnostics,
+    onRootError: (url, error) => onStreamRootError(source, url, error),
+  })
+  activeSource = source
+
+  applyHeightOffset()
+  stream.group.visible = pointCloudRevealed
+  stream.setDensityCeiling(bootLoading ? 0 : 2 - lastBand)
+  applyStreamMemoryBudget()
+  // A new material set means the precision context has to be applied again.
+  appliedHighPrecision = null
+  updateMatrixPrecision(performance.now())
+  stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
+  lastSwapAt = performance.now()
+  // A different density pack means a different point population under the
+  // parcel, so its locked ground height has to be measured again.
+  if (reason !== 'boot') donationShapeLayer?.resetGroundLock()
+  console.info(`[point-source] ${reason} → ${source.label} (${source.datasetPath})`)
+}
+
+/** The whole tileset was unreachable — fall the affected rows back to Auto
+ * rather than leaving the view empty. */
+function onStreamRootError(source: ResolvedSource, url: string, error: unknown): void {
+  console.warn('[point-source] tileset root unavailable', url, error)
+  if (!pointSource || source.key !== activeSource?.key) return
+  pointSource.markFailed(source.packId, source.areaId)
+  for (const rowDef of ZOOM_BAND_ROWS) {
+    if (pointSource.assignment(rowDef.band) === source.packId) pointSource.setAssignment(rowDef.band, AUTO)
+  }
+  syncPackSelects()
+  zoomDatasetValueEl.textContent = `${source.label} unavailable — back to Auto`
+  // The fallback must not wait out the cooldown.
+  lastSwapAt = -Infinity
+  userSwapRequested = true
+}
+
+/**
+ * Swap the streamed pack when the active zoom level asks for a different one.
+ * Four independent brakes keep a camera sitting on a band edge from thrashing:
+ * the band hysteresis upstream, key equality (two levels on the same pack never
+ * rebuild), a dwell on the new key, and a cooldown between rebuilds.
+ */
+function maybeSwapPointSource(now: number, band: ZoomBand): void {
+  if (!pointSource || !activeSource) return
+  // Never during the loader or a flight: the loader stages tiles at the flight
+  // destination and the flight runs on an SSE floor — throwing the tree away
+  // there costs the entrance its whole working set.
+  if (bootLoading || cameraFlight.active || now - flightEndedAt < SWAP_LANDING_MS) {
+    pendingSourceKey = null
+    return
+  }
+  const areaId = enuFrameReady ? pointSource.areaFor(cloudRangeEnu.x, cloudRangeEnu.y) : null
+  const next = pointSource.resolve(band, areaId)
+  if (next.key === activeSource.key) { pendingSourceKey = null; return }
+  if (next.key !== pendingSourceKey) { pendingSourceKey = next.key; pendingSince = now; return }
+  if (!userSwapRequested && now - pendingSince < SWAP_DWELL_MS) return
+  if (now - lastSwapAt < SWAP_COOLDOWN_MS) return
+  pendingSourceKey = null
+  userSwapRequested = false
+  rebuildStream(next, `zoom level ${band}`)
 }
 
 function updateStreaming(now: number): StreamingStats | null {
@@ -1468,6 +1750,9 @@ function updateStreaming(now: number): StreamingStats | null {
     visiblePoints: lastStreamStats?.points ?? 0,
     cameraGroundRange: cameraCloudRange,
   })
+  lastBand = quality.band as ZoomBand
+  maybeSwapPointSource(now, lastBand)
+  if (!stream) return lastStreamStats
   // With the brakes toggled off the density ladder speaks alone — the
   // comparison subject against the Cesium viewer.
   const targetSse = renderOptions.effective().sseBrakes
@@ -1513,6 +1798,7 @@ const diagAltitudeEl = $('#diagAltitude')
 const diagRangeEl = $('#diagRange')
 const diagStopEl = $('#diagStop')
 const diagMissingEl = $('#diagMissing')
+const diagOriginEl = $('#diagOrigin')
 if (showDiagnostics) diagStatsEl.hidden = false
 
 function updateHud(stats: StreamingStats | null): void {
@@ -1531,6 +1817,7 @@ function updateHud(stats: StreamingStats | null): void {
   fpsEl.className = `v ${className}`
   chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
   chipFpsEl.className = className
+  updateZoomPanel(performance.now())
 
   // Fly to the height that looks right, read it off here, put it into
   // navigation.zoomStopHeightM.
@@ -1539,6 +1826,10 @@ function updateHud(stats: StreamingStats | null): void {
   diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
   diagStopEl.textContent = `${Math.round(navigationClearance)} m`
   diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+  // How far the camera has drifted from the render origin, and how often it has
+  // been pulled back. A steadily climbing rebase count while standing still
+  // would mean the threshold is fighting something.
+  diagOriginEl.textContent = `${Math.round(camera.position.length())} m · ${originStats().rebases}×`
 }
 
 function loop(now: number): void {
@@ -1547,6 +1838,10 @@ function loop(now: number): void {
   // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
   // WebGPU-Punktwolke, Wolken-Raymarch, Streaming). Eigener WebGL-Renderer.
   if (gaussianSplatLayer?.isEnabled()) { gaussianSplatLayer.update(); return }
+  // First thing in the frame, so every consumer below — camera writers, both
+  // tile traversals, the mask probe, the layers — sees one origin for the
+  // whole frame and never a shift in the middle of it.
+  updateOrigin()
   cameraFlight.update(now)
   updateCloudReveal()
   updateMatrixPrecision(now)
@@ -1685,16 +1980,23 @@ async function main(): Promise<void> {
       Math.hypot(maxX - minX, maxY - minY) * EXPERIENCE_CONFIG.navigation.surveyBoundsScale,
     )
   }
-  enuToWorld(cloudCenterEnu, cloudCenterEcef)
-  uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
-  const planePoint = enuToWorld(new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40))
-  groundPlane.setFromNormalAndCoplanarPoint(enuUp, planePoint)
+  groundPlanePointEnu.set(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40)
   enuFrameReady = true
+  // Seed the origin at the survey centre. Everything derived below — survey
+  // centre, ground plane, the shader ENU matrix — is produced in render space
+  // from here on; `enuFrame`/`enuInverse` stay absolute for the one conversion
+  // that genuinely needs ECEF (lon/lat -> ENU for the parcel).
+  originAnchorEcef
+    .set(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z + zOffset)
+    .applyMatrix4(enuFrame)
+  rebaseTo(originAnchorEcef)
+  refreshOriginDerived()
+  uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
 
   globe = createGlobe({
     renderer: renderer as any,
     camera,
-    scene,
+    scene: ecefRoot,
     maptilerKey: MAPTILER_KEY,
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
@@ -1714,36 +2016,32 @@ async function main(): Promise<void> {
     onActivateAim: activateAimTarget,
     onDismissAim: dismissAimMode,
   })
-  stream = createStreamingCloud({
-    tilesetUrl: pointTree === 'aph'
-      ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
-      : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`,
-    requestVolumes: pointTree !== 'aph',
-    // The APH quadtree only pays off with residency to match: the Cesium
-    // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
-    // evict close-range nodes as fast as they arrive.
-    limits: pointTree === 'aph'
-      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
-      : undefined,
-    camera,
-    renderer,
-    scene,
-    uniforms,
-    errorTarget: sseAuto,
-    debugVolume: showDiagnostics,
-  })
-  applyHeightOffset()
-  // Debug handle for streaming diagnosis in the console.
+  pointSource = createPointSource({ baseUrl, manifest, basePack: pointTree, onChange: syncPackSelects })
+  buildZoomPackRows(pointSource)
+  // Shareable comparison links, e.g. ?zoom0=area:detail — an unknown or unbuilt
+  // pack silently resolves back to Auto.
+  for (const rowDef of ZOOM_BAND_ROWS) {
+    const requested = params.get(`zoom${rowDef.band}`)
+    if (requested) pointSource.setAssignment(rowDef.band, requested)
+  }
+  syncPackSelects()
+  rebuildStream(pointSource.base(), 'boot')
+  // Debug handle for streaming diagnosis in the console. Getters, so a handle
+  // grabbed before a pack swap does not go stale.
   ;(window as any).__wild = {
-    stream,
     camera,
+    get stream() { return stream },
+    get source() { return activeSource },
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },
+    get origin() { return originStats() },
+    /** Render space -> absolute ECEF, for anything compared against geodesy. */
+    toEcef(value: THREE.Vector3) { return renderToEcef(value) },
   }
 
   environmentLayer = createEnvironmentLayer({
-    scene,
+    scene: ecefRoot,
     renderer,
     fog: distanceFog,
     uniforms,
@@ -1765,7 +2063,7 @@ async function main(): Promise<void> {
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
-      scene,
+      scene: ecefRoot,
       overlay: $('#markerOverlay'),
       enuFrame,
       zOffset,
@@ -1790,7 +2088,7 @@ async function main(): Promise<void> {
     const shapeEcef = new THREE.Vector3()
     const shapeEnu = new THREE.Vector3()
     donationShapeLayer = createDonationShapeLayer({
-      scene,
+      scene: ecefRoot,
       overlay: $('#markerOverlay'),
       enuFrame,
       zOffset,
@@ -1802,6 +2100,8 @@ async function main(): Promise<void> {
         ellipsoid.getCartographicToPosition(
           THREE.MathUtils.degToRad(lat), THREE.MathUtils.degToRad(lon), 0, shapeEcef,
         )
+        // The one place that is genuinely absolute: the ellipsoid returns true
+        // ECEF, so this uses `enuInverse`, never the render-space variant.
         shapeEnu.copy(shapeEcef).applyMatrix4(enuInverse)
         out[0] = shapeEnu.x
         out[1] = shapeEnu.y
@@ -1810,7 +2110,9 @@ async function main(): Promise<void> {
       fallbackGroundZ: areaMinZ,
       canopyHeightM: manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM,
       probe: (centreEnu, radiusM) => {
-        const sample = stream?.sampleGroundZ(centreEnu, radiusM, enuInverse)
+        // Render-space variant: sampleGroundZ multiplies this by the tiles'
+        // own matrixWorld, which lives under the floating-origin root.
+        const sample = stream?.sampleGroundZ(centreEnu, radiusM, enuInverseRender)
         if (!sample) return null
         // sampleGroundZ reports the tiles' own ENU height, straight out of
         // enuFrame⁻¹. Everything else here — areaMinZ, the ground plane, the
@@ -1859,6 +2161,9 @@ async function main(): Promise<void> {
   )))
   camera.up.copy(enuUp)
   camera.lookAt(enuToWorld(stagingTarget.clone()))
+  // Staging jumps straight to the parcel; pull the origin along before the
+  // first frame so the very first traversal already runs camera-relative.
+  updateOrigin(true)
 
   setMaskMode(2)
   setStatus('Adaptive streaming · loading tiles…')
@@ -1870,7 +2175,7 @@ async function main(): Promise<void> {
     areaMinZ,
   )
   void createFieldModelLayer({
-    scene,
+    scene: ecefRoot,
     camera,
     enuFrame,
     zOffset,
@@ -1908,8 +2213,10 @@ async function main(): Promise<void> {
   if (compareParam) setCompareMode(true)
 
   ;(window as any).__three = {
-    renderer, scene, camera, uniforms, globe, stream, markerLayer,
+    renderer, scene, camera, uniforms, globe, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
+    // Getter: the streamer is replaced whenever a density pack is swapped.
+    get stream() { return stream },
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()

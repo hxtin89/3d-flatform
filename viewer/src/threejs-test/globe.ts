@@ -9,7 +9,7 @@ import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { texture } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
-import { applyMatrixPrecision, maskDimNode, type CloudUniforms } from './point-cloud'
+import { applyHighPrecisionAlways, maskDimNode, type CloudUniforms } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
 import type { MemoryBudgetSnapshot } from './streaming'
 
@@ -26,8 +26,6 @@ export interface Globe {
   /** Exact snapshot & restore — setMemoryBudget never shrinks maxSize. */
   getMemoryBudget(): MemoryBudgetSnapshot
   setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
-  /** Re-apply the current matrix precision mode to already-loaded imagery. */
-  refreshMatrixPrecision(): void
   stats(): { visible: number; cacheBytes: number; gpuBytes: number }
   dispose(): void
 }
@@ -35,7 +33,8 @@ export interface Globe {
 export function createGlobe(opts: {
   renderer: { domElement: HTMLCanvasElement; getSize(v: THREE.Vector2): THREE.Vector2 }
   camera: THREE.PerspectiveCamera
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   maptilerKey: string
   /** Minimum height above the globe, derived from the point-cloud height. */
   cameraClearance: number
@@ -64,8 +63,10 @@ export function createGlobe(opts: {
     shape: 'ellipsoid',
     useRecommendedSettings: true,
     tileDimension: 512,
-    // same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer)
-    url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
+    // Same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer). In dev
+    // it goes through the vite proxy, which strips the Referer the domain-restricted
+    // key rejects from localhost — see vite.config.ts.
+    url: `${import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
   tiles.registerPlugin(new UpdateOnChangePlugin())
   const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 64 * 1024 * 1024 })
@@ -91,8 +92,9 @@ export function createGlobe(opts: {
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters
-      // with them — see applyMatrixPrecision.
-      applyMatrixPrecision(mat)
+      // with them, but never follows the point-cloud precision toggle — mediump
+      // tears visible gaps between the map tiles. See applyHighPrecisionAlways.
+      applyHighPrecisionAlways(mat)
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
       mat.colorNode = texture(map)
@@ -155,9 +157,6 @@ export function createGlobe(opts: {
       tiles.update()
     },
     setResolution,
-    refreshMatrixPrecision() {
-      tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
-    },
     stats() {
       return {
         visible: tiles.visibleTiles.size,

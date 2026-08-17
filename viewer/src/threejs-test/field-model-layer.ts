@@ -29,7 +29,8 @@ export interface FieldModelEditTargets {
 }
 
 interface FieldModelLayerOptions {
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   camera: THREE.PerspectiveCamera
   enuFrame: THREE.Matrix4
   zOffset: number
