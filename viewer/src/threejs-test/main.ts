@@ -453,6 +453,8 @@ const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scen
  * it visibly stepped mid-zoom. The slider stays a live multiplier on top of the
  * curve so it survives every camera move. */
 let pointSizeScale = 1
+/** User fatness preference, multiplying each tile's spacing-derived size. */
+let perTileSizeFatness = 1
 let cameraAltitude = 0
 let lastAppliedPointSize = -1
 
@@ -719,6 +721,18 @@ function syncLiftReadout(): void {
   liftValueValEl.textContent = `${Math.round(pointCloudLiftM)} m`
   liftValueEl.value = String(Math.round(pointCloudLiftM))
 }
+const perTileSizeEl = $<HTMLInputElement>('#perTileSize')
+const perTileSizeValEl = $<HTMLSpanElement>('#perTileSizeVal')
+const syncPerTileSize = () => {
+  perTileSizeValEl.textContent = `${perTileSizeFatness.toFixed(2)}×`
+  perTileSizeEl.value = String(perTileSizeFatness)
+}
+perTileSizeEl.addEventListener('input', () => {
+  perTileSizeFatness = Number(perTileSizeEl.value)
+  syncPerTileSize()
+})
+syncPerTileSize()
+
 const onLiftValue = () => {
   pointCloudLiftM = Number(liftValueEl.value)
   applyPointCloudLift()
@@ -2147,6 +2161,9 @@ function loop(now: number): void {
   // immediately once the queue is empty, which it is for all but the first
   // seconds after a tile loads.
   groundPatchMask.update()
+  // Every frame, not only when the shared size changes: the per-tile sizes follow
+  // camera distance, so they move whenever the camera does.
+  stream?.applyPerTileSize({ scale: perTileSizeFatness, fill: EXPERIENCE_CONFIG.lod.perTilePointSizeFill })
   depthOfField.update(cameraGroundRange)
   depthOfField.render()
 }

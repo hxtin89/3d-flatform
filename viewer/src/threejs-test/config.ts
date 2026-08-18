@@ -61,6 +61,22 @@ export const EXPERIENCE_CONFIG = {
     // it, the UI slider multiplies on top. Dialled in on the slider at 0.8x, which
     // lands the close-range size around 3.1 px.
     pointSizeMultiplier: 0.8,
+    /**
+     * Overlap factor on each tile's point spacing. 1 makes dots exactly meet, above
+     * that they overlap and close the last gaps.
+     *
+     * The size is a world measure now, in metres, with sizeAttenuation doing the
+     * projection per point. Two earlier attempts got this wrong and both are worth
+     * recording: sizing a tile by its *own* spacing ignores that refinement is ADD, so
+     * ten tiles stack on the same ground and the coarse ones blotted fat dots over
+     * detail the fine ones had already filled. Sizing from the finest spacing in the
+     * stack fixed that, but computing pixels from the tile centre still gave stacked
+     * tiles different sizes for the same ground — a 2 km tile has no single distance.
+     */
+    perTilePointSizeFill: 1.35,
+    /** Guard rails on the metre size, so a tile can neither vanish nor blob. */
+    perTilePointSizeMinM: 0.05,
+    perTilePointSizeMaxM: 4.0,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,

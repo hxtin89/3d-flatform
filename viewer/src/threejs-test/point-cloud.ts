@@ -474,8 +474,17 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
   material.transparent = false
   material.depthWrite = true
-  material.sizeAttenuation = false
-  material.sizeNode = u.pointSize
+  // Attenuated, so the size below is read as METRES and three divides by each point's
+  // own view depth. A tile can span two kilometres of ground; one pixel size for all of
+  // it cannot be right, and computing it from the tile centre made every stacked tile
+  // land on a different size for the same ground. Letting the GPU project per point
+  // removes that error and the per-frame distance maths with it.
+  material.sizeAttenuation = true
+  // Per tile, not the shared uniform: the size that makes ground look gapless is the
+  // point spacing there, and that differs per tile. Written by applyPerTileSize.
+  const tileSize = uniform(EXPERIENCE_CONFIG.lod.perTilePointSizeMinM)
+  material.sizeNode = tileSize
+  material.userData.pointSizeUniform = tileSize
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')

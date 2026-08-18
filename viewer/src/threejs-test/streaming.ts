@@ -50,6 +50,15 @@ export interface StreamingCloud {
   /** Diagnostic A/B: CPU-computed (float64) vs in-shader (float32) model-view
    * matrices. Off makes the ECEF rounding jitter visible again. */
   setHighPrecision(enabled: boolean): void
+  /**
+   * Size each tile's points from that tile's own spacing, so a coarse tile and a
+   * refined one blend instead of meeting along a visible rectangle.
+   *
+   * The size is in metres and sizeAttenuation does the projection, so `scale` is just
+   * the user's fatness preference. Called every frame because the stack changes as
+   * tiles refine, not because the camera moves.
+   */
+  applyPerTileSize(opts: { scale: number; fill: number }): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
@@ -175,6 +184,11 @@ export function createStreamingCloud(opts: {
   })
   tiles.registerPlugin(unloadPlugin as any)
 
+  // Reused every frame by applyPerTileSize so the per-frame pass allocates nothing.
+  interface SizeEntry { object: any; size: any; spacing: number; effective: number }
+  const sizeEntries: SizeEntry[] = []
+  const sizeByTile = new Map<object, SizeEntry>()
+
   const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
   const failedTiles = new Set<string>()
 
@@ -189,7 +203,7 @@ export function createStreamingCloud(opts: {
 
   /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
    * the tile carries no usable position buffer. */
-  function buildPointQuads(source: THREE.Points): THREE.Mesh | null {
+  function buildPointQuads(source: THREE.Points, tile: any): THREE.Mesh | null {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
@@ -211,7 +225,28 @@ export function createStreamingCloud(opts: {
     }
     geometry.instanceCount = position.count
 
+    // Mean horizontal point spacing, the same quantity the pipeline puts in
+    // geometricError: sqrt(footprint area / points). Taken from the tile's own
+    // geometry because the tileset's leaves carry geometricError 0 by construction,
+    // so the published value cannot size the finest tiles.
+    source.geometry.computeBoundingBox()
+    const box = source.geometry.boundingBox
+    let spacingM = 0
+    const centre = new THREE.Vector3()
+    if (box) {
+      box.getCenter(centre)
+      const area = Math.max((box.max.x - box.min.x) * (box.max.y - box.min.y), 1e-6)
+      spacingM = Math.sqrt(area / Math.max(1, position.count))
+    }
+
     const mesh = new THREE.Mesh(geometry, createCloudMaterial(uniforms, color?.itemSize ?? 3))
+    mesh.userData.spacingM = spacingM
+    // Needed to find the tile's place in the tree — the size depends on the whole
+    // stack at a location, not on this tile alone. See applyPerTileSize.
+    mesh.userData.tile = tile
+    // The instanced geometry's own bounds describe the unit quad, not the points, so
+    // the centre has to be carried over from the source geometry.
+    mesh.userData.localCentre = centre
     // A Mesh, not a Sprite: WebGPUUtils.getPrimitiveTopology only names a
     // topology for isMesh, and Mesh avoids Sprite's own culling and raycasting.
     mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
@@ -232,7 +267,7 @@ export function createStreamingCloud(opts: {
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay
       // readable either way, but taking the tile here keeps the handoff obvious.
       opts.onPointTile?.(source)
-      const mesh = buildPointQuads(source)
+      const mesh = buildPointQuads(source, tile)
       if (!mesh) continue
 
       // TilesRenderer collected the tile's geometries and materials during
@@ -314,6 +349,50 @@ export function createStreamingCloud(opts: {
       // Same registry as setHighPrecision: the scene graph holds every live tile
       // material, and UnloadTilesPlugin keeps disposing them itself.
       tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+    },
+    applyPerTileSize({ scale, fill }) {
+      // Refinement is ADD, so tiles do not replace their parents — they stack. Measured
+      // in one view, fourteen tiles covered the same ground, with own spacings from
+      // 0.13 m to 7.3 m. The density you see there is the sum of all of them, so the
+      // spacing that matters is the *finest* one present, not each tile's own.
+      //
+      // Sizing by a tile's own spacing was wrong for that reason: the coarse members got
+      // fat dots over ground the fine ones had already filled, so they blotted over the
+      // detail, and the mismatch was worst where refinement depth changes — along tile
+      // boundaries, the artifact this is meant to remove.
+      //
+      // Descendants sit strictly inside their ancestors in a quadtree, so propagating
+      // each spacing up the parent chain gives every tile the finest spacing over its
+      // own footprint.
+      sizeEntries.length = 0
+      sizeByTile.clear()
+      tiles.group.traverse((object: any) => {
+        const size = object.material?.userData?.pointSizeUniform
+        if (!size) return
+        const spacing = object.userData?.spacingM
+        const entry = { object, size, spacing: spacing || 0, effective: spacing || 0 }
+        sizeEntries.push(entry)
+        if (object.userData?.tile) sizeByTile.set(object.userData.tile, entry)
+      })
+      for (const entry of sizeEntries) {
+        if (!entry.spacing) continue
+        let node = entry.object.userData?.tile?.parent
+        while (node) {
+          const ancestor = sizeByTile.get(node)
+          if (ancestor && entry.spacing < ancestor.effective) ancestor.effective = entry.spacing
+          node = node.parent
+        }
+      }
+      // Metres, not pixels: sizeAttenuation projects per point, so there is no distance
+      // to take here and a tile keeps one honest size across its whole extent.
+      for (const entry of sizeEntries) {
+        const wanted = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeMinM) * fill * scale
+        entry.size.value = THREE.MathUtils.clamp(
+          wanted,
+          EXPERIENCE_CONFIG.lod.perTilePointSizeMinM,
+          EXPERIENCE_CONFIG.lod.perTilePointSizeMaxM,
+        )
+      }
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (!centerWorld || !(radius > 0)) {
