@@ -2163,6 +2163,10 @@ function loop(now: number): void {
   groundPatchMask.update()
   // Every frame, not only when the shared size changes: the per-tile sizes follow
   // camera distance, so they move whenever the camera does.
+  // Pixels a one-metre object spans at one metre out — the shader projects each point
+  // with it, so the size follows perspective exactly instead of per tile.
+  uniforms.pointSizeProjection.value = renderer.domElement.clientHeight
+    / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))
   stream?.applyPerTileSize({ scale: perTileSizeFatness, fill: EXPERIENCE_CONFIG.lod.perTilePointSizeFill })
   depthOfField.update(cameraGroundRange)
   depthOfField.render()

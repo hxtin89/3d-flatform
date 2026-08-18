@@ -7,6 +7,7 @@ import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, length, max, min, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
+  modelWorldMatrix, clamp,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -25,6 +26,12 @@ export interface CloudUniforms {
   maskSurroundColor: any
   maskSurroundAmount: any
   pointSize: any
+  /**
+   * Pixels a one-metre object spans at one metre from the camera:
+   * `canvasHeight / (2 * tan(fov/2))`. Lets the point size be projected per point in
+   * the shader instead of per tile on the CPU.
+   */
+  pointSizeProjection: any
   /** Basemap-only grading (the point cloud has its own). */
   mapSaturation: any
   mapBrightness: any
@@ -118,6 +125,7 @@ export function createUniforms(): CloudUniforms {
     maskSurroundColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.surroundColor)),
     maskSurroundAmount: uniform(EXPERIENCE_CONFIG.design.surroundTint),
     pointSize: uniform(2),
+    pointSizeProjection: uniform(1000),
     groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
       ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),
     groundPatchColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.groundPatch.color)),
@@ -474,17 +482,38 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
   material.transparent = false
   material.depthWrite = true
-  // Attenuated, so the size below is read as METRES and three divides by each point's
-  // own view depth. A tile can span two kilometres of ground; one pixel size for all of
-  // it cannot be right, and computing it from the tile centre made every stacked tile
-  // land on a different size for the same ground. Letting the GPU project per point
-  // removes that error and the per-frame distance maths with it.
-  material.sizeAttenuation = true
-  // Per tile, not the shared uniform: the size that makes ground look gapless is the
-  // point spacing there, and that differs per tile. Written by applyPerTileSize.
-  const tileSize = uniform(EXPERIENCE_CONFIG.lod.perTilePointSizeMinM)
-  material.sizeNode = tileSize
-  material.userData.pointSizeUniform = tileSize
+  // The size a tile needs to look gapless is its point spacing there, in metres —
+  // written per tile by applyPerTileSize, and projected here per point.
+  const tileSpacingM = uniform(EXPERIENCE_CONFIG.lod.perTilePointSizeFallbackM)
+  material.userData.pointSizeUniform = tileSpacingM
+  /**
+   * Pixel floor for this tile, and 0 for tiles that finer ones already cover.
+   *
+   * The floor exists so distant canopy cannot thin into holes as dots fall under a
+   * pixel. But a coarse tile sitting under finer descendants contributes nothing there
+   * — its points are duplicated by the levels above it — so holding it at a pixel is
+   * pure fill cost. Letting those go sub-pixel and disappear is free detail.
+   */
+  const tileMinPx = uniform(EXPERIENCE_CONFIG.lod.perTilePointSizeMinPx)
+  material.userData.pointSizeMinPxUniform = tileMinPx
+
+  // Projected in the shader rather than by three's sizeAttenuation, which would work
+  // but leaves no way to bound the result: sub-pixel dots at distance punch holes in
+  // the canopy, and metre-sized dots up close read as blobs. Doing it here keeps the
+  // per-point exactness and allows both limits to be expressed where they belong, in
+  // pixels. Computing it per tile on the CPU was the earlier attempt and could not
+  // work — a tile spans up to two kilometres and has no single distance.
+  material.sizeAttenuation = false
+  material.sizeNode = (() => {
+    // Annotated `any` like the rest of this file's node plumbing — untyped uniforms
+    // otherwise collapse TSL's overloads.
+    const pointLocal: any = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+    const pointWorld: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
+    const toCamera: any = max(length(pointWorld.sub(cameraPosition)), float(1))
+    const projected: any = tileSpacingM.mul(u.pointSizeProjection).div(toCamera)
+    return clamp(max(projected, tileMinPx), float(0),
+      float(EXPERIENCE_CONFIG.lod.perTilePointSizeMaxPx))
+  })()
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')

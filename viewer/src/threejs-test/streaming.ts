@@ -54,9 +54,9 @@ export interface StreamingCloud {
    * Size each tile's points from that tile's own spacing, so a coarse tile and a
    * refined one blend instead of meeting along a visible rectangle.
    *
-   * The size is in metres and sizeAttenuation does the projection, so `scale` is just
-   * the user's fatness preference. Called every frame because the stack changes as
-   * tiles refine, not because the camera moves.
+   * Publishes metres; the shader projects per point and clamps the result in pixels, so
+   * `scale` is just the user's fatness preference. Called every frame because the stack
+   * changes as tiles refine, not because the camera moves.
    */
   applyPerTileSize(opts: { scale: number; fill: number }): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
@@ -185,7 +185,7 @@ export function createStreamingCloud(opts: {
   tiles.registerPlugin(unloadPlugin as any)
 
   // Reused every frame by applyPerTileSize so the per-frame pass allocates nothing.
-  interface SizeEntry { object: any; size: any; spacing: number; effective: number }
+  interface SizeEntry { object: any; size: any; minPx: any; spacing: number; effective: number }
   const sizeEntries: SizeEntry[] = []
   const sizeByTile = new Map<object, SizeEntry>()
 
@@ -225,17 +225,39 @@ export function createStreamingCloud(opts: {
     }
     geometry.instanceCount = position.count
 
-    // Mean horizontal point spacing, the same quantity the pipeline puts in
-    // geometricError: sqrt(footprint area / points). Taken from the tile's own
-    // geometry because the tileset's leaves carry geometricError 0 by construction,
-    // so the published value cannot size the finest tiles.
+    // Mean horizontal point spacing — the size that makes this tile's ground look
+    // gapless. `sqrt(area / points)`, the same quantity the pipeline puts in
+    // geometricError, computed here because the published value is 0 for leaves by
+    // construction and so cannot size the finest tiles.
+    //
+    // Over the OCCUPIED area, not the bounding box. Tiles at the survey edge and along
+    // the river hold points in a fraction of their box, and using the box there
+    // overestimates the spacing and hands out dots several times too fat — the same
+    // mistake the coverage mask made with node boxes. Occupancy is counted on a 16x16
+    // grid, the same microcell resolution the pipeline samples with, from every 8th
+    // point: enough to tell a full tile from a half-empty one, cheap enough to run on
+    // load.
     source.geometry.computeBoundingBox()
     const box = source.geometry.boundingBox
     let spacingM = 0
     const centre = new THREE.Vector3()
     if (box) {
       box.getCenter(centre)
-      const area = Math.max((box.max.x - box.min.x) * (box.max.y - box.min.y), 1e-6)
+      const width = Math.max(box.max.x - box.min.x, 1e-6)
+      const depth = Math.max(box.max.y - box.min.y, 1e-6)
+      const GRID = 16
+      const occupied = new Uint8Array(GRID * GRID)
+      const array = position.array as ArrayLike<number>
+      const stride = position.itemSize
+      let cells = 0
+      for (let i = 0; i < position.count; i += 8) {
+        const o = i * stride
+        const gx = Math.min(GRID - 1, ((array[o] - box.min.x) / width * GRID) | 0)
+        const gy = Math.min(GRID - 1, ((array[o + 1] - box.min.y) / depth * GRID) | 0)
+        const at = gy * GRID + gx
+        if (!occupied[at]) { occupied[at] = 1; cells++ }
+      }
+      const area = width * depth * (Math.max(cells, 1) / (GRID * GRID))
       spacingM = Math.sqrt(area / Math.max(1, position.count))
     }
 
@@ -370,7 +392,8 @@ export function createStreamingCloud(opts: {
         const size = object.material?.userData?.pointSizeUniform
         if (!size) return
         const spacing = object.userData?.spacingM
-        const entry = { object, size, spacing: spacing || 0, effective: spacing || 0 }
+        const entry = { object, size, minPx: object.material.userData.pointSizeMinPxUniform,
+          spacing: spacing || 0, effective: spacing || 0 }
         sizeEntries.push(entry)
         if (object.userData?.tile) sizeByTile.set(object.userData.tile, entry)
       })
@@ -383,15 +406,19 @@ export function createStreamingCloud(opts: {
           node = node.parent
         }
       }
-      // Metres, not pixels: sizeAttenuation projects per point, so there is no distance
-      // to take here and a tile keeps one honest size across its whole extent.
+      // Metres. The shader projects per point and clamps the result in pixels, so there
+      // is no distance to take here and a tile keeps one honest spacing across its
+      // whole extent however far it reaches.
       for (const entry of sizeEntries) {
-        const wanted = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeMinM) * fill * scale
-        entry.size.value = THREE.MathUtils.clamp(
-          wanted,
-          EXPERIENCE_CONFIG.lod.perTilePointSizeMinM,
-          EXPERIENCE_CONFIG.lod.perTilePointSizeMaxM,
-        )
+        entry.size.value = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeFallbackM)
+          * fill * scale
+        // Only the finest data at a spot gets the pixel floor. A coarse tile whose
+        // descendants already cover it is duplicated detail, so let it fall away with
+        // distance instead of paying a pixel per point for nothing.
+        if (entry.minPx) {
+          const isFinest = !entry.spacing || entry.effective >= entry.spacing
+          entry.minPx.value = isFinest ? EXPERIENCE_CONFIG.lod.perTilePointSizeMinPx : 0
+        }
       }
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {

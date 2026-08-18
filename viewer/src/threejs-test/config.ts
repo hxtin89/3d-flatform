@@ -65,18 +65,24 @@ export const EXPERIENCE_CONFIG = {
      * Overlap factor on each tile's point spacing. 1 makes dots exactly meet, above
      * that they overlap and close the last gaps.
      *
-     * The size is a world measure now, in metres, with sizeAttenuation doing the
-     * projection per point. Two earlier attempts got this wrong and both are worth
-     * recording: sizing a tile by its *own* spacing ignores that refinement is ADD, so
-     * ten tiles stack on the same ground and the coarse ones blotted fat dots over
-     * detail the fine ones had already filled. Sizing from the finest spacing in the
-     * stack fixed that, but computing pixels from the tile centre still gave stacked
-     * tiles different sizes for the same ground — a 2 km tile has no single distance.
+     * The spacing is a world measure, in metres, projected per point in the shader.
+     * Two earlier attempts got this wrong and both are worth recording: sizing a tile by
+     * its *own* spacing ignores that refinement is ADD, so the levels stack on the same
+     * ground and the coarse ones blotted fat dots over detail the fine ones had already
+     * filled. Sizing from the finest spacing in the stack fixed that, but computing
+     * pixels from the tile centre still gave stacked tiles different sizes for the same
+     * ground — a 2 km tile has no single distance.
      */
     perTilePointSizeFill: 1.35,
-    /** Guard rails on the metre size, so a tile can neither vanish nor blob. */
-    perTilePointSizeMinM: 0.05,
-    perTilePointSizeMaxM: 4.0,
+    /**
+     * Guard rails in PIXELS, applied after the per-point projection. The floor is what
+     * keeps distant canopy from thinning into holes as dots fall under a pixel; the
+     * ceiling stops close-range dots from reading as blobs.
+     */
+    perTilePointSizeMinPx: 1.2,
+    perTilePointSizeMaxPx: 9,
+    /** Used until a tile's own spacing is known. */
+    perTilePointSizeFallbackM: 0.2,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,
