@@ -185,7 +185,9 @@ export function createStreamingCloud(opts: {
   tiles.registerPlugin(unloadPlugin as any)
 
   // Reused every frame by applyPerTileSize so the per-frame pass allocates nothing.
-  interface SizeEntry { object: any; size: any; minPx: any; spacing: number; effective: number }
+  interface SizeEntry {
+    object: any; size: any; minPx: any; reveal: any; spacing: number; effective: number
+  }
   const sizeEntries: SizeEntry[] = []
   let lastSizePass = performance.now()
   const sizeByTile = new Map<object, SizeEntry>()
@@ -394,6 +396,7 @@ export function createStreamingCloud(opts: {
         if (!size) return
         const spacing = object.userData?.spacingM
         const entry = { object, size, minPx: object.material.userData.pointSizeMinPxUniform,
+          reveal: object.material.userData.revealUniform,
           spacing: spacing || 0, effective: spacing || 0 }
         sizeEntries.push(entry)
         if (object.userData?.tile) sizeByTile.set(object.userData.tile, entry)
@@ -431,10 +434,17 @@ export function createStreamingCloud(opts: {
           entry.size.value += (target - entry.size.value) * alpha
           if (entry.minPx) entry.minPx.value += (targetMinPx - entry.minPx.value) * alpha
         } else {
-          // First sight: snap, or the tile eases in from the fallback and pops anyway.
+          // First sight: the size snaps, because easing it in from the fallback would be
+          // its own pop. The points are what fade — see revealUniform.
           entry.object.userData.sizeSettled = true
           entry.size.value = target
           if (entry.minPx) entry.minPx.value = targetMinPx
+          if (entry.reveal) entry.reveal.value = 0
+        }
+        // Dissolve in on the same curve the ancestors shrink on, so coverage is handed
+        // over rather than stepped.
+        if (entry.reveal && entry.reveal.value < 1) {
+          entry.reveal.value = Math.min(1, entry.reveal.value + (1 - entry.reveal.value) * alpha + 0.004)
         }
       }
     },

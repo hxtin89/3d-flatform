@@ -497,6 +497,23 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   const tileMinPx = uniform(EXPERIENCE_CONFIG.lod.perTilePointSizeMinPx)
   material.userData.pointSizeMinPxUniform = tileMinPx
 
+  /**
+   * Fraction of this tile's points that are drawn, eased from 0 on arrival.
+   *
+   * Shrinking an ancestor's dots when a finer tile lands is unavoidable — the ground
+   * genuinely goes from sparse to dense — and easing that shrink only turns a flash
+   * into a swell, which gives the tile away just as plainly because a whole rectangle
+   * swells at once. Fading the newcomer *in* on the same curve is what makes it
+   * invisible: as the coarse dots shrink, the fine ones appear to fill, so the total
+   * covered area stays roughly constant and there is no pulse to see.
+   *
+   * Done by discarding points against a hash rather than with alpha, because this
+   * material is opaque and writes depth — see the vignette fringe, which dissolves the
+   * same way for the same reason.
+   */
+  const tileReveal = uniform(1)
+  material.userData.revealUniform = tileReveal
+
   // Projected in the shader rather than by three's sizeAttenuation, which would work
   // but leaves no way to bound the result: sub-pixel dots at distance punch holes in
   // the canopy, and metre-sized dots up close read as blobs. Doing it here keeps the
@@ -529,6 +546,12 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
 
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
     const distance = length(enu.xy.sub(u.maskCenter))
+
+    // Arrival dissolve. Same wrapped seed as the vignette fringe below: hash() truncates
+    // to uint and raw ENU metres reach ~1e8 after scaling, where float32 quantises
+    // coarser than a point spacing and whole blocks would pop together.
+    const revealSeed: any = hash(abs(enu.x.mul(97).add(enu.y.mul(1013))).mod(1_048_576))
+    If(tileReveal.lessThan(0.999).and(revealSeed.greaterThan(tileReveal)), () => Discard())
 
     // Fringe rather than a clean circular cut: across the band each point holds a
     // stable pseudo-random keep-threshold, so points thin out gradually and the
