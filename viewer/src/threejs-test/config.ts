@@ -98,7 +98,7 @@ export const EXPERIENCE_CONFIG = {
      * Drives the arrival dissolve too, so the two curves match — the coarse dots shrink
      * exactly as the fine ones fade in and coverage is handed over rather than stepped.
      */
-    perTilePointSizeSmoothingMs: 600,
+    perTilePointSizeSmoothingMs: 350,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,
