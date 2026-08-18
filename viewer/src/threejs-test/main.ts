@@ -2517,6 +2517,9 @@ async function main(): Promise<void> {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask,
+    // Live-tweakable tuning, so values can be found by hand before they are committed —
+    // everything read per frame picks changes up immediately.
+    config: EXPERIENCE_CONFIG,
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()

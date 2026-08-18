@@ -94,8 +94,11 @@ export const EXPERIENCE_CONFIG = {
      *
      * A new tile still snaps to its size on first sight; easing in from the fallback
      * would be its own pop.
+     *
+     * Drives the arrival dissolve too, so the two curves match — the coarse dots shrink
+     * exactly as the fine ones fade in and coverage is handed over rather than stepped.
      */
-    perTilePointSizeSmoothingMs: 140,
+    perTilePointSizeSmoothingMs: 600,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,
