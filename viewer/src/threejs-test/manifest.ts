@@ -3,6 +3,24 @@
 //                    coordinates onto the WGS84 globe (same one Cesium uses)
 // Full manifest schema lives in the Cesium viewer's src/manifest.ts.
 
+/** One published density pack, as the pipeline records it. `status` is free-form
+ * on purpose — the panel shows whatever the manifest says instead of filtering
+ * against a hardcoded list, so packs added later appear without a code change. */
+export interface ManifestDataset {
+  /** Path below the tiles base URL, e.g. `peru-b2-globe/2404PeruB2-detail-p100/areas/area-001`. */
+  dataset: string
+  status: string
+}
+
+export interface ManifestArea {
+  areaId: string
+  label: string
+  /** ENU bbox, 6 numbers, or null when the manifest entry is malformed. */
+  bbox: number[] | null
+  /** Per-area packs keyed by mode (`explore`, `detail`, `context`, …). */
+  datasets: Record<string, ManifestDataset>
+}
+
 export interface GlobeManifest {
   /** ENU→ECEF, column-major, apply as THREE.Matrix4.fromArray() */
   rootTransform: number[]
@@ -22,6 +40,22 @@ export interface GlobeManifest {
   surveyBbox: number[] | null
   /** Vertical source-data span, used to keep navigation above the cloud. */
   areaVerticalSpan: number | null
+  /** Top-level `datasets` map — packs that cover the whole survey (today: overview). */
+  globalDatasets: Record<string, ManifestDataset>
+  /** All areas with their per-area packs, in manifest order. */
+  areas: ManifestArea[]
+}
+
+/** The manifest arrives as `any`; read it defensively rather than casting. */
+function readDatasets(raw: unknown): Record<string, ManifestDataset> {
+  const out: Record<string, ManifestDataset> = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [key, value] of Object.entries(raw as Record<string, any>)) {
+    const path = typeof value?.dataset === 'string' ? value.dataset.replace(/^\/+|\/+$/g, '') : ''
+    if (!path) continue
+    out[key] = { dataset: path, status: typeof value.status === 'string' ? value.status : 'unknown' }
+  }
+  return out
 }
 
 export async function fetchGlobeManifest(baseUrl: string, dataset: string): Promise<GlobeManifest> {
@@ -43,9 +77,20 @@ export async function fetchGlobeManifest(baseUrl: string, dataset: string): Prom
     ?? areas[0]
     ?? null
   let surveyBbox: number[] | null = null
+  const parsedAreas: ManifestArea[] = []
   for (const area of areas) {
     const bbox = area?.bbox
-    if (!Array.isArray(bbox) || bbox.length !== 6 || bbox.some((value: unknown) => !Number.isFinite(Number(value)))) continue
+    const usableBbox = Array.isArray(bbox) && bbox.length === 6
+      && !bbox.some((value: unknown) => !Number.isFinite(Number(value)))
+    if (typeof area?.areaId === 'string') {
+      parsedAreas.push({
+        areaId: area.areaId,
+        label: typeof area.label === 'string' ? area.label : area.areaId,
+        bbox: usableBbox ? bbox.map(Number) : null,
+        datasets: readDatasets(area?.datasets),
+      })
+    }
+    if (!usableBbox) continue
     if (!surveyBbox) surveyBbox = bbox.map(Number)
     else {
       surveyBbox[0] = Math.min(surveyBbox[0], Number(bbox[0]))
@@ -70,5 +115,7 @@ export async function fetchGlobeManifest(baseUrl: string, dataset: string): Prom
     areaBbox: Array.isArray(defaultArea?.bbox) && defaultArea.bbox.length === 6 ? defaultArea.bbox : null,
     surveyBbox,
     areaVerticalSpan: Number.isFinite(areaVerticalSpan) ? areaVerticalSpan : null,
+    globalDatasets: readDatasets(m.datasets),
+    areas: parsedAreas,
   }
 }

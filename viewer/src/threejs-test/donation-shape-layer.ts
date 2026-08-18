@@ -20,6 +20,7 @@ import {
   positionLocal, pow, sin, smoothstep, uniform, uv, vec2, vec3, vec4,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
+import { applyHighPrecisionAlways } from './point-cloud'
 import {
   buildDonationShapeGeometry, buildOutlineRibbon, buildSegmentRibbon, buildWall,
   type DonationShapeForm, type DonationShapeGeometry, type DonationShapeSource,
@@ -34,7 +35,8 @@ export interface GroundProbeResult {
 }
 
 export interface DonationShapeLayerOptions {
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   overlay: HTMLElement
   /** ENU->ECEF, from the area manifest. */
   enuFrame: THREE.Matrix4
@@ -69,6 +71,9 @@ export interface DonationShapeInfo {
 export interface DonationShapeLayer {
   update(now: number, camera: THREE.PerspectiveCamera): void
   setStyle(style: DonationShapeStyle): void
+  /** Re-measure the ground height. Only for a genuinely different point source
+   * — the height is deliberately locked for the rest of the session. */
+  resetGroundLock(): void
   setForm(form: DonationShapeForm): void
   setSmoothness(value: number): void
   setVisible(visible: boolean): void
@@ -257,6 +262,12 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   })()
 
   const materials = [fillMaterial, ghostMaterial, rimMaterial, gridMaterial, wallMaterial]
+  // The parcel hangs off the same ECEF root as the point cloud. Without the
+  // CPU-composed model-view matrix its vertices snap to the float32 grid at
+  // ~6.4e6 m — half a metre, which is 3-4 px at the distance the parcel is
+  // looked at from. Unlike the point cloud this is never a diagnostic A/B:
+  // there is nothing to learn from a jittering outline.
+  materials.forEach(applyHighPrecisionAlways)
 
   // ------------------------------------------------------------ geometry sets
   interface FormGeometry {
@@ -419,6 +430,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     const seedAttribute = new THREE.InstancedBufferAttribute(seeds, 4)
     const seed: any = instancedBufferAttribute(seedAttribute)
     const moteMaterial = new PointsNodeMaterial()
+    applyHighPrecisionAlways(moteMaterial)
     moteMaterial.transparent = true
     moteMaterial.depthWrite = false
     moteMaterial.blending = THREE.AdditiveBlending
@@ -499,7 +511,12 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   let targetCanopyZ = canopyZ
   let lastProbe = -Infinity
   let firstProbeAt = -Infinity
-  let settleStreak = 0
+  /** Accepted probes, kept until the height locks. The percentile is taken over
+   * whichever tiles happen to be resident, so it shifts as the camera moves and
+   * streaming refines — a running median over several probes is stable where a
+   * single one is not. */
+  const groundSamples: number[] = []
+  const canopySamples: number[] = []
   let settled = config.groundZOverrideM !== null
   let lastFrame = -Infinity
   let revealStart = -Infinity
@@ -588,6 +605,14 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     syncLabelText()
   }
 
+  function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b)
+    const middle = sorted.length >> 1
+    return sorted.length % 2 === 1
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) * 0.5
+  }
+
   function runProbe(now: number): void {
     if (settled || now - lastProbe < config.probeIntervalMs) return
     lastProbe = now
@@ -605,16 +630,31 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     }
     if (firstProbeAt === -Infinity) firstProbeAt = now
 
-    if (Math.abs(sample.groundZ - targetGroundZ) < config.probeSettleEpsilonM) settleStreak += 1
-    else settleStreak = 0
-    targetGroundZ = sample.groundZ
-    targetCanopyZ = Math.max(sample.canopyZ, sample.groundZ + 6)
+    groundSamples.push(sample.groundZ)
+    canopySamples.push(sample.canopyZ)
+    targetGroundZ = median(groundSamples)
+    targetCanopyZ = Math.max(median(canopySamples), targetGroundZ + 6)
     console.info(
       `[donation-shape] ground ${sample.groundZ.toFixed(1)} m · canopy ${sample.canopyZ.toFixed(1)} m`
-      + ` · ${sample.samples} samples · support ${sample.support}/25`,
+      + ` · ${sample.samples} samples · support ${sample.support}/25`
+      + ` · median ${targetGroundZ.toFixed(2)} m (${groundSamples.length}/${config.probeLockSamples})`,
     )
-    if (settleStreak >= config.probeSettleStreak || now - firstProbeAt > config.probeTimeoutMs) {
+
+    // Lock once the median rests on enough agreeing probes. After the lock the
+    // parcel never moves vertically again: a height that keeps following the
+    // resident tile set slides visibly under the camera, which reads as the
+    // whole overlay bobbing up and down.
+    const spread = groundSamples.length > 1
+      ? Math.max(...groundSamples) - Math.min(...groundSamples)
+      : Infinity
+    const timedOut = now - firstProbeAt > config.probeTimeoutMs
+    if ((groundSamples.length >= config.probeLockSamples && spread <= config.probeLockSpreadM) || timedOut) {
       settled = true
+      console.info(
+        `[donation-shape] ground locked at ${targetGroundZ.toFixed(2)} m`
+        + ` (${groundSamples.length} probes, spread ${Number.isFinite(spread) ? spread.toFixed(2) : '—'} m`
+        + `${timedOut ? ', timeout' : ''})`,
+      )
     }
   }
 
@@ -678,6 +718,14 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
       if (next === style) return
       style = next
       applyStyle()
+    },
+    resetGroundLock() {
+      if (config.groundZOverrideM !== null) return
+      groundSamples.length = 0
+      canopySamples.length = 0
+      settled = false
+      firstProbeAt = -Infinity
+      lastProbe = -Infinity
     },
     setForm(next) {
       if (next === form) return

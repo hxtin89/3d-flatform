@@ -1994,7 +1994,6 @@ function updateMatrixPrecision(now: number): void {
   if (want === appliedHighPrecision) return
   appliedHighPrecision = want
   stream?.setHighPrecision(want)
-  globe?.refreshMatrixPrecision()
 }
 
 function updateStreaming(now: number): StreamingStats | null {

@@ -10,8 +10,8 @@ import { texture, mix } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
-  applyMatrixPrecision, applyMaskSurround, groundFogNode, gradeImageryNode, applyGroundPatch,
-  rebuildEffectMaterial,
+  applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
+  applyGroundPatch, rebuildEffectMaterial,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -30,8 +30,6 @@ export interface Globe {
   /** Exact snapshot & restore — setMemoryBudget never shrinks maxSize. */
   getMemoryBudget(): MemoryBudgetSnapshot
   setMemoryBudgetExact(budget: MemoryBudgetSnapshot): void
-  /** Re-apply the current matrix precision mode to already-loaded imagery. */
-  refreshMatrixPrecision(): void
   /** Rebuild loaded imagery shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
   /**
@@ -56,7 +54,8 @@ export interface Globe {
 export function createGlobe(opts: {
   renderer: { domElement: HTMLCanvasElement; getSize(v: THREE.Vector2): THREE.Vector2 }
   camera: THREE.PerspectiveCamera
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   maptilerKey: string
   /** Minimum height above the globe, derived from the point-cloud height. */
   cameraClearance: number
@@ -92,8 +91,10 @@ export function createGlobe(opts: {
     // configured deepest zoom into a level count. Caps refinement at the depth
     // where the imagery still holds real detail — see design.basemapMaxZoom.
     levels: EXPERIENCE_CONFIG.design.basemapMaxZoom + 1,
-    // same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer)
-    url: `https://api.maptiler.com/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
+    // Same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer). In dev
+    // it goes through the vite proxy, which strips the Referer the domain-restricted
+    // key rejects from localhost — see vite.config.ts.
+    url: `${import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
   tiles.registerPlugin(new UpdateOnChangePlugin())
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
@@ -122,8 +123,9 @@ export function createGlobe(opts: {
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters
-      // with them — see applyMatrixPrecision.
-      applyMatrixPrecision(mat)
+      // with them, but never follows the point-cloud precision toggle — mediump
+      // tears visible gaps between the map tiles. See applyHighPrecisionAlways.
+      applyHighPrecisionAlways(mat)
       // Keep enough satellite context outside the cloud spotlight to read paths
       // and terrain while the CSS vignette still provides a strong focal frame.
       // .rgb, not the raw vec4: gradeImageryNode mixes against a vec3 luma.
@@ -202,9 +204,6 @@ export function createGlobe(opts: {
       if (imageryEnabled) tiles.update()
     },
     setResolution,
-    refreshMatrixPrecision() {
-      tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
-    },
     refreshEffects() {
       tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
     },

@@ -107,6 +107,14 @@ export const EXPERIENCE_CONFIG = {
     maximumOrbitDegrees: 72,
     minimumBoundsRadiusM: 2_500,
     surveyBoundsScale: 0.6,
+    // Floating origin: how far the camera may drift from the render origin
+    // before the whole world is shifted back under it. Scaled by viewing range
+    // because pan/zoom speed is too (keyboard.panRangeFactor), so the rebase
+    // rate stays roughly constant from the canopy to the overview. Even at the
+    // 20 km ceiling the float32 step is 2.4 mm against metres per screen pixel.
+    originRebaseMinM: 500,
+    originRebaseMaxM: 20_000,
+    originRebaseRangeFactor: 4,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.
@@ -225,8 +233,12 @@ export const EXPERIENCE_CONFIG = {
     probeMaxDeviationM: 400,
     probeSupportBandM: 1.5,
     probeSmoothingMs: 900,
-    probeSettleEpsilonM: 0.05,
-    probeSettleStreak: 3,
+    // The height locks once this many accepted probes agree within the spread
+    // below — the median of them wins and is never revised. Anything that keeps
+    // following the resident tiles makes the whole parcel bob while the camera
+    // moves, because the percentile is taken over whatever happens to be loaded.
+    probeLockSamples: 5,
+    probeLockSpreadM: 0.5,
     probeTimeoutMs: 45_000,
     // Escape hatch when a site's canopy defeats the probe.
     groundZOverrideM: null as number | null,

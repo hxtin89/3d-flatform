@@ -106,7 +106,8 @@ export function createStreamingCloud(opts: {
   tilesetUrl: string
   camera: THREE.PerspectiveCamera
   renderer: any
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   uniforms: CloudUniforms
   errorTarget?: number
   limits?: Partial<StreamingLimits>
@@ -120,12 +121,19 @@ export function createStreamingCloud(opts: {
    * renderer was going to download anyway — see ground-patch-mask.
    */
   onPointTile?: (object: THREE.Object3D) => void
+  /** The root tileset itself was unreachable (404/403) — this cloud will stay empty. */
+  onRootError?: (url: string, error: unknown) => void
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
   const useRequestVolumes = opts.requestVolumes !== false
   const limits = { ...DEFAULT_LIMITS, ...opts.limits }
 
   const tiles = new TilesRenderer(tilesetUrl)
+  // dispose() aborts every *tile* fetch through the renderer's own per-tile
+  // controllers, but the root tileset request uses fetchOptions verbatim. Without
+  // this signal a swapped-away renderer still resolves its root and fires events.
+  const lifecycle = new AbortController()
+  tiles.fetchOptions = { ...tiles.fetchOptions, signal: lifecycle.signal }
   tiles.errorTarget = errorTarget
   tiles.lruCache.minSize = limits.cacheMinTiles
   tiles.lruCache.maxSize = limits.cacheMaxTiles
@@ -259,7 +267,10 @@ export function createStreamingCloud(opts: {
   // renderer retries whenever it comes back into view. Report each URL once so
   // one absent tile cannot bury the console, but leave the retries alone: the
   // file may well appear after the next upload.
-  tiles.addEventListener('load-error', ({ url, error }: any) => {
+  tiles.addEventListener('load-error', ({ tile, url, error }: any) => {
+    // A null tile means the *root* tileset failed — the whole pack is unreachable,
+    // not one gap, so the caller gets to pick a different source.
+    if (tile == null) { opts.onRootError?.(String(url ?? ''), error); return }
     const key = String(url ?? '')
     if (failedTiles.has(key)) return
     failedTiles.add(key)
@@ -417,6 +428,7 @@ export function createStreamingCloud(opts: {
     dispose() {
       scene.remove(tiles.group)
       tiles.dispose()
+      lifecycle.abort()
     },
   }
 }

@@ -7,6 +7,7 @@ import {
 } from 'three/tsl'
 import { JitteredRaymarchingBox } from './tsl-raymarch'
 import { EXPERIENCE_CONFIG } from './config'
+import { originVersion } from './origin'
 import type { CloudUniforms } from './point-cloud'
 
 export type CloudMode = 'off' | 'soft' | 'volume'
@@ -63,7 +64,8 @@ export interface EnvironmentLayer {
 }
 
 interface EnvironmentLayerOptions {
-  scene: THREE.Scene
+  /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
+  scene: THREE.Object3D
   renderer: { setClearColor(color: THREE.ColorRepresentation, alpha?: number): void }
   fog: THREE.Fog
   uniforms: CloudUniforms
@@ -215,7 +217,19 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   root.matrix.copy(enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, zOffset))
   root.matrixWorldNeedsUpdate = true
   scene.add(root)
-  const rootInverse = new THREE.Matrix4().copy(root.matrix).invert()
+  // Render space -> ENU. Derived from matrixWorld, not matrix: the layer root
+  // hangs under the floating-origin root, so its world transform (and therefore
+  // this inverse) changes whenever the origin moves.
+  const rootInverse = new THREE.Matrix4()
+  let rootInverseVersion = -1
+  function renderToLayerEnu(value: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
+    if (rootInverseVersion !== originVersion()) {
+      rootInverseVersion = originVersion()
+      root.updateMatrixWorld(true)
+      rootInverse.copy(root.matrixWorld).invert()
+    }
+    return target.copy(value).applyMatrix4(rootInverse)
+  }
   const nearCameraEnu = new THREE.Vector3()
   let lastNearUpdate = performance.now()
 
@@ -553,8 +567,11 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     // Both, for the reason documented where scene.background is created: the clear
     // colour never reaches the depth-of-field pass's offscreen target, so the sky
     // has to exist as an actual background too.
-    if ((scene.background as THREE.Color | null)?.isColor) {
-      (scene.background as THREE.Color).copy(state.skyColor)
+    // Cast because the layer accepts any Object3D — only a Scene carries a background,
+    // and it is the Scene that gets passed today.
+    const background = (scene as THREE.Scene).background
+    if ((background as THREE.Color | null)?.isColor) {
+      (background as THREE.Color).copy(state.skyColor)
     }
     fog.color.copy(state.fogColor)
     // Ground fog rides the same daylight ramp as the distance fog, so it turns
@@ -703,7 +720,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
               cloud.mesh.position.x += cloud.driftDirection.x * cfg.driftMps * elapsedSeconds
               cloud.mesh.position.y += cloud.driftDirection.y * cfg.driftMps * elapsedSeconds
               // Fade out early when the camera is about to fly through the box.
-              nearCameraEnu.copy(camera.position).applyMatrix4(rootInverse)
+              renderToLayerEnu(camera.position, nearCameraEnu)
               const halfDiagonal = cloud.mesh.scale.length() * 0.5
               const distance = nearCameraEnu.distanceTo(cloud.mesh.position)
               envelope *= smooth01(halfDiagonal * 0.8, halfDiagonal * 1.6, distance)

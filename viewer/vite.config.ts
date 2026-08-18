@@ -63,6 +63,21 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tiles/, ''),
       },
+      // The MapTiler key is domain-restricted, so every raster tile a dev server
+      // on localhost requests comes back 403 (with a placeholder PNG body) and the
+      // basemap stays empty. Strip the Referer here — the key answers 200 without
+      // one. Dev only; the production build talks to api.maptiler.com directly.
+      '/maptiler': {
+        target: 'https://api.maptiler.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/maptiler/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.removeHeader('referer')
+            proxyReq.removeHeader('origin')
+          })
+        },
+      },
     },
   },
   build: {
