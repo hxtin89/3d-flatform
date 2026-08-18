@@ -83,6 +83,19 @@ export const EXPERIENCE_CONFIG = {
     perTilePointSizeMaxPx: 9,
     /** Used until a tile's own spacing is known. */
     perTilePointSizeFallbackM: 0.2,
+    /**
+     * Time constant for easing a tile's size toward its target.
+     *
+     * The target moves in steps, not smoothly: the moment a finer descendant arrives,
+     * an ancestor's effective spacing snaps to it. Measured over 200 frames of camera
+     * movement, only six tiles changed size at all — but every one of those changed by
+     * more than 1.5x in a single frame, the largest by 2.0x. A whole tile's dots
+     * halving between frames is what reads as a flicker.
+     *
+     * A new tile still snaps to its size on first sight; easing in from the fallback
+     * would be its own pop.
+     */
+    perTilePointSizeSmoothingMs: 140,
     // Base size when the height curve above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,

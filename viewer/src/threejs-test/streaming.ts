@@ -187,6 +187,7 @@ export function createStreamingCloud(opts: {
   // Reused every frame by applyPerTileSize so the per-frame pass allocates nothing.
   interface SizeEntry { object: any; size: any; minPx: any; spacing: number; effective: number }
   const sizeEntries: SizeEntry[] = []
+  let lastSizePass = performance.now()
   const sizeByTile = new Map<object, SizeEntry>()
 
   const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
@@ -409,15 +410,31 @@ export function createStreamingCloud(opts: {
       // Metres. The shader projects per point and clamps the result in pixels, so there
       // is no distance to take here and a tile keeps one honest spacing across its
       // whole extent however far it reaches.
+      // Eased, not assigned. The target moves in steps — an ancestor's effective spacing
+      // snaps the moment a finer descendant arrives — and a whole tile's dots changing
+      // by 2x between frames is what reads as a flicker. The uniforms are the state, so
+      // they are their own history.
+      const now = performance.now()
+      const dt = Math.min((now - lastSizePass) / 1000, 0.25)
+      lastSizePass = now
+      const tau = Math.max(EXPERIENCE_CONFIG.lod.perTilePointSizeSmoothingMs, 1) / 1000
+      const alpha = 1 - Math.exp(-dt / tau)
       for (const entry of sizeEntries) {
-        entry.size.value = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeFallbackM)
+        const target = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeFallbackM)
           * fill * scale
         // Only the finest data at a spot gets the pixel floor. A coarse tile whose
         // descendants already cover it is duplicated detail, so let it fall away with
         // distance instead of paying a pixel per point for nothing.
-        if (entry.minPx) {
-          const isFinest = !entry.spacing || entry.effective >= entry.spacing
-          entry.minPx.value = isFinest ? EXPERIENCE_CONFIG.lod.perTilePointSizeMinPx : 0
+        const isFinest = !entry.spacing || entry.effective >= entry.spacing
+        const targetMinPx = isFinest ? EXPERIENCE_CONFIG.lod.perTilePointSizeMinPx : 0
+        if (entry.object.userData.sizeSettled) {
+          entry.size.value += (target - entry.size.value) * alpha
+          if (entry.minPx) entry.minPx.value += (targetMinPx - entry.minPx.value) * alpha
+        } else {
+          // First sight: snap, or the tile eases in from the fallback and pops anyway.
+          entry.object.userData.sizeSettled = true
+          entry.size.value = target
+          if (entry.minPx) entry.minPx.value = targetMinPx
         }
       }
     },
