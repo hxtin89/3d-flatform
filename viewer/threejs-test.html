@@ -658,17 +658,23 @@
 
     <div id="panel" class="card">
       <button class="close" data-close="panel">×</button>
-      <p class="opt-head">Zoom levels · point source</p>
-      <div class="row zoom-row" id="zoomStatusRow">
-        <label class="h">Current zoom level</label>
-        <div class="stats">
-          <span class="k">Level</span><span class="v" id="zoomBandValue">—</span>
-          <span class="k">LOD range</span><span class="v" id="zoomRangeValue">—</span>
-          <span class="k">SSE</span><span class="v" id="zoomSseValue">—</span>
+      <!-- Zoom-levels / point-source panel, merged in from jan-threejs-test but not yet
+           wired: point-source.ts is in the tree, main.ts is not driving it. Hidden
+           rather than left showing "Reading area manifest…" for ever. Unhide together
+           with the wiring; the left-hand HUD reports band and SSE meanwhile. -->
+      <div hidden>
+        <p class="opt-head">Zoom levels · point source</p>
+        <div class="row zoom-row" id="zoomStatusRow">
+          <label class="h">Current zoom level</label>
+          <div class="stats">
+            <span class="k">Level</span><span class="v" id="zoomBandValue">—</span>
+            <span class="k">LOD range</span><span class="v" id="zoomRangeValue">—</span>
+            <span class="k">SSE</span><span class="v" id="zoomSseValue">—</span>
+          </div>
+          <span class="weather-note" id="zoomDatasetValue">Reading area manifest…</span>
         </div>
-        <span class="weather-note" id="zoomDatasetValue">Reading area manifest…</span>
+        <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       </div>
-      <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       <p class="opt-head">View</p>
       <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
       <div class="row">
