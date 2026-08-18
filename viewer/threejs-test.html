@@ -656,9 +656,9 @@
         <input type="range" id="size" min="0.5" max="3" step="0.1" value="1" />
       </div>
       <div class="row">
-        <label class="h" for="perTileSize">Dot fatness · <span class="val" id="perTileSizeVal">—</span></label>
-        <input type="range" id="perTileSize" min="0.3" max="3" step="0.05" />
-        <span class="weather-note" id="perTileSizeNote">Multiplies the size each tile derives from its own point spacing. Sizes are a world measure here, so they follow perspective per point — the slider above only scales it further</span>
+        <label class="h" for="perTileSize">Transition · <span class="val" id="perTileSizeVal">—</span></label>
+        <input type="range" id="perTileSize" min="0" max="2000" step="25" />
+        <span class="weather-note" id="perTileSizeNote">How long a tile takes to hand over when a finer one arrives — the coarse dots shrink over this while the new points dissolve in, so coverage stays even. 0 ms snaps, which is what made tiles flicker</span>
       </div>
       <div class="row">
         <label class="h" for="precisionToggle">Matrix precision</label>

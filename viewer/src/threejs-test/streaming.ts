@@ -58,7 +58,7 @@ export interface StreamingCloud {
    * `scale` is just the user's fatness preference. Called every frame because the stack
    * changes as tiles refine, not because the camera moves.
    */
-  applyPerTileSize(opts: { scale: number; fill: number }): void
+  applyPerTileSize(opts: { scale: number; fill: number; smoothingMs: number }): { medianM: number }
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
@@ -375,7 +375,7 @@ export function createStreamingCloud(opts: {
       // material, and UnloadTilesPlugin keeps disposing them itself.
       tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
     },
-    applyPerTileSize({ scale, fill }) {
+    applyPerTileSize({ scale, fill, smoothingMs }) {
       // Refinement is ADD, so tiles do not replace their parents — they stack. Measured
       // in one view, fourteen tiles covered the same ground, with own spacings from
       // 0.13 m to 7.3 m. The density you see there is the sum of all of them, so the
@@ -420,7 +420,7 @@ export function createStreamingCloud(opts: {
       const now = performance.now()
       const dt = Math.min((now - lastSizePass) / 1000, 0.25)
       lastSizePass = now
-      const tau = Math.max(EXPERIENCE_CONFIG.lod.perTilePointSizeSmoothingMs, 1) / 1000
+      const tau = Math.max(smoothingMs, 1) / 1000
       const alpha = 1 - Math.exp(-dt / tau)
       for (const entry of sizeEntries) {
         const target = (entry.effective || EXPERIENCE_CONFIG.lod.perTilePointSizeFallbackM)
@@ -447,6 +447,10 @@ export function createStreamingCloud(opts: {
           entry.reveal.value = Math.min(1, entry.reveal.value + (1 - entry.reveal.value) * alpha + 0.004)
         }
       }
+      // Reported so the UI can show what the points actually are, in metres. There is
+      // no single pixel figure any more — the shader projects each point on its own.
+      const sizes = sizeEntries.map((e) => e.size.value).sort((a, b) => a - b)
+      return { medianM: sizes.length ? sizes[sizes.length >> 1] : 0 }
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (!centerWorld || !(radius > 0)) {

@@ -454,7 +454,11 @@ const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scen
  * curve so it survives every camera move. */
 let pointSizeScale = 1
 /** User fatness preference, multiplying each tile's spacing-derived size. */
-let perTileSizeFatness = 1
+let perTileSizeFatness = EXPERIENCE_CONFIG.lod.pointSizeMultiplier
+/** Median published size in metres, for the readout. */
+let lastMedianSizeM = 0
+/** Handover time, live from the panel. The config value is the starting point. */
+let perTileSmoothingMs: number = EXPERIENCE_CONFIG.lod.perTilePointSizeSmoothingMs
 let cameraAltitude = 0
 let lastAppliedPointSize = -1
 
@@ -476,18 +480,18 @@ function basePointSizeForHeight(heightM: number): number {
   return last[1]
 }
 
+/**
+ * Point Size is a multiplier on the size each tile derives from its own point spacing.
+ *
+ * It used to set a pixel size directly, through a camera-height curve. Both are
+ * superseded: the size is a world measure now and the shader projects it per point, so
+ * distance is already handled and a height curve on top would fight it. The slider
+ * keeps its job — overall fatness — and the readout says what the points are in metres,
+ * because there is no single pixel figure to quote any more.
+ */
 function applyPointSize(): void {
-  // Curve off (compare mode): one fixed base like Cesium's pointSize, so the
-  // comparison shows raw density instead of size-masked holes.
-  const base = renderOptions.effective().dynamicPointSize
-    ? basePointSizeForHeight(cameraAltitude)
-    : EXPERIENCE_CONFIG.lod.fixedPointSizePx
-  const pixels = base * EXPERIENCE_CONFIG.lod.pointSizeMultiplier * pointSizeScale
-  // The uniform is read by every tile material each frame; skip sub-pixel churn.
-  if (Math.abs(pixels - lastAppliedPointSize) < 0.02) return
-  lastAppliedPointSize = pixels
-  uniforms.pointSize.value = pixels
-  $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${pixels.toFixed(1)}px`
+  perTileSizeFatness = EXPERIENCE_CONFIG.lod.pointSizeMultiplier * pointSizeScale
+  $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${lastMedianSizeM.toFixed(2)} m`
 }
 
 let globe: Globe | null = null
@@ -724,11 +728,11 @@ function syncLiftReadout(): void {
 const perTileSizeEl = $<HTMLInputElement>('#perTileSize')
 const perTileSizeValEl = $<HTMLSpanElement>('#perTileSizeVal')
 const syncPerTileSize = () => {
-  perTileSizeValEl.textContent = `${perTileSizeFatness.toFixed(2)}×`
-  perTileSizeEl.value = String(perTileSizeFatness)
+  perTileSizeValEl.textContent = `${Math.round(perTileSmoothingMs)} ms`
+  perTileSizeEl.value = String(perTileSmoothingMs)
 }
 perTileSizeEl.addEventListener('input', () => {
-  perTileSizeFatness = Number(perTileSizeEl.value)
+  perTileSmoothingMs = Number(perTileSizeEl.value)
   syncPerTileSize()
 })
 syncPerTileSize()
@@ -2167,7 +2171,12 @@ function loop(now: number): void {
   // with it, so the size follows perspective exactly instead of per tile.
   uniforms.pointSizeProjection.value = renderer.domElement.clientHeight
     / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))
-  stream?.applyPerTileSize({ scale: perTileSizeFatness, fill: EXPERIENCE_CONFIG.lod.perTilePointSizeFill })
+  const sizeReport = stream?.applyPerTileSize({
+    scale: perTileSizeFatness,
+    fill: EXPERIENCE_CONFIG.lod.perTilePointSizeFill,
+    smoothingMs: perTileSmoothingMs,
+  })
+  if (sizeReport) { lastMedianSizeM = sizeReport.medianM; applyPointSize() }
   depthOfField.update(cameraGroundRange)
   depthOfField.render()
 }
