@@ -46,6 +46,22 @@ export const EXPERIENCE_CONFIG = {
     aphOverviewSse: 16,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
+    // Foveated detail: redistribute the band above across the image instead of
+    // raising it everywhere. The factors multiply whatever screen-space error the
+    // adaptive controller has chosen, so the band still follows camera range and
+    // foveation only decides where inside the frame that budget lands. Off by
+    // default until the position below is measured against real camera pitches.
+    foveation: {
+      enabled: false,
+      // Below 1 buys detail in the core; 1 leaves the core exactly as it is today.
+      centreFactor: 1,
+      // Above 1 coarsens the far corner of the image.
+      edgeFactor: 3,
+      // Core radius in half screen heights, so 1 reaches the top and bottom edges.
+      radius: 0.35,
+      // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top.
+      offsetY: 0,
+    },
     // Drawn point size in CSS pixels as a continuous function of camera height
     // over the cloud floor — three fixed bands visibly stepped while zooming.
     // Anchors are measured preferences: zoom all the way in (~82 m, APH d6),

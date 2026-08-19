@@ -9,6 +9,7 @@ import {
 } from './point-cloud'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
+import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
@@ -490,6 +491,8 @@ function applyPointSize(): void {
 
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
+const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
+let foveation: Foveation | null = null
 let markerLayer: MarkerLayer | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
@@ -1632,6 +1635,41 @@ designScrollEl.addEventListener('wheel', (event) => {
 const asFactor = (value: number) => `${value.toFixed(2)}×`
 const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
 
+// Foveated detail. Deliberately a set of raw sliders rather than a derived curve:
+// whether the core belongs above or below the screen centre under tilt is an open
+// question — the near ground at the bottom edge is already fully refined by
+// distance, while the expensive band under tilt runs across the middle — so the
+// position is measured first and only then turned into a function of pitch.
+const foveationToggleEl = $<HTMLButtonElement>('#foveationToggle')
+const syncFoveationToggle = () => {
+  const on = foveationSettings.enabled
+  foveationToggleEl.classList.toggle('on', on)
+  foveationToggleEl.setAttribute('aria-pressed', String(on))
+  foveationToggleEl.textContent = on ? '◎ Fovea · On' : '◎ Fovea · Off'
+}
+foveationToggleEl.addEventListener('click', () => {
+  foveationSettings.enabled = !foveationSettings.enabled
+  syncFoveationToggle()
+})
+syncFoveationToggle()
+
+const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
+const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
+const asOffset = (value: number) =>
+  value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
+bindDesignSlider('foveationRadius', FOVEATION.radius, asScreenHeights, (v) => {
+  foveationSettings.radius = v
+})
+bindDesignSlider('foveationOffsetY', FOVEATION.offsetY, asOffset, (v) => {
+  foveationSettings.offsetY = v
+})
+bindDesignSlider('foveationCentre', FOVEATION.centreFactor, asFactor, (v) => {
+  foveationSettings.centreFactor = v
+})
+bindDesignSlider('foveationEdge', FOVEATION.edgeFactor, asFactor, (v) => {
+  foveationSettings.edgeFactor = v
+})
+
 /** Bind a colour input, seeded from config like the sliders are. */
 function bindDesignColor(id: string, initial: number, apply: (hex: string) => void): void {
   const input = $<HTMLInputElement>(`#${id}`)
@@ -2050,6 +2088,7 @@ function updateStreaming(now: number): StreamingStats | null {
   applyPointSize()
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
+  foveation?.beginFrame()
   stream.update()
   lastStreamStats = stream.stats()
   return lastStreamStats
@@ -2088,6 +2127,8 @@ function updateHud(stats: StreamingStats | null): void {
   chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
   chipFpsEl.className = className
 
+  updateFoveationReadout()
+
   // Fly to the height that looks right, read it off here, put it into
   // navigation.zoomStopHeightM.
   if (!showDiagnostics) return
@@ -2095,6 +2136,17 @@ function updateHud(stats: StreamingStats | null): void {
   diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
   diagStopEl.textContent = `${Math.round(navigationClearance)} m`
   diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+}
+
+const foveationReadoutEl = $('#foveationReadout')
+
+/** Pitch next to the resulting error targets, so a liked slider position can be
+ * written down against the camera angle that produced it. */
+function updateFoveationReadout(): void {
+  if (!foveationSettings.enabled || !foveation) { foveationReadoutEl.textContent = 'off' ; return }
+  const { core, periphery, coreSse, edgeSse } = foveation.stats()
+  foveationReadoutEl.textContent =
+    `${cameraPitchDeg().toFixed(0)}° tilt · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
 }
 
 function loop(now: number): void {
@@ -2303,6 +2355,9 @@ async function main(): Promise<void> {
   })
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
+  // Same reason the settings object lives outside: the panel is bound long before
+  // this point, so foveation adopts the values already on the sliders.
+  foveation = createFoveation(stream.tiles, camera, foveationSettings)
   applyHeightOffset()
   // The rectangle is settled exactly once, off the critical path: the survey never
   // moves. Coverage then accumulates from the point tiles the renderer loads anyway

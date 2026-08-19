@@ -756,6 +756,39 @@
         <span class="weather-note" id="compareReloadNote">Reloads with ?compare=1: no device benchmark, no startup resolution cap — the full, fair comparison</span>
       </div>
       <div id="compareRows"></div>
+      <details class="design-section" id="foveationSection">
+        <summary>Foveated detail (test)</summary>
+        <div class="row">
+          <label class="h" for="foveationToggle">Foveation</label>
+          <button class="act" id="foveationToggle" type="button" aria-pressed="false" aria-describedby="foveationNote">◎ Fovea · Off</button>
+          <span class="weather-note" id="foveationNote">Redistributes the density budget across the image instead of raising it: full detail in a core, coarser toward the corners. Distance is already handled per tile, so this only decides <em>where in the frame</em> the budget lands</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationRadius">Core radius · <span class="val" id="foveationRadiusVal">—</span></label>
+          <input type="range" id="foveationRadius" min="0.05" max="1.5" step="0.01" />
+          <span class="weather-note">Measured in half screen heights, so 1.0 reaches the top and bottom edges. The falloff runs from here out to the image corner</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationOffsetY">Core position · <span class="val" id="foveationOffsetYVal">—</span></label>
+          <input type="range" id="foveationOffsetY" min="-1" max="1" step="0.01" />
+          <span class="weather-note">Where the core sits on the projected image: -1 bottom edge, 0 centre, +1 top. Under tilt the near ground fills the lower screen and the horizon the upper — note the pitch below against the value you like, and the mapping can be made automatic afterwards</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationCentre">Core detail · <span class="val" id="foveationCentreVal">—</span></label>
+          <input type="range" id="foveationCentre" min="0.25" max="1" step="0.05" />
+          <span class="weather-note">Screen-space error multiplier inside the core. 1.0x leaves the core exactly as it is today; below that buys detail beyond the current band, at four times the points per halving</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationEdge">Corner detail · <span class="val" id="foveationEdgeVal">—</span></label>
+          <input type="range" id="foveationEdge" min="1" max="8" step="0.1" />
+          <span class="weather-note">Screen-space error multiplier at the image corner. Without this you cannot tell whether a visible ring means the core is too small or the outside too coarse</span>
+        </div>
+        <div class="row">
+          <label class="h">Readout</label>
+          <span class="val" id="foveationReadout">—</span>
+          <span class="weather-note">Camera pitch, the screen-space error the core and corner resolve to given the live band, and how the traversed tiles split between them</span>
+        </div>
+      </details>
     </div>
 
     <!-- Design panel: its own window, own chip, own scroll. Sections are native
