@@ -691,6 +691,59 @@
         </div>
         <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       </div>
+      <details class="design-section" id="foveationSection" open>
+        <summary>Foveated detail (test)</summary>
+        <div class="row">
+          <label class="h" for="foveationToggle">Foveation</label>
+          <button class="act" id="foveationToggle" type="button" aria-pressed="false" aria-describedby="foveationNote">◎ Fovea · Off</button>
+          <span class="weather-note" id="foveationNote">Redistributes the density budget across the image instead of raising it: full detail in a core, coarser toward the corners. Distance is already handled per tile, so this only decides <em>where in the frame</em> the budget lands</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationRadius">Core radius · <span class="val" id="foveationRadiusVal">—</span></label>
+          <input type="range" id="foveationRadius" min="0.05" max="1.5" step="0.01" />
+          <span class="weather-note">Measured in half screen heights, so 1.0 reaches the top and bottom edges. Full core quality holds out to this line</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationFalloff">Falloff width · <span class="val" id="foveationFalloffVal">—</span></label>
+          <input type="range" id="foveationFalloff" min="0.05" max="2" step="0.01" />
+          <span class="weather-note">How far past the core the blend to the corner value takes, same unit. Small is an abrupt ring you will see; large spreads the loss across the frame. The dashed circle is where it ends — from there out you are at the full corner value</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationOffsetY">Core position · <span class="val" id="foveationOffsetYVal">—</span></label>
+          <input type="range" id="foveationOffsetY" min="-1" max="1" step="0.01" />
+          <span class="weather-note">Where the core sits on the projected image: -1 bottom edge, 0 centre, +1 top. Under tilt the near ground fills the lower screen and the horizon the upper — note the pitch below against the value you like, and the mapping can be made automatic afterwards</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationCentre">Core detail · <span class="val" id="foveationCentreVal">—</span></label>
+          <input type="range" id="foveationCentre" min="0.25" max="1" step="0.05" />
+          <span class="weather-note">Screen-space error multiplier inside the core. 1.0x leaves the core exactly as it is today; below that buys detail beyond the current band, at four times the points per halving</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationEdge">Corner detail · <span class="val" id="foveationEdgeVal">—</span></label>
+          <input type="range" id="foveationEdge" min="1" max="64" step="1" />
+          <span class="weather-note">Screen-space error multiplier at the image corner. Without this you cannot tell whether a visible ring means the core is too small or the outside too coarse</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationGuidesToggle">Guides</label>
+          <button class="act" id="foveationGuidesToggle" type="button" aria-pressed="false" aria-describedby="foveationGuidesNote">⊕ Guides · Off</button>
+          <span class="weather-note" id="foveationGuidesNote">Draws the core and the middle of the falloff onto the image, so the two screen measures above can be judged where they act instead of from their numbers</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationTilesToggle">Tile grid</label>
+          <button class="act" id="foveationTilesToggle" type="button" aria-pressed="false" aria-describedby="foveationTilesNote">▦ Tiles · Off</button>
+          <span class="weather-note" id="foveationTilesNote">Outlines every drawn tile where it lands in the image, labelled with its depth, a • for a leaf, and its error in pixels. Cyan means the core budget, orange the corner budget. Leaves carry error 0 and can never be coarsened, so an orange leaf is a tile foveation cannot drop</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationBoxesToggle">Tile boxes</label>
+          <button class="act" id="foveationBoxesToggle" type="button" aria-pressed="false" aria-describedby="foveationBoxesNote">◳ Boxes · Off</button>
+          <span class="weather-note" id="foveationBoxesNote">The same tiles as wireframe volumes in the scene instead of rectangles on the glass. The flat outlines are each tile's axis-aligned screen bounds, which for a box seen at an angle is wider than the box itself — that is most of the overlap you see there. These are the real volumes, so nesting reads correctly</span>
+        </div>
+        <div class="row">
+          <label class="h">Readout</label>
+          <span class="val" id="foveationReadout">—</span>
+          <span class="weather-note">Camera angle below the horizon — 90° is straight down, 0° is level — then the screen-space error the core and corner resolve to given the live band, and how the traversed tiles split between them</span>
+        </div>
+      </details>
       <p class="opt-head">View</p>
       <button class="act primary" id="flyTo">✈ Fly to Point Cloud</button>
       <div class="row">
@@ -772,59 +825,6 @@
         <span class="weather-note" id="compareReloadNote">Reloads with ?compare=1: no device benchmark, no startup resolution cap — the full, fair comparison</span>
       </div>
       <div id="compareRows"></div>
-      <details class="design-section" id="foveationSection">
-        <summary>Foveated detail (test)</summary>
-        <div class="row">
-          <label class="h" for="foveationToggle">Foveation</label>
-          <button class="act" id="foveationToggle" type="button" aria-pressed="false" aria-describedby="foveationNote">◎ Fovea · Off</button>
-          <span class="weather-note" id="foveationNote">Redistributes the density budget across the image instead of raising it: full detail in a core, coarser toward the corners. Distance is already handled per tile, so this only decides <em>where in the frame</em> the budget lands</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationRadius">Core radius · <span class="val" id="foveationRadiusVal">—</span></label>
-          <input type="range" id="foveationRadius" min="0.05" max="1.5" step="0.01" />
-          <span class="weather-note">Measured in half screen heights, so 1.0 reaches the top and bottom edges. Full core quality holds out to this line</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationFalloff">Falloff width · <span class="val" id="foveationFalloffVal">—</span></label>
-          <input type="range" id="foveationFalloff" min="0.05" max="2" step="0.01" />
-          <span class="weather-note">How far past the core the blend to the corner value takes, same unit. Small is an abrupt ring you will see; large spreads the loss across the frame. The dashed circle is where it ends — from there out you are at the full corner value</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationOffsetY">Core position · <span class="val" id="foveationOffsetYVal">—</span></label>
-          <input type="range" id="foveationOffsetY" min="-1" max="1" step="0.01" />
-          <span class="weather-note">Where the core sits on the projected image: -1 bottom edge, 0 centre, +1 top. Under tilt the near ground fills the lower screen and the horizon the upper — note the pitch below against the value you like, and the mapping can be made automatic afterwards</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationCentre">Core detail · <span class="val" id="foveationCentreVal">—</span></label>
-          <input type="range" id="foveationCentre" min="0.25" max="1" step="0.05" />
-          <span class="weather-note">Screen-space error multiplier inside the core. 1.0x leaves the core exactly as it is today; below that buys detail beyond the current band, at four times the points per halving</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationEdge">Corner detail · <span class="val" id="foveationEdgeVal">—</span></label>
-          <input type="range" id="foveationEdge" min="1" max="64" step="1" />
-          <span class="weather-note">Screen-space error multiplier at the image corner. Without this you cannot tell whether a visible ring means the core is too small or the outside too coarse</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationGuidesToggle">Guides</label>
-          <button class="act" id="foveationGuidesToggle" type="button" aria-pressed="false" aria-describedby="foveationGuidesNote">⊕ Guides · Off</button>
-          <span class="weather-note" id="foveationGuidesNote">Draws the core and the middle of the falloff onto the image, so the two screen measures above can be judged where they act instead of from their numbers</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationTilesToggle">Tile grid</label>
-          <button class="act" id="foveationTilesToggle" type="button" aria-pressed="false" aria-describedby="foveationTilesNote">▦ Tiles · Off</button>
-          <span class="weather-note" id="foveationTilesNote">Outlines every drawn tile where it lands in the image, labelled with its depth, a • for a leaf, and its error in pixels. Cyan means the core budget, orange the corner budget. Leaves carry error 0 and can never be coarsened, so an orange leaf is a tile foveation cannot drop</span>
-        </div>
-        <div class="row">
-          <label class="h" for="foveationBoxesToggle">Tile boxes</label>
-          <button class="act" id="foveationBoxesToggle" type="button" aria-pressed="false" aria-describedby="foveationBoxesNote">◳ Boxes · Off</button>
-          <span class="weather-note" id="foveationBoxesNote">The same tiles as wireframe volumes in the scene instead of rectangles on the glass. The flat outlines are each tile's axis-aligned screen bounds, which for a box seen at an angle is wider than the box itself — that is most of the overlap you see there. These are the real volumes, so nesting reads correctly</span>
-        </div>
-        <div class="row">
-          <label class="h">Readout</label>
-          <span class="val" id="foveationReadout">—</span>
-          <span class="weather-note">Camera angle below the horizon — 90° is straight down, 0° is level — then the screen-space error the core and corner resolve to given the live band, and how the traversed tiles split between them</span>
-        </div>
-      </details>
     </div>
 
     <!-- Design panel: its own window, own chip, own scroll. Sections are native
