@@ -10,6 +10,8 @@
  */
 
 export interface RenderOptions {
+  /** Diagnostic APH mode: refine every leaf in the active camera frustum. */
+  leafLoading: boolean
   /** Boot-SSE brake (256 while loading) + flight SSE floor/ramp. */
   sseBrakes: boolean
   /** Distance fog + per-preset far-plane scaling (shortens the view). */
@@ -37,6 +39,7 @@ export interface RenderOptions {
 export type RenderOptionKey = keyof RenderOptions
 
 export const DEFAULT_OPTIONS: RenderOptions = {
+  leafLoading: false,
   sseBrakes: true,
   fogAtmosphere: true,
   daylightGrading: true,
@@ -56,6 +59,7 @@ export const DEFAULT_OPTIONS: RenderOptions = {
 /** Compare mode: every optimisation off; only the point cloud with the SSE
  * band ladder, navigation and (per user decision) the basemap remain. */
 export const COMPARE_PROFILE: RenderOptions = {
+  leafLoading: false,
   sseBrakes: false,
   fogAtmosphere: false,
   daylightGrading: false,
@@ -79,6 +83,13 @@ export interface RenderOptionRow {
 
 /** Panel rows, in display order. Test UI is English (user decision). */
 export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
+  {
+    key: 'leafLoading',
+    label: 'Leaf loading',
+    onText: '🌲 Leaves · All visible',
+    offText: '🌲 Leaves · Normal',
+    note: 'APH diagnostic: refine every leaf in the camera view; disables the mask gate and keeps up to 16 GiB resident',
+  },
   {
     key: 'sseBrakes',
     label: 'SSE brakes',
