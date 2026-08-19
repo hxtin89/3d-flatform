@@ -1682,13 +1682,18 @@ foveationTilesToggleEl.addEventListener('click', () => {
  * screen heights and the falloff runs from it out to the image corner, so the
  * dashed circle marks the middle of that ramp — the ring you would see first. */
 function updateFoveationGuides(): void {
-  // The tile grid is worth having on its own — where the tiles sit is a question
-  // about the tree, not about foveation — so it does not wait for the mode.
-  const showCircles = foveationGuidesOn && foveationSettings.enabled
-  foveationGuidesEl.toggleAttribute('hidden', !showCircles && !foveationTilesOn)
-  foveationGuideCoreEl.toggleAttribute('hidden', !showCircles)
-  foveationGuideRampEl.toggleAttribute('hidden', !showCircles)
-  foveationGuideAxisEl.toggleAttribute('hidden', !showCircles)
+  // Both overlays stand on their own: where the tiles sit is a question about the
+  // tree, and the circles are how you place the core before switching the mode on.
+  // Neither waits for the other, and neither waits for foveation to be enabled.
+  //
+  // The `hidden` attribute is not honoured on SVG child elements, so visibility goes
+  // through display — on the root as well, to keep it out of hit testing entirely.
+  const showCircles = foveationGuidesOn
+  foveationGuidesEl.style.display = showCircles || foveationTilesOn ? '' : 'none'
+  const circleDisplay = showCircles ? '' : 'none'
+  foveationGuideCoreEl.style.display = circleDisplay
+  foveationGuideRampEl.style.display = circleDisplay
+  foveationGuideAxisEl.style.display = circleDisplay
   updateFoveationTiles()
   if (!showCircles) return
   const width = window.innerWidth
