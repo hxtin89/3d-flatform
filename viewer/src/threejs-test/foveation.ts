@@ -30,8 +30,13 @@ export interface FoveationSettings {
   centreFactor: number
   /** Screen-space error multiplier at the far corner of the image. Above 1 is coarser. */
   edgeFactor: number
-  /** Core radius, measured in half screen heights out from the fovea centre. */
-  radius: number
+  /**
+   * Half extents of the core, in half screen heights. Equal values give a round
+   * core; wide and low gives a band, which is what a tilted camera wants — the
+   * interesting ground runs across the frame, not in a disc around one point.
+   */
+  width: number
+  height: number
   /**
    * How wide the blend from the core factor to the corner factor is, in the same
    * unit. Small is an abrupt ring, large spreads the loss out over the whole frame.
@@ -195,19 +200,27 @@ export function createFoveation(
       footprint.minY = Math.min(footprint.minY, y)
       footprint.maxY = Math.max(footprint.maxY, y)
     }
-    // Point-to-box distance, so a tile covering the fovea scores 0 however far out
-    // its corners reach. The box is the bounds of the projected corners rather than
-    // their hull, which errs toward keeping the core budget — the safe direction.
-    const dx = Math.max(footprint.minX, 0, -footprint.maxX)
-    const dy = Math.max(footprint.minY - settings.offsetY, 0, settings.offsetY - footprint.maxY)
+    // Gap between two rectangles: the tile's screen bounds and the core. Zero while
+    // they overlap, however far out the tile's own corners reach. The tile box is the
+    // bounds of the projected corners rather than their hull, which errs toward
+    // keeping the core budget — the safe direction.
+    const coreMinY = settings.offsetY - settings.height
+    const coreMaxY = settings.offsetY + settings.height
+    const dx = Math.max(footprint.minX - settings.width, -settings.width - footprint.maxX, 0)
+    const dy = Math.max(coreMinY - footprint.maxY, footprint.minY - coreMaxY, 0)
     footprint.nearest = Math.hypot(dx, dy)
     footprint.valid = true
     return footprint
   }
 
-  /** How far along the core-to-corner ramp a footprint distance sits. */
-  const rampAt = (nearest: number): number =>
-    smoothstep01((nearest - settings.radius) / Math.max(settings.falloff, 1e-3))
+  /**
+   * How far along the ramp a gap sits. The gap is already measured from the edge of
+   * the core, so the ramp starts at zero — which makes every iso-line of this
+   * function a rectangle rounded by the gap, and that is exactly what the guides
+   * draw.
+   */
+  const rampAt = (gap: number): number =>
+    smoothstep01(gap / Math.max(settings.falloff, 1e-3))
 
   /** The screen-space error multiplier this tile earns from where it lands. */
   const factorFor = (tile: any): number => {

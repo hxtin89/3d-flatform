@@ -60,11 +60,13 @@ export const EXPERIENCE_CONFIG = {
       // error 0 and can never be coarsened; 8x reaches the internal nodes above them
       // and takes 14% of the drawn points with no ring showing.
       edgeFactor: 8,
-      // Core radius in half screen heights, so 1 reaches the top and bottom edges.
-      radius: 0.35,
-      // Width of the blend from the core out to the corner factor, same unit. The
-      // ramp used to run to the image corner, which at radius 0.35 on a 16:10 frame
-      // is 1.27 — hence the default.
+      // Half extents of the core, in half screen heights, so a height of 1 reaches
+      // the top and bottom edges. Equal values give a round core; a wide, low pair
+      // gives the horizontal band a tilted camera wants. Both default to the value
+      // the circular core was measured at, so the old readings still reproduce.
+      width: 0.35,
+      height: 0.35,
+      // How far past the core the blend to the corner factor takes, same unit.
       falloff: 1.25,
       // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top.
       offsetY: 0,

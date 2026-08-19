@@ -1657,8 +1657,8 @@ foveationToggleEl.addEventListener('click', () => {
 syncFoveationToggle()
 
 const foveationGuidesEl = document.querySelector<SVGSVGElement>('#foveationGuides')!
-const foveationGuideCoreEl = document.querySelector<SVGCircleElement>('#foveationGuideCore')!
-const foveationGuideRampEl = document.querySelector<SVGCircleElement>('#foveationGuideRamp')!
+const foveationGuideCoreEl = document.querySelector<SVGRectElement>('#foveationGuideCore')!
+const foveationGuideRampEl = document.querySelector<SVGRectElement>('#foveationGuideRamp')!
 const foveationGuideAxisEl = document.querySelector<SVGLineElement>('#foveationGuideAxis')!
 const foveationGuidesToggleEl = $<HTMLButtonElement>('#foveationGuidesToggle')
 const foveationTilesToggleEl = $<HTMLButtonElement>('#foveationTilesToggle')
@@ -1712,15 +1712,21 @@ function updateFoveationGuides(): void {
   const height = window.innerHeight
   const unit = height / 2
   const centreY = unit - foveationSettings.offsetY * unit
-  const core = foveationSettings.radius * unit
-  foveationGuideCoreEl.setAttribute('cx', String(width / 2))
-  foveationGuideCoreEl.setAttribute('cy', String(centreY))
-  foveationGuideCoreEl.setAttribute('r', String(core))
-  foveationGuideRampEl.setAttribute('cx', String(width / 2))
-  foveationGuideRampEl.setAttribute('cy', String(centreY))
-  // End of the blend, not its middle: that is the value the falloff slider sets, so
-  // it is the one worth drawing.
-  foveationGuideRampEl.setAttribute('r', String(core + foveationSettings.falloff * unit))
+  const halfW = foveationSettings.width * unit
+  const halfH = foveationSettings.height * unit
+  foveationGuideCoreEl.setAttribute('x', String(width / 2 - halfW))
+  foveationGuideCoreEl.setAttribute('y', String(centreY - halfH))
+  foveationGuideCoreEl.setAttribute('width', String(halfW * 2))
+  foveationGuideCoreEl.setAttribute('height', String(halfH * 2))
+  // End of the blend, not its middle: that is the value the falloff slider sets. The
+  // iso-line of a box distance is the box grown by that distance with corners rounded
+  // to it, so this outline is exact rather than an approximation.
+  const grow = foveationSettings.falloff * unit
+  foveationGuideRampEl.setAttribute('x', String(width / 2 - halfW - grow))
+  foveationGuideRampEl.setAttribute('y', String(centreY - halfH - grow))
+  foveationGuideRampEl.setAttribute('width', String((halfW + grow) * 2))
+  foveationGuideRampEl.setAttribute('height', String((halfH + grow) * 2))
+  foveationGuideRampEl.setAttribute('rx', String(grow))
   // SVG line coordinates are lengths, not percentages, so the span is written out.
   foveationGuideAxisEl.setAttribute('x1', '0')
   foveationGuideAxisEl.setAttribute('x2', String(width))
@@ -1797,8 +1803,12 @@ const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
 const asOffset = (value: number) =>
   value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
-bindDesignSlider('foveationRadius', FOVEATION.radius, asScreenHeights, (v) => {
-  foveationSettings.radius = v
+bindDesignSlider('foveationWidth', FOVEATION.width, asScreenHeights, (v) => {
+  foveationSettings.width = v
+  updateFoveationGuides()
+})
+bindDesignSlider('foveationHeight', FOVEATION.height, asScreenHeights, (v) => {
+  foveationSettings.height = v
   updateFoveationGuides()
 })
 bindDesignSlider('foveationOffsetY', FOVEATION.offsetY, asOffset, (v) => {
