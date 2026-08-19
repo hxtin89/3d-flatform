@@ -433,6 +433,9 @@ export const EXPERIENCE_CONFIG = {
     basemapGraceMs: 12_000,
   },
   atmosphere: {
+    /** Distance haze on at startup. Off while the level-of-detail work is being
+     * judged: the haze hides exactly the far-field density the sliders change. */
+    distanceFogEnabled: false,
     // Bring humid tropical and boreal haze into the mid-distance.
     minimumFarM: 24_000,
     maximumFarM: 650_000,
@@ -698,6 +701,9 @@ export const EXPERIENCE_CONFIG = {
     // and the 170 m lower fade keeps the air under the band clear. Pinned to a
     // warm cream instead of following the daylight ramp.
     groundFog: {
+      /** Ground haze on at startup. Off for the same reason as the distance fog:
+       * it sits over the canopy the density settings are being read from. */
+      enabled: false,
       /** Final multiplier, so 0 is reliably off regardless of the other values.
        * The panel allows up to 3; the resulting coverage is clamped to 1, so past
        * 100% the fog saturates earlier rather than overshooting its colour. */
@@ -735,7 +741,9 @@ export const EXPERIENCE_CONFIG = {
   // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel
   // toggle exists so it can be dropped on weak hardware.
   depthOfField: {
-    enabled: true,
+    /** Off at startup: the blur makes the peripheral point density impossible to
+     * judge, which is precisely what the foveation sliders are for. */
+    enabled: false,
     /** Pin the focal plane to whatever the screen centre is aimed at, so the
      * near canopy stays sharp while the background falls away. With this off,
      * focusDistanceM becomes an absolute distance from the camera. */

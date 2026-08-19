@@ -436,7 +436,9 @@ const distanceFog = new THREE.Fog(
   EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,
   EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogFarFactor,
 )
-scene.fog = distanceFog
+// The toggle's own sync() would take this off the scene a moment later anyway, but
+// materials get built in between and would carry the fog node for nothing.
+scene.fog = EXPERIENCE_CONFIG.atmosphere.distanceFogEnabled ? distanceFog : null
 const camera = new THREE.PerspectiveCamera(
   60,
   window.innerWidth / window.innerHeight,
@@ -526,7 +528,7 @@ let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.s
 let lastAtmosphereUpdate = -Infinity
 // Distance-fog ends as fractions of the far plane — see updateAtmosphere.
 /** Design switch, and the device tier's own veto — the scene keeps fog only if both agree. */
-let distanceFogEnabled = true
+let distanceFogEnabled: boolean = EXPERIENCE_CONFIG.atmosphere.distanceFogEnabled
 let distanceFogAllowedByTier = true
 let distanceFogNearFactor: number = EXPERIENCE_CONFIG.atmosphere.fogNearFactor
 let distanceFogFarFactor: number = EXPERIENCE_CONFIG.atmosphere.fogFarFactor
@@ -1886,18 +1888,20 @@ function refreshEffectShaders(): void {
 }
 
 /** One switch for an effect that lives in the tile shaders. */
-function bindShaderEffectToggle(id: string, label: string, effect: CloudEffect): void {
-  bindEffectToggle(id, label, true, (enabled) => {
+function bindShaderEffectToggle(
+  id: string, label: string, effect: CloudEffect, initial = true,
+): void {
+  bindEffectToggle(id, label, initial, (enabled) => {
     if (setCloudEffectEnabled(effect, enabled)) refreshEffectShaders()
   })
 }
 
-bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog')
+bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog', DESIGN.groundFog.enabled)
 bindShaderEffectToggle('cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows')
 // Distance fog is three's own scene fog, so switching it off is a matter of taking
 // it off the scene — with no fog there, the node materials build without it. The
 // device tier can also disable it (see the fogAtmosphere case), and that still wins.
-bindEffectToggle('distanceFogToggle', '≋ Distance fog', true, (enabled) => {
+bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmosphere.distanceFogEnabled, (enabled) => {
   distanceFogEnabled = enabled
   scene.fog = enabled && distanceFogAllowedByTier ? distanceFog : null
   refreshEffectShaders()
