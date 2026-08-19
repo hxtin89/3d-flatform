@@ -1659,7 +1659,10 @@ const foveationGuideCoreEl = document.querySelector<SVGCircleElement>('#foveatio
 const foveationGuideRampEl = document.querySelector<SVGCircleElement>('#foveationGuideRamp')!
 const foveationGuideAxisEl = document.querySelector<SVGLineElement>('#foveationGuideAxis')!
 const foveationGuidesToggleEl = $<HTMLButtonElement>('#foveationGuidesToggle')
+const foveationTilesToggleEl = $<HTMLButtonElement>('#foveationTilesToggle')
+const foveationTilesEl = document.querySelector<SVGGElement>('#foveationTiles')!
 let foveationGuidesOn = false
+let foveationTilesOn = false
 foveationGuidesToggleEl.addEventListener('click', () => {
   foveationGuidesOn = !foveationGuidesOn
   foveationGuidesToggleEl.classList.toggle('on', foveationGuidesOn)
@@ -1667,14 +1670,27 @@ foveationGuidesToggleEl.addEventListener('click', () => {
   foveationGuidesToggleEl.textContent = foveationGuidesOn ? '⊕ Guides · On' : '⊕ Guides · Off'
   updateFoveationGuides()
 })
+foveationTilesToggleEl.addEventListener('click', () => {
+  foveationTilesOn = !foveationTilesOn
+  foveationTilesToggleEl.classList.toggle('on', foveationTilesOn)
+  foveationTilesToggleEl.setAttribute('aria-pressed', String(foveationTilesOn))
+  foveationTilesToggleEl.textContent = foveationTilesOn ? '▦ Tiles · On' : '▦ Tiles · Off'
+  updateFoveationGuides()
+})
 
 /** Both foveation screen measures, drawn where they act. The radius is in half
  * screen heights and the falloff runs from it out to the image corner, so the
  * dashed circle marks the middle of that ramp — the ring you would see first. */
 function updateFoveationGuides(): void {
-  const show = foveationGuidesOn && foveationSettings.enabled
-  foveationGuidesEl.toggleAttribute('hidden', !show)
-  if (!show) return
+  // The tile grid is worth having on its own — where the tiles sit is a question
+  // about the tree, not about foveation — so it does not wait for the mode.
+  const showCircles = foveationGuidesOn && foveationSettings.enabled
+  foveationGuidesEl.toggleAttribute('hidden', !showCircles && !foveationTilesOn)
+  foveationGuideCoreEl.toggleAttribute('hidden', !showCircles)
+  foveationGuideRampEl.toggleAttribute('hidden', !showCircles)
+  foveationGuideAxisEl.toggleAttribute('hidden', !showCircles)
+  updateFoveationTiles()
+  if (!showCircles) return
   const width = window.innerWidth
   const height = window.innerHeight
   const unit = height / 2
@@ -1694,6 +1710,70 @@ function updateFoveationGuides(): void {
   foveationGuideAxisEl.setAttribute('y2', String(centreY))
 }
 window.addEventListener('resize', updateFoveationGuides)
+
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+/**
+ * One outline per drawn tile, in the same half-screen-height frame the core radius
+ * uses. Rebuilt rather than diffed: there are a few dozen tiles and this is a debug
+ * view, so clarity beats churn.
+ */
+function updateFoveationTiles(): void {
+  if (!foveationTilesOn || !foveation) {
+    if (foveationTilesEl.childElementCount) foveationTilesEl.replaceChildren()
+    return
+  }
+  const width = window.innerWidth
+  const height = window.innerHeight
+  const unit = height / 2
+  const toX = (x: number) => width / 2 + x * unit
+  const toY = (y: number) => unit - y * unit
+  const nodes: SVGElement[] = []
+  const straddling: string[] = []
+  // Coarse tiles first, so the small deep ones stay readable on top of them.
+  for (const region of foveation.regions().sort((a, b) => a.depth - b.depth)) {
+    // Cyan at the core budget through orange at the corner budget — the same reading
+    // as the circles, per tile.
+    const hue = 190 - region.ramp * 160
+    const colour = `hsl(${hue} 90% 60%)`
+    const caption = `d${region.depth}${region.leaf ? ' •' : ''} ${region.error.toFixed(0)}px`
+    // A tile containing the view plane has no screen rectangle at all: its corners
+    // land on both sides of the camera. Those are the coarse ancestors the camera
+    // sits inside, and they always reach the core, so they get a list instead.
+    if (region.straddles) { straddling.push(caption); continue }
+    const x0 = Math.max(toX(region.minX), -2)
+    const x1 = Math.min(toX(region.maxX), width + 2)
+    const y0 = Math.max(toY(region.maxY), -2)
+    const y1 = Math.min(toY(region.minY), height + 2)
+    const rect = document.createElementNS(SVG_NS, 'rect')
+    rect.setAttribute('x', String(x0))
+    rect.setAttribute('y', String(y0))
+    rect.setAttribute('width', String(Math.max(x1 - x0, 1)))
+    rect.setAttribute('height', String(Math.max(y1 - y0, 1)))
+    rect.setAttribute('stroke', colour)
+    // A leaf cannot be coarsened however far out it sits, so it is drawn dashed to
+    // separate "outside the core" from "actually saveable".
+    if (region.leaf) rect.setAttribute('stroke-dasharray', '5 4')
+    rect.setAttribute('opacity', String(0.5 + region.ramp * 0.45))
+    nodes.push(rect)
+
+    const label = document.createElementNS(SVG_NS, 'text')
+    label.setAttribute('x', String(Math.min(x0 + 4, width - 64)))
+    label.setAttribute('y', String(Math.min(Math.max(y0 + 12, 12), height - 4)))
+    label.setAttribute('fill', colour)
+    label.textContent = caption
+    nodes.push(label)
+  }
+  straddling.forEach((caption, i) => {
+    const label = document.createElementNS(SVG_NS, 'text')
+    label.setAttribute('x', String(width / 2 - 40))
+    label.setAttribute('y', String(16 + i * 13))
+    label.setAttribute('fill', 'hsl(190 90% 60%)')
+    label.textContent = i === 0 ? `across view plane: ${caption}` : caption
+    nodes.push(label)
+  })
+  foveationTilesEl.replaceChildren(...nodes)
+}
 
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
@@ -2173,6 +2253,13 @@ function updateHud(stats: StreamingStats | null): void {
   chipFpsEl.className = className
 
   updateFoveationReadout()
+  // The outlines follow the camera, so they need refreshing beyond slider changes.
+  // A few times a second is enough to read them and keeps the DOM churn off the
+  // frame budget.
+  if (foveationTilesOn && performance.now() - lastFoveationTilesMs > 160) {
+    lastFoveationTilesMs = performance.now()
+    updateFoveationTiles()
+  }
 
   // Fly to the height that looks right, read it off here, put it into
   // navigation.zoomStopHeightM.
@@ -2184,6 +2271,7 @@ function updateHud(stats: StreamingStats | null): void {
 }
 
 const foveationReadoutEl = $('#foveationReadout')
+let lastFoveationTilesMs = 0
 
 /** Pitch next to the resulting error targets, so a liked slider position can be
  * written down against the camera angle that produced it. */
@@ -2197,7 +2285,7 @@ function updateFoveationReadout(): void {
   }
   const { core, periphery, coreSse, edgeSse } = foveation.stats()
   foveationReadoutEl.textContent =
-    `${cameraPitchDeg().toFixed(0)}° tilt · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
+    `${cameraPitchDeg().toFixed(0)}° down · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
 }
 
 function loop(now: number): void {

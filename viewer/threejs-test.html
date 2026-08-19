@@ -298,9 +298,11 @@
                     transition: color .18s ease, border-color .18s ease, background .18s ease, transform .18s ease; }
       #foveationGuides { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 16;
                          pointer-events: none; overflow: visible; }
-      #foveationGuideCore { fill: none; stroke: #66e0ff; stroke-width: 1.5; opacity: .85; }
-      #foveationGuideRamp { fill: none; stroke: #66e0ff; stroke-width: 1; stroke-dasharray: 6 7; opacity: .45; }
-      #foveationGuideAxis { stroke: #66e0ff; stroke-width: 1; stroke-dasharray: 2 8; opacity: .5; }
+      #foveationGuideCore { fill: none; stroke: #66e0ff; stroke-width: 3; opacity: .95; }
+      #foveationGuideRamp { fill: none; stroke: #66e0ff; stroke-width: 2.5; stroke-dasharray: 14 10; opacity: .8; }
+      #foveationGuideAxis { stroke: #66e0ff; stroke-width: 2; stroke-dasharray: 10 8; opacity: .8; }
+      #foveationTiles rect { fill: none; stroke-width: 2; }
+      #foveationTiles text { font: 600 10px ui-monospace, monospace; letter-spacing: .04em; }
       body.aim-mode { cursor: crosshair; }
       body.aim-mode #aimReticle { display: grid; }
       #aimReticle::before, #aimReticle::after { content: ""; position: absolute; background: currentColor; opacity: .8; }
@@ -582,7 +584,8 @@
     <!-- Foveation guides. The core radius is a screen measure and its position is a
          screen measure, so the honest way to tune them is to draw them on the screen. -->
     <svg id="foveationGuides" aria-hidden="true" hidden>
-      <line id="foveationGuideAxis" x1="0" x2="100%" />
+      <g id="foveationTiles"></g>
+      <line id="foveationGuideAxis" />
       <circle id="foveationGuideCore" />
       <circle id="foveationGuideRamp" />
     </svg>
@@ -802,9 +805,14 @@
           <span class="weather-note" id="foveationGuidesNote">Draws the core and the middle of the falloff onto the image, so the two screen measures above can be judged where they act instead of from their numbers</span>
         </div>
         <div class="row">
+          <label class="h" for="foveationTilesToggle">Tile grid</label>
+          <button class="act" id="foveationTilesToggle" type="button" aria-pressed="false" aria-describedby="foveationTilesNote">▦ Tiles · Off</button>
+          <span class="weather-note" id="foveationTilesNote">Outlines every drawn tile where it lands in the image, labelled with its depth, a • for a leaf, and its error in pixels. Cyan means the core budget, orange the corner budget. Leaves carry error 0 and can never be coarsened, so an orange leaf is a tile foveation cannot drop</span>
+        </div>
+        <div class="row">
           <label class="h">Readout</label>
           <span class="val" id="foveationReadout">—</span>
-          <span class="weather-note">Camera pitch, the screen-space error the core and corner resolve to given the live band, and how the traversed tiles split between them</span>
+          <span class="weather-note">Camera angle below the horizon — 90° is straight down, 0° is level — then the screen-space error the core and corner resolve to given the live band, and how the traversed tiles split between them</span>
         </div>
       </details>
     </div>

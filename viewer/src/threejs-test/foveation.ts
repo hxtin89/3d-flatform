@@ -51,11 +51,34 @@ export interface FoveationStats {
   edgeSse: number
 }
 
+/**
+ * One visible tile as it lands on the image, for the debug overlay. All bounds are
+ * in half screen heights measured from the image centre — x to the right, y up —
+ * the same units the core radius is given in, so the two are directly comparable.
+ */
+export interface TileRegion {
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+  /** 0 inside the core, 1 at the corner budget. */
+  ramp: number
+  depth: number
+  /** A leaf carries error 0 and can never be coarsened, whatever the ramp says. */
+  leaf: boolean
+  /** Projected error in pixels, before foveation. */
+  error: number
+  /** The tile straddles the view plane, so its screen bounds are not meaningful. */
+  straddles: boolean
+}
+
 export interface Foveation {
   readonly settings: FoveationSettings
   /** Reset the per-frame counters. Call immediately before the tiles update. */
   beginFrame(): void
   stats(): FoveationStats
+  /** Every currently drawn tile, measured the same way the LOD decision measures it. */
+  regions(): TileRegion[]
   dispose(): void
 }
 
@@ -99,45 +122,74 @@ export function createFoveation(
   refreshFrame()
 
   /**
-   * The screen-space error multiplier this tile earns from where it lands.
+   * Where a tile lands on the image, measured from its eight projected corners.
    *
-   * Measured against the tile's actual footprint in the image — the nearest of its
-   * eight projected corners — and not against its centre or its bounding sphere.
-   * Both shortcuts were tried and both fail on this dataset: the OBB bounding sphere
-   * of a single leaf spans a whole screen height because its diagonal includes the
-   * canopy, so subtracting it pulled every tile into the core; and judging by the
-   * centre alone puts more than half of the tiles outside the frame even while they
-   * cover the middle of it, because a large tile straddling the view has its centre
-   * off to one side.
+   * The nearest corner is what the LOD decision uses, deliberately not the tile's
+   * centre nor its bounding sphere. Both shortcuts were tried and both fail on this
+   * dataset: the OBB bounding sphere of a single leaf spans a whole screen height
+   * because its diagonal includes the canopy, so subtracting it pulled every tile
+   * into the core; and judging by the centre alone puts more than half the tiles
+   * outside the frame even while they cover the middle of it, because a large tile
+   * straddling the view has its centre off to one side.
    */
-  const factorFor = (tile: any): number => {
+  const footprint = {
+    minX: 0, maxX: 0, minY: 0, maxY: 0, nearest: Infinity, straddles: false, valid: false,
+  }
+
+  const measure = (tile: any): typeof footprint => {
+    footprint.valid = false
+    footprint.straddles = false
+    footprint.nearest = Infinity
     const volume = tile?.engineData?.boundingVolume
-    if (!volume) return 1
+    if (!volume) return footprint
     volume.getOBB(scratchBox, scratchObbMatrix)
     scratchObbMatrix.premultiply(localToView)
 
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5))
-    const aspect = camera.aspect || 1
     const { min, max } = scratchBox
-    let nearest = Infinity
+    footprint.minX = Infinity
+    footprint.maxX = -Infinity
+    footprint.minY = Infinity
+    footprint.maxY = -Infinity
     for (let i = 0; i < 8; i++) {
       scratchCorner
         .set(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z)
         .applyMatrix4(scratchObbMatrix)
       const forward = -scratchCorner.z
       // A corner at or behind the camera means the tile straddles the view plane, so
-      // it reaches the core whatever its other corners say.
-      if (!(forward > 1e-3)) { nearest = 0; break }
+      // it reaches the core whatever its other corners say — and its screen bounds
+      // are not a rectangle any more.
+      if (!(forward > 1e-3)) {
+        footprint.straddles = true
+        footprint.nearest = 0
+        footprint.valid = true
+        return footprint
+      }
       // Half screen heights, so the core stays a circle on screen rather than an
       // ellipse stretched by the aspect ratio.
       const x = scratchCorner.x / (forward * tanHalf)
       const y = scratchCorner.y / (forward * tanHalf)
-      nearest = Math.min(nearest, Math.hypot(x, y - settings.offsetY))
+      footprint.minX = Math.min(footprint.minX, x)
+      footprint.maxX = Math.max(footprint.maxX, x)
+      footprint.minY = Math.min(footprint.minY, y)
+      footprint.maxY = Math.max(footprint.maxY, y)
+      footprint.nearest = Math.min(footprint.nearest, Math.hypot(x, y - settings.offsetY))
     }
-    if (!Number.isFinite(nearest)) return 1
+    footprint.valid = true
+    return footprint
+  }
 
-    const corner = Math.hypot(aspect, 1)
-    const ramp = smoothstep01((nearest - settings.radius) / Math.max(corner - settings.radius, 1e-3))
+  /** How far along the core-to-corner ramp a footprint distance sits. */
+  const rampAt = (nearest: number): number => {
+    const corner = Math.hypot(camera.aspect || 1, 1)
+    return smoothstep01((nearest - settings.radius) / Math.max(corner - settings.radius, 1e-3))
+  }
+
+  /** The screen-space error multiplier this tile earns from where it lands. */
+  const factorFor = (tile: any): number => {
+    const shape = measure(tile)
+    if (!shape.valid) return 1
+    const ramp = rampAt(shape.nearest)
     if (ramp <= 0) core++
     else periphery++
     return settings.centreFactor + (settings.edgeFactor - settings.centreFactor) * ramp
@@ -169,6 +221,26 @@ export function createFoveation(
       }
       core = 0
       periphery = 0
+    },
+    regions() {
+      refreshFrame()
+      const out: TileRegion[] = []
+      for (const tile of tiles.visibleTiles as Set<any>) {
+        const shape = measure(tile)
+        if (!shape.valid) continue
+        out.push({
+          minX: shape.minX,
+          maxX: shape.maxX,
+          minY: shape.minY,
+          maxY: shape.maxY,
+          ramp: rampAt(shape.nearest),
+          depth: tile.internal?.depth ?? 0,
+          leaf: (tile.children?.length ?? 0) === 0,
+          error: tile.traversal?.error ?? 0,
+          straddles: shape.straddles,
+        })
+      }
+      return out
     },
     stats() {
       const target = tiles.errorTarget || 0
