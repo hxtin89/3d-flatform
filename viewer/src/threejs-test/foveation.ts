@@ -76,7 +76,10 @@ export interface TileRegion {
   depth: number
   /** A leaf carries error 0 and can never be coarsened, whatever the ramp says. */
   leaf: boolean
-  /** Projected error in pixels, before foveation. */
+  /**
+   * Projected error in pixels *before* foveation scaled it, so it can be read
+   * against the two screen-space error targets the readout names.
+   */
   error: number
   /** The tile straddles the view plane, so its screen bounds are not meaningful. */
   straddles: boolean
@@ -247,10 +250,16 @@ export function createFoveation(
   const boxCentre = new THREE.Vector3()
   const boxLocal = new THREE.Matrix4()
 
+  // What the renderer keeps on the tile is the error *after* the division below, so
+  // at a 512x corner factor a peripheral tile reads a fraction of a pixel — which in
+  // the debug grid looks like an extremely fine tile rather than a heavily discounted
+  // one. Keep the unscaled value for the overlay to show.
+  const rawError = new WeakMap<object, number>()
   const original = tiles.calculateTileViewError.bind(tiles)
   tiles.calculateTileViewError = (tile: any, target: any) => {
     original(tile, target)
     if (!settings.enabled || !target.inView) return
+    rawError.set(tile, target.error)
     const factor = factorFor(tile)
     if (factor > 0) target.error /= factor
   }
@@ -331,7 +340,7 @@ export function createFoveation(
           ramp: rampAt(shape.nearest),
           depth: tile.internal?.depth ?? 0,
           leaf: (tile.children?.length ?? 0) === 0,
-          error: tile.traversal?.error ?? 0,
+          error: rawError.get(tile) ?? tile.traversal?.error ?? 0,
           straddles: shape.straddles,
         })
       }
