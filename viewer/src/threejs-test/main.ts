@@ -1799,10 +1799,28 @@ function updateFoveationTiles(): void {
   foveationTilesEl.replaceChildren(...nodes)
 }
 
+// Band lock. Not part of foveation, but it sits in the same panel because it is what
+// makes the two multipliers comparable: without it the base moves under you.
+const BAND_LOCK = EXPERIENCE_CONFIG.lod.bandLock
+let bandLockOn: boolean = BAND_LOCK.enabled
+let bandLockSse: number = BAND_LOCK.sse
+const bandLockToggleEl = $<HTMLButtonElement>('#bandLockToggle')
+const syncBandLockToggle = () => {
+  bandLockToggleEl.classList.toggle('on', bandLockOn)
+  bandLockToggleEl.setAttribute('aria-pressed', String(bandLockOn))
+  bandLockToggleEl.textContent = bandLockOn ? '🔒 Band · Locked' : '🔒 Band · Ladder'
+}
+bandLockToggleEl.addEventListener('click', () => {
+  bandLockOn = !bandLockOn
+  syncBandLockToggle()
+})
+syncBandLockToggle()
+
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
 const asOffset = (value: number) =>
   value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
+bindDesignSlider('bandLockSse', BAND_LOCK.sse, (v) => `SSE ${v}`, (v) => { bandLockSse = v })
 bindDesignSlider('foveationWidth', FOVEATION.width, asScreenHeights, (v) => {
   foveationSettings.width = v
   updateFoveationGuides()
@@ -2219,22 +2237,25 @@ function updateStreaming(now: number): StreamingStats | null {
   })
   // With the brakes toggled off the density ladder speaks alone — the
   // comparison subject against the Cesium viewer.
+  // Locked, the ladder is bypassed but the brakes below are not: pinning to 1 during
+  // the entrance flight would stream the whole survey at full detail for nothing.
+  const laddered = bandLockOn ? bandLockSse : quality.sse
   const targetSse = renderOptions.effective().leafLoading
     // Low SSE forces the selected APH branches through to their leaves. It is
     // deliberately scoped to the current camera frustum by TilesRenderer.
     ? 0.25
     : renderOptions.effective().sseBrakes
       ? Math.max(
-        quality.sse,
+        laddered,
         bootLoading
           ? EXPERIENCE_CONFIG.lod.bootSse
           : flightSseFloor({
             flying: cameraFlight.active,
             msSinceLanding: now - flightEndedAt,
-            targetSse: quality.sse,
+            targetSse: laddered,
           }),
       )
-      : quality.sse
+      : laddered
   if (Math.abs(targetSse - sseAuto) > 0.25) {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
@@ -2320,7 +2341,8 @@ function updateFoveationReadout(): void {
   }
   const { core, periphery, coreSse, edgeSse } = foveation.stats()
   foveationReadoutEl.textContent =
-    `${cameraPitchDeg().toFixed(0)}° down · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
+    `${cameraPitchDeg().toFixed(0)}° down · base ${sseAuto.toFixed(1)}${bandLockOn ? ' locked' : ''}`
+    + ` · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
 }
 
 function loop(now: number): void {

@@ -46,6 +46,18 @@ export const EXPERIENCE_CONFIG = {
     aphOverviewSse: 16,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
+    /**
+     * Pin the screen-space error target instead of taking it from the band ladder.
+     * A testing aid: the ladder plus its hysteresis means the same camera height can
+     * carry either 4 or 8 depending on which way you arrived, so two settings
+     * compared across a band edge are not comparable at all. Locked, everything the
+     * foveation factors multiply is a constant. The boot and flight brakes still
+     * apply on top, and leaf loading still overrides both.
+     */
+    bandLock: {
+      enabled: false,
+      sse: 8,
+    },
     // Foveated detail: redistribute the band above across the image instead of
     // raising it everywhere. The factors multiply whatever screen-space error the
     // adaptive controller has chosen, so the band still follows camera range and
