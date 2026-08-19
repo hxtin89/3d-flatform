@@ -42,9 +42,9 @@ export interface FoveationSettings {
 }
 
 export interface FoveationStats {
-  /** Tiles whose error was left at or below the core factor this frame. */
+  /** Tiles left at the core factor, from the fullest traversal of the last second. */
   core: number
-  /** Tiles pushed toward the edge factor this frame. */
+  /** Tiles pushed toward the edge factor, same traversal. */
   periphery: number
   /** Screen-space error the core and the corner resolve to, given the live target. */
   coreSse: number
@@ -59,8 +59,9 @@ export interface Foveation {
   dispose(): void
 }
 
-const scratchSphere = new THREE.Sphere()
-const scratchCentre = new THREE.Vector3()
+const scratchBox = new THREE.Box3()
+const scratchObbMatrix = new THREE.Matrix4()
+const scratchCorner = new THREE.Vector3()
 
 const smoothstep01 = (x: number) => {
   const t = Math.min(Math.max(x, 0), 1)
@@ -72,41 +73,71 @@ export function createFoveation(
   camera: THREE.PerspectiveCamera,
   settings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation },
 ): Foveation {
-
   let core = 0
   let periphery = 0
-  // Traversal is skipped entirely while the camera holds still (UpdateOnChangePlugin),
-  // so the live counters read zero exactly when the view is worth reading. Keep the
-  // last frame that actually evaluated tiles instead of reporting an empty split.
+  // Most frames re-walk the whole selected set, but plenty evaluate a handful of
+  // tiles or none, and a readout of the latest frame would sit at "1 core / 0
+  // outside". Publish the fullest traversal of the last second instead.
   let lastCore = 0
   let lastPeriphery = 0
+  let bestCore = 0
+  let bestPeriphery = 0
+  let windowStartMs = 0
 
-  /** The screen-space error multiplier this tile earns from where it lands. */
+  // Tile bounding volumes live in the tiles' own root frame, not in world space —
+  // the renderer pushes the camera down into that frame rather than lifting the
+  // volumes out of it (see TilesRenderer.calculateTileViewError). Going to view
+  // space with the camera matrix alone puts nearly every tile behind the camera,
+  // which silently collapses this whole function into its bail-out branch.
+  const localToView = new THREE.Matrix4()
+
+  const refreshFrame = () => {
+    camera.updateMatrixWorld()
+    tiles.group.updateWorldMatrix(true, false)
+    localToView.multiplyMatrices(camera.matrixWorldInverse, tiles.group.matrixWorld)
+  }
+  refreshFrame()
+
+  /**
+   * The screen-space error multiplier this tile earns from where it lands.
+   *
+   * Measured against the tile's actual footprint in the image — the nearest of its
+   * eight projected corners — and not against its centre or its bounding sphere.
+   * Both shortcuts were tried and both fail on this dataset: the OBB bounding sphere
+   * of a single leaf spans a whole screen height because its diagonal includes the
+   * canopy, so subtracting it pulled every tile into the core; and judging by the
+   * centre alone puts more than half of the tiles outside the frame even while they
+   * cover the middle of it, because a large tile straddling the view has its centre
+   * off to one side.
+   */
   const factorFor = (tile: any): number => {
     const volume = tile?.engineData?.boundingVolume
     if (!volume) return 1
-    volume.getSphere(scratchSphere)
-
-    // View space, so a tile behind the camera is recognisable as such — projecting
-    // it would mirror it back into frame and hand the periphery a core budget.
-    scratchCentre.copy(scratchSphere.center).applyMatrix4(camera.matrixWorldInverse)
-    const forward = -scratchCentre.z
-    if (!(forward > 1e-3)) return settings.edgeFactor
+    volume.getOBB(scratchBox, scratchObbMatrix)
+    scratchObbMatrix.premultiply(localToView)
 
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5))
     const aspect = camera.aspect || 1
-    // Everything below is in half-screen-heights, so the core stays a circle on
-    // screen instead of an ellipse stretched by the aspect ratio.
-    const y = scratchCentre.y / (forward * tanHalf)
-    const x = scratchCentre.x / (forward * tanHalf)
-    const extent = scratchSphere.radius / (forward * tanHalf)
+    const { min, max } = scratchBox
+    let nearest = Infinity
+    for (let i = 0; i < 8; i++) {
+      scratchCorner
+        .set(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z)
+        .applyMatrix4(scratchObbMatrix)
+      const forward = -scratchCorner.z
+      // A corner at or behind the camera means the tile straddles the view plane, so
+      // it reaches the core whatever its other corners say.
+      if (!(forward > 1e-3)) { nearest = 0; break }
+      // Half screen heights, so the core stays a circle on screen rather than an
+      // ellipse stretched by the aspect ratio.
+      const x = scratchCorner.x / (forward * tanHalf)
+      const y = scratchCorner.y / (forward * tanHalf)
+      nearest = Math.min(nearest, Math.hypot(x, y - settings.offsetY))
+    }
+    if (!Number.isFinite(nearest)) return 1
 
-    // Subtract the tile's own projected size: a near foreground tile spans much of
-    // the image, and judging it by its centre alone would coarsen ground the viewer
-    // is standing on.
-    const distance = Math.max(Math.hypot(x, y - settings.offsetY) - extent, 0)
     const corner = Math.hypot(aspect, 1)
-    const ramp = smoothstep01((distance - settings.radius) / Math.max(corner - settings.radius, 1e-3))
+    const ramp = smoothstep01((nearest - settings.radius) / Math.max(corner - settings.radius, 1e-3))
     if (ramp <= 0) core++
     else periphery++
     return settings.centreFactor + (settings.edgeFactor - settings.centreFactor) * ramp
@@ -123,9 +154,18 @@ export function createFoveation(
   return {
     settings,
     beginFrame() {
-      if (core + periphery > 0) {
-        lastCore = core
-        lastPeriphery = periphery
+      refreshFrame()
+      if (core + periphery > bestCore + bestPeriphery) {
+        bestCore = core
+        bestPeriphery = periphery
+      }
+      const now = performance.now()
+      if (now - windowStartMs > 1000) {
+        windowStartMs = now
+        lastCore = bestCore
+        lastPeriphery = bestPeriphery
+        bestCore = 0
+        bestPeriphery = 0
       }
       core = 0
       periphery = 0

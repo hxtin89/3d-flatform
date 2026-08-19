@@ -296,6 +296,11 @@
                     color: rgba(240,237,227,.72); border: 1px dashed rgba(240,237,227,.28); border-radius: 50%;
                     background: radial-gradient(circle, transparent 0 32px, rgba(0,45,34,.05) 33px 100%);
                     transition: color .18s ease, border-color .18s ease, background .18s ease, transform .18s ease; }
+      #foveationGuides { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 16;
+                         pointer-events: none; overflow: visible; }
+      #foveationGuideCore { fill: none; stroke: #66e0ff; stroke-width: 1.5; opacity: .85; }
+      #foveationGuideRamp { fill: none; stroke: #66e0ff; stroke-width: 1; stroke-dasharray: 6 7; opacity: .45; }
+      #foveationGuideAxis { stroke: #66e0ff; stroke-width: 1; stroke-dasharray: 2 8; opacity: .5; }
       body.aim-mode { cursor: crosshair; }
       body.aim-mode #aimReticle { display: grid; }
       #aimReticle::before, #aimReticle::after { content: ""; position: absolute; background: currentColor; opacity: .8; }
@@ -574,6 +579,14 @@
       <span id="aimReticleLabel">Find target</span>
     </div>
 
+    <!-- Foveation guides. The core radius is a screen measure and its position is a
+         screen measure, so the honest way to tune them is to draw them on the screen. -->
+    <svg id="foveationGuides" aria-hidden="true" hidden>
+      <line id="foveationGuideAxis" x1="0" x2="100%" />
+      <circle id="foveationGuideCore" />
+      <circle id="foveationGuideRamp" />
+    </svg>
+
     <div id="loader" role="progressbar" aria-label="Loading point cloud" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
       <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
       <div class="loader-content">
@@ -780,8 +793,13 @@
         </div>
         <div class="row">
           <label class="h" for="foveationEdge">Corner detail · <span class="val" id="foveationEdgeVal">—</span></label>
-          <input type="range" id="foveationEdge" min="1" max="8" step="0.1" />
+          <input type="range" id="foveationEdge" min="1" max="24" step="0.5" />
           <span class="weather-note">Screen-space error multiplier at the image corner. Without this you cannot tell whether a visible ring means the core is too small or the outside too coarse</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationGuidesToggle">Guides</label>
+          <button class="act" id="foveationGuidesToggle" type="button" aria-pressed="false" aria-describedby="foveationGuidesNote">⊕ Guides · Off</button>
+          <span class="weather-note" id="foveationGuidesNote">Draws the core and the middle of the falloff onto the image, so the two screen measures above can be judged where they act instead of from their numbers</span>
         </div>
         <div class="row">
           <label class="h">Readout</label>

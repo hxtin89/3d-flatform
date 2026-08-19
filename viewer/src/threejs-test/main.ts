@@ -1650,8 +1650,50 @@ const syncFoveationToggle = () => {
 foveationToggleEl.addEventListener('click', () => {
   foveationSettings.enabled = !foveationSettings.enabled
   syncFoveationToggle()
+  updateFoveationGuides()
 })
 syncFoveationToggle()
+
+const foveationGuidesEl = document.querySelector<SVGSVGElement>('#foveationGuides')!
+const foveationGuideCoreEl = document.querySelector<SVGCircleElement>('#foveationGuideCore')!
+const foveationGuideRampEl = document.querySelector<SVGCircleElement>('#foveationGuideRamp')!
+const foveationGuideAxisEl = document.querySelector<SVGLineElement>('#foveationGuideAxis')!
+const foveationGuidesToggleEl = $<HTMLButtonElement>('#foveationGuidesToggle')
+let foveationGuidesOn = false
+foveationGuidesToggleEl.addEventListener('click', () => {
+  foveationGuidesOn = !foveationGuidesOn
+  foveationGuidesToggleEl.classList.toggle('on', foveationGuidesOn)
+  foveationGuidesToggleEl.setAttribute('aria-pressed', String(foveationGuidesOn))
+  foveationGuidesToggleEl.textContent = foveationGuidesOn ? '⊕ Guides · On' : '⊕ Guides · Off'
+  updateFoveationGuides()
+})
+
+/** Both foveation screen measures, drawn where they act. The radius is in half
+ * screen heights and the falloff runs from it out to the image corner, so the
+ * dashed circle marks the middle of that ramp — the ring you would see first. */
+function updateFoveationGuides(): void {
+  const show = foveationGuidesOn && foveationSettings.enabled
+  foveationGuidesEl.toggleAttribute('hidden', !show)
+  if (!show) return
+  const width = window.innerWidth
+  const height = window.innerHeight
+  const unit = height / 2
+  const centreY = unit - foveationSettings.offsetY * unit
+  const corner = Math.hypot(width / 2, unit)
+  const core = foveationSettings.radius * unit
+  foveationGuideCoreEl.setAttribute('cx', String(width / 2))
+  foveationGuideCoreEl.setAttribute('cy', String(centreY))
+  foveationGuideCoreEl.setAttribute('r', String(core))
+  foveationGuideRampEl.setAttribute('cx', String(width / 2))
+  foveationGuideRampEl.setAttribute('cy', String(centreY))
+  foveationGuideRampEl.setAttribute('r', String(core + (corner - core) * 0.5))
+  // SVG line coordinates are lengths, not percentages, so the span is written out.
+  foveationGuideAxisEl.setAttribute('x1', '0')
+  foveationGuideAxisEl.setAttribute('x2', String(width))
+  foveationGuideAxisEl.setAttribute('y1', String(centreY))
+  foveationGuideAxisEl.setAttribute('y2', String(centreY))
+}
+window.addEventListener('resize', updateFoveationGuides)
 
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
@@ -1659,9 +1701,11 @@ const asOffset = (value: number) =>
   value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
 bindDesignSlider('foveationRadius', FOVEATION.radius, asScreenHeights, (v) => {
   foveationSettings.radius = v
+  updateFoveationGuides()
 })
 bindDesignSlider('foveationOffsetY', FOVEATION.offsetY, asOffset, (v) => {
   foveationSettings.offsetY = v
+  updateFoveationGuides()
 })
 bindDesignSlider('foveationCentre', FOVEATION.centreFactor, asFactor, (v) => {
   foveationSettings.centreFactor = v
@@ -1669,6 +1713,7 @@ bindDesignSlider('foveationCentre', FOVEATION.centreFactor, asFactor, (v) => {
 bindDesignSlider('foveationEdge', FOVEATION.edgeFactor, asFactor, (v) => {
   foveationSettings.edgeFactor = v
 })
+
 
 /** Bind a colour input, seeded from config like the sliders are. */
 function bindDesignColor(id: string, initial: number, apply: (hex: string) => void): void {
@@ -2143,7 +2188,13 @@ const foveationReadoutEl = $('#foveationReadout')
 /** Pitch next to the resulting error targets, so a liked slider position can be
  * written down against the camera angle that produced it. */
 function updateFoveationReadout(): void {
-  if (!foveationSettings.enabled || !foveation) { foveationReadoutEl.textContent = 'off' ; return }
+  if (!foveation) { foveationReadoutEl.textContent = 'not streaming yet'; return }
+  if (!foveationSettings.enabled) {
+    // The sliders write their values whether or not the mode is on, so the readout
+    // has to say which of the two is the reason nothing is moving.
+    foveationReadoutEl.textContent = 'mode off — sliders have no effect'
+    return
+  }
   const { core, periphery, coreSse, edgeSse } = foveation.stats()
   foveationReadoutEl.textContent =
     `${cameraPitchDeg().toFixed(0)}° tilt · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`

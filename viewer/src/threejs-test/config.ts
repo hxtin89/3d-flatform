@@ -55,8 +55,11 @@ export const EXPERIENCE_CONFIG = {
       enabled: false,
       // Below 1 buys detail in the core; 1 leaves the core exactly as it is today.
       centreFactor: 1,
-      // Above 1 coarsens the far corner of the image.
-      edgeFactor: 3,
+      // Above 1 coarsens the far corner of the image. Measured from the staging view:
+      // 3x drops a single tile because the periphery is mostly leaves, which carry
+      // error 0 and can never be coarsened; 8x reaches the internal nodes above them
+      // and takes 14% of the drawn points with no ring showing.
+      edgeFactor: 8,
       // Core radius in half screen heights, so 1 reaches the top and bottom edges.
       radius: 0.35,
       // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top.
