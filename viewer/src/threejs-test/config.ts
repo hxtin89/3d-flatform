@@ -62,6 +62,10 @@ export const EXPERIENCE_CONFIG = {
       edgeFactor: 8,
       // Core radius in half screen heights, so 1 reaches the top and bottom edges.
       radius: 0.35,
+      // Width of the blend from the core out to the corner factor, same unit. The
+      // ramp used to run to the image corner, which at radius 0.35 on a 16:10 frame
+      // is 1.27 — hence the default.
+      falloff: 1.25,
       // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top.
       offsetY: 0,
     },

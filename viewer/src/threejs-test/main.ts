@@ -1677,6 +1677,16 @@ foveationTilesToggleEl.addEventListener('click', () => {
   foveationTilesToggleEl.textContent = foveationTilesOn ? '▦ Tiles · On' : '▦ Tiles · Off'
   updateFoveationGuides()
 })
+const foveationBoxesToggleEl = $<HTMLButtonElement>('#foveationBoxesToggle')
+let foveationBoxesOn = false
+foveationBoxesToggleEl.addEventListener('click', () => {
+  foveationBoxesOn = !foveationBoxesOn
+  foveationBoxesToggleEl.classList.toggle('on', foveationBoxesOn)
+  foveationBoxesToggleEl.setAttribute('aria-pressed', String(foveationBoxesOn))
+  foveationBoxesToggleEl.textContent = foveationBoxesOn ? '◳ Boxes · On' : '◳ Boxes · Off'
+  foveation?.setBoxesVisible(foveationBoxesOn)
+  foveation?.updateBoxes()
+})
 
 /** Both foveation screen measures, drawn where they act. The radius is in half
  * screen heights and the falloff runs from it out to the image corner, so the
@@ -1700,14 +1710,15 @@ function updateFoveationGuides(): void {
   const height = window.innerHeight
   const unit = height / 2
   const centreY = unit - foveationSettings.offsetY * unit
-  const corner = Math.hypot(width / 2, unit)
   const core = foveationSettings.radius * unit
   foveationGuideCoreEl.setAttribute('cx', String(width / 2))
   foveationGuideCoreEl.setAttribute('cy', String(centreY))
   foveationGuideCoreEl.setAttribute('r', String(core))
   foveationGuideRampEl.setAttribute('cx', String(width / 2))
   foveationGuideRampEl.setAttribute('cy', String(centreY))
-  foveationGuideRampEl.setAttribute('r', String(core + (corner - core) * 0.5))
+  // End of the blend, not its middle: that is the value the falloff slider sets, so
+  // it is the one worth drawing.
+  foveationGuideRampEl.setAttribute('r', String(core + foveationSettings.falloff * unit))
   // SVG line coordinates are lengths, not percentages, so the span is written out.
   foveationGuideAxisEl.setAttribute('x1', '0')
   foveationGuideAxisEl.setAttribute('x2', String(width))
@@ -1790,6 +1801,10 @@ bindDesignSlider('foveationRadius', FOVEATION.radius, asScreenHeights, (v) => {
 })
 bindDesignSlider('foveationOffsetY', FOVEATION.offsetY, asOffset, (v) => {
   foveationSettings.offsetY = v
+  updateFoveationGuides()
+})
+bindDesignSlider('foveationFalloff', FOVEATION.falloff, asScreenHeights, (v) => {
+  foveationSettings.falloff = v
   updateFoveationGuides()
 })
 bindDesignSlider('foveationCentre', FOVEATION.centreFactor, asFactor, (v) => {
@@ -2261,9 +2276,10 @@ function updateHud(stats: StreamingStats | null): void {
   // The outlines follow the camera, so they need refreshing beyond slider changes.
   // A few times a second is enough to read them and keeps the DOM churn off the
   // frame budget.
-  if (foveationTilesOn && performance.now() - lastFoveationTilesMs > 160) {
+  if ((foveationTilesOn || foveationBoxesOn) && performance.now() - lastFoveationTilesMs > 160) {
     lastFoveationTilesMs = performance.now()
     updateFoveationTiles()
+    foveation?.updateBoxes()
   }
 
   // Fly to the height that looks right, read it off here, put it into

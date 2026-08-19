@@ -33,6 +33,11 @@ export interface FoveationSettings {
   /** Core radius, measured in half screen heights out from the fovea centre. */
   radius: number
   /**
+   * How wide the blend from the core factor to the corner factor is, in the same
+   * unit. Small is an abrupt ring, large spreads the loss out over the whole frame.
+   */
+  falloff: number
+  /**
    * Where the fovea sits on the projected image: -1 is the bottom edge, 0 the
    * centre, +1 the top. Under tilt the near ground fills the lower screen and the
    * horizon the upper, so the best place for the core is an open question — hence a
@@ -79,6 +84,15 @@ export interface Foveation {
   stats(): FoveationStats
   /** Every currently drawn tile, measured the same way the LOD decision measures it. */
   regions(): TileRegion[]
+  /**
+   * Wireframe boxes around every drawn tile, in the scene rather than on the glass.
+   * The screen overlay can only draw each tile's axis-aligned screen bounds, which
+   * for an oblique box is larger than its silhouette and makes neighbours look as
+   * though they overlap; these are the real volumes.
+   */
+  setBoxesVisible(visible: boolean): void
+  /** Rebuild the boxes from the current tile set. No-op while they are hidden. */
+  updateBoxes(): void
   dispose(): void
 }
 
@@ -192,10 +206,8 @@ export function createFoveation(
   }
 
   /** How far along the core-to-corner ramp a footprint distance sits. */
-  const rampAt = (nearest: number): number => {
-    const corner = Math.hypot(camera.aspect || 1, 1)
-    return smoothstep01((nearest - settings.radius) / Math.max(corner - settings.radius, 1e-3))
-  }
+  const rampAt = (nearest: number): number =>
+    smoothstep01((nearest - settings.radius) / Math.max(settings.falloff, 1e-3))
 
   /** The screen-space error multiplier this tile earns from where it lands. */
   const factorFor = (tile: any): number => {
@@ -206,6 +218,21 @@ export function createFoveation(
     else periphery++
     return settings.centreFactor + (settings.edgeFactor - settings.centreFactor) * ramp
   }
+
+  // Parented next to the tiles group rather than inside it: streaming applies the
+  // matrix-precision context to every material under that group, and these lines are
+  // not node materials built for it.
+  const boxGroup = new THREE.Group()
+  boxGroup.name = 'foveation-tile-boxes'
+  boxGroup.matrixAutoUpdate = false
+  boxGroup.visible = false
+  boxGroup.renderOrder = 10
+  tiles.group.parent?.add(boxGroup)
+  const boxEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1))
+  const boxPool: THREE.LineSegments[] = []
+  const boxSize = new THREE.Vector3()
+  const boxCentre = new THREE.Vector3()
+  const boxLocal = new THREE.Matrix4()
 
   const original = tiles.calculateTileViewError.bind(tiles)
   tiles.calculateTileViewError = (tile: any, target: any) => {
@@ -233,6 +260,49 @@ export function createFoveation(
       }
       core = 0
       periphery = 0
+    },
+    setBoxesVisible(visible: boolean) {
+      boxGroup.visible = visible
+      if (!visible) for (const box of boxPool) box.visible = false
+    },
+    updateBoxes() {
+      if (!boxGroup.visible) return
+      // The OBBs are given in the tiles' own frame, so the group carries the tiles'
+      // transform and every box below it is plain local geometry.
+      tiles.group.updateMatrix()
+      boxGroup.matrix.copy(tiles.group.matrix)
+      boxGroup.matrixWorldNeedsUpdate = true
+      let used = 0
+      for (const tile of tiles.visibleTiles as Set<any>) {
+        const volume = tile?.engineData?.boundingVolume
+        if (!volume) continue
+        const shape = measure(tile)
+        if (!shape.valid) continue
+        volume.getOBB(scratchBox, scratchObbMatrix)
+        scratchBox.getSize(boxSize)
+        scratchBox.getCenter(boxCentre)
+        let box = boxPool[used]
+        if (!box) {
+          box = new THREE.LineSegments(boxEdges, new THREE.LineBasicMaterial({ transparent: true }))
+          box.matrixAutoUpdate = false
+          box.frustumCulled = false
+          boxPool.push(box)
+          boxGroup.add(box)
+        }
+        const ramp = rampAt(shape.nearest)
+        const material = box.material as THREE.LineBasicMaterial
+        // Same reading as the screen overlay: cyan at the core budget, orange at the
+        // corner budget.
+        material.color.setHSL((190 - ramp * 160) / 360, 0.9, 0.6)
+        material.opacity = 0.55 + ramp * 0.4
+        boxLocal.makeTranslation(boxCentre.x, boxCentre.y, boxCentre.z)
+        boxLocal.scale(boxSize)
+        box.matrix.multiplyMatrices(scratchObbMatrix, boxLocal)
+        box.matrixWorldNeedsUpdate = true
+        box.visible = true
+        used++
+      }
+      for (let i = used; i < boxPool.length; i++) boxPool[i].visible = false
     },
     regions() {
       refreshFrame()
@@ -265,6 +335,9 @@ export function createFoveation(
     },
     dispose() {
       delete tiles.calculateTileViewError
+      boxGroup.removeFromParent()
+      for (const box of boxPool) (box.material as THREE.Material).dispose()
+      boxEdges.dispose()
     },
   }
 }
