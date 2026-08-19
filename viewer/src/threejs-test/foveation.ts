@@ -124,13 +124,20 @@ export function createFoveation(
   /**
    * Where a tile lands on the image, measured from its eight projected corners.
    *
-   * The nearest corner is what the LOD decision uses, deliberately not the tile's
-   * centre nor its bounding sphere. Both shortcuts were tried and both fail on this
-   * dataset: the OBB bounding sphere of a single leaf spans a whole screen height
-   * because its diagonal includes the canopy, so subtracting it pulled every tile
-   * into the core; and judging by the centre alone puts more than half the tiles
-   * outside the frame even while they cover the middle of it, because a large tile
-   * straddling the view has its centre off to one side.
+   * The LOD decision uses the distance from the fovea centre to the tile's screen
+   * bounds — zero when the tile covers the fovea. Three cheaper measures were tried
+   * and all three fail on this dataset:
+   *
+   * - The bounding sphere: the OBB sphere of a single leaf spans a whole screen
+   *   height, because its diagonal includes the canopy. Subtracting it pulled every
+   *   tile into the core and the radius stopped doing anything.
+   * - The tile centre: more than half the tiles have their centre outside the frame
+   *   while still covering the middle of it, because a large tile straddling the view
+   *   sits off to one side.
+   * - The nearest of the eight corners: for a tile that *contains* the fovea the
+   *   corners are all out at the image edge, so the tiles the core must refine
+   *   through were classed as periphery and coarsened — which starved the core of
+   *   the very detail foveation is supposed to protect.
    */
   const footprint = {
     minX: 0, maxX: 0, minY: 0, maxY: 0, nearest: Infinity, straddles: false, valid: false,
@@ -173,8 +180,13 @@ export function createFoveation(
       footprint.maxX = Math.max(footprint.maxX, x)
       footprint.minY = Math.min(footprint.minY, y)
       footprint.maxY = Math.max(footprint.maxY, y)
-      footprint.nearest = Math.min(footprint.nearest, Math.hypot(x, y - settings.offsetY))
     }
+    // Point-to-box distance, so a tile covering the fovea scores 0 however far out
+    // its corners reach. The box is the bounds of the projected corners rather than
+    // their hull, which errs toward keeping the core budget — the safe direction.
+    const dx = Math.max(footprint.minX, 0, -footprint.maxX)
+    const dy = Math.max(footprint.minY - settings.offsetY, 0, settings.offsetY - footprint.maxY)
+    footprint.nearest = Math.hypot(dx, dy)
     footprint.valid = true
     return footprint
   }
