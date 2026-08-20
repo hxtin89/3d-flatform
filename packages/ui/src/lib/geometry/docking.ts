@@ -64,7 +64,11 @@ function solveCorner(
   const hasH = widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY - vSign * PROBE, widget.id);
   const hasV = widgetAt(widgets, hProbeX - hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
   const hasDiag = widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
-  if (hasH && hasV && !hasDiag) return "concave";
+  // Neighbors on both perpendicular sides: 4 widgets meet here in total (this one +
+  // the 3 probed cells). If the diagonal cell is ALSO occupied, all 4 quadrants are
+  // full -- a flush junction, sharp/no gap. If it's empty, this is the reflex point
+  // around a missing quadrant -- round it to smoothly flow around the gap.
+  if (hasH && hasV) return hasDiag ? "none" : "concave";
   return "convex";
 }
 

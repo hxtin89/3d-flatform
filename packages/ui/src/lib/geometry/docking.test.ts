@@ -8,7 +8,7 @@ describe("solveDocking", () => {
     expect(result.corners).toEqual(["none", "convex", "convex", "convex"]);
   });
 
-  it("rounds every corner convex on a flush 2x2 grid (no reflex point, no missing quadrant)", () => {
+  it("leaves the shared center of a flush 2x2 grid sharp -- no gap, all 4 quadrants full", () => {
     const widgets = [
       { id: "tl", x: 0, y: 0, width: 100, height: 100 },
       { id: "tr", x: 100, y: 0, width: 100, height: 100 },
@@ -17,9 +17,10 @@ describe("solveDocking", () => {
     ];
     const results = solveDocking(widgets);
     // The shared center point (100,100) has a neighbor in every direction including
-    // diagonal for each widget, so none of them see a missing quadrant there.
-    expect(results.find((r) => r.id === "tl")!.corners[2]).toBe("convex"); // bottomRight
-    expect(results.find((r) => r.id === "br")!.corners[0]).toBe("convex"); // topLeft (not composition TL)
+    // diagonal for each widget -- rounding any of them there would open a visible
+    // gap at a point where all 4 widgets should meet flush.
+    expect(results.find((r) => r.id === "tl")!.corners[2]).toBe("none"); // bottomRight
+    expect(results.find((r) => r.id === "br")!.corners[0]).toBe("none"); // topLeft (not composition TL)
   });
 
   it("finds the concave reflex point where 3 widgets meet around one missing quadrant", () => {
