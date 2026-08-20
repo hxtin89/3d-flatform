@@ -56,6 +56,16 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
 // the viewport-relative margin.
 const LOGO_NOTCH: Rect = { x: 20, y: 20, width: 130, height: 74 }
 
+// Same reference-frame widths design-system-demo.ts scales widget content
+// against. Rahmen's real margin in Figma is a constant 60px within a
+// 1080-wide mobile frame (and ~60-70px within the 1920-wide desktop frame
+// -- close enough to treat as the same constant) -- scaling that by
+// viewportWidth/referenceWidth keeps the frame's border visually
+// proportional to Figma instead of an arbitrary guess.
+const MOBILE_REFERENCE_WIDTH = 1080
+const DESKTOP_REFERENCE_WIDTH = 1920
+const FIGMA_MARGIN_PX = 60
+
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3)
 }
@@ -131,7 +141,9 @@ export function createFrame(): Frame {
       return margin
     },
     getTargetMargin() {
-      return Math.min(window.innerWidth, window.innerHeight) * 0.12
+      const isPortrait = window.innerHeight >= window.innerWidth
+      const referenceWidth = isPortrait ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
+      return FIGMA_MARGIN_PX * (window.innerWidth / referenceWidth)
     },
     setNotch(id, rect) {
       let el = notchElements.get(id)
