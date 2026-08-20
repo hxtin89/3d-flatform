@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import cesium from 'vite-plugin-cesium';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // HTTPS is opt-in (npm run dev:https): WebGPU needs a secure context, so testing
 // WebGPU on a phone over LAN requires https://<ip>:5173 (self-signed cert — accept
@@ -9,7 +10,7 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 const useHttps = process.env.VITE_HTTPS === '1';
 
 export default defineConfig({
-  plugins: [cesium(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [cesium(), svelte(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     port: 5177,
     host: true, // listen on all interfaces + print LAN IPs for phone testing

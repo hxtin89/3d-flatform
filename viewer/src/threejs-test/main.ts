@@ -10,6 +10,7 @@ import { createStreamingCloud, type StreamingCloud, type StreamingStats } from '
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
+import { createDesignSystemDemo, type DesignSystemDemo } from './design-system-demo'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { EXPERIENCE_CONFIG } from './config'
@@ -438,6 +439,7 @@ function applyPointSize(): void {
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
+let designSystemDemo: DesignSystemDemo | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
@@ -2060,6 +2062,7 @@ async function main(): Promise<void> {
   audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
+  designSystemDemo = createDesignSystemDemo()
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
@@ -2243,6 +2246,7 @@ function dispose(): void {
   closeFieldVideo(false)
   rainLayer?.dispose()
   audioLayer?.dispose()
+  designSystemDemo?.dispose()
   keyboardNavigation?.dispose()
   markerLayer?.dispose()
   donationShapeLayer?.dispose()
