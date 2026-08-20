@@ -37,15 +37,15 @@ const MOBILE_FRAME = { width: 1080, height: 1920 }
 const DESKTOP_FRAME = { width: 1920, height: 1080 }
 
 const WEATHER_CLUSTER: BentoGridItem[] = [
-  { id: 'weatherBar', x: 0, y: 0, width: 255, height: 180, title: 'Leicht bewölkt', description: 'Nordwest Wind', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'convex', bottomLeft: 'none' } },
-  { id: 'weather29', x: 0, y: 180, width: 180, height: 180, value: '29°', description: 'Celsius', accent: 'gold', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'convex', bottomLeft: 'convex' } },
-  { id: 'weather83', x: 180, y: 180, width: 180, height: 180, value: '83%', description: 'Luftfeuchtigkeit', accent: 'forest-green', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'none', bottomLeft: 'none' } },
+  { id: 'weatherBar', x: 0, y: 0, width: 255, height: 180, title: 'Leicht bewölkt', description: 'Nordwest Wind', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'fill-left', bottomLeft: 'none' } },
+  { id: 'weather29', x: 0, y: 180, width: 180, height: 180, value: '29°', description: 'Celsius', accent: 'gold', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'fill-left', bottomLeft: 'convex' } },
+  { id: 'weather83', x: 180, y: 180, width: 180, height: 180, value: '83%', description: 'Luftfeuchtigkeit', accent: 'forest-green', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'fill-top', bottomLeft: 'none' } },
 ]
 
 const SPECIES_ROW: BentoGridItem[] = [
-  { id: 'vogel', x: 0, y: 270, width: 300, height: 300, title: 'SCHNURRVOGEL', description: 'pipra fasciicauda', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'convex', bottomLeft: 'convex' } },
+  { id: 'vogel', x: 0, y: 270, width: 300, height: 300, title: 'SCHNURRVOGEL', description: 'pipra fasciicauda', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'none', bottomLeft: 'convex' } },
   { id: 'giftfrosch', x: 300, y: 0, width: 360, height: 570, title: 'SIRA GIFTFROSCH', description: 'ranitomeya sirensis', accent: 'grey-dark', cornerOverrides: { topLeft: 'convex', topRight: 'convex', bottomRight: 'fill-left', bottomLeft: 'none' } },
-  { id: 'morphofalter', x: 660, y: 270, width: 300, height: 300, title: 'BLAUER MORPHOFALTER', description: 'morpho deidamia', accent: 'grey-light', cornerOverrides: { topLeft: 'none', topRight: 'convex', bottomRight: 'none', bottomLeft: 'none' } },
+  { id: 'morphofalter', x: 660, y: 270, width: 300, height: 300, title: 'BLAUER MORPHOFALTER', description: 'morpho deidamia', accent: 'grey-light', cornerOverrides: { topLeft: 'none', topRight: 'convex', bottomRight: 'convex', bottomLeft: 'none' } },
 ]
 
 /** viewportWidth / referenceFrameWidth, portrait vs. landscape picking the frame -- recomputed on resize. */
@@ -142,6 +142,29 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     return frame.animateMarginTo(0, durationMs, updateDocks)
   }
 
+  // Manual trigger for the reveal/retract animation, independent of the
+  // loader flow in main.ts -- lets anyone replay it on demand.
+  const toggleButton = document.createElement('button')
+  toggleButton.type = 'button'
+  toggleButton.textContent = 'Frame ein/aus'
+  Object.assign(toggleButton.style, {
+    position: 'fixed',
+    left: '16px',
+    bottom: '16px',
+    zIndex: '60',
+    padding: '10px 16px',
+    borderRadius: '999px',
+    border: 'none',
+    background: 'var(--gray-900)',
+    color: 'var(--gray-50)',
+    font: '600 14px sans-serif',
+    cursor: 'pointer',
+  })
+  toggleButton.addEventListener('click', () => {
+    revealed ? retract() : reveal()
+  })
+  document.body.append(toggleButton)
+
   if (import.meta.env.DEV) {
     ;(window as any).__designSystemDemo = { frame, reveal, retract }
   }
@@ -157,6 +180,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
       frame.dispose()
       weatherHost.remove()
       speciesHost.remove()
+      toggleButton.remove()
       if (import.meta.env.DEV) delete (window as any).__designSystemDemo
     },
   }

@@ -56,11 +56,11 @@ export const WeatherCluster: Story = {
     radius: 60,
     items: [
       // Figma: "S1: WeatherBar (Widget)" @ (660,71) 255x180
-      { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "convex", bottomLeft: "none" } },
+      { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
       // Figma: "S1: Weather29 (Widget)" @ (660,251) 180x180
-      { id: "weather29", x: 0, y: 180, width: 180, height: 180, value: "29°", description: "Celsius", accent: "gold", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "convex", bottomLeft: "convex" } },
+      { id: "weather29", x: 0, y: 180, width: 180, height: 180, value: "29°", description: "Celsius", accent: "gold", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "fill-left", bottomLeft: "convex" } },
       // Figma: "S1: Weather83 (Widget)" @ (840,251) 180x180
-      { id: "weather83", x: 180, y: 180, width: 180, height: 180, value: "83%", description: "Luftfeuchtigkeit", accent: "forest-green", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "none", bottomLeft: "none" } },
+      { id: "weather83", x: 180, y: 180, width: 180, height: 180, value: "83%", description: "Luftfeuchtigkeit", accent: "forest-green", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-top", bottomLeft: "none" } },
     ],
   },
 };
@@ -70,11 +70,11 @@ export const SpeciesRow: Story = {
     radius: 60,
     items: [
       // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-      { id: "vogel", x: 0, y: 270, width: 300, height: 300, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "convex", bottomLeft: "convex" } },
+      { id: "vogel", x: 0, y: 270, width: 300, height: 300, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "none", bottomLeft: "convex" } },
       // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570
       { id: "giftfrosch", x: 300, y: 0, width: 360, height: 570, title: "SIRA GIFTFROSCH", description: "ranitomeya sirensis", accent: "grey-dark", cornerOverrides: { topLeft: "convex", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
       // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
-      { id: "morphofalter", x: 660, y: 270, width: 300, height: 300, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", cornerOverrides: { topLeft: "none", topRight: "convex", bottomRight: "none", bottomLeft: "none" } },
+      { id: "morphofalter", x: 660, y: 270, width: 300, height: 300, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", cornerOverrides: { topLeft: "none", topRight: "convex", bottomRight: "convex", bottomLeft: "none" } },
     ],
   },
 };
