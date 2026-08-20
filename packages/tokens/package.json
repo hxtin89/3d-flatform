@@ -1,0 +1,15 @@
+{
+  "name": "@wi/tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CSS custom properties generated from Figma variables. Framework-free — plain CSS, no build step needed to consume.",
+  "exports": {
+    "./css": "./src/index.css",
+    "./css/*": "./src/*.css"
+  },
+  "scripts": {
+    "build": "node scripts/generate.mjs",
+    "tokens:validate": "node scripts/generate.mjs"
+  }
+}

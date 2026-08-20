@@ -1,0 +1,35 @@
+{
+  "name": "Label Line",
+  "summary": "Auto-width, translucent text pill used to build multi-line headlines where each line's rounded background hugs only its own words.",
+  "description": "Reuses the Corner atom system from Bento Widget, but at a dedicated smaller scale (60x60 tile, 30px radius — 'Size=Small' on the shared Corner component set) since a 60px-tall label needs a proportionally smaller radius than a 220px+ bento card. Width hugs its own Text content; height is a per-instance tunable value driven by font size, not fixed.",
+  "properties": {
+    "Text": { "type": "TEXT", "default": "Label" },
+    "Corner Top Left": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex, Size=Small" },
+    "Corner Top Right": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex, Size=Small" },
+    "Corner Bottom Right": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex, Size=Small" },
+    "Corner Bottom Left": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex, Size=Small" }
+  },
+  "sizeVariant": "Corner atoms come in Size=Large (120x120, radius 60, used by Bento Widget) and Size=Small (60x60, radius 30, used here). Figma instance-swap slots render swapped content stretched to the SLOT's own declared size, never the swapped component's natural size — so a slot built for Large will always render at Large's radius no matter which atom is swapped in. Changing a slot's effective size requires rebuilding it on the master (editComponentProperty to change the property's registered default, then rebuild the instance from that default), not a per-instance swap.",
+  "multiLineHeadlines": "Stack multiple Label Line instances vertically with 0 gap — one instance per line, so each line's background hugs only that line's own width (a single instance with a manual '\\n' line break would hug to the widest line instead). Line height formula for consistent spacing across font sizes: height = ceil(fontSize * 1.2) + 12px padding. Worked example: 'Test: Label Stack (Dein Habitat)' — three lines (Dein Habitat / Peruanischer / Auwald) at 34px and 60px.",
+  "cornerDirectionRules": [
+    "Only the corner belonging to the genuinely NARROWER line at a given transition needs a Fill treatment — the wider neighbor's edge is a flat pass-through there, not a real corner, and needs nothing.",
+    "If the narrower line is ABOVE a wider one, its own BOTTOM corner reaches DOWNWARD onto the wider line's flat top — use Fill-Top (not Fill-Left) for a Bottom-Right corner reaching down; Fill-Left at Bottom-Right reaches RIGHTWARD instead, which is for a horizontal neighbor, not a vertical one below.",
+    "If the WIDER line is ABOVE a narrower one below, the narrower line's TOP corner typically needs no treatment — the wider line already fully covers that area, so a Fill atom there renders invisibly with zero visible effect. Tune the wider line's own corner instead if a curve is wanted at that transition."
+  ],
+  "colorBinding": "Fill and all 3 real-geometry Size=Small corner atoms (Concave, Fill-Left, Fill-Top) are bound to a dedicated 'label/fill' variable in the same Color/Widget Accent collection Bento Widget's 'accent/fill' lives in (same modes, independent per-mode value — Default is white at 90% opacity for the glass-label look). Recolor an instance via its explicit variable mode, never a literal fill, so corners inherit automatically.",
+  "knownPitfalls": [
+    "A corner given a literal (unbound) fill override permanently blocks inheriting the master's variable binding, even after the master is fixed — re-bind that specific corner via setBoundVariableForPaint(...) rather than re-editing the master.",
+    "Using the wrong Fill atom direction (Fill-Left vs Fill-Top) at a given rotation produces a visible geometric gap even though the corner Type looks plausible in isolation — verify the actual reach direction against which neighbor the corner needs to connect to, not just which Type name sounds right."
+  ],
+  "tokensUsed": ["label/pill (radius/outer analog for the small atom, 30)", "Color/Widget Accent (label/fill)"],
+  "referenceLayouts": [
+    { "name": "Test: Label Stack (Dein Habitat)", "demonstrates": "3-line variable-width headline, per-line hugging, consistent line-height formula, correct Fill direction per transition" }
+  ],
+  "status": "beta",
+  "lastUpdated": "2026-08-19",
+  "provenance": {
+    "description": "ai-inferred",
+    "cornerDirectionRules": "ai-inferred, verified empirically",
+    "colorBinding": "user"
+  }
+}

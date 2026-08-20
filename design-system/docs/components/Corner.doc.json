@@ -1,0 +1,34 @@
+{
+  "name": "Corner",
+  "summary": "Rotatable 120x120 corner atom used at all 4 corners of a Bento Widget so adjacent widgets can visually dock, round, or flow into each other.",
+  "description": "A single set of 5 canonical corner treatments, reused at all 4 widget-corner positions via rotation (0/90/180/270) instead of authoring 4 separate atoms per position. Anchor point V sits at the tile's local center (60,60) and is placed exactly on the widget's true geometric corner.",
+  "variants": {
+    "Type": ["Convex", "None", "Concave", "Fill-Left", "Fill-Top"]
+  },
+  "slotContract": {
+    "usage": "Instance-swap component property on the parent Bento Widget (one per corner: Corner Top Left/Top Right/Bottom Right/Bottom Left). Not used standalone.",
+    "positioning": "layoutPositioning=ABSOLUTE with constraints (MIN/MAX per edge, matching which side of the widget the corner is on) so resizing the parent widget auto-repositions the corner with zero manual overrides."
+  },
+  "geometryRules": [
+    "Convex: empty overlay. Pair with the widget's native per-corner radius set to card/outer (rounded) for a true outer corner.",
+    "None: empty overlay, visually identical to Convex — the native radius alone drives rounded vs sharp, not the Type label. Prefer None for authoring clarity but don't assume existing work always matches.",
+    "Concave: quarter-disk overlay bulging from the anchor point. Use at a reflex vertex where 3+ widgets meet around a missing quadrant, when only one side should carry the curve. Pair with native radius 0.",
+    "Fill-Left / Fill-Top: crescent overlay extending the OWNING widget's own material past a sharp corner. Two straight edges meet at V; the arc connects their far endpoints (tile-local (0,60) and (60,120) in the unrotated Fill-Left orientation). One endpoint continues along the widget's own edge, the other reaches outward. Pair with native radius 0.",
+    "Two-sided Fill seams: when two adjacent widgets each carry a Fill corner facing the same open gap, size the adjustable widget so the two corners' outward-facing endpoints coincide (found via absoluteTransform on the tile-local endpoints) — produces one continuous curve instead of two disconnected bulges. Not every seam needs this — a single one-sided bulge against a plain neighbor is also valid (see the Species Row reference).",
+    "Composition top-left rule (scoped): a widget at the TRUE app screen's top-left gets radius 0 there (sharp). Does not apply just because a widget sits at an isolated test frame's local top-left."
+  ],
+  "colorBinding": "Fill corners: bind the atom's fill (boolean node + BOTH operand children, not just the boolean) to the same color variable/mode the owning widget's own fill uses (Color/Widget Accent) — this keeps the corner in sync automatically since it's nested inside that instance and inherits its explicit mode. Concave has no such shortcut — its correct color depends on an external neighbor/background and must be set manually per placement.",
+  "knownPitfalls": [
+    "Figma rotates a node around its pre-rotation (x,y) pivot, not its center — naive x/y math is off by exactly the tile's own width/height depending on rotation angle. Verify with absoluteTransform, don't hand-derive and trust it blindly.",
+    "Manually overriding a corner instance's x/y after the PARENT widget has been resized throws 'cannot override relative-transform' — use constraints instead, never manual re-positioning post-resize.",
+    "A boolean's operand children (the raw square/circle used to build it) keep their own fill independent of the boolean's own fill — recoloring only the boolean leaves the operands' default color leaking wherever their silhouette isn't fully covered."
+  ],
+  "tokensUsed": ["card/outer (radius/outer)", "Color/Widget Accent (accent/fill)"],
+  "status": "beta",
+  "lastUpdated": "2026-08-19",
+  "provenance": {
+    "description": "ai-inferred",
+    "geometryRules": "ai-inferred",
+    "knownPitfalls": "ai-inferred"
+  }
+}

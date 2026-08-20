@@ -1,1 +1,11 @@
 *.MOV
+
+# design system (packages/tokens, packages/ui)
+node_modules/
+dist/
+.svelte-kit/
+storybook-static/
+.turbo/
+.env
+!viewer/.env.example
+!.env.example

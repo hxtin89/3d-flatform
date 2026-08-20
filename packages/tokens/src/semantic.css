@@ -1,0 +1,27 @@
+:root {
+  --inset-xs: var(--space-4);
+  --inset-sm: var(--space-8);
+  --inset-md: var(--space-12);
+  --inset-lg: var(--space-16);
+  --inset-xl: var(--space-24);
+  --stack-xs: var(--space-2);
+  --stack-sm: var(--space-6);
+  --stack-md: var(--space-12);
+  --stack-lg: var(--space-20);
+  --stack-xl: var(--space-32);
+  --inline-xs: var(--space-2);
+  --inline-sm: var(--space-6);
+  --inline-md: var(--space-10);
+  --inline-lg: var(--space-16);
+  --inline-xl: var(--space-24);
+  --control: var(--radius-md);
+  --field: var(--radius-sm);
+  --pill: var(--radius-full);
+  --card-outer: var(--radius-outer);
+  --card-inner: var(--radius-inner);
+  --label-pill: 30px;
+  --width-default: var(--width-1);
+  --width-focus: var(--width-2);
+  --width-emphasis: var(--width-2);
+  --offset-focus: var(--width-2);
+}

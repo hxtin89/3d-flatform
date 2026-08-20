@@ -1,0 +1,106 @@
+:root {
+  --bg-default: var(--gray-50);
+  --bg-subtle: var(--gray-100);
+  --bg-muted: var(--gray-200);
+  --bg-emphasis: var(--accent-500);
+  --bg-inverse: var(--gray-900);
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-700);
+  --text-disabled: var(--gray-400);
+  --text-inverse: var(--gray-50);
+  --text-link: var(--info-700);
+  --text-on-emphasis: var(--gray-50);
+  --border-default: var(--gray-300);
+  --border-subtle: var(--gray-200);
+  --border-focus: var(--accent-500);
+  --border-emphasis: var(--gray-900);
+  --status-success-bg: var(--success-100);
+  --status-success-text: var(--success-700);
+  --status-success-border: var(--success-300);
+  --status-warning-bg: var(--warning-100);
+  --status-warning-text: var(--warning-700);
+  --status-warning-border: var(--warning-300);
+  --status-danger-bg: var(--danger-100);
+  --status-danger-text: var(--danger-700);
+  --status-danger-border: var(--danger-300);
+  --status-info-bg: var(--info-100);
+  --status-info-text: var(--info-700);
+  --status-info-border: var(--info-300);
+  --status-highlight-bg: var(--highlight-100);
+  --status-highlight-text: var(--highlight-700);
+  --status-highlight-border: var(--highlight-500);
+  --shadow-ambient: rgb(0 0 0 / 0.08);
+  --shadow-key: rgb(0 0 0 / 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-default: var(--gray-950);
+    --bg-subtle: var(--gray-900);
+    --bg-muted: var(--gray-800);
+    --bg-emphasis: var(--accent-500);
+    --bg-inverse: var(--gray-50);
+    --text-primary: var(--gray-50);
+    --text-secondary: var(--gray-300);
+    --text-disabled: var(--gray-600);
+    --text-inverse: var(--gray-900);
+    --text-link: var(--info-300);
+    --text-on-emphasis: var(--gray-50);
+    --border-default: var(--gray-700);
+    --border-subtle: var(--gray-800);
+    --border-focus: var(--accent-500);
+    --border-emphasis: var(--gray-50);
+    --status-success-bg: var(--success-900);
+    --status-success-text: var(--success-300);
+    --status-success-border: var(--success-700);
+    --status-warning-bg: var(--warning-900);
+    --status-warning-text: var(--warning-300);
+    --status-warning-border: var(--warning-700);
+    --status-danger-bg: var(--danger-900);
+    --status-danger-text: var(--danger-300);
+    --status-danger-border: var(--danger-700);
+    --status-info-bg: var(--info-900);
+    --status-info-text: var(--info-300);
+    --status-info-border: var(--info-700);
+    --status-highlight-bg: var(--highlight-700);
+    --status-highlight-text: var(--highlight-100);
+    --status-highlight-border: var(--highlight-500);
+    --shadow-ambient: rgb(0 0 0 / 0.32);
+    --shadow-key: rgb(0 0 0 / 0.48);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg-default: var(--gray-950);
+  --bg-subtle: var(--gray-900);
+  --bg-muted: var(--gray-800);
+  --bg-emphasis: var(--accent-500);
+  --bg-inverse: var(--gray-50);
+  --text-primary: var(--gray-50);
+  --text-secondary: var(--gray-300);
+  --text-disabled: var(--gray-600);
+  --text-inverse: var(--gray-900);
+  --text-link: var(--info-300);
+  --text-on-emphasis: var(--gray-50);
+  --border-default: var(--gray-700);
+  --border-subtle: var(--gray-800);
+  --border-focus: var(--accent-500);
+  --border-emphasis: var(--gray-50);
+  --status-success-bg: var(--success-900);
+  --status-success-text: var(--success-300);
+  --status-success-border: var(--success-700);
+  --status-warning-bg: var(--warning-900);
+  --status-warning-text: var(--warning-300);
+  --status-warning-border: var(--warning-700);
+  --status-danger-bg: var(--danger-900);
+  --status-danger-text: var(--danger-300);
+  --status-danger-border: var(--danger-700);
+  --status-info-bg: var(--info-900);
+  --status-info-text: var(--info-300);
+  --status-info-border: var(--info-700);
+  --status-highlight-bg: var(--highlight-700);
+  --status-highlight-text: var(--highlight-100);
+  --status-highlight-border: var(--highlight-500);
+  --shadow-ambient: rgb(0 0 0 / 0.32);
+  --shadow-key: rgb(0 0 0 / 0.48);
+}

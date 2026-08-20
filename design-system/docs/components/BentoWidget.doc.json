@@ -1,0 +1,46 @@
+{
+  "name": "Bento Widget",
+  "summary": "Generic bento-grid card whose 4 corners independently dock, round, or flow into neighboring widgets, resizable to any grid cell size.",
+  "description": "One generic widget rather than several typed variants — content differs via component properties, corner treatment differs via 4 independent instance-swap slots (see the Corner component). Built to support widgets placed edge-to-edge on a bento grid that later animate into their final docked corner combination.",
+  "variants": {
+    "State": ["Default", "Selected"]
+  },
+  "properties": {
+    "Title": { "type": "TEXT", "default": "Widget Title" },
+    "Value": { "type": "TEXT", "default": "29°" },
+    "Description": { "type": "TEXT", "default": "Description" },
+    "Icon": { "type": "INSTANCE_SWAP", "default": "icon/sun" },
+    "Expanded": { "type": "BOOLEAN", "default": false, "note": "Toggles visibility of the 'Expanded Content' panel only — does NOT resize the card automatically. See growthChoreography." },
+    "Has Image": { "type": "BOOLEAN", "default": false, "note": "Toggles a full-bleed background Image + Image Scrim layer, for photo-backed content (map preview, camera-trap photo, habitat photo). Completing a photo widget needs 3-4 manual per-instance steps since booleans can't drive a fill/text-color/corner-color change — see photoWidgets below." },
+    "Corner Top Left": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex" },
+    "Corner Top Right": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex" },
+    "Corner Bottom Right": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex" },
+    "Corner Bottom Left": { "type": "INSTANCE_SWAP", "default": "Corner: Type=Convex" }
+  },
+  "photoWidgets": "Has Image=true only toggles visibility of the Image/Image Scrim layers. Manual per-instance completion steps: (1) set the Image rectangle's own fill to the real photo, (2) override Title/Value/Description AND the Icon instance's fill to text/onEmphasis for legibility over the photo, (3) hide Value if the content has no number (e.g. a habitat card), (4) if a Fill/Concave corner is also used on this widget, its color must be manually sampled from the photo near that corner — the automatic Color/Widget Accent sync only works for flat-color widgets, there's no single accent color to bind to for a photo. Corner treatment was intentionally restricted to 'manual sample per instance' rather than building automatic photo-cropping into the Corner atom (user decision — simpler, consistent with how Concave already works).",
+  "states": {
+    "Default": "bg/subtle fill (via Color/Widget Accent variable, Default mode), no stroke.",
+    "Selected": "border/focus (yellow) fill instead of bg/subtle. No stroke — an earlier version used a 2px inside stroke, which was shifting all content by the stroke weight; removed in favor of a solid fill so Default and Selected are pixel-identical in content position."
+  },
+  "growthChoreography": "The card's height stays FIXED at all times. Figma cannot make one instance react to another's property change, so growing a card and shifting its neighbors is always an explicit step (scripted or by hand): when Expanded is set true, also grow that instance's height by a clean 30px-grid multiple (Expanded Content panel is authored at 78px + 12px itemSpacing = 90px, one step) and shift any widget flush against its bottom edge down by that same amount. Worked example: 'Test: Bento Docking (Expand Choreography)'.",
+  "tokensUsed": ["card/outer (radius/outer, master default corner radius)", "Color/Widget Accent (accent/fill)", "border/focus", "text/primary", "text/secondary", "text/onEmphasis", "Heading/SM", "Display/XL", "Body/Default", "Caption"],
+  "tokenFixesMadeHere": "text/onEmphasis was found resolving to gray/900 (dark) in both Light and Dark mode — backwards from its documented purpose (text that contrasts an emphasis/dark fill, e.g. a photo). It had never been exercised until the photo-widget test surfaced it. Fixed at the token source to alias gray/50 (white) in both modes.",
+  "referenceLayouts": [
+    { "name": "Test: Bento Docking", "demonstrates": "single-size 3-widget L-shape, one-sided Concave rounding a reflex point" },
+    { "name": "Test: Bento Docking (Sizes & Colors)", "demonstrates": "mixed-size/color L-shape with an open gap; per-widget accent-color variable modes; two-sided Fill-seam endpoint matching" },
+    { "name": "Test: Bento Docking (2x2 Grid, No Gap)", "demonstrates": "4-widget flush grid, no Fill/Concave needed; mixed exterior-corner styles are valid" },
+    { "name": "Test: Bento Docking (Species Row S1)", "demonstrates": "recreation of a real production cluster; asymmetric one-sided Fill bulge is valid, not every seam needs two-sided treatment" },
+    { "name": "Test: Bento Docking (Expand Choreography)", "demonstrates": "before/after pair for the Expanded growth mechanism and neighbor reflow" }
+  ],
+  "status": "beta",
+  "lastUpdated": "2026-08-19",
+  "notCompletedYet": [
+    "Per-corner radius is not individually token-bound per instance (only the master's all-60 default is) — instances set literal 0/60 per corner as needed.",
+    "No Code Connect / framework mapping yet — project.uiFramework is unset."
+  ],
+  "provenance": {
+    "description": "ai-inferred",
+    "growthChoreography": "user",
+    "referenceLayouts": "ai-inferred"
+  }
+}

@@ -1,0 +1,50 @@
+/* Default mode as the fallback, so a widget with no data-accent still resolves. */
+:root {
+  --accent-fill: rgb(247 247 247);
+  --label-fill: rgb(255 255 255 / 0.9);
+}
+
+[data-accent="default"] {
+  --accent-fill: rgb(247 247 247);
+  --label-fill: rgb(255 255 255 / 0.9);
+}
+
+[data-accent="blue"] {
+  --accent-fill: rgb(59 130 246);
+  --label-fill: rgb(59 130 246 / 0.9);
+}
+
+[data-accent="green"] {
+  --accent-fill: rgb(34 197 94);
+  --label-fill: rgb(34 197 94 / 0.9);
+}
+
+[data-accent="coral"] {
+  --accent-fill: rgb(249 115 22);
+  --label-fill: rgb(249 115 22 / 0.9);
+}
+
+[data-accent="purple"] {
+  --accent-fill: rgb(139 92 246);
+  --label-fill: rgb(139 92 246 / 0.9);
+}
+
+[data-accent="grey-light"] {
+  --accent-fill: rgb(171 171 171);
+  --label-fill: rgb(171 171 171 / 0.9);
+}
+
+[data-accent="grey-dark"] {
+  --accent-fill: rgb(115 115 115);
+  --label-fill: rgb(115 115 115 / 0.9);
+}
+
+[data-accent="gold"] {
+  --accent-fill: rgb(230 206 0);
+  --label-fill: rgb(230 206 0 / 0.9);
+}
+
+[data-accent="forest-green"] {
+  --accent-fill: rgb(0 68 50);
+  --label-fill: rgb(0 68 50 / 0.9);
+}

@@ -2,8 +2,13 @@
   "name": "sbb-pointcloud-pipeline",
   "version": "1.0.0",
   "description": "Local self-hosted point cloud pipeline: LAZ → PDAL → COPC → 3D Tiles → CesiumJS",
+  "packageManager": "pnpm@11.22.0",
   "scripts": {
     "dev": "npm run viewer:dev",
+    "ds:build": "turbo run build --filter=./packages/*",
+    "ds:dev": "turbo run dev --filter=./packages/*",
+    "ds:tokens:validate": "turbo run tokens:validate --filter=./packages/*",
+    "ds:docs:check": "turbo run docs:check --filter=./packages/*",
     "pipeline:download": "bash pipeline/download.sh",
     "pipeline:inspect": "bash pipeline/inspect.sh",
     "pipeline:prepare": "bash pipeline/prepare.sh",
@@ -33,6 +38,7 @@
     "viewer:install": "cd viewer && npm install"
   },
   "devDependencies": {
-    "sirv-cli": "^2.0.2"
+    "sirv-cli": "^2.0.2",
+    "turbo": "^2.3.0"
   }
 }

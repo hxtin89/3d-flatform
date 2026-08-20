@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 6,
+  "user": {
+    "codingLevel": "comfortable"
+  },
+  "project": {
+    "uiFramework": "svelte",
+    "tokenOutputTarget": "vanilla-css",
+    "constraints": {
+      "consumingApp": "C:\\Projects\\3d-flatform\\viewer (Vite + TS, Three.js WebGPURenderer, DOM overlays over full-screen canvas — runtime weight/per-frame cost matters)",
+      "deploy": "static build, Apache under /livingdashboard/, no Node runtime -> SvelteKit adapter-static, no SSR",
+      "designFrame": "1080x1920 = 360 logical px, mobile-first, 30px layout grid",
+      "excluded": ["react", "shadcn", "shadcn-svelte", "tailwind", "mui", "css-in-js", "framer-motion/FLIP layout-animation libs"],
+      "cornerAsCodeComponent": false
+    }
+  },
+  "workspace": {
+    "name": "3d-flatform",
+    "localPath": ".",
+    "stage": "github",
+    "origin": "greenfield",
+    "detectedLayers": {
+      "monorepo": true,
+      "storybook": false,
+      "tokens": false,
+      "syncLayer": false
+    }
+  },
+  "figma": {
+    "mechanism": "console-mcp",
+    "fileKey": "6VZRVUlLaIDwv3lMSIPdDm",
+    "connected": true,
+    "lastVerified": "2026-08-19T11:11:13.885Z",
+    "coverPageBuilt": true,
+    "canPublish": true,
+    "libraryPublished": true,
+    "publishedAt": "2026-08-19T00:00:00.000Z",
+    "docCardVariables": null
+  },
+  "tokens": {
+    "intakeMode": "retrofit",
+    "tiers": 2,
+    "primitivesBuilt": true,
+    "semanticBuilt": true,
+    "stylesBuilt": true,
+    "collections": ["_Color/Primitive", "Spacing/Primitive", "_Radius/Primitive", "_Border/Primitive", "_Typography/Primitive", "Color/Semantic", "Spacing/Semantic", "Typography/Semantic", "Radius/Semantic", "Border/Semantic"],
+    "styleGroups": ["Text", "Elevation"],
+    "lastSync": null
+  },
+  "sheets": { "built": true },
+  "icons": {
+    "library": "phosphor",
+    "version": "v2.0.8",
+    "weight": "light",
+    "baseSize": 24,
+    "built": true,
+    "packageInstalled": false,
+    "subset": ["arrow-left", "arrow-right", "x", "check", "caret-down", "caret-up", "caret-left", "caret-right", "magnifying-glass", "list", "info", "plus", "minus", "sun", "cloud", "wind", "map-pin", "compass", "camera", "leaf", "paw-print", "drop", "thermometer"]
+  },
+  "components": {
+    "built": ["Corner", "Bento Widget", "Label Line"],
+    "meta": {
+      "Corner": { "status": "beta", "variants": { "Type": ["Convex", "None", "Concave", "Fill-Left", "Fill-Top"], "Size": ["Large", "Small"] }, "docPath": "design-system/docs/components/Corner.doc.json" },
+      "Bento Widget": { "status": "beta", "variants": ["Default", "Selected"], "properties": ["Title", "Value", "Description", "Icon", "Expanded", "Has Image", "Corner Top Left", "Corner Top Right", "Corner Bottom Right", "Corner Bottom Left"], "docPath": "design-system/docs/components/BentoWidget.doc.json" },
+      "Label Line": { "status": "beta", "properties": ["Text", "Corner Top Left", "Corner Top Right", "Corner Bottom Right", "Corner Bottom Left"], "docPath": "design-system/docs/components/LabelLine.doc.json" }
+    },
+    "instanceSwapUpgradePending": []
+  },
+  "repo": {
+    "stage": "github",
+    "packageManager": "pnpm",
+    "monorepo": "turborepo",
+    "remote": "git@github.com:hxtin89/3d-flatform.git",
+    "branch": "sbb/UI-test",
+    "existingApp": "viewer (pre-existing standalone Vite+TS app, now a pnpm workspace member; keeps its own tooling, consumes packages/ui as a workspace dependency)"
+  },
+  "sync": {
+    "platforms": ["vanilla-css"],
+    "customAdapters": [],
+    "lastRun": "2026-08-20T00:00:00.000Z",
+    "note": "Ad-hoc: packages/tokens/scripts/generate.mjs from a manual Figma variable snapshot (tokens-raw.json), not yet the formal token-sync-layer/DTCG pipeline. Re-running sync-figma-tokens later should replace this with the real thing."
+  },
+  "storybook": {
+    "initialized": true,
+    "chromatic": false,
+    "codeConnect": false,
+    "note": "@storybook/sveltekit configured in packages/ui, 4 BentoWidget + 3 LabelLine stories. Verified 2026-08-19: dev server runs clean, all stories render correctly. Fixed a real bug found during verification: LabelLine.svelte's .label-line__text used display:flex (block-level, width:auto stretches to fill container) while the container's own width was derived from that span's measured clientWidth -- a feedback loop that ballooned width into the thousands of px. Fixed by changing to display:inline-flex so the span shrink-wraps to its text content."
+  },
+  "audit": {
+    "ranAt": "2026-08-17T15:49:00.000Z",
+    "codeSurface": null,
+    "figmaInventory": {
+      "variables": 0,
+      "bindings": 0,
+      "textStyles": 0,
+      "effectStyles": 0,
+      "modes": []
+    },
+    "percentSemantic": 0,
+    "docSurface": null
+  },
+  "tokenCrosswalk": {
+    "path": null,
+    "statusCounts": null,
+    "validatorPassing": null
+  },
+  "retrofit": {
+    "phase": null,
+    "startedAt": null,
+    "completedAt": null,
+    "journalScaffolded": false
+  },
+  "completedSkills": ["figma-environment-setup", "design-system-audit", "token-builder", "token-sheet-builder", "icon-system-builder", "component-builder"]
+}
