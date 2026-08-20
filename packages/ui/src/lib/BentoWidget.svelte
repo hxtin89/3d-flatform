@@ -10,7 +10,8 @@
     corners: Corners;
     /** Radius used when `path` was built — must match the value passed to silhouette() so Concave/Fill-* overflow is sized correctly. Defaults to the card/outer token (60). */
     radius?: number;
-    title: string;
+    /** Omit (with no icon either) to hide the header row entirely -- the real Bento Widget master supports this too (used for small cells where a bare Value/Description reads fine on its own, e.g. a temperature cell). */
+    title?: string;
     /** Omit to hide the value row entirely (e.g. species cards with no number). */
     value?: string;
     description?: string;
@@ -79,10 +80,12 @@
   </svg>
 
   <div class="bento-widget__content">
-    <header class="bento-widget__header">
-      {#if icon}<span class="bento-widget__icon">{@render icon()}</span>{/if}
-      <h3 class="bento-widget__title">{title}</h3>
-    </header>
+    {#if title || icon}
+      <header class="bento-widget__header">
+        {#if icon}<span class="bento-widget__icon">{@render icon()}</span>{/if}
+        {#if title}<h3 class="bento-widget__title">{title}</h3>{/if}
+      </header>
+    {/if}
     {#if value}<p class="bento-widget__value">{value}</p>{/if}
     {#if description}<p class="bento-widget__description">{description}</p>{/if}
     {#if expanded && expandedContent}

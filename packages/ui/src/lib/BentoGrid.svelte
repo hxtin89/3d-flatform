@@ -6,7 +6,7 @@
 
   /** A grid rect plus the content BentoWidget needs to render it. */
   export interface BentoGridItem extends GridWidget {
-    title: string;
+    title?: string;
     value?: string;
     description?: string;
     accent?: string;
