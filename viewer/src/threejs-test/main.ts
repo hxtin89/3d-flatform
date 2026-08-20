@@ -510,8 +510,6 @@ let cameraGroundRange = Infinity
 /** Refinement distance. Kept apart from cameraGroundRange, which measures the
  * screen-centre look-at point and runs to kilometres near the horizon. */
 let cameraCloudRange = Infinity
-/** Last gain the frame-time feedback asked for, for the HUD. 1 = feedback off or idle. */
-let qualityGain = 1
 /** Before the manifest lands the ENU frame is identity and areaMinZ is 0, so a
  * height read from it comes out as 0 — the finest refinement of the whole
  * survey, requested while the loader is still running. */
@@ -779,12 +777,6 @@ function applyPixelRatio(): void {
 function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderOptionKey[]): void {
   for (const key of changed) {
     switch (key) {
-      case 'qualityFeedback':
-        adaptiveQuality.setFeedbackEnabled(effective.qualityFeedback)
-        // Same reason as leaf loading: release the hysteresis so the new target lands
-        // on the next frame rather than on the next camera move.
-        sseAuto = -1
-        break
       case 'leafLoading':
         // Leaf loading changes only traversal/residency. The existing point-size
         // slider and camera-height curve remain exactly as the user configured.
@@ -900,9 +892,6 @@ for (const rowDef of RENDER_OPTION_ROWS) {
 // Buttons are created before any option transition occurs, so initialise their
 // visual state from the defaults instead of the generic "On" construction.
 syncOptionButtons()
-// applyRenderOptions only fires on a *change*, so the controller would otherwise sit
-// with the feedback off while the panel claims it is on.
-adaptiveQuality.setFeedbackEnabled(renderOptions.effective().qualityFeedback)
 
 function syncOptionButtons(): void {
   const requested = renderOptions.requested()
@@ -2259,8 +2248,8 @@ function updateStreaming(now: number): StreamingStats | null {
     visiblePoints: lastStreamStats?.points ?? 0,
     cameraGroundRange: cameraCloudRange,
   })
-  qualityGain = renderOptions.effective().qualityFeedback ? quality.pressure : 1
-  // With the brakes toggled off the density ladder speaks alone.
+  // With the brakes toggled off the density ladder speaks alone — the
+  // comparison subject against the Cesium viewer.
   // Locked, the ladder is bypassed but the brakes below are not: pinning to 1 during
   // the entrance flight would stream the whole survey at full detail for nothing.
   const laddered = bandLockOn ? bandLockSse : quality.sse
@@ -2317,11 +2306,7 @@ if (showDiagnostics) diagStatsEl.hidden = false
 function updateHud(stats: StreamingStats | null): void {
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
   densityEl.textContent = stats?.density ?? '—'
-  // The gain is the interesting half once the loop is closed: SSE 8 at 0.25x and SSE 2
-  // at 1x are the same target reached two different ways.
-  lodEl.textContent = qualityGain === 1
-    ? `SSE ${sseAuto.toFixed(0)}`
-    : `SSE ${sseAuto.toFixed(1)} · ${qualityGain.toFixed(2)}×`
+  lodEl.textContent = `SSE ${sseAuto.toFixed(0)}`
   visibleEl.textContent = stats ? fmtInt(stats.points) : '0'
   pointTilesEl.textContent = String(stats?.visible ?? 0)
   mapTilesEl.textContent = String(globeStats.visible)
