@@ -330,6 +330,7 @@ const onLoaderStart = () => {
   const now = performance.now()
   loaderFinishAt = now + (reducedMotion ? 20 : 1200)
   loaderEl.classList.add('finishing')
+  designSystemDemo?.reveal()
   rainCycleStartedAt = now
   loaderFlightStarted = true
   // Park the cloud until the flight has closed most of the distance. The loader

@@ -60,7 +60,14 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   const weatherHost = document.createElement('div')
   document.body.append(weatherHost)
-  const weatherDock = dockElement(weatherHost, { edge: 'top-right', mode: 'frame' }, frame, 'weather')
+  // Weather's rect feeds the frame's precise top-right corner notch (with
+  // the correct concave elbow) rather than a generic unioned rect -- see
+  // design-system-frame.ts's header for why that distinction matters here.
+  const weatherDock = dockElement(weatherHost, {
+    edge: 'top-right',
+    mode: 'frame',
+    onRect: (rect) => frame.setTopRightReach(rect.width, rect.height),
+  }, frame)
 
   const speciesHost = document.createElement('div')
   speciesHost.style.display = 'flex'
@@ -68,7 +75,14 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   speciesHost.style.alignItems = 'center'
   speciesHost.style.gap = '12px'
   document.body.append(speciesHost)
-  const speciesDock = dockElement(speciesHost, { edge: 'bottom-center', mode: 'frame' }, frame, 'species')
+  // Species sits fully inside the window (its bottom edge is flush with
+  // the window's own bottom edge in Figma) -- a generic notch here is
+  // always a no-op, which is correct: no cutout needed at all.
+  const speciesDock = dockElement(speciesHost, {
+    edge: 'bottom-center',
+    mode: 'frame',
+    onRect: (rect) => frame.setNotch('species', rect),
+  }, frame)
 
   const labelTarget = document.createElement('div')
   const speciesTarget = document.createElement('div')
@@ -113,9 +127,11 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   updateDocks()
   window.addEventListener('resize', handleResize)
 
-  // Auto-reveal once, shortly after mount -- no real "select a habitat"
-  // interaction exists yet to hang this on. reveal()/retract() are exposed
-  // below for whoever wires that interaction later.
+  // Starts fully retracted (margin 0, full-bleed) -- the caller decides when
+  // to reveal (main.ts calls it from onLoaderStart, the same moment the
+  // loading screen begins fading and the flight-in begins, so the animation
+  // is actually visible instead of finishing during the ~60-90s load that
+  // happens entirely behind the loader).
   function reveal(durationMs = 600) {
     return frame.animateMarginTo(frame.getTargetMargin(), durationMs, updateDocks).then(() => {
       revealed = true
@@ -125,7 +141,6 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     revealed = false
     return frame.animateMarginTo(0, durationMs, updateDocks)
   }
-  reveal()
 
   if (import.meta.env.DEV) {
     ;(window as any).__designSystemDemo = { frame, reveal, retract }

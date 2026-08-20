@@ -1,8 +1,12 @@
 // Generic docking: positions a host element against either the true
 // viewport edge ('outer') or the frame's current, possibly-animating
-// window edge ('frame'), then reports its own rendered bounds to the frame
-// as a notch. Works for content of any size -- it always reads the host's
-// live getBoundingClientRect(), never an assumed fixed size.
+// window edge ('frame'). Works for content of any size -- it always reads
+// the host's live getBoundingClientRect(), never an assumed fixed size.
+//
+// Reporting the docked rect to the frame (as a notch, or as a top-right
+// reach for the concave-elbow corner notch) is the caller's job via
+// `onRect`, not this module's -- different clusters need different Frame
+// APIs (see design-system-demo.ts), and dockElement only knows positioning.
 import type { Frame } from './design-system-frame'
 
 export type DockEdge = 'top-right' | 'bottom-center'
@@ -11,14 +15,15 @@ export type DockMode = 'outer' | 'frame'
 export interface DockConfig {
   edge: DockEdge
   mode: DockMode
+  onRect: (rect: DOMRect) => void
 }
 
 export interface Docked {
-  /** Recomputes position (for 'frame' mode, against the live margin) and notch. Call on resize and on every frame-margin animation tick. */
+  /** Recomputes position (for 'frame' mode, against the live margin) and calls onRect. Call on resize and on every frame-margin animation tick. */
   update(): void
 }
 
-export function dockElement(host: HTMLElement, config: DockConfig, frame: Frame, notchId: string): Docked {
+export function dockElement(host: HTMLElement, config: DockConfig, frame: Frame): Docked {
   host.style.position = 'fixed'
   host.style.zIndex = '50'
 
@@ -47,7 +52,7 @@ export function dockElement(host: HTMLElement, config: DockConfig, frame: Frame,
       }
       const centering = config.edge === 'bottom-center' ? 'translateX(-50%) ' : ''
       host.style.transform = `${centering}translate(${offsetX}px, ${offsetY}px) scale(var(--design-system-demo-content-scale, 1))`
-      frame.setNotch(notchId, host.getBoundingClientRect())
+      config.onRect(host.getBoundingClientRect())
     },
   }
 }
