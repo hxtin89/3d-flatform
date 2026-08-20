@@ -10,6 +10,7 @@ import {
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
+import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
@@ -495,6 +496,7 @@ let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
 let foveation: Foveation | null = null
+let viewAngle: ViewAngleCorrection | null = null
 let markerLayer: MarkerLayer | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
@@ -777,6 +779,12 @@ function applyPixelRatio(): void {
 function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderOptionKey[]): void {
   for (const key of changed) {
     switch (key) {
+      case 'viewAngleError':
+        if (viewAngle) viewAngle.settings.enabled = effective.viewAngleError
+        // Release the hysteresis so the new targets land on the next frame rather than
+        // on the next camera move.
+        sseAuto = -1
+        break
       case 'leafLoading':
         // Leaf loading changes only traversal/residency. The existing point-size
         // slider and camera-height curve remain exactly as the user configured.
@@ -2576,6 +2584,10 @@ async function main(): Promise<void> {
   // Same reason the settings object lives outside: the panel is bound long before
   // this point, so foveation adopts the values already on the sliders.
   foveation = createFoveation(stream.tiles, camera, foveationSettings)
+  // After foveation, so it wraps that wrapper. Both are multipliers on the same error,
+  // so the order does not matter — but the unwind does, and view-angle checks.
+  viewAngle = createViewAngleCorrection(stream.tiles, camera, enuUp)
+  viewAngle.settings.enabled = renderOptions.effective().viewAngleError
   applyHeightOffset()
   // The rectangle is settled exactly once, off the critical path: the survey never
   // moves. Coverage then accumulates from the point tiles the renderer loads anyway

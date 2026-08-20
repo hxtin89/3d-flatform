@@ -50,6 +50,16 @@ export const EXPERIENCE_CONFIG = {
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
     /**
+     * Correct the screen-space error for the angle the ground is seen at — see
+     * view-angle.ts for the geometry. Purely a function of camera and tile position,
+     * so it cannot hunt the way a frame-time loop does.
+     */
+    viewAngleError: {
+      enabled: true,
+      /** Floor for the cosine, so grazing tiles stay loadable. */
+      minCosine: 0.1,
+    },
+    /**
      * Ceiling on how much the view angle may stretch the refinement distance.
      *
      * The distance is the slant range to the ground ahead, altitude / sin(pitch),

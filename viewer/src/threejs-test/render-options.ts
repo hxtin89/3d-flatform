@@ -12,6 +12,8 @@
 export interface RenderOptions {
   /** Diagnostic APH mode: refine every leaf in the active camera frustum. */
   leafLoading: boolean
+  /** Scale the per-tile error by the cosine of the viewing angle onto the ground. */
+  viewAngleError: boolean
   /** Boot-SSE brake (256 while loading) + flight SSE floor/ramp. */
   sseBrakes: boolean
   /** Distance fog + per-preset far-plane scaling (shortens the view). */
@@ -40,6 +42,7 @@ export type RenderOptionKey = keyof RenderOptions
 
 export const DEFAULT_OPTIONS: RenderOptions = {
   leafLoading: false,
+  viewAngleError: true,
   sseBrakes: true,
   fogAtmosphere: true,
   daylightGrading: true,
@@ -60,6 +63,7 @@ export const DEFAULT_OPTIONS: RenderOptions = {
  * band ladder, navigation and (per user decision) the basemap remain. */
 export const COMPARE_PROFILE: RenderOptions = {
   leafLoading: false,
+  viewAngleError: false,
   sseBrakes: false,
   fogAtmosphere: false,
   daylightGrading: false,
@@ -89,6 +93,13 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '🌲 Leaves · All visible',
     offText: '🌲 Leaves · Normal',
     note: 'APH diagnostic: refine every leaf in the camera view; disables the mask gate and keeps up to 16 GiB resident',
+  },
+  {
+    key: 'viewAngleError',
+    label: 'View-angle error',
+    onText: '◺ Angle · On',
+    offText: '◺ Angle · Off',
+    note: 'Scales each tile error by how squarely the ground faces the camera. Tilting foreshortens the ground, so the points squeeze together on screen and a level the plain distance quotient asks for is not needed. Off restores that quotient',
   },
   {
     key: 'sseBrakes',
