@@ -1,15 +1,17 @@
 // Proof-of-concept mount for the @wi/ui design-system package inside this
 // Vite+Three.js app. Real content pulled from the "Bento Grid — Recreation"
-// Figma page, Frame 1 (S1), so the Figma -> tokens -> Svelte component
-// pipeline is proven end-to-end against production data, not placeholders.
-// Not the real habitat info panel (a data model + interaction trigger) --
-// this is a fixed-corner proof that the pieces render correctly together.
+// Figma page: Frame 1 (1080x1920, mobile) for layout/sizes, Frame 1 Desktop
+// (1920x1080) for the weather cluster's real desktop position (top-right).
+// Frame 1 Desktop has no finished species-row layout yet (only leftover
+// unstyled placeholder rects outside its own bounds) -- per explicit
+// direction, the species cluster reuses Frame 1's real mobile geometry at
+// every viewport size rather than inventing a desktop arrangement Figma
+// doesn't have.
 //
-// Position/size/corner-Type/accent-mode were read directly off the real
-// Figma instances (not re-solved) -- see BentoGrid.stories.ts's
-// WeatherCluster/SpeciesRow stories, which use the exact same data. Not
-// reproduced: the bird/frog/butterfly line-art icons and the frog widget's
-// extra measurement/status block (own bespoke sub-layout).
+// Not reproduced: the bird/frog/butterfly line-art icons (no icon system
+// wired into @wi/ui content yet) and the frog widget's extra measurement/
+// status block (its own bespoke sub-layout, outside BentoWidget's current
+// prop shape).
 import { mount, unmount, type Component } from 'svelte'
 import { LabelLine, BentoGrid, type BentoGridItem } from '@wi/ui'
 import '@wi/tokens/css'
@@ -17,6 +19,11 @@ import '@wi/tokens/css'
 export interface DesignSystemDemo {
   dispose(): void
 }
+
+// Figma frame sizes this layout is scaled against -- portrait viewports use
+// the mobile frame as the scale basis, landscape viewports the desktop one.
+const MOBILE_FRAME = { width: 1080, height: 1920 }
+const DESKTOP_FRAME = { width: 1920, height: 1080 }
 
 const WEATHER_CLUSTER: BentoGridItem[] = [
   { id: 'weatherBar', x: 0, y: 0, width: 255, height: 180, title: 'Leicht bewölkt', description: 'Nordwest Wind', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'convex', bottomLeft: 'none' } },
@@ -30,27 +37,53 @@ const SPECIES_ROW: BentoGridItem[] = [
   { id: 'morphofalter', x: 660, y: 270, width: 300, height: 300, title: 'BLAUER MORPHOFALTER', description: 'morpho deidamia', accent: 'grey-light', cornerOverrides: { topLeft: 'none', topRight: 'convex', bottomRight: 'none', bottomLeft: 'none' } },
 ]
 
-export function createDesignSystemDemo(): DesignSystemDemo {
-  const container = document.createElement('div')
-  container.id = 'design-system-demo'
-  container.style.position = 'fixed'
-  container.style.left = '20px'
-  container.style.bottom = '20px'
-  container.style.zIndex = '50'
-  container.style.display = 'flex'
-  container.style.flexDirection = 'column'
-  container.style.gap = '12px'
-  container.style.transform = 'scale(0.4)'
-  container.style.transformOrigin = 'bottom left'
-  document.body.append(container)
+/** viewportWidth / referenceFrameWidth, portrait vs. landscape picking the frame -- recomputed on resize. */
+function computeScale(): number {
+  const isPortrait = window.innerHeight >= window.innerWidth
+  const reference = isPortrait ? MOBILE_FRAME : DESKTOP_FRAME
+  return window.innerWidth / reference.width
+}
 
-  const labelHost = document.createElement('div')
+export function createDesignSystemDemo(): DesignSystemDemo {
+  // "Rahmen" from Figma: a gray/200 rectangle sized to the whole frame,
+  // sitting behind the photo and every widget -- here, behind the whole
+  // viewport, above the 3D canvas.
+  const backdrop = document.createElement('div')
+  backdrop.id = 'design-system-demo-backdrop'
+  backdrop.style.position = 'fixed'
+  backdrop.style.inset = '0'
+  backdrop.style.zIndex = '40'
+  backdrop.style.background = 'var(--gray-200)'
+  document.body.append(backdrop)
+
   const weatherHost = document.createElement('div')
+  weatherHost.style.position = 'fixed'
+  weatherHost.style.top = '0'
+  weatherHost.style.right = '0'
+  weatherHost.style.zIndex = '50'
+  weatherHost.style.transformOrigin = 'top right'
+  weatherHost.style.padding = '24px'
+  document.body.append(weatherHost)
+
   const speciesHost = document.createElement('div')
-  container.append(labelHost, weatherHost, speciesHost)
+  speciesHost.style.position = 'fixed'
+  speciesHost.style.bottom = '0'
+  speciesHost.style.left = '50%'
+  speciesHost.style.zIndex = '50'
+  speciesHost.style.transformOrigin = 'bottom center'
+  speciesHost.style.display = 'flex'
+  speciesHost.style.flexDirection = 'column'
+  speciesHost.style.alignItems = 'center'
+  speciesHost.style.gap = '12px'
+  speciesHost.style.padding = '24px'
+  document.body.append(speciesHost)
+
+  const labelTarget = document.createElement('div')
+  const speciesTarget = document.createElement('div')
+  speciesHost.append(labelTarget, speciesTarget)
 
   const label = mount(LabelLine as Component, {
-    target: labelHost,
+    target: labelTarget,
     props: { text: 'Dein Habitat', fontSize: 34, accent: 'forest-green' },
   })
 
@@ -60,16 +93,27 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   })
 
   const speciesRow = mount(BentoGrid as Component, {
-    target: speciesHost,
+    target: speciesTarget,
     props: { items: SPECIES_ROW, radius: 60 },
   })
 
+  function applyScale() {
+    const scale = computeScale()
+    weatherHost.style.transform = `scale(${scale})`
+    speciesHost.style.transform = `translateX(-50%) scale(${scale})`
+  }
+  applyScale()
+  window.addEventListener('resize', applyScale)
+
   return {
     dispose() {
+      window.removeEventListener('resize', applyScale)
       unmount(label)
       unmount(weatherCluster)
       unmount(speciesRow)
-      container.remove()
+      backdrop.remove()
+      weatherHost.remove()
+      speciesHost.remove()
     },
   }
 }
