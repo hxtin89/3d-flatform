@@ -55,3 +55,33 @@ export const Expanded: Story = {
 export const NoValue: Story = {
   args: { ...Default.args, value: undefined, title: "SCHNURRVOGEL", description: "pipra fasciicauda" },
 };
+
+export const ConcaveBottomRight: Story = {
+  args: {
+    ...Default.args,
+    corners: ["convex", "convex", "concave", "convex"],
+    path: silhouette(width, heightCollapsed, ["convex", "convex", "concave", "convex"], 60),
+    title: "Concave",
+    description: "Reflex point rounding",
+  },
+};
+
+export const FillLeftTopLeft: Story = {
+  args: {
+    ...Default.args,
+    corners: ["fill-left", "convex", "convex", "convex"],
+    path: silhouette(width, heightCollapsed, ["fill-left", "convex", "convex", "convex"], 60),
+    title: "Fill-Left",
+    description: "Reaches left past the corner",
+  },
+};
+
+export const FillTopTopLeft: Story = {
+  args: {
+    ...Default.args,
+    corners: ["fill-top", "convex", "convex", "convex"],
+    path: silhouette(width, heightCollapsed, ["fill-top", "convex", "convex", "convex"], 60),
+    title: "Fill-Top",
+    description: "Reaches up past the corner",
+  },
+};

@@ -1,38 +1,147 @@
-// STUB — owned by the app, not this package. Replace with the real
-// Convex/None/Concave/Fill-Left/Fill-Top crescent math ported from the Figma
-// Corner component (see design-system/docs/components/Corner.doc.json).
-// This placeholder only does plain per-corner rounded-rect radii so components
-// render something sane before that port lands.
+// Ported from the Figma Corner component set (design-system/docs/components/Corner.doc.json).
+// Each corner is either a plain arc (Convex/None) staying within the widget's own
+// w x h box, or a "loop" that departs the sharp vertex, swings out through 1-2
+// reach points beyond the box, and returns to the vertex before the path resumes
+// its edge -- this matches Figma's boolean-built Corner atoms, which are a
+// separate overlay reaching past the widget's own boundary, not a plain radius.
+//
+// Convex: standard rounded corner, arc center = the inset point (r,r) from the vertex.
+// Concave: the SAME two arc endpoints as Convex, but the arc's other valid center
+//   (there are always exactly two circles of radius r through 2 points 90 deg apart)
+//   is the vertex itself, and the loop swings through the diagonal reach points --
+//   this fillets a REFLEX vertex (3+ widgets meeting around a missing quadrant),
+//   bulging this widget's material out to meet the gap.
+// Fill-Left / Fill-Top: reach past ONE edge only (horizontal or vertical), staying
+//   flush on the other -- used to bridge one widget's corner toward an adjacent
+//   narrower/offset widget. Fill-Left always reaches away from the shape
+//   horizontally (left at TL/BL, right at TR/BR); Fill-Top always reaches away
+//   vertically (up at TL/TR, down at BL/BR) -- the direction is a function of
+//   which corner it's applied to, not the type name alone.
 
 export type CornerType = "convex" | "none" | "concave" | "fill-left" | "fill-top";
 
 /** Corner order matches the Figma convention used throughout this design system: [topLeft, topRight, bottomRight, bottomLeft]. */
 export type Corners = [CornerType, CornerType, CornerType, CornerType];
 
-function cornerRadius(type: CornerType, r: number): number {
-  // ponytail: stub — only 'convex' rounds; everything else currently renders sharp.
-  // Concave/Fill-* need the real crescent geometry, not a plain radius.
-  return type === "convex" ? r : 0;
+interface CornerResult {
+  /** How far the preceding edge command should travel before this corner (0 = all the way to the sharp vertex). */
+  arrivalInset: number;
+  /** How far the following edge command starts from the sharp vertex (0 = starts exactly at the vertex). */
+  departureInset: number;
+  /** Extra path commands inserted between the arrival point and the departure point (empty for Convex/None). */
+  extra: string;
+}
+
+function tl(type: CornerType, r: number): CornerResult {
+  switch (type) {
+    case "convex":
+      return { arrivalInset: r, departureInset: r, extra: `A${r},${r} 0 0 1 ${r},0` };
+    case "none":
+      return { arrivalInset: 0, departureInset: 0, extra: "" };
+    case "concave":
+      // Loop out past the vertex into the missing quadrant (up, then left) and back.
+      return { arrivalInset: 0, departureInset: 0, extra: `L0,${-r} A${r},${r} 0 0 0 ${-r},0 L0,0` };
+    case "fill-left":
+      // Vertical (left) edge is flush, stops early; loop reaches left; horizontal (top) edge is sharp.
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${-r},0 L0,0` };
+    case "fill-top":
+      // Horizontal (top) edge is flush, stops early; loop reaches up; vertical (left) edge is sharp.
+      return { arrivalInset: 0, departureInset: r, extra: `L0,${-r} A${r},${r} 0 0 0 ${r},0` };
+  }
+}
+
+function tr(type: CornerType, r: number, w: number): CornerResult {
+  switch (type) {
+    case "convex":
+      return { arrivalInset: r, departureInset: r, extra: `A${r},${r} 0 0 1 ${w},${r}` };
+    case "none":
+      return { arrivalInset: 0, departureInset: 0, extra: "" };
+    case "concave":
+      return { arrivalInset: 0, departureInset: 0, extra: `L${w},${-r} A${r},${r} 0 0 1 ${w + r},0 L${w},0` };
+    case "fill-left":
+      // Horizontal (top) edge is sharp; vertical (right) edge is flush, starts late; loop reaches right.
+      return { arrivalInset: 0, departureInset: r, extra: `L${w + r},0 A${r},${r} 0 0 0 ${w},${r}` };
+    case "fill-top":
+      // Horizontal (top) edge is flush, stops early; loop reaches up; vertical (right) edge is sharp.
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${w},${-r} L${w},0` };
+  }
+}
+
+function br(type: CornerType, r: number, w: number, h: number): CornerResult {
+  switch (type) {
+    case "convex":
+      return { arrivalInset: r, departureInset: r, extra: `A${r},${r} 0 0 1 ${w - r},${h}` };
+    case "none":
+      return { arrivalInset: 0, departureInset: 0, extra: "" };
+    case "concave":
+      return { arrivalInset: 0, departureInset: 0, extra: `L${w + r},${h} A${r},${r} 0 0 1 ${w},${h + r} L${w},${h}` };
+    case "fill-left":
+      // Vertical (right) edge is flush, stops early; loop reaches right; horizontal (bottom) edge is sharp.
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${w + r},${h} L${w},${h}` };
+    case "fill-top":
+      // Horizontal (bottom) edge is flush, starts late; loop reaches down; vertical (right) edge is sharp.
+      return { arrivalInset: 0, departureInset: r, extra: `L${w},${h + r} A${r},${r} 0 0 0 ${w - r},${h}` };
+  }
+}
+
+function bl(type: CornerType, r: number, h: number): CornerResult {
+  switch (type) {
+    case "convex":
+      return { arrivalInset: r, departureInset: r, extra: `A${r},${r} 0 0 1 0,${h - r}` };
+    case "none":
+      return { arrivalInset: 0, departureInset: 0, extra: "" };
+    case "concave":
+      return { arrivalInset: 0, departureInset: 0, extra: `L0,${h + r} A${r},${r} 0 0 1 ${-r},${h} L0,${h}` };
+    case "fill-left":
+      // Horizontal (bottom) edge is sharp; vertical (left) edge is flush, starts late; loop reaches left.
+      return { arrivalInset: 0, departureInset: r, extra: `L${-r},${h} A${r},${r} 0 0 0 0,${h - r}` };
+    case "fill-top":
+      // Horizontal (bottom) edge is flush, stops early; loop reaches down; vertical (left) edge is sharp.
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 0,${h + r} L0,${h}` };
+  }
 }
 
 /**
- * Builds an SVG path `d` for a rounded rect with independent per-corner radii.
- * (w, h, corners[4], r) -> path d
+ * Builds an SVG path `d` for a rounded rect with independent per-corner treatments.
+ * (w, h, corners[4], r) -> path d. Concave/Fill-* corners reach past the nominal
+ * w x h box -- pair with cornerOverflow() to size the consuming SVG so nothing clips.
  */
 export function silhouette(w: number, h: number, corners: Corners, r: number): string {
-  const [tl, tr, br, bl] = corners.map((c) => cornerRadius(c, r));
+  const [tlType, trType, brType, blType] = corners;
+  const c1 = tl(tlType, r);
+  const c2 = tr(trType, r, w);
+  const c3 = br(brType, r, w, h);
+  const c4 = bl(blType, r, h);
+
   return [
-    `M${tl},0`,
-    `H${w - tr}`,
-    tr ? `A${tr},${tr} 0 0 1 ${w},${tr}` : "",
-    `V${h - br}`,
-    br ? `A${br},${br} 0 0 1 ${w - br},${h}` : "",
-    `H${bl}`,
-    bl ? `A${bl},${bl} 0 0 1 0,${h - bl}` : "",
-    `V${tl}`,
-    tl ? `A${tl},${tl} 0 0 1 ${tl},0` : "",
+    `M${c1.departureInset},0`,
+    `H${w - c2.arrivalInset}`,
+    c2.extra,
+    `V${h - c3.arrivalInset}`,
+    c3.extra,
+    `H${c4.arrivalInset}`,
+    c4.extra,
+    `V${c1.arrivalInset}`,
+    c1.extra,
     "Z",
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** How far a silhouette's Concave/Fill-* corners reach past the nominal w x h box, per side. */
+export function cornerOverflow(corners: Corners, r: number): { left: number; top: number; right: number; bottom: number } {
+  const [tlType, trType, brType, blType] = corners;
+  let left = 0, top = 0, right = 0, bottom = 0;
+
+  if (tlType === "concave" || tlType === "fill-left") left = Math.max(left, r);
+  if (tlType === "concave" || tlType === "fill-top") top = Math.max(top, r);
+  if (trType === "concave" || trType === "fill-left") right = Math.max(right, r);
+  if (trType === "concave" || trType === "fill-top") top = Math.max(top, r);
+  if (brType === "concave" || brType === "fill-left") right = Math.max(right, r);
+  if (brType === "concave" || brType === "fill-top") bottom = Math.max(bottom, r);
+  if (blType === "concave" || blType === "fill-left") left = Math.max(left, r);
+  if (blType === "concave" || blType === "fill-top") bottom = Math.max(bottom, r);
+
+  return { left, top, right, bottom };
 }

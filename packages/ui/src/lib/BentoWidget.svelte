@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { Corners } from "./geometry/silhouette";
+  import { cornerOverflow, type Corners } from "./geometry/silhouette";
 
   interface Props {
     /** SVG path `d` for this widget's silhouette, computed externally (silhouette.ts) — this component never computes geometry itself. */
@@ -8,6 +8,8 @@
     width: number;
     height: number;
     corners: Corners;
+    /** Radius used when `path` was built — must match the value passed to silhouette() so Concave/Fill-* overflow is sized correctly. Defaults to the card/outer token (60). */
+    radius?: number;
     title: string;
     /** Omit to hide the value row entirely (e.g. species cards with no number). */
     value?: string;
@@ -27,6 +29,7 @@
     width,
     height,
     corners,
+    radius = 60,
     title,
     value,
     description,
@@ -40,6 +43,9 @@
   }: Props = $props();
 
   const clipId = `bento-clip-${Math.random().toString(36).slice(2, 9)}`;
+  const overflow = $derived(cornerOverflow(corners, radius));
+  const svgWidth = $derived(width + overflow.left + overflow.right);
+  const svgHeight = $derived(height + overflow.top + overflow.bottom);
 </script>
 
 <div
@@ -50,7 +56,15 @@
   style:width="{width}px"
   style:height="{height}px"
 >
-  <svg class="bento-widget__silhouette" viewBox="0 0 {width} {height}" width={width} height={height} aria-hidden="true">
+  <svg
+    class="bento-widget__silhouette"
+    viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
+    width={svgWidth}
+    height={svgHeight}
+    style:left="{-overflow.left}px"
+    style:top="{-overflow.top}px"
+    aria-hidden="true"
+  >
     <defs>
       <clipPath id={clipId}>
         <path d={path} />
@@ -85,8 +99,9 @@
 
   .bento-widget__silhouette {
     position: absolute;
-    inset: 0;
     z-index: 0;
+    /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
+    pointer-events: none;
   }
 
   .bento-widget__fill {

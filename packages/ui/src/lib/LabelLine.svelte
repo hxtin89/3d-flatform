@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { silhouette, type Corners } from "./geometry/silhouette";
+  import { silhouette, cornerOverflow, type Corners } from "./geometry/silhouette";
 
   interface Props {
     text: string;
@@ -27,6 +27,9 @@
   const height = $derived(Math.ceil(fontSize * 1.2) + 12);
   const width = $derived(textWidth + PADDING_X * 2);
   const path = $derived(silhouette(width, height, corners, radius));
+  const overflow = $derived(cornerOverflow(corners, radius));
+  const svgWidth = $derived(width + overflow.left + overflow.right);
+  const svgHeight = $derived(height + overflow.top + overflow.bottom);
 
   $effect(() => {
     onResize?.({ width, height });
@@ -34,7 +37,15 @@
 </script>
 
 <div class="label-line" data-accent={accent} style:width="{width}px" style:height="{height}px">
-  <svg class="label-line__silhouette" viewBox="0 0 {width} {height}" width={width} height={height} aria-hidden="true">
+  <svg
+    class="label-line__silhouette"
+    viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
+    width={svgWidth}
+    height={svgHeight}
+    style:left="{-overflow.left}px"
+    style:top="{-overflow.top}px"
+    aria-hidden="true"
+  >
     <path d={path} class="label-line__fill" />
   </svg>
   <span class="label-line__text" style:font-size="{fontSize}px" bind:clientWidth={textWidth}>{text}</span>
@@ -48,8 +59,9 @@
 
   .label-line__silhouette {
     position: absolute;
-    inset: 0;
     z-index: 0;
+    /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
+    pointer-events: none;
   }
 
   .label-line__fill {
