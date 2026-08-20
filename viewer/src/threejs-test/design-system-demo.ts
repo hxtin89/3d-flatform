@@ -8,6 +8,11 @@
 // every viewport size rather than inventing a desktop arrangement Figma
 // doesn't have.
 //
+// The frame/notch/docking system lives in design-system-frame.ts and
+// design-system-dock.ts -- this file just wires content to them. See those
+// files' headers for the Figma geometry (the real notched-polygon "S1:
+// Photo" shape) and docking rules this was built from.
+//
 // Not reproduced: the bird/frog/butterfly line-art icons (no icon system
 // wired into @wi/ui content yet) and the frog widget's extra measurement/
 // status block (its own bespoke sub-layout, outside BentoWidget's current
@@ -15,8 +20,14 @@
 import { mount, unmount, type Component } from 'svelte'
 import { LabelLine, BentoGrid, type BentoGridItem } from '@wi/ui'
 import '@wi/tokens/css'
+import { createFrame } from './design-system-frame'
+import { dockElement } from './design-system-dock'
 
 export interface DesignSystemDemo {
+  /** Animates the frame margin in (grey border appears, docked clusters shift to the window edge). */
+  reveal(durationMs?: number): Promise<void>
+  /** Animates the frame margin back to 0 (full-bleed, no grey). */
+  retract(durationMs?: number): Promise<void>
   dispose(): void
 }
 
@@ -38,155 +49,26 @@ const SPECIES_ROW: BentoGridItem[] = [
 ]
 
 /** viewportWidth / referenceFrameWidth, portrait vs. landscape picking the frame -- recomputed on resize. */
-function computeScale(): number {
+function computeContentScale(): number {
   const isPortrait = window.innerHeight >= window.innerWidth
   const reference = isPortrait ? MOBILE_FRAME : DESKTOP_FRAME
   return window.innerWidth / reference.width
 }
 
-// Fixed corner offset for the eagle logo notch, matching where the "Vector"
-// eagle icon sits in Figma (165,30,114,68) in BOTH the mobile and desktop
-// frames -- it's anchored to the corner at a constant pixel offset rather
-// than scaling with the frame, so this stays constant too, not tied to
-// computeScale().
-const LOGO_NOTCH = { x: 20, y: 20, width: 130, height: 74 }
-
-/**
- * "Rahmen" from Figma is a flat gray/200 rectangle sized to the whole
- * frame, sitting behind the photo and every widget -- the "cutout" look
- * there comes entirely from the photo and widgets opaquely stacking on
- * top, not from the rectangle itself having holes.
- *
- * The 3D scene here can't sit "on top of" a DOM backdrop the way a static
- * photo layer can, so this builds Rahmen's grey as an actual frame shape
- * with real holes: a big rounded window over the point-cloud viewport,
- * plus one notch per thing that needs to read clearly against the 3D scene
- * rather than the grey -- the logo corner, the weather cluster, the species
- * cluster. Implemented as a solid gray/200 rect behind an SVG luminance
- * mask (white = grey shows, black = hole) so the notches can freely
- * overlap the window without needing polygon boolean math.
- */
-const SVG_NS = 'http://www.w3.org/2000/svg'
-
-function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}): SVGElementTagNameMap[K] {
-  const el = document.createElementNS(SVG_NS, tag)
-  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value)
-  return el
-}
-
-function createFrameBackdrop() {
-  const svg = svgEl('svg')
-  svg.style.position = 'fixed'
-  svg.style.inset = '0'
-  svg.style.zIndex = '40'
-  svg.style.pointerEvents = 'none'
-
-  const maskId = 'design-system-demo-frame-mask'
-  const mask = svgEl('mask', { id: maskId })
-  const maskBackground = svgEl('rect', { x: '0', y: '0', fill: 'white' })
-  const windowNotch = svgEl('rect', { id: 'frame-window', fill: 'black' })
-  const logoNotch = svgEl('rect', { id: 'frame-logo-notch', fill: 'black' })
-  const weatherNotch = svgEl('rect', { id: 'frame-weather-notch', fill: 'black' })
-  const speciesNotch = svgEl('rect', { id: 'frame-species-notch', fill: 'black' })
-  mask.append(maskBackground, windowNotch, logoNotch, weatherNotch, speciesNotch)
-
-  const gray = svgEl('rect', { x: '0', y: '0', fill: 'var(--gray-200)' })
-  gray.setAttribute('mask', `url(#${maskId})`)
-
-  function resizeSurface() {
-    const w = String(window.innerWidth)
-    const h = String(window.innerHeight)
-    svg.setAttribute('width', w)
-    svg.setAttribute('height', h)
-    maskBackground.setAttribute('width', w)
-    maskBackground.setAttribute('height', h)
-    gray.setAttribute('width', w)
-    gray.setAttribute('height', h)
-  }
-  resizeSurface()
-
-  svg.append(mask, gray)
-  document.body.append(svg)
-  // Observed in testing: a mask="url(#id)" reference set in the same tick
-  // the <mask> element is inserted can render as if the mask weren't there
-  // at all (fully opaque, no cutouts) until something forces the browser to
-  // re-resolve the reference. A same-frame requestAnimationFrame reset
-  // wasn't a long enough delay to fix it reliably; toggling the attribute
-  // off and back on after the page has had a moment to settle is what
-  // verified clean across repeated fresh loads.
-  setTimeout(() => {
-    gray.removeAttribute('mask')
-    gray.setAttribute('mask', `url(#${maskId})`)
-  }, 200)
-
-  const notchElements: Record<string, SVGRectElement> = {
-    'frame-window': windowNotch,
-    'frame-logo-notch': logoNotch,
-    'frame-weather-notch': weatherNotch,
-    'frame-species-notch': speciesNotch,
-  }
-
-  function setNotch(id: string, rect: { x: number; y: number; width: number; height: number }, radius = 32) {
-    const el = notchElements[id]
-    el.setAttribute('x', String(rect.x))
-    el.setAttribute('y', String(rect.y))
-    el.setAttribute('width', String(Math.max(0, rect.width)))
-    el.setAttribute('height', String(Math.max(0, rect.height)))
-    el.setAttribute('rx', String(radius))
-  }
-
-  function updateWindow() {
-    resizeSurface()
-    // Frame border thickness: a real visible border, not a thin sliver --
-    // 12% of the shorter viewport side, so the point-cloud window stays the
-    // dominant focus at every size.
-    const margin = Math.min(window.innerWidth, window.innerHeight) * 0.12
-    setNotch(
-      'frame-window',
-      { x: margin, y: margin, width: window.innerWidth - margin * 2, height: window.innerHeight - margin * 2 },
-      60,
-    )
-    setNotch('frame-logo-notch', LOGO_NOTCH, 16)
-  }
-
-  function updateClusterNotch(id: string, host: HTMLElement) {
-    const rect = host.getBoundingClientRect()
-    setNotch(id, rect, 40)
-  }
-
-  return {
-    updateWindow,
-    updateClusterNotch,
-    dispose() {
-      svg.remove()
-    },
-  }
-}
-
 export function createDesignSystemDemo(): DesignSystemDemo {
-  const frame = createFrameBackdrop()
+  const frame = createFrame()
 
   const weatherHost = document.createElement('div')
-  weatherHost.style.position = 'fixed'
-  weatherHost.style.top = '0'
-  weatherHost.style.right = '0'
-  weatherHost.style.zIndex = '50'
-  weatherHost.style.transformOrigin = 'top right'
-  weatherHost.style.padding = '24px'
   document.body.append(weatherHost)
+  const weatherDock = dockElement(weatherHost, { edge: 'top-right', mode: 'frame' }, frame, 'weather')
 
   const speciesHost = document.createElement('div')
-  speciesHost.style.position = 'fixed'
-  speciesHost.style.bottom = '0'
-  speciesHost.style.left = '50%'
-  speciesHost.style.zIndex = '50'
-  speciesHost.style.transformOrigin = 'bottom center'
   speciesHost.style.display = 'flex'
   speciesHost.style.flexDirection = 'column'
   speciesHost.style.alignItems = 'center'
   speciesHost.style.gap = '12px'
-  speciesHost.style.padding = '24px'
   document.body.append(speciesHost)
+  const speciesDock = dockElement(speciesHost, { edge: 'bottom-center', mode: 'frame' }, frame, 'species')
 
   const labelTarget = document.createElement('div')
   const speciesTarget = document.createElement('div')
@@ -207,29 +89,60 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     props: { items: SPECIES_ROW, radius: 60 },
   })
 
-  function applyLayout() {
-    const scale = computeScale()
-    weatherHost.style.transform = `scale(${scale})`
-    speciesHost.style.transform = `translateX(-50%) scale(${scale})`
-    frame.updateWindow()
-    // Transforms above apply synchronously, so getBoundingClientRect() inside
-    // updateClusterNotch() already reflects the new scale/position -- no need
-    // to wait a frame.
-    frame.updateClusterNotch('frame-weather-notch', weatherHost)
-    frame.updateClusterNotch('frame-species-notch', speciesHost)
+  let revealed = false
+
+  function applyContentScale() {
+    const scale = String(computeContentScale())
+    weatherHost.style.setProperty('--design-system-demo-content-scale', scale)
+    speciesHost.style.setProperty('--design-system-demo-content-scale', scale)
   }
-  applyLayout()
-  window.addEventListener('resize', applyLayout)
+
+  function updateDocks() {
+    weatherDock.update()
+    speciesDock.update()
+  }
+
+  function handleResize() {
+    applyContentScale()
+    frame.handleResize()
+    if (revealed) frame.setMargin(frame.getTargetMargin())
+    updateDocks()
+  }
+
+  applyContentScale()
+  updateDocks()
+  window.addEventListener('resize', handleResize)
+
+  // Auto-reveal once, shortly after mount -- no real "select a habitat"
+  // interaction exists yet to hang this on. reveal()/retract() are exposed
+  // below for whoever wires that interaction later.
+  function reveal(durationMs = 600) {
+    return frame.animateMarginTo(frame.getTargetMargin(), durationMs, updateDocks).then(() => {
+      revealed = true
+    })
+  }
+  function retract(durationMs = 400) {
+    revealed = false
+    return frame.animateMarginTo(0, durationMs, updateDocks)
+  }
+  reveal()
+
+  if (import.meta.env.DEV) {
+    ;(window as any).__designSystemDemo = { frame, reveal, retract }
+  }
 
   return {
+    reveal,
+    retract,
     dispose() {
-      window.removeEventListener('resize', applyLayout)
+      window.removeEventListener('resize', handleResize)
       unmount(label)
       unmount(weatherCluster)
       unmount(speciesRow)
       frame.dispose()
       weatherHost.remove()
       speciesHost.remove()
+      if (import.meta.env.DEV) delete (window as any).__designSystemDemo
     },
   }
 }
