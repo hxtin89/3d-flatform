@@ -43,7 +43,7 @@ function tl(type: CornerType, r: number): CornerResult {
       return { arrivalInset: 0, departureInset: 0, extra: `L0,${-r} A${r},${r} 0 0 0 ${-r},0 L0,0` };
     case "fill-left":
       // Vertical (left) edge is flush, stops early; loop reaches left; horizontal (top) edge is sharp.
-      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${-r},0 L0,0` };
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 0 ${-r},0 L0,0` };
     case "fill-top":
       // Horizontal (top) edge is flush, stops early; loop reaches up; vertical (left) edge is sharp.
       return { arrivalInset: 0, departureInset: r, extra: `L0,${-r} A${r},${r} 0 0 0 ${r},0` };
@@ -77,7 +77,7 @@ function br(type: CornerType, r: number, w: number, h: number): CornerResult {
       return { arrivalInset: 0, departureInset: 0, extra: `L${w + r},${h} A${r},${r} 0 0 1 ${w},${h + r} L${w},${h}` };
     case "fill-left":
       // Vertical (right) edge is flush, stops early; loop reaches right; horizontal (bottom) edge is sharp.
-      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${w + r},${h} L${w},${h}` };
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 0 ${w + r},${h} L${w},${h}` };
     case "fill-top":
       // Horizontal (bottom) edge is flush, starts late; loop reaches down; vertical (right) edge is sharp.
       return { arrivalInset: 0, departureInset: r, extra: `L${w},${h + r} A${r},${r} 0 0 0 ${w - r},${h}` };

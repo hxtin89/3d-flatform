@@ -85,9 +85,13 @@ function currentScale(): number {
 
 /**
  * The window's boundary as a single path: a rounded rect with two notches
- * bitten into its top corners, each notch's inner elbow rounded concavely
- * (same radius, opposite arc sweep from a plain convex corner -- see file
- * header). `tl`/`tr` are how far each notch reaches into the window from
+ * bitten into its top corners. Each notch's inner elbow is a genuine 270deg
+ * reflex vertex: the two adjoining edges reach the vertex exactly, overshoot
+ * past it by r (continuing their own direction of travel), and an r-radius
+ * arc centered ON the vertex connects the two overshoot points -- this is
+ * NOT the same shape as a plain convex corner with the sweep flag flipped
+ * (that reads as smooth but is a much tighter, wrong flare than Figma's
+ * real one). `tl`/`tr` are how far each notch reaches into the window from
  * that corner (width = horizontal reach, height = vertical reach).
  */
 function windowPath(win: Rect, tl: { width: number; height: number }, tr: { width: number; height: number }): string {
@@ -102,8 +106,15 @@ function windowPath(win: Rect, tl: { width: number; height: number }, tr: { widt
     `M${x + tlW + r},${y}`,
     `H${x + w - trW - r}`,
     r > 0 ? `A${r},${r} 0 0 1 ${x + w - trW},${y + r}` : '',
-    `V${y + trH - r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + w - trW + r},${y + trH}` : '',
+    `V${y + trH}`,
+    // Elbow: a genuine 270deg reflex vertex, not a plain radius -- the
+    // adjoining edges reach the vertex exactly and overshoot PAST it (by r,
+    // continuing each edge's own direction of travel) before the arc (radius
+    // r, centered on the vertex itself) connects the two overshoot points.
+    // A direct short arc between pulled-back endpoints (the previous
+    // approach) still reads as "smooth" but is a much tighter, wrong-shaped
+    // flare than Figma's real one -- see this file's header.
+    r > 0 ? `L${x + w - trW},${y + trH + r} A${r},${r} 0 0 1 ${x + w - trW - r},${y + trH} L${x + w - trW},${y + trH}` : '',
     `H${x + w - r}`,
     r > 0 ? `A${r},${r} 0 0 1 ${x + w},${y + trH + r}` : '',
     `V${y + h - R}`,
@@ -112,8 +123,8 @@ function windowPath(win: Rect, tl: { width: number; height: number }, tr: { widt
     R > 0 ? `A${R},${R} 0 0 1 ${x},${y + h - R}` : '',
     `V${y + tlH + r}`,
     r > 0 ? `A${r},${r} 0 0 1 ${x + r},${y + tlH}` : '',
-    `H${x + tlW - r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + tlW},${y + tlH - r}` : '',
+    `H${x + tlW}`,
+    r > 0 ? `L${x + tlW + r},${y + tlH} A${r},${r} 0 0 1 ${x + tlW},${y + tlH + r} L${x + tlW},${y + tlH}` : '',
     `V${y + r}`,
     r > 0 ? `A${r},${r} 0 0 1 ${x + tlW + r},${y}` : '',
     'Z',
