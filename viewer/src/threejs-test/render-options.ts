@@ -42,7 +42,10 @@ export type RenderOptionKey = keyof RenderOptions
 
 export const DEFAULT_OPTIONS: RenderOptions = {
   leafLoading: false,
-  viewAngleError: true,
+  // Off: the cosine correction assumes the points sample a surface, and a canopy is a
+  // volume — see view-angle.ts. It costs real detail even looking straight down,
+  // because only the tile directly beneath the camera is seen face-on.
+  viewAngleError: false,
   sseBrakes: true,
   fogAtmosphere: true,
   daylightGrading: true,

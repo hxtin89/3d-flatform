@@ -55,7 +55,7 @@ export const EXPERIENCE_CONFIG = {
      * so it cannot hunt the way a frame-time loop does.
      */
     viewAngleError: {
-      enabled: true,
+      enabled: false,
       /** Floor for the cosine, so grazing tiles stay loadable. */
       minCosine: 0.1,
     },

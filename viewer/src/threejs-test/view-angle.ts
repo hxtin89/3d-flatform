@@ -22,6 +22,15 @@ import { EXPERIENCE_CONFIG } from './config'
  *
  * Unlike a frame-time feedback this cannot oscillate. It reads only camera and tile
  * geometry, so a still camera gives a still result, every frame.
+ *
+ * DEFAULT OFF, because the premise above is wrong for this data. Foreshortening applies
+ * to a *surface*; a canopy is a ~70 m volume of leaves and trunks, and an isotropic
+ * point cloud does not foreshorten — it looks equally dense from every direction. The
+ * node's geometricError is a 3D spacing, so spacing/distance was already
+ * view-independent and the cosine subtracts detail that was never redundant. Measured
+ * from 212 m straight down it dropped 3.31M points to 2.11M and visibly opened holes in
+ * the canopy. Kept behind the switch only as the basis for a distance-gated version,
+ * where grazing *far* ground is hidden by haze and depth of field anyway.
  */
 export interface ViewAngleSettings {
   enabled: boolean
