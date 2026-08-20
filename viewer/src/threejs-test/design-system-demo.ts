@@ -48,10 +48,13 @@ const SPECIES_ROW: BentoGridItem[] = [
   { id: 'morphofalter', x: 660, y: 270, width: 300, height: 300, title: 'BLAUER MORPHOFALTER', description: 'morpho deidamia', accent: 'grey-light', cornerOverrides: { topLeft: 'none', topRight: 'convex', bottomRight: 'convex', bottomLeft: 'none' } },
 ]
 
+function isPortrait(): boolean {
+  return window.innerHeight >= window.innerWidth
+}
+
 /** viewportWidth / referenceFrameWidth, portrait vs. landscape picking the frame -- recomputed on resize. */
 function computeContentScale(): number {
-  const isPortrait = window.innerHeight >= window.innerWidth
-  const reference = isPortrait ? MOBILE_FRAME : DESKTOP_FRAME
+  const reference = isPortrait() ? MOBILE_FRAME : DESKTOP_FRAME
   return window.innerWidth / reference.width
 }
 
@@ -70,10 +73,6 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   }, frame)
 
   const speciesHost = document.createElement('div')
-  speciesHost.style.display = 'flex'
-  speciesHost.style.flexDirection = 'column'
-  speciesHost.style.alignItems = 'center'
-  speciesHost.style.gap = '12px'
   document.body.append(speciesHost)
   // Species sits fully inside the window (its bottom edge is flush with
   // the window's own bottom edge in Figma) -- a generic notch here is
@@ -84,12 +83,22 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     onRect: (rect) => frame.setNotch('species', rect),
   }, frame)
 
-  const labelTarget = document.createElement('div')
-  const speciesTarget = document.createElement('div')
-  speciesHost.append(labelTarget, speciesTarget)
+  // The habitat label docks to a side border, not the bottom -- left in
+  // portrait, right in landscape, mirroring the same orientation switch
+  // computeContentScale() already uses for MOBILE_FRAME vs DESKTOP_FRAME.
+  // It's a fully solid pill (no corner overrides, so no gaps in its own
+  // silhouette) -- unlike weather/species it never needs a frame notch,
+  // since there's nothing behind it that would need to show through.
+  const labelHost = document.createElement('div')
+  document.body.append(labelHost)
+  const labelDock = dockElement(labelHost, {
+    edge: () => (isPortrait() ? 'left-center' : 'right-center'),
+    mode: 'frame',
+    onRect: () => {},
+  }, frame)
 
   const label = mount(LabelLine as Component, {
-    target: labelTarget,
+    target: labelHost,
     props: { text: 'Dein Habitat', fontSize: 34, accent: 'forest-green' },
   })
 
@@ -99,7 +108,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   })
 
   const speciesRow = mount(BentoGrid as Component, {
-    target: speciesTarget,
+    target: speciesHost,
     props: { items: SPECIES_ROW, radius: 60 },
   })
 
@@ -109,11 +118,13 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     const scale = String(computeContentScale())
     weatherHost.style.setProperty('--design-system-demo-content-scale', scale)
     speciesHost.style.setProperty('--design-system-demo-content-scale', scale)
+    labelHost.style.setProperty('--design-system-demo-content-scale', scale)
   }
 
   function updateDocks() {
     weatherDock.update()
     speciesDock.update()
+    labelDock.update()
   }
 
   function handleResize() {
@@ -180,6 +191,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
       frame.dispose()
       weatherHost.remove()
       speciesHost.remove()
+      labelHost.remove()
       toggleButton.remove()
       if (import.meta.env.DEV) delete (window as any).__designSystemDemo
     },
