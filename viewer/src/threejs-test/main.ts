@@ -2327,11 +2327,20 @@ function updateHud(stats: StreamingStats | null): void {
 }
 
 const foveationReadoutEl = $('#foveationReadout')
+const foveationCentreValEl = $('#foveationCentreVal')
+const foveationEdgeValEl = $('#foveationEdgeVal')
 let lastFoveationTilesMs = 0
 
 /** Pitch next to the resulting error targets, so a liked slider position can be
  * written down against the camera angle that produced it. */
 function updateFoveationReadout(): void {
+  // The two factors multiply a base that moves with camera range, so the multiplier
+  // alone is not a number anyone can act on. Written here rather than in the slider's
+  // own format callback because the base changes without the slider being touched.
+  foveationCentreValEl.textContent =
+    `${foveationSettings.centreFactor.toFixed(2)}× · SSE ${(sseAuto * foveationSettings.centreFactor).toFixed(1)}`
+  foveationEdgeValEl.textContent =
+    `${foveationSettings.edgeFactor.toFixed(2)}× · SSE ${(sseAuto * foveationSettings.edgeFactor).toFixed(1)}`
   if (!foveation) { foveationReadoutEl.textContent = 'not streaming yet'; return }
   if (!foveationSettings.enabled) {
     // The sliders write their values whether or not the mode is on, so the readout
