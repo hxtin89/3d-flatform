@@ -24,7 +24,10 @@ export const EXPERIENCE_CONFIG = {
     cloudRevealProgress: { strong: 0.55, medium: 0.85, constrained: 1 },
   },
   lod: {
-    // Height over the point-cloud floor at which each density band takes over.
+    // Distance at which each density band takes over. Named "Height" because the
+    // metric used to be plain altitude; it is now the slant range to the ground ahead
+    // (see maxTiltRangeFactor), so these edges are only heights when looking straight
+    // down. At 45 degrees the detail edge below is reached at 106 m of altitude.
     // Distance alone decides density; frame rate is paid for elsewhere (vignette
     // mask, parrot count, cloud quality).
     // Must stay above navigation.zoomStopHeightM, otherwise the finest band is
@@ -46,6 +49,16 @@ export const EXPERIENCE_CONFIG = {
     aphOverviewSse: 16,
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
+    /**
+     * Ceiling on how much the view angle may stretch the refinement distance.
+     *
+     * The distance is the slant range to the ground ahead, altitude / sin(pitch),
+     * which goes to infinity as the camera levels out. The raycast version of this
+     * was dropped for exactly that reason — it swung kilometres per degree near the
+     * horizon. Clamping the sine instead keeps the metric analytic and bounded: at 6
+     * the range can reach six times the altitude and no further.
+     */
+    maxTiltRangeFactor: 6,
     /**
      * Pin the screen-space error target instead of taking it from the band ladder.
      * A testing aid: the ladder plus its hysteresis means the same camera height can

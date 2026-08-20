@@ -1410,9 +1410,16 @@ function updateMaskFollow(): void {
   else followEnu.lerp(hit2d, 0.2)
   uniforms.maskCenter.value.copy(followEnu)
 
-  // Refinement distance: height over the cloud floor plus how far outside the
-  // survey footprint the camera sits. The screen-centre hit above is useless
-  // here — pointed at the horizon it swings by kilometres per degree of pitch.
+  // Refinement distance: the slant range to the ground the camera is pointed at, plus
+  // how far outside the survey footprint it sits.
+  //
+  // Altitude alone was pitch-blind. Rotating in place at 135 m, the ground in frame
+  // moved from 437 m to 1739 m away while the range stayed at 135 and the band never
+  // budged — so a near-nadir view, where you are genuinely closest to what you see,
+  // got the same budget as a view down the horizon. altitude / sin(pitch) is that
+  // distance in closed form: it matches the screen-centre raycast where the raycast is
+  // trustworthy, and unlike the raycast it is clamped rather than running off to
+  // infinity as the camera levels out.
   if (enuFrameReady) {
     worldToEnu(camera.position, cloudRangeEnu)
     const altitude = Math.max(0, cloudRangeEnu.z - areaMinZ)
@@ -1421,9 +1428,15 @@ function updateMaskFollow(): void {
       Math.hypot(cloudRangeEnu.x - cloudCenterEnu.x, cloudRangeEnu.y - cloudCenterEnu.y)
       - navigationBoundsRadius,
     )
-    cameraCloudRange = Math.hypot(altitude, outside)
+    const tiltSin = Math.max(
+      Math.sin(THREE.MathUtils.degToRad(cameraPitchDeg())),
+      1 / EXPERIENCE_CONFIG.lod.maxTiltRangeFactor,
+    )
+    cameraCloudRange = Math.hypot(altitude / tiltSin, outside)
     cameraAltitude = altitude
-    rangeDebug = { altitude, outside, range: cameraCloudRange, groundRange: cameraGroundRange }
+    rangeDebug = {
+      altitude, outside, range: cameraCloudRange, groundRange: cameraGroundRange,
+    }
   } else {
     cameraCloudRange = cameraGroundRange
   }
