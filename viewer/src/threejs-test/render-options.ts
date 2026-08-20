@@ -1,7 +1,7 @@
 /**
  * Runtime toggles for every performance optimisation layered on top of the core
- * zoom-dependent density (the SSE band ladder in adaptive-quality.ts — that one
- * is the comparison subject against the Cesium viewer and never switches off).
+ * zoom-dependent density (the SSE band ladder in adaptive-quality.ts, which the
+ * frame-time feedback below may bend but which is never switched off).
  *
  * Two-level state: `requested` holds the user's individual toggle choices;
  * `effective()` is what the app actually applies. Compare mode overrides
@@ -12,6 +12,8 @@
 export interface RenderOptions {
   /** Diagnostic APH mode: refine every leaf in the active camera frustum. */
   leafLoading: boolean
+  /** Frame-time feedback on the SSE band: coarser when slow, finer when there is room. */
+  qualityFeedback: boolean
   /** Boot-SSE brake (256 while loading) + flight SSE floor/ramp. */
   sseBrakes: boolean
   /** Distance fog + per-preset far-plane scaling (shortens the view). */
@@ -40,6 +42,7 @@ export type RenderOptionKey = keyof RenderOptions
 
 export const DEFAULT_OPTIONS: RenderOptions = {
   leafLoading: false,
+  qualityFeedback: true,
   sseBrakes: true,
   fogAtmosphere: true,
   daylightGrading: true,
@@ -60,6 +63,9 @@ export const DEFAULT_OPTIONS: RenderOptions = {
  * band ladder, navigation and (per user decision) the basemap remain. */
 export const COMPARE_PROFILE: RenderOptions = {
   leafLoading: false,
+  // A fixed ladder is the point of this profile: a measurement needs the same target
+  // at the same camera position every time.
+  qualityFeedback: false,
   sseBrakes: false,
   fogAtmosphere: false,
   daylightGrading: false,
@@ -89,6 +95,13 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '🌲 Leaves · All visible',
     offText: '🌲 Leaves · Normal',
     note: 'APH diagnostic: refine every leaf in the camera view; disables the mask gate and keeps up to 16 GiB resident',
+  },
+  {
+    key: 'qualityFeedback',
+    label: 'Frame-time feedback',
+    onText: '⟲ Feedback · On',
+    offText: '⟲ Feedback · Off',
+    note: 'Lets the frame clock bend the SSE band — coarser when frames are slow, finer when there is headroom. Off pins the band to camera distance alone, which mispredicts cost by 5x between a nadir and a tilted view',
   },
   {
     key: 'sseBrakes',

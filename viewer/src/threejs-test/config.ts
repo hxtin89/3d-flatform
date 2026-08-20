@@ -50,6 +50,41 @@ export const EXPERIENCE_CONFIG = {
     // Margin a band keeps past its edge, so drift cannot flip the level.
     bandHysteresis: 0.15,
     /**
+     * Frame-time feedback on the screen-space error target.
+     *
+     * The band ladder is an open-loop guess from camera distance, and measurement
+     * shows it mispredicts cost by a factor of five: 11.2M points run at 60 fps
+     * looking straight down from 699 m and at 12 fps from 80 m tilted 31 degrees,
+     * because the tilted view draws near points as large quads. Distance cannot see
+     * that; the frame clock can.
+     *
+     * The gain multiplies the band. Above 1 it coarsens under load, which is what the
+     * controller always computed and nobody applied. Below 1 it spends headroom the
+     * ladder leaves on the table — at 699 m nadir the ladder asks for SSE 8 where
+     * SSE 2 held 60 fps.
+     */
+    qualityFeedback: {
+      /** Finest the gain may reach, i.e. two band steps below the ladder. */
+      minGain: 0.25,
+      /** Coarsest, unchanged from the value the controller already used. */
+      maxGain: 4,
+      /** Comfortable samples in a row before asking for more detail. */
+      reliefSamples: 4,
+      /** How much one relief step gives. Deliberately slower than the tightening
+       * steps: streaming takes seconds to catch up, and overshooting is visible. */
+      reliefStep: 0.8,
+      /**
+       * Quiet period after any tightening before more detail may be requested again.
+       *
+       * Without it the loop hunts. On a vsync-capped display "fps is at target" says
+       * nothing about how much room is left, so every comfortable sample immediately
+       * asks for more, walks back into the same wall, and the density visibly pulses —
+       * measured swinging between 6.1M and 9.7M points in one tilted view. The
+       * cooldown makes the loop approach a limit once instead of oscillating about it.
+       */
+      reliefCooldownMs: 8_000,
+    },
+    /**
      * Ceiling on how much the view angle may stretch the refinement distance.
      *
      * The distance is the slant range to the ground ahead, altitude / sin(pitch),

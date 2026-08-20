@@ -13,6 +13,11 @@ export interface AdaptiveQualitySample {
 export interface AdaptiveQualityState {
   sse: number
   baseSse: number
+  /**
+   * Multiplier the frame clock puts on the band. Above 1 coarsens under load, below 1
+   * spends headroom the ladder leaves unused. Applied only while the feedback is
+   * switched on; tracked either way, so the HUD can show what it would do.
+   */
   pressure: number
   /** 0 = detail, 1 = explore, 2 = overview — chosen purely by camera height. */
   band: number
@@ -24,6 +29,8 @@ export interface AdaptiveQualityState {
 const HARD_POINTS = 24_000_000
 const TARGET_FPS = 58
 const MAX_SSE = 512
+const MIN_SSE = 0.5
+const FEEDBACK = EXPERIENCE_CONFIG.lod.qualityFeedback
 
 const BAND_SSE = [
   EXPERIENCE_CONFIG.lod.detailSse,
@@ -46,14 +53,25 @@ const BAND_EDGES = [
 const BAND_HYSTERESIS = EXPERIENCE_CONFIG.lod.bandHysteresis
 
 /**
- * Density is a pure function of camera distance. The controller additionally
- * tracks a `pressure` value from frame time, which callers spend on the cheap
- * knobs — vignette mask, parrot count, cloud quality, view distance — never on
- * point density.
+ * Density is the camera-distance band, multiplied by a gain the frame clock sets.
+ *
+ * The band alone is open loop, and it mispredicts cost badly: the same 11.2M points
+ * hold 60 fps looking straight down from 699 m and collapse to 12 fps from 80 m
+ * tilted 31 degrees, because a tilted view draws near points as large quads. Distance
+ * cannot see that. So the gain closes the loop — coarser when frames are slow, finer
+ * when they are not — and `setFeedbackEnabled` turns it off for a fixed, reproducible
+ * ladder when a measurement needs one.
+ *
+ * The tightening steps are fast and the relief step is slow on purpose. Streaming
+ * takes seconds to answer a finer target, and asking for too much is visible while
+ * asking for too little is not.
  */
 export class AdaptiveQualityController {
   private pressure = 1
   private pressureFloor = 1
+  private comfortableSamples = 0
+  private tightenedAt = 0
+  private feedback = false
   private lastUpdate = 0
   private sse = 256
   private band: number
@@ -99,22 +117,55 @@ export class AdaptiveQualityController {
     this.pressure = Math.max(this.pressure, this.pressureFloor)
   }
 
+  setFeedbackEnabled(enabled: boolean): void {
+    if (enabled === this.feedback) return
+    this.feedback = enabled
+    // Switching off has to release the gain too, or the ladder would stay bent at
+    // whatever the loop had last decided.
+    if (!enabled) { this.pressure = Math.max(1, this.pressureFloor); this.comfortableSamples = 0 }
+  }
+
+  /**
+   * Floor for the gain. A device the loader benchmark already found weak keeps its
+   * bias and never asks for more than the ladder offers; anything else may.
+   */
+  private gainFloor(): number {
+    return this.pressureFloor > 1 ? this.pressureFloor : FEEDBACK.minGain
+  }
+
   update(sample: AdaptiveQualitySample): AdaptiveQualityState {
     const baseSse = this.bandSse(sample.cameraGroundRange)
 
     if (sample.now - this.lastUpdate >= 750) {
       this.lastUpdate = sample.now
       const hasFps = sample.fps > 0
+      const floor = this.gainFloor()
       if ((hasFps && sample.fps < 45) || sample.visiblePoints > HARD_POINTS) {
-        this.pressure = Math.min(4, this.pressure * 1.6)
+        this.pressure = Math.min(FEEDBACK.maxGain, Math.max(this.pressure, 1) * 1.6)
+        this.comfortableSamples = 0
+        this.tightenedAt = sample.now
       } else if (hasFps && sample.fps < TARGET_FPS - 3) {
-        this.pressure = Math.min(4, this.pressure * 1.25)
+        this.pressure = Math.min(FEEDBACK.maxGain, Math.max(this.pressure, 1) * 1.25)
+        this.comfortableSamples = 0
+        this.tightenedAt = sample.now
       } else if (!hasFps || sample.fps >= TARGET_FPS) {
-        this.pressure = Math.max(this.pressureFloor, this.pressure * 0.85)
+        if (this.pressure > 1) {
+          // Give back what load took before asking for anything extra.
+          this.pressure = Math.max(1, this.pressure * 0.85)
+          this.comfortableSamples = 0
+        } else {
+          this.comfortableSamples++
+          const settled = sample.now - this.tightenedAt >= FEEDBACK.reliefCooldownMs
+          if (settled && this.comfortableSamples >= FEEDBACK.reliefSamples) {
+            this.comfortableSamples = 0
+            this.pressure = Math.max(floor, this.pressure * FEEDBACK.reliefStep)
+          }
+        }
       }
     }
 
-    this.sse = Math.min(MAX_SSE, baseSse)
+    const gain = this.feedback ? this.pressure : 1
+    this.sse = Math.min(MAX_SSE, Math.max(MIN_SSE, baseSse * gain))
     return { sse: this.sse, baseSse, pressure: this.pressure, band: this.band }
   }
 }
