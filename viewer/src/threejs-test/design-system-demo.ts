@@ -44,17 +44,127 @@ function computeScale(): number {
   return window.innerWidth / reference.width
 }
 
+// Fixed corner offset for the eagle logo notch, matching where the "Vector"
+// eagle icon sits in Figma (165,30,114,68) in BOTH the mobile and desktop
+// frames -- it's anchored to the corner at a constant pixel offset rather
+// than scaling with the frame, so this stays constant too, not tied to
+// computeScale().
+const LOGO_NOTCH = { x: 20, y: 20, width: 130, height: 74 }
+
+/**
+ * "Rahmen" from Figma is a flat gray/200 rectangle sized to the whole
+ * frame, sitting behind the photo and every widget -- the "cutout" look
+ * there comes entirely from the photo and widgets opaquely stacking on
+ * top, not from the rectangle itself having holes.
+ *
+ * The 3D scene here can't sit "on top of" a DOM backdrop the way a static
+ * photo layer can, so this builds Rahmen's grey as an actual frame shape
+ * with real holes: a big rounded window over the point-cloud viewport,
+ * plus one notch per thing that needs to read clearly against the 3D scene
+ * rather than the grey -- the logo corner, the weather cluster, the species
+ * cluster. Implemented as a solid gray/200 rect behind an SVG luminance
+ * mask (white = grey shows, black = hole) so the notches can freely
+ * overlap the window without needing polygon boolean math.
+ */
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}): SVGElementTagNameMap[K] {
+  const el = document.createElementNS(SVG_NS, tag)
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value)
+  return el
+}
+
+function createFrameBackdrop() {
+  const svg = svgEl('svg')
+  svg.style.position = 'fixed'
+  svg.style.inset = '0'
+  svg.style.zIndex = '40'
+  svg.style.pointerEvents = 'none'
+
+  const maskId = 'design-system-demo-frame-mask'
+  const mask = svgEl('mask', { id: maskId })
+  const maskBackground = svgEl('rect', { x: '0', y: '0', fill: 'white' })
+  const windowNotch = svgEl('rect', { id: 'frame-window', fill: 'black' })
+  const logoNotch = svgEl('rect', { id: 'frame-logo-notch', fill: 'black' })
+  const weatherNotch = svgEl('rect', { id: 'frame-weather-notch', fill: 'black' })
+  const speciesNotch = svgEl('rect', { id: 'frame-species-notch', fill: 'black' })
+  mask.append(maskBackground, windowNotch, logoNotch, weatherNotch, speciesNotch)
+
+  const gray = svgEl('rect', { x: '0', y: '0', fill: 'var(--gray-200)' })
+  gray.setAttribute('mask', `url(#${maskId})`)
+
+  function resizeSurface() {
+    const w = String(window.innerWidth)
+    const h = String(window.innerHeight)
+    svg.setAttribute('width', w)
+    svg.setAttribute('height', h)
+    maskBackground.setAttribute('width', w)
+    maskBackground.setAttribute('height', h)
+    gray.setAttribute('width', w)
+    gray.setAttribute('height', h)
+  }
+  resizeSurface()
+
+  svg.append(mask, gray)
+  document.body.append(svg)
+  // Observed in testing: a mask="url(#id)" reference set in the same tick
+  // the <mask> element is inserted can render as if the mask weren't there
+  // at all (fully opaque, no cutouts) until something forces the browser to
+  // re-resolve the reference. A same-frame requestAnimationFrame reset
+  // wasn't a long enough delay to fix it reliably; toggling the attribute
+  // off and back on after the page has had a moment to settle is what
+  // verified clean across repeated fresh loads.
+  setTimeout(() => {
+    gray.removeAttribute('mask')
+    gray.setAttribute('mask', `url(#${maskId})`)
+  }, 200)
+
+  const notchElements: Record<string, SVGRectElement> = {
+    'frame-window': windowNotch,
+    'frame-logo-notch': logoNotch,
+    'frame-weather-notch': weatherNotch,
+    'frame-species-notch': speciesNotch,
+  }
+
+  function setNotch(id: string, rect: { x: number; y: number; width: number; height: number }, radius = 32) {
+    const el = notchElements[id]
+    el.setAttribute('x', String(rect.x))
+    el.setAttribute('y', String(rect.y))
+    el.setAttribute('width', String(Math.max(0, rect.width)))
+    el.setAttribute('height', String(Math.max(0, rect.height)))
+    el.setAttribute('rx', String(radius))
+  }
+
+  function updateWindow() {
+    resizeSurface()
+    // Frame border thickness: a real visible border, not a thin sliver --
+    // 12% of the shorter viewport side, so the point-cloud window stays the
+    // dominant focus at every size.
+    const margin = Math.min(window.innerWidth, window.innerHeight) * 0.12
+    setNotch(
+      'frame-window',
+      { x: margin, y: margin, width: window.innerWidth - margin * 2, height: window.innerHeight - margin * 2 },
+      60,
+    )
+    setNotch('frame-logo-notch', LOGO_NOTCH, 16)
+  }
+
+  function updateClusterNotch(id: string, host: HTMLElement) {
+    const rect = host.getBoundingClientRect()
+    setNotch(id, rect, 40)
+  }
+
+  return {
+    updateWindow,
+    updateClusterNotch,
+    dispose() {
+      svg.remove()
+    },
+  }
+}
+
 export function createDesignSystemDemo(): DesignSystemDemo {
-  // "Rahmen" from Figma: a gray/200 rectangle sized to the whole frame,
-  // sitting behind the photo and every widget -- here, behind the whole
-  // viewport, above the 3D canvas.
-  const backdrop = document.createElement('div')
-  backdrop.id = 'design-system-demo-backdrop'
-  backdrop.style.position = 'fixed'
-  backdrop.style.inset = '0'
-  backdrop.style.zIndex = '40'
-  backdrop.style.background = 'var(--gray-200)'
-  document.body.append(backdrop)
+  const frame = createFrameBackdrop()
 
   const weatherHost = document.createElement('div')
   weatherHost.style.position = 'fixed'
@@ -97,21 +207,27 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     props: { items: SPECIES_ROW, radius: 60 },
   })
 
-  function applyScale() {
+  function applyLayout() {
     const scale = computeScale()
     weatherHost.style.transform = `scale(${scale})`
     speciesHost.style.transform = `translateX(-50%) scale(${scale})`
+    frame.updateWindow()
+    // Transforms above apply synchronously, so getBoundingClientRect() inside
+    // updateClusterNotch() already reflects the new scale/position -- no need
+    // to wait a frame.
+    frame.updateClusterNotch('frame-weather-notch', weatherHost)
+    frame.updateClusterNotch('frame-species-notch', speciesHost)
   }
-  applyScale()
-  window.addEventListener('resize', applyScale)
+  applyLayout()
+  window.addEventListener('resize', applyLayout)
 
   return {
     dispose() {
-      window.removeEventListener('resize', applyScale)
+      window.removeEventListener('resize', applyLayout)
       unmount(label)
       unmount(weatherCluster)
       unmount(speciesRow)
-      backdrop.remove()
+      frame.dispose()
       weatherHost.remove()
       speciesHost.remove()
     },
