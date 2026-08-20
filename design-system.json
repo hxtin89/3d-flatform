@@ -77,8 +77,8 @@
   "sync": {
     "platforms": ["vanilla-css"],
     "customAdapters": [],
-    "lastRun": "2026-08-20T00:00:00.000Z",
-    "note": "Ad-hoc: packages/tokens/scripts/generate.mjs from a manual Figma variable snapshot (tokens-raw.json), not yet the formal token-sync-layer/DTCG pipeline. Re-running sync-figma-tokens later should replace this with the real thing."
+    "lastRun": "2026-08-20T12:23:00.000Z",
+    "note": "Verified 2026-08-20: fetched all 11 variable collections live from Figma (figma_get_variables) and diffed every value against packages/tokens/scripts/tokens-raw.json -- byte-for-byte identical, no drift. Regenerated CSS anyway as an idempotency check (no diff). The pipeline is still ad-hoc (generate.mjs reads a manual JSON snapshot, not a live pull on every run) rather than the formal token-sync-layer/DTCG pipeline, but the snapshot itself is now confirmed current as of this timestamp."
   },
   "storybook": {
     "initialized": true,
