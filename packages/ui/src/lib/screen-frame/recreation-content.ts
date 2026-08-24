@@ -16,11 +16,16 @@
 // regardless of which one is currently expanded (see BentoGridItem's
 // `expandedHeight` doc for exactly how the grow-up math works).
 //
-// No cornerOverrides here (unlike WEATHER_CLUSTER) -- Figma's static file
-// only ever shows ONE arrangement (Giftfrosch selected), so hand-pinned
-// corners tuned for that one arrangement would be wrong for the other two
-// once selection is interactive. solveDocking's adjacency solver picks
-// correct corners for whichever item is currently expanded instead.
+// cornerOverrides below are pinned only where solveDocking's plain-T-junction
+// default ('convex') diverges from Figma's real authored Corner atoms
+// (confirmed against Figma's own component instances, Giftfrosch-selected
+// arrangement): Vogel's top-left is a Fill-Top bulge (not a plain round),
+// Giftfrosch's bottom-right is a Fill-Left bulge toward Morphofalter, and
+// Morphofalter's left-side corners (touching Giftfrosch) are flush/sharp
+// ('none'), not rounded. These three are pinned; every other corner in this
+// row keeps solveDocking's solved default since Figma's static file only
+// ever shows ONE arrangement (Giftfrosch selected) and those corners were
+// not independently verified for the other two expand states.
 //
 // Selected-state measurement/status/caption content verified directly off
 // the real Figma text nodes. icon/image below are line-art/illustration
@@ -50,7 +55,7 @@ const SPECIES_EXPANDED_HEIGHT = 570;
 
 export const SPECIES_ROW: BentoGridItem[] = [
   // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", icon: birdIcon },
+  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", icon: birdIcon, cornerOverrides: { topLeft: "fill-top" } },
   // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570 (selected/expanded) -- measurement/
   // status/caption facts read off the actual Figma text nodes (25556:1315/1317/1314).
   {
@@ -71,7 +76,8 @@ export const SPECIES_ROW: BentoGridItem[] = [
     accent: "grey-dark",
     icon: frogIcon,
     image: giftfroschImage,
+    cornerOverrides: { bottomRight: "fill-left" },
   },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
-  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", icon: butterflyIcon },
+  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", icon: butterflyIcon, cornerOverrides: { topLeft: "none", bottomLeft: "none" } },
 ];
