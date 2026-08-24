@@ -1,4 +1,5 @@
 export { default as BentoWidget } from "./BentoWidget.svelte";
+export { default as SpeciesWidget } from "./SpeciesWidget.svelte";
 export { default as LabelLine } from "./LabelLine.svelte";
 export { default as BentoGrid, type BentoGridItem } from "./BentoGrid.svelte";
 export { silhouette, cornerOverflow } from "./geometry/silhouette";

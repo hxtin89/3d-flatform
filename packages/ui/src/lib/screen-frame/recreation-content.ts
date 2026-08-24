@@ -4,10 +4,14 @@
 // Screen.stories.ts examples, and the viewer app's live demo all render the
 // same real data instead of three hand-copied arrays drifting apart.
 //
-// Not reproduced: the bird/frog/butterfly line-art icons (no icon system
-// wired into @wi/ui content yet) and the frog widget's extra measurement/
-// status block (its own bespoke sub-layout, outside BentoWidget's title/
-// value/description shape).
+// Species widgets use SpeciesWidget (not BentoWidget) via `kind: "species"` --
+// Vogel/Morphofalter are the unselected state (icon slot, left empty -- no
+// icon system wired in yet), Giftfrosch is the selected state (measurement/
+// status/caption facts + image slot, also left empty -- no photo asset
+// pipeline yet). Content verified directly off the real Figma text nodes.
+//
+// Not reproduced: the bird/frog/butterfly line-art icons and the frog's real
+// photo (no icon system / image assets wired into @wi/ui yet).
 import type { BentoGridItem } from "../BentoGrid.svelte";
 
 export const WEATHER_CLUSTER: BentoGridItem[] = [
@@ -21,9 +25,25 @@ export const WEATHER_CLUSTER: BentoGridItem[] = [
 
 export const SPECIES_ROW: BentoGridItem[] = [
   // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-  { id: "vogel", x: 0, y: 270, width: 300, height: 300, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "none", bottomLeft: "convex" } },
-  // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570
-  { id: "giftfrosch", x: 300, y: 0, width: 360, height: 570, title: "SIRA GIFTFROSCH", description: "ranitomeya sirensis", accent: "grey-dark", cornerOverrides: { topLeft: "convex", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
+  { id: "vogel", x: 0, y: 270, width: 300, height: 300, kind: "species", title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "none", bottomLeft: "convex" } },
+  // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570 -- selected state, with the real
+  // measurement/status/caption facts read off the actual Figma text nodes (25556:1315/1317/1314).
+  {
+    id: "giftfrosch",
+    x: 300,
+    y: 0,
+    width: 360,
+    height: 570,
+    kind: "species",
+    title: "SIRA GIFTFROSCH",
+    description: "ranitomeya sirensis",
+    selected: true,
+    measurement: "15-17mm",
+    status: "Schutzstatus: am Wenigsten bedroht",
+    caption: "Nur die männlichen Frösche kümmern sich um den Nachwuchs",
+    accent: "grey-dark",
+    cornerOverrides: { topLeft: "convex", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" },
+  },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
-  { id: "morphofalter", x: 660, y: 270, width: 300, height: 300, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", cornerOverrides: { topLeft: "none", topRight: "convex", bottomRight: "convex", bottomLeft: "none" } },
+  { id: "morphofalter", x: 660, y: 270, width: 300, height: 300, kind: "species", title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", cornerOverrides: { topLeft: "none", topRight: "convex", bottomRight: "convex", bottomLeft: "none" } },
 ];

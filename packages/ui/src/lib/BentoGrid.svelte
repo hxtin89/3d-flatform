@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import BentoWidget from "./BentoWidget.svelte";
+  import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
   import { silhouette } from "./geometry/silhouette";
 
-  /** A grid rect plus the content BentoWidget needs to render it. */
+  /** A grid rect plus the content BentoWidget (or SpeciesWidget, when kind: "species") needs to render it. */
   export interface BentoGridItem extends GridWidget {
     title?: string;
     value?: string;
@@ -13,6 +14,14 @@
     icon?: Snippet;
     hasImage?: boolean;
     imageSrc?: string;
+    /** Renders as SpeciesWidget instead of BentoWidget -- see that component for its distinct selected/unselected design. Defaults to "bento". */
+    kind?: "bento" | "species";
+    /** kind: "species" only -- see SpeciesWidget's props for what each does. */
+    selected?: boolean;
+    measurement?: string;
+    status?: string;
+    caption?: string;
+    image?: Snippet;
   }
 
   interface Props {
@@ -35,20 +44,39 @@
   {#each items as item, i (item.id)}
     {@const result = solved[i]}
     <div class="bento-grid__cell" style:left="{item.x}px" style:top="{item.y}px">
-      <BentoWidget
-        path={silhouette(item.width, item.height, result.corners, radius)}
-        width={item.width}
-        height={item.height}
-        corners={result.corners}
-        {radius}
-        title={item.title}
-        value={item.value}
-        description={item.description}
-        icon={item.icon}
-        hasImage={item.hasImage}
-        imageSrc={item.imageSrc}
-        accent={item.accent}
-      />
+      {#if item.kind === "species"}
+        <SpeciesWidget
+          path={silhouette(item.width, item.height, result.corners, radius)}
+          width={item.width}
+          height={item.height}
+          corners={result.corners}
+          {radius}
+          title={item.title}
+          description={item.description}
+          selected={item.selected}
+          measurement={item.measurement}
+          status={item.status}
+          caption={item.caption}
+          icon={item.icon}
+          image={item.image}
+          accent={item.accent}
+        />
+      {:else}
+        <BentoWidget
+          path={silhouette(item.width, item.height, result.corners, radius)}
+          width={item.width}
+          height={item.height}
+          corners={result.corners}
+          {radius}
+          title={item.title}
+          value={item.value}
+          description={item.description}
+          icon={item.icon}
+          hasImage={item.hasImage}
+          imageSrc={item.imageSrc}
+          accent={item.accent}
+        />
+      {/if}
     </div>
   {/each}
 </div>
