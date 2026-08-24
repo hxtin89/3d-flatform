@@ -68,6 +68,16 @@
     fill: var(--label-fill);
   }
 
+  /* Figma's real "PERUANISCHER"/"AUWALD" label pills (Frame 1 Desktop's
+     composited render, not the isolated component thumbnail) sit on a dark
+     forest-green fill and use white text -- --text-primary alone renders
+     near-illegible dark-grey-on-dark-green. Same class of fix as
+     SpeciesWidget's grey-dark override, using the semantic role built for
+     exactly this (text-on-emphasis) rather than a raw gray literal. */
+  .label-line[data-accent="forest-green"] .label-line__text {
+    color: var(--text-on-emphasis);
+  }
+
   .label-line__text {
     position: relative;
     z-index: 1;

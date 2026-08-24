@@ -154,11 +154,12 @@
   /* --text-secondary (gray-700) happens to equal grey-dark's own accent-fill
      value -- description/fact text would otherwise be invisible (same color
      as its own background). Figma's real widgets bind dark-fill text to a
-     dedicated "text/onEmphasis" role for exactly this reason; this codebase
-     doesn't have that role yet, so this is scoped to the one accent that
-     actually collides rather than reworking text-color tokens more broadly. */
+     dedicated "text/onEmphasis" role for exactly this reason -- the token
+     package already has that role (color-semantic.css's --text-on-emphasis),
+     it just wasn't reached for here; there's no "secondary on emphasis"
+     equivalent yet, so --gray-300 stays a scoped literal for that one. */
   .species-widget[data-accent="grey-dark"] {
-    --text-primary: var(--gray-50);
+    --text-primary: var(--text-on-emphasis);
     --text-secondary: var(--gray-300);
   }
 
