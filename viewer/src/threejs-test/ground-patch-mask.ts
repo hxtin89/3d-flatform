@@ -227,6 +227,25 @@ export function createGroundPatchMask(opts: {
 
   const localToEnu = new THREE.Matrix4()
 
+  /**
+   * Are this carrier's points actually being drawn?
+   *
+   * A tile is handed over when it *loads*, which is earlier than when it is shown, so
+   * without this the patch can appear before the canopy under it. Parentage is not the
+   * test — the renderer attaches a tile's scene at load and signals display separately,
+   * by toggling `visible` on it. So every ancestor has to be visible, and the walk has
+   * to reach a Scene.
+   */
+  function isDisplayed(object: THREE.Object3D): boolean {
+    let node: THREE.Object3D | null = object
+    while (node) {
+      if (!node.visible) return false
+      if ((node as any).isScene) return true
+      node = node.parent
+    }
+    return false
+  }
+
   /** ENU x of a local point, from the matrix elements directly. */
   function enuX(a: ArrayLike<number>, o: number, e: number[]): number {
     return e[0] * a[o] + e[4] * a[o + 1] + e[8] * a[o + 2] + e[12]
@@ -431,10 +450,19 @@ export function createGroundPatchMask(opts: {
     update() {
       if (!enuInverse || (!queue.length && !dirtyCells.size && !indexDirty)) return
       let budget = pointsPerFrame
+      // Tiles that are loaded but not yet shown go to the back rather than blocking the
+      // queue. Bounded by the queue length so a frame where nothing is ready costs one
+      // pass instead of spinning.
+      let deferrals = queue.length
       while (budget > 0 && queue.length) {
         const object = queue[0]
         const position = (object as any).geometry?.getAttribute?.('position')
         if (!position) { queue.shift(); cursor = 0; continue }
+        if (cursor === 0 && !isDisplayed(object)) {
+          if (deferrals-- <= 0) break
+          queue.push(queue.shift() as THREE.Object3D)
+          continue
+        }
         // Composed now rather than at load time: the tile's place in the world is
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
