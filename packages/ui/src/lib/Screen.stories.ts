@@ -32,3 +32,28 @@ export const Mobile: Story = {
 export const Desktop: Story = {
   args: { width: 1280, height: 720 },
 };
+
+// Responsiveness sweep -- Mobile/Desktop above only ever verified two exact
+// sizes. These cover the range a real browser window gets resized through:
+// very narrow, very wide, near-square (where ScreenFrame's species/label
+// docks have to fall back from the tall-frame arrangement to the wide-frame
+// one -- see dock.ts's fitsPortraitArrangement), and two in-between sizes.
+export const NarrowPortrait: Story = {
+  args: { width: 320, height: 844 },
+};
+
+export const WideLandscape: Story = {
+  args: { width: 1920, height: 1080 },
+};
+
+export const NearSquare: Story = {
+  args: { width: 900, height: 900 },
+};
+
+export const MediumPortrait: Story = {
+  args: { width: 600, height: 900 },
+};
+
+export const MediumLandscape: Story = {
+  args: { width: 1500, height: 850 },
+};

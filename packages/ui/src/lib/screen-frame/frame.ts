@@ -86,9 +86,32 @@ const FIGMA_MARGIN_PX = 60
 const FIGMA_TOP_LEFT_NOTCH_PX = { width: 123, height: 58 }
 const WINDOW_CORNER_RADIUS = 60
 
+/**
+ * True when the container is portrait ENOUGH to use the tall-frame dock
+ * arrangement (species bottom-center, label left-center) instead of the
+ * wide-frame one (species bottom-left, label bottom-right) -- shared by
+ * every caller that has to pick between Figma's two verified layouts
+ * (this file's own reference-width pick, and ScreenFrame.svelte/
+ * design-system-demo.ts's dock-edge and label-align pick, which import
+ * this instead of each re-deriving their own aspect check).
+ *
+ * A plain `height >= width` tie-break routes every near-square container
+ * (e.g. a 900x900 window) into the portrait arrangement, where the
+ * label's left-center dock sits at the container's vertical midpoint --
+ * which collides with the species row's bottom-anchored height as soon as
+ * the frame isn't tall enough to keep the two apart (the real Figma
+ * mobile frame, 1080x1920, clears it comfortably; a square frame does
+ * not). 1.2 keeps both Figma-verified frames on their intended side
+ * (1920/1080 ~= 1.78 either way) while routing the ambiguous near-square
+ * middle to the wide-frame arrangement instead, which has no collision
+ * risk there (both docks are bottom-anchored, on opposite sides).
+ */
+export function isPortraitAspect(width: number, height: number): boolean {
+  return height >= width * 1.2
+}
+
 function currentScale(containerWidth: number, containerHeight: number): number {
-  const isPortrait = containerHeight >= containerWidth
-  const referenceWidth = isPortrait ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
+  const referenceWidth = isPortraitAspect(containerWidth, containerHeight) ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
   return containerWidth / referenceWidth
 }
 

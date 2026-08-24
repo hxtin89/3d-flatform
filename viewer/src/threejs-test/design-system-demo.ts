@@ -24,7 +24,7 @@
 // screen-frame/recreation-content.ts -- shared with BentoGrid.stories.ts and
 // Screen.stories.ts so the real Figma data has one source, not three copies.
 import { mount, unmount, type Component } from 'svelte'
-import { HabitatLabelStack, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW, EAGLE_LOGO_SVG } from '@wi/ui'
+import { HabitatLabelStack, BentoGrid, createFrame, dockElement, fitsPortraitArrangement, WEATHER_CLUSTER, SPECIES_ROW, EAGLE_LOGO_SVG } from '@wi/ui'
 import '@wi/tokens/css'
 
 export interface DesignSystemDemo {
@@ -73,32 +73,39 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   const speciesHost = document.createElement('div')
   container.append(speciesHost)
+  // Which corner arrangement species/label are currently docked to -- see
+  // fitsPortraitArrangement's doc comment (measures the species row's real
+  // rendered height against the label's, since a container-aspect-ratio
+  // guess breaks down for any near-square size). Read by the edge closures
+  // below, written once per handleResize() pass after a first updateDocks()
+  // pass has given both hosts their real, current-content rects.
+  let useWideArrangement = false
   // Species sits fully inside the window (its bottom edge is flush with the
   // window's own bottom edge in Figma) -- a generic notch here is always a
-  // no-op, which is correct: no cutout needed at all. Portrait (Frame 1):
-  // bottom-center. Landscape (Frame 1 Desktop): bottom-left, NOT the same
-  // dock scaled up -- verified against both frames' real instance x/y.
-  const isPortrait = () => container.clientHeight >= container.clientWidth
+  // no-op, which is correct: no cutout needed at all. Tall-frame arrangement
+  // (Frame 1): bottom-center. Wide-frame arrangement (Frame 1 Desktop):
+  // bottom-left, NOT the same dock scaled up -- verified against both
+  // frames' real instance x/y.
   const speciesDock = dockElement(speciesHost, container, {
-    edge: () => (isPortrait() ? 'bottom-center' : 'bottom-left'),
+    edge: () => (useWideArrangement ? 'bottom-left' : 'bottom-center'),
     mode: 'frame',
     onRect: (rect) => frame.setNotch('species', rect),
   }, frame)
 
-  // The habitat label: portrait docks left-center, landscape docks
-  // bottom-right (sitting low next to the species cluster, not vertically
-  // centered) -- same source as the species note above. It's a stack of 3
-  // pills (HabitatLabelStack), not a single line -- see that component for
-  // the real "Test: Label Stack" content this reproduces.
+  // The habitat label: tall-frame arrangement docks left-center, wide-frame
+  // docks bottom-right (sitting low next to the species cluster, not
+  // vertically centered) -- same source as the species note above. It's a
+  // stack of 3 pills (HabitatLabelStack), not a single line -- see that
+  // component for the real "Test: Label Stack" content this reproduces.
   const labelHost = document.createElement('div')
   container.append(labelHost)
   const labelDock = dockElement(labelHost, container, {
-    edge: () => (isPortrait() ? 'left-center' : 'bottom-right'),
+    edge: () => (useWideArrangement ? 'bottom-right' : 'left-center'),
     mode: 'frame',
     onRect: () => {},
   }, frame)
 
-  let labelAlign: 'left' | 'right' = isPortrait() ? 'left' : 'right'
+  let labelAlign: 'left' | 'right' = 'left'
   let label = mount(HabitatLabelStack as Component, {
     target: labelHost,
     props: { align: labelAlign },
@@ -132,7 +139,14 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     logoHost.style.transform = `scale(${scale})`
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
-    const nextAlign = isPortrait() ? 'left' : 'right'
+    // First pass positions species/label with the previous pass's
+    // arrangement, purely so both hosts report their real, current-content
+    // rects; species' own top edge doesn't depend on which horizontal
+    // arrangement is picked (bottom-center and bottom-left are both
+    // bottom-anchored), so this reading is never stale.
+    updateDocks()
+    useWideArrangement = !fitsPortraitArrangement(speciesHost, labelHost, container)
+    const nextAlign = useWideArrangement ? 'right' : 'left'
     if (nextAlign !== labelAlign) {
       labelAlign = nextAlign
       unmount(label)

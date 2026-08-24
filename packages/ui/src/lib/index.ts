@@ -9,7 +9,7 @@ export type { GridWidget, DockingResult } from "./geometry/docking";
 export { default as ScreenFrame } from "./screen-frame/ScreenFrame.svelte";
 export { createFrame } from "./screen-frame/frame";
 export type { Frame, Rect } from "./screen-frame/frame";
-export { dockElement } from "./screen-frame/dock";
+export { dockElement, fitsPortraitArrangement } from "./screen-frame/dock";
 export type { DockConfig, DockEdge, DockMode, Docked } from "./screen-frame/dock";
 export { WEATHER_CLUSTER, SPECIES_ROW } from "./screen-frame/recreation-content";
 export { default as HabitatLabelStack } from "./screen-frame/HabitatLabelStack.svelte";

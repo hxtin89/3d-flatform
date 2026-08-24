@@ -50,6 +50,26 @@ export interface Docked {
   update(): void
 }
 
+/**
+ * Whether the species row's real bottom-anchored height leaves enough room
+ * above it, at the container's vertical midpoint, for the label to dock
+ * left-center without the two colliding. A container-aspect-ratio guess
+ * (e.g. "portrait means tall enough") breaks down for any near-square
+ * size: the species row's real rendered height doesn't shrink with aspect
+ * ratio the same way the frame's own margin/notch geometry does, so a
+ * fixed ratio threshold that's safe for one species dataset (or one
+ * expand/collapse state) is wrong for another. Measuring the actual boxes
+ * -- both already docked/rendered by the time this runs -- is the only
+ * check that can't drift out of sync with real content. False means both
+ * the species and label docks should use the wide-frame corners
+ * (bottom-left / bottom-right) instead of bottom-center / left-center.
+ */
+export function fitsPortraitArrangement(speciesHost: HTMLElement, labelHost: HTMLElement, container: HTMLElement): boolean {
+  const speciesTop = speciesHost.getBoundingClientRect().top - container.getBoundingClientRect().top
+  const labelHeight = labelHost.getBoundingClientRect().height
+  return speciesTop > container.clientHeight / 2 + labelHeight / 2
+}
+
 /** `host` and `container` must both already be in the DOM -- `container` is the same positioning context the Frame (see frame.ts) was built against. */
 export function dockElement(host: HTMLElement, container: HTMLElement, config: DockConfig, frame: Frame): Docked {
   host.style.position = 'absolute'
