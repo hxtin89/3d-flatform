@@ -226,6 +226,10 @@ export function createGroundPatchMask(opts: {
   let splatMinY = Infinity, splatMaxY = -Infinity
 
   const localToEnu = new THREE.Matrix4()
+  const probeMatrix = new THREE.Matrix4()
+  let probeObject: THREE.Object3D | null = null
+  let probeLastX: number | null = null
+  let probeLastY: number | null = null
 
   /**
    * Are this carrier's points actually being drawn?
@@ -448,7 +452,47 @@ export function createGroundPatchMask(opts: {
     },
 
     update() {
-      if (!enuInverse || (!queue.length && !dirtyCells.size && !indexDirty)) return
+      if (!enuInverse) return
+      // Watchdog: does one fixed tile's computed ENU move? A tile's position in the
+      // survey never changes, so if this shifts, one of the two factors in
+      // `enuInverse x matrixWorld` is from a different moment than the other. The size
+      // of the shift says which: a rebase delta is kilometres.
+      // Re-arm when the tracked tile is unloaded, resetting the baseline so the swap
+      // cannot look like drift.
+      if (probeObject && !probeObject.parent) { probeObject = null; probeLastX = null; probeLastY = null }
+      if (!probeObject) {
+        for (const candidate of queue) {
+          if (candidate.parent && (candidate as any).geometry?.getAttribute?.('position')) {
+            probeObject = candidate; probeLastX = null; probeLastY = null
+            break
+          }
+        }
+      }
+      if (probeObject && probeObject.parent) {
+        const pos = (probeObject as any).geometry?.getAttribute?.('position')
+        if (pos) {
+          probeObject.updateWorldMatrix(true, false)
+          probeMatrix.multiplyMatrices(enuInverse, probeObject.matrixWorld)
+          const e = probeMatrix.elements as unknown as number[]
+          const px = enuX(pos.array as ArrayLike<number>, 0, e)
+          const py = enuY(pos.array as ArrayLike<number>, 0, e)
+          if (probeLastX !== null && probeLastY !== null) {
+            const shift = Math.hypot(px - probeLastX, py - probeLastY)
+            if (shift > 1) {
+              console.warn(
+                `[enu-probe] same tile moved ${shift.toFixed(0)} m in ENU:`
+                + ` (${probeLastX.toFixed(0)},${probeLastY.toFixed(0)})`
+                + ` -> (${px.toFixed(0)},${py.toFixed(0)})`
+                + ` | worldTranslation ${probeObject.matrixWorld.elements[12].toFixed(0)},`
+                + `${probeObject.matrixWorld.elements[13].toFixed(0)},`
+                + `${probeObject.matrixWorld.elements[14].toFixed(0)}`,
+              )
+            }
+          }
+          probeLastX = px; probeLastY = py
+        }
+      }
+      if (!queue.length && !dirtyCells.size && !indexDirty) return
       let budget = pointsPerFrame
       // Tiles that are loaded but not yet shown go to the back rather than blocking the
       // queue. Bounded by the queue length so a frame where nothing is ready costs one
