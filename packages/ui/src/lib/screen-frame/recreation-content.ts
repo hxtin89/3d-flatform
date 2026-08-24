@@ -25,7 +25,11 @@
 // ('none'), not rounded. These three are pinned; every other corner in this
 // row keeps solveDocking's solved default since Figma's static file only
 // ever shows ONE arrangement (Giftfrosch selected) and those corners were
-// not independently verified for the other two expand states.
+// not independently verified for the other two expand states. BentoGrid
+// itself only keeps these three overrides live while Giftfrosch is still
+// the selected item -- selecting Vogel or Morphofalter drops all of them
+// back to solveDocking's solved default, since that's an arrangement this
+// pinning was never verified against (see BentoGrid.svelte's effectiveItems).
 //
 // Selected-state measurement/status/caption content verified directly off
 // the real Figma text nodes. icon/image below are line-art/illustration

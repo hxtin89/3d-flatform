@@ -48,7 +48,8 @@
   // the tweens below are deliberately seeded ONCE and then owned by BentoGrid
   // itself, not re-derived if the caller ever passes a new `items` array.
   // `untrack` marks that as intentional (not "forgot to make this reactive").
-  let selectedId: string | null = $state(untrack(() => items.find((item) => item.selectable && item.selected)?.id ?? null));
+  const initialSelectedId = untrack(() => items.find((item) => item.selectable && item.selected)?.id ?? null);
+  let selectedId: string | null = $state(initialSelectedId);
 
   // One Tween per selectable item, created once (not reactively -- creating a
   // new tween on every derive would restart any in-flight animation).
@@ -71,12 +72,21 @@
   // Effective (possibly mid-animation) rects -- solveDocking and silhouette()
   // both react to these every tween tick, so corners and the card shape stay
   // consistent with each other throughout the expand/collapse motion.
+  //
+  // cornerOverrides are a snapshot of ONE verified Figma arrangement (whichever
+  // item was authored `selected: true`) -- they only describe that specific
+  // geometry. The instant a different item becomes selected, every widget's
+  // relative height changes and those pinned Fill/None treatments are no
+  // longer known to be correct (see recreation-content.ts's doc comment), so
+  // they're dropped back to solveDocking's solved default rather than kept
+  // around for an arrangement they were never verified against.
   const effectiveItems = $derived(
     items.map((item) => {
+      const base = selectedId === initialSelectedId ? item : { ...item, cornerOverrides: undefined };
       const tween = heightTweens.get(item.id);
-      if (!tween) return item;
+      if (!tween) return base;
       const height = tween.current;
-      return { ...item, y: item.y + item.height - height, height };
+      return { ...base, y: item.y + item.height - height, height };
     }),
   );
 
