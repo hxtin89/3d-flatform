@@ -35,6 +35,11 @@
 
   let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect }: Props = $props();
 
+  // Same highlight/shadow sheen as BentoWidget (see its own comment) -- the
+  // two non-selected species cards (Vogel/Morphofalter) share the identical
+  // grey-light Figma accent, so without it they render as twin flat blocks
+  // with no material depth at all.
+  const sheenId = `species-sheen-${Math.random().toString(36).slice(2, 9)}`;
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
@@ -69,7 +74,15 @@
     style:top="{-overflow.top}px"
     aria-hidden="true"
   >
+    <defs>
+      <linearGradient id={sheenId} x1="0" y1="0" x2="0.4" y2="1">
+        <stop offset="0" stop-color="rgb(255 255 255 / 0.16)" />
+        <stop offset="40%" stop-color="rgb(255 255 255 / 0)" />
+        <stop offset="100%" stop-color="rgb(0 0 0 / 0.12)" />
+      </linearGradient>
+    </defs>
     <path d={path} class="species-widget__fill" />
+    <path d={path} fill="url(#{sheenId})" class="species-widget__sheen" />
   </svg>
 
   <div class="species-widget__content">
@@ -128,7 +141,13 @@
       {#if selected}
         {#if image}{@render image()}{/if}
       {:else if icon}
-        {@render icon()}
+        <!-- A tinted circular plate behind the line-art icon, not the bare
+             stroke floating on the card fill -- a considered icon TREATMENT
+             (badge, weight, contrast) is the honest fix available without a
+             licensed photo/vector asset pipeline (see species-icons.ts's own
+             header on why these stay line-art), and reads far less like
+             generic dropped-in clip-art than an outline with nothing around it. -->
+        <span class="species-widget__icon-plate">{@render icon()}</span>
       {/if}
     </div>
   </div>
@@ -174,6 +193,10 @@
 
   .species-widget__fill {
     fill: var(--accent-fill);
+  }
+
+  .species-widget__sheen {
+    pointer-events: none;
   }
 
   /* --text-secondary (gray-700) happens to equal grey-dark's own accent-fill
@@ -288,5 +311,15 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+  }
+
+  .species-widget__icon-plate {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--inset-lg);
+    border-radius: var(--pill);
+    background: rgb(0 0 0 / 0.12);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
   }
 </style>

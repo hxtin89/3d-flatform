@@ -44,6 +44,15 @@
   }: Props = $props();
 
   const clipId = `bento-clip-${Math.random().toString(36).slice(2, 9)}`;
+  // Light-from-top-left/shadow-at-bottom-right sheen, layered over the flat
+  // accent fill on every card regardless of accent -- the polish gap vs.
+  // colabs.com.au/alethia.earth wasn't a wrong color (grey-light/grey-dark/
+  // gold/forest-green are all real Figma bindings, see widget-accent.css),
+  // it's that a single solid fill reads as a scoreboard color block with no
+  // material quality. This is pure alpha-over-color compositing (white highlight,
+  // black shadow, both translucent) so it sits correctly on top of ANY accent
+  // without needing a per-accent gradient recipe.
+  const sheenId = `bento-sheen-${Math.random().toString(36).slice(2, 9)}`;
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
@@ -70,6 +79,11 @@
       <clipPath id={clipId}>
         <path d={path} />
       </clipPath>
+      <linearGradient id={sheenId} x1="0" y1="0" x2="0.4" y2="1">
+        <stop offset="0" stop-color="rgb(255 255 255 / 0.16)" />
+        <stop offset="40%" stop-color="rgb(255 255 255 / 0)" />
+        <stop offset="100%" stop-color="rgb(0 0 0 / 0.12)" />
+      </linearGradient>
     </defs>
     {#if hasImage && imageSrc}
       <image href={imageSrc} width={width} height={height} preserveAspectRatio="xMidYMid slice" clip-path="url(#{clipId})" />
@@ -77,6 +91,7 @@
     {:else}
       <path d={path} class="bento-widget__fill" />
     {/if}
+    <path d={path} fill="url(#{sheenId})" class="bento-widget__sheen" />
   </svg>
 
   <div class="bento-widget__content">
@@ -142,6 +157,10 @@
     fill: rgb(0 0 0 / 0.35);
   }
 
+  .bento-widget__sheen {
+    pointer-events: none;
+  }
+
   .bento-widget__content {
     position: relative;
     z-index: 1;
@@ -201,8 +220,13 @@
 
   .bento-widget__value {
     /* Figma: "Display/2XL", Sora Bold 60/40 -- already matched size-heading-2xl before,
-       now expressed via the bundled style like the other roles. */
+       now expressed via the bundled style like the other roles. tabular-nums is a
+       rendering feature of the same bound font/size, not a new type style, so it
+       doesn't need Figma verification -- it just stops "29°"/"83%" from having the
+       slightly-off digit widths a proportional numeral set gives a scoreboard-style
+       standalone number. */
     font: var(--text-display-2xl);
+    font-variant-numeric: tabular-nums;
     margin: 0;
   }
 
@@ -212,5 +236,19 @@
     /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
     letter-spacing: var(--text-body-tracking);
     margin: 0;
+  }
+
+  /* Weather cluster's description doubles as the whole cell's only other line
+     of text (no separate label role in Figma) -- restyled as a small tracked
+     caption sitting under the value, closer to how alethia.earth's macro-photo
+     overlays caption a reading, instead of reading as a second full-size body
+     line competing with the number above it. Scoped to cells that actually
+     pair a bare `value` with a `description` (the weather cluster's own
+     pattern) so title+description widgets elsewhere keep the plain body line. */
+  .bento-widget__value + .bento-widget__description {
+    font: var(--weight-emphasis) var(--size-caption) / var(--line-height-caption) var(--family-sans);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.85;
   }
 </style>

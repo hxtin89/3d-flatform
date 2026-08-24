@@ -160,29 +160,33 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   }
 
   // Manual trigger for the reveal/retract animation, independent of the
-  // loader flow in main.ts -- lets anyone replay it on demand.
-  const toggleButton = document.createElement('button')
-  toggleButton.type = 'button'
-  toggleButton.textContent = 'Frame ein/aus'
-  Object.assign(toggleButton.style, {
-    position: 'fixed',
-    left: '16px',
-    bottom: '16px',
-    zIndex: '60',
-    padding: '10px 16px',
-    borderRadius: '999px',
-    border: 'none',
-    background: 'var(--gray-900)',
-    color: 'var(--gray-50)',
-    font: '600 14px sans-serif',
-    cursor: 'pointer',
-  })
-  toggleButton.addEventListener('click', () => {
-    revealed ? retract() : reveal()
-  })
-  document.body.append(toggleButton)
-
+  // loader flow in main.ts -- lets anyone replay it on demand. DEV-only, same
+  // gate as the __designSystemDemo debug hook below: this is a development
+  // aid for poking at the animation, not part of the finished composition,
+  // so it shouldn't sit on top of a production/preview build's viewport.
+  let toggleButton: HTMLButtonElement | undefined
   if (import.meta.env.DEV) {
+    toggleButton = document.createElement('button')
+    toggleButton.type = 'button'
+    toggleButton.textContent = 'Frame ein/aus'
+    Object.assign(toggleButton.style, {
+      position: 'fixed',
+      left: '16px',
+      bottom: '16px',
+      zIndex: '60',
+      padding: '10px 16px',
+      borderRadius: '999px',
+      border: 'none',
+      background: 'var(--gray-900)',
+      color: 'var(--gray-50)',
+      font: '600 14px sans-serif',
+      cursor: 'pointer',
+    })
+    toggleButton.addEventListener('click', () => {
+      revealed ? retract() : reveal()
+    })
+    document.body.append(toggleButton)
+
     ;(window as any).__designSystemDemo = { frame, reveal, retract }
   }
 
@@ -196,7 +200,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
       unmount(speciesRow)
       frame.dispose()
       container.remove()
-      toggleButton.remove()
+      toggleButton?.remove()
       if (import.meta.env.DEV) delete (window as any).__designSystemDemo
     },
   }
