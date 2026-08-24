@@ -4,6 +4,7 @@
   import HabitatLabelStack from "./HabitatLabelStack.svelte";
   import { WEATHER_CLUSTER, SPECIES_ROW } from "./recreation-content";
   import { eagleLogo } from "./logo-icon";
+  import { habitatPhoto } from "./habitat-photo";
 
   interface Props {
     /** Fixed pixel size -- deliberately NOT viewport/addon-driven, so the mobile/desktop
@@ -21,13 +22,14 @@
 <div style:width="{width}px" style:height="{height}px">
   <ScreenFrame>
     {#snippet background()}
-      <!-- Stand-in for the real drone/canopy photo this frame is cut around
-           (no licensed photo asset in this repo). Two turbulence scales
-           (fine moss grain + coarse bark/foliage patching), both tinted
-           green instead of desaturated to grey, plus soft dappled-light
-           blobs give it the texture real canopy photography/photogrammetry
-           has -- a flat radial-gradient block read as an unfinished demo
-           even with grain on top.
+      <!-- The real drone/photogrammetry photo this frame is cut around --
+           the actual "S1: Photo" image fill from the Figma source file
+           (Frame 1 Desktop, node 25556:1099: a river-bend scan with a
+           topographic contour overlay), not a licensed stock photo and not
+           fabricated. Re-encoded smaller (see habitat-photo.ts) since the
+           original upload is 6MB+; the dark scrim gradient and grain below
+           are still layered on top for text legibility and to tie the photo
+           into the UI's own palette, not as a placeholder for it anymore.
            This used to also overlay four fabricated HUD readouts (fake node
            IDs, soil/canopy/wind sensor numbers, a sparkline) that exist
            nowhere in the real Figma frame -- get_screenshot on the actual
@@ -37,6 +39,8 @@
            fabrication this screen is being held to account for, just with
            better formatting. -->
       <div class="habitat-backdrop">
+        <img class="habitat-backdrop__photo" src={habitatPhoto} alt="" aria-hidden="true" />
+        <div class="habitat-backdrop__scrim"></div>
         <svg class="habitat-backdrop__texture" aria-hidden="true">
           <!-- Each filter desaturates the turbulence to a per-pixel luminance
                (keeping alpha untouched, so the texture stays visible) then
@@ -79,17 +83,49 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    /* Layered radial gradients standing in for canopy/rock depth cues from a
-       real photo -- a broad dusk-light falloff, two darker off-center blobs,
-       and two soft warm blobs standing in for dappled sunlight breaking
-       through canopy (the cue that reads as "real photo" rather than "flat
-       vignette" in daylight forest shots). */
+  }
+
+  .habitat-backdrop__photo {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Slow parallax-style drift instead of a static plant -- the reference
+       sites' depth comes from motion as much as from the photo itself. Scale
+       stays >1 for the whole animation so the pan never exposes an edge. */
+    animation: habitat-photo-drift 40s ease-in-out infinite alternate;
+  }
+
+  @keyframes habitat-photo-drift {
+    from {
+      transform: scale(1.08) translate(0, 0);
+    }
+    to {
+      transform: scale(1.14) translate(-1.5%, -1.5%);
+    }
+  }
+
+  .habitat-backdrop__scrim {
+    position: absolute;
+    inset: 0;
+    /* Same darkening/warming role the flat gradient used to play alone --
+       now a scrim over the real photo instead of standing in for it: a
+       broad dusk-light falloff, two darker off-center blobs for depth, and
+       two soft warm blobs for dappled light, plus an overall darken so
+       widget text stays legible over bright parts of the photo. */
     background:
-      radial-gradient(18% 14% at 28% 22%, rgb(214 198 120 / 0.16) 0%, transparent 70%),
-      radial-gradient(14% 10% at 68% 38%, rgb(214 198 120 / 0.1) 0%, transparent 70%),
+      radial-gradient(18% 14% at 28% 22%, rgb(214 198 120 / 0.14) 0%, transparent 70%),
+      radial-gradient(14% 10% at 68% 38%, rgb(214 198 120 / 0.09) 0%, transparent 70%),
       radial-gradient(60% 45% at 20% 85%, rgb(10 20 15 / 0.55) 0%, transparent 70%),
       radial-gradient(50% 40% at 85% 75%, rgb(6 14 10 / 0.5) 0%, transparent 70%),
-      radial-gradient(120% 90% at 50% 10%, #2f4a3d 0%, #16241d 60%, #0b120e 100%);
+      radial-gradient(120% 90% at 50% 10%, rgb(20 30 24 / 0.35) 0%, rgb(10 16 12 / 0.55) 60%, rgb(5 8 6 / 0.75) 100%);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .habitat-backdrop__photo {
+      animation: none;
+    }
   }
 
   .habitat-backdrop__texture {

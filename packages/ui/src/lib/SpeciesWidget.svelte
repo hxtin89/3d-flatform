@@ -138,6 +138,14 @@
   .species-widget {
     position: relative;
     isolation: isolate;
+    /* Hover/focus lift -- see BentoWidget's identical pair for why the
+       transform sits on the root and the shadow lives on the silhouette. */
+    transition: transform 220ms ease;
+  }
+
+  .species-widget:hover,
+  .species-widget:focus-visible {
+    transform: translateY(-6px);
   }
 
   .species-widget__silhouette {
@@ -145,6 +153,23 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
+    transition: filter 220ms ease;
+  }
+
+  .species-widget:hover .species-widget__silhouette,
+  .species-widget:focus-visible .species-widget__silhouette {
+    filter: drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .species-widget,
+    .species-widget__silhouette {
+      transition: none;
+    }
+    .species-widget:hover,
+    .species-widget:focus-visible {
+      transform: none;
+    }
   }
 
   .species-widget__fill {

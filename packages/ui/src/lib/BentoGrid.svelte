@@ -88,7 +88,7 @@
 <div class="bento-grid" style:width="{bounds.width}px" style:height="{bounds.height}px">
   {#each effectiveItems as item, i (item.id)}
     {@const result = solved[i]}
-    <div class="bento-grid__cell" style:left="{item.x}px" style:top="{item.y}px">
+    <div class="bento-grid__cell" style:left="{item.x}px" style:top="{item.y}px" style:--cell-enter-delay="{i * 70}ms">
       {#if item.kind === "species"}
         <SpeciesWidget
           path={silhouette(item.width, item.height, result.corners, radius)}
@@ -135,5 +135,31 @@
 
   .bento-grid__cell {
     position: absolute;
+    /* Staggered rise-and-fade on first mount (index-driven delay set inline
+       above) -- the static grid otherwise just appears fully-formed, which
+       reads flat next to reference sites that reveal their cards on scroll.
+       `both` holds the from-state through the delay so cards don't flash
+       visible before their turn, and holds the to-state after so a later
+       reactive re-render (e.g. the height Tween driving expand/collapse)
+       never replays this -- keyed #each keeps the same DOM node throughout. */
+    animation: bento-cell-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation-delay: var(--cell-enter-delay, 0ms);
+  }
+
+  @keyframes bento-cell-enter {
+    from {
+      opacity: 0;
+      transform: translateY(24px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bento-grid__cell {
+      animation: none;
+    }
   }
 </style>

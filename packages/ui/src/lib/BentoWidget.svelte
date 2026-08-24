@@ -98,6 +98,14 @@
   .bento-widget {
     position: relative;
     isolation: isolate;
+    /* Hover/focus lift -- transform lives here (not on the silhouette) so the
+       content layer moves with the card instead of just its fill. */
+    transition: transform 220ms ease;
+  }
+
+  .bento-widget:hover,
+  .bento-widget:focus-within {
+    transform: translateY(-6px);
   }
 
   .bento-widget__silhouette {
@@ -105,6 +113,25 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
+    /* drop-shadow (not box-shadow) so the shadow hugs the card's actual
+       silhouette -- these corners are concave/notched, not a plain rect. */
+    transition: filter 220ms ease;
+  }
+
+  .bento-widget:hover .bento-widget__silhouette,
+  .bento-widget:focus-within .bento-widget__silhouette {
+    filter: drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bento-widget,
+    .bento-widget__silhouette {
+      transition: none;
+    }
+    .bento-widget:hover,
+    .bento-widget:focus-within {
+      transform: none;
+    }
   }
 
   .bento-widget__fill {
