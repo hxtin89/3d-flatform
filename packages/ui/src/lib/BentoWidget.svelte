@@ -95,14 +95,18 @@
   </svg>
 
   <div class="bento-widget__content">
-    {#if title || icon}
-      <header class="bento-widget__header">
-        {#if icon}<span class="bento-widget__icon">{@render icon()}</span>{/if}
-        {#if title}<h3 class="bento-widget__title">{title}</h3>{/if}
-      </header>
-    {/if}
+    {#if title}<h3 class="bento-widget__title">{title}</h3>{/if}
     {#if value}<p class="bento-widget__value">{value}</p>{/if}
     {#if description}<p class="bento-widget__description">{description}</p>{/if}
+    <!-- Figma's real WeatherBar cell (25556:1159/1160, Frame 1 Desktop) puts
+         its icon PAIR below both text lines, not beside the title -- the
+         icon slot used to render inline in a header row next to the title,
+         which is the only reason this cell read as cramped (tiny icons
+         squeezed left of the text) next to the reference sites' generous
+         spacing. This is the one BentoWidget instance that uses `icon` at
+         all (SpeciesWidget's icon plate is a separate component/layout), so
+         moving it here doesn't disturb any other card. -->
+    {#if icon}<span class="bento-widget__icon-row">{@render icon()}</span>{/if}
     {#if expanded && expandedContent}
       <div class="bento-widget__expanded">{@render expandedContent()}</div>
     {/if}
@@ -213,10 +217,11 @@
     --text-secondary: var(--text-on-emphasis);
   }
 
-  .bento-widget__header {
-    display: flex;
-    align-items: center;
-    gap: var(--inline-xs);
+  /* Sits below title+description (see the markup comment above) -- the flex
+     column's own --stack-xs gap already gives it the right breathing room
+     above, matching Figma's ~10px text-to-icon gap. */
+  .bento-widget__icon-row {
+    display: block;
   }
 
   .bento-widget__title {
