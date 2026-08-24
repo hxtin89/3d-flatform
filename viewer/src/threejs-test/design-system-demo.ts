@@ -104,14 +104,16 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     props: { align: labelAlign },
   })
 
+  // topLeftIsScreenCorner: false on both -- neither cluster sits at the real
+  // screen's actual top-left, see BentoGrid's own doc comment.
   const weatherCluster = mount(BentoGrid as Component, {
     target: weatherHost,
-    props: { items: WEATHER_CLUSTER, radius: 60 },
+    props: { items: WEATHER_CLUSTER, radius: 60, topLeftIsScreenCorner: false },
   })
 
   const speciesRow = mount(BentoGrid as Component, {
     target: speciesHost,
-    props: { items: SPECIES_ROW, radius: 60 },
+    props: { items: SPECIES_ROW, radius: 60, topLeftIsScreenCorner: false },
   })
 
   let revealed = false

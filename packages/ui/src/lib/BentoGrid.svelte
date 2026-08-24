@@ -36,9 +36,11 @@
     items: BentoGridItem[];
     /** Corner radius for every widget in the grid -- matches the Corner atom's own Large/Small sizing (60 default). */
     radius?: number;
+    /** Whether this grid's own local (min-x, min-y) widget is genuinely the real app screen's top-left (gets a sharp corner there) -- see solveDocking's doc comment. Defaults to true (matches the generic/isolated docking-test layouts); real sub-compositions that sit elsewhere on the screen (the weather cluster, the species row) must pass `false`. */
+    topLeftIsScreenCorner?: boolean;
   }
 
-  let { items, radius = 60 }: Props = $props();
+  let { items, radius = 60, topLeftIsScreenCorner = true }: Props = $props();
 
   const EXPAND_DURATION_MS = 400;
 
@@ -78,7 +80,7 @@
     }),
   );
 
-  const solved = $derived(solveDocking(effectiveItems));
+  const solved = $derived(solveDocking(effectiveItems, topLeftIsScreenCorner));
   const bounds = $derived({
     width: Math.max(...items.map((item) => item.x + item.width)),
     height: Math.max(...items.map((item) => item.y + item.height)),

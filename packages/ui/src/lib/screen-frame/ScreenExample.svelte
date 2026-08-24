@@ -67,10 +67,12 @@
       {@render eagleLogo()}
     {/snippet}
     {#snippet weather()}
-      <BentoGrid items={WEATHER_CLUSTER} radius={60} />
+      <!-- topLeftIsScreenCorner=false: neither cluster sits at the real screen's
+           actual top-left, see BentoGrid's own doc comment. -->
+      <BentoGrid items={WEATHER_CLUSTER} radius={60} topLeftIsScreenCorner={false} />
     {/snippet}
     {#snippet species()}
-      <BentoGrid items={SPECIES_ROW} radius={60} />
+      <BentoGrid items={SPECIES_ROW} radius={60} topLeftIsScreenCorner={false} />
     {/snippet}
     {#snippet label(align)}
       <HabitatLabelStack {align} />

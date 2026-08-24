@@ -77,8 +77,22 @@ function solveCorner(
  * position/size pass through unchanged -- solving gap sizes so Fill seams meet
  * exactly is a layout-authoring decision (see "two-sided Fill seams" in
  * Corner.doc.json), not something this classifier does on its own.
+ *
+ * `compositionTopLeft` (default true) gates the "composition top-left" rule
+ * below -- Corner.doc.json is explicit that this is SCOPED to a widget at the
+ * true app screen's top-left, not just whichever widget happens to sit at a
+ * passed-in array's own min (x,y): "Do NOT apply this just because a widget
+ * sits at the local top-left corner of an isolated test frame -- 'Test: Bento
+ * Docking (Species Row S1)' initially had it applied incorrectly for exactly
+ * that reason: the real species row sits lower on the actual screen (below
+ * other content), so its own top-left corner is a normal rounded corner
+ * (Convex/60), not sharp." solveDocking has no way to know where its caller's
+ * array sits on the real screen, so callers representing a real sub-composition
+ * (the weather cluster, the species row) must pass `false` explicitly; the
+ * generic/isolated docking test layouts (which per that same doc note DO
+ * represent a screen's own top-left region) keep the default.
  */
-export function solveDocking(widgets: GridWidget[]): DockingResult[] {
+export function solveDocking(widgets: GridWidget[], compositionTopLeft = true): DockingResult[] {
   const minX = Math.min(...widgets.map((w) => w.x));
   const minY = Math.min(...widgets.map((w) => w.y));
 
@@ -92,7 +106,7 @@ export function solveDocking(widgets: GridWidget[]): DockingResult[] {
 
     // Composition top-left rule: the widget whose own TL corner sits at the whole
     // group's minimum (x,y) gets a sharp corner there instead of rounded.
-    if (topLeft === "convex" && x === minX && y === minY) topLeft = "none";
+    if (compositionTopLeft && topLeft === "convex" && x === minX && y === minY) topLeft = "none";
 
     const corners: Corners = [
       widget.cornerOverrides?.topLeft ?? topLeft,

@@ -53,10 +53,13 @@ export const FlushTwoByTwoGrid: Story = {
 // status block (its own bespoke sub-layout, outside BentoWidget's title/
 // value/description shape) -- separate scope from wiring the grid/corner/
 // color pipeline.
+// topLeftIsScreenCorner: false on both -- neither cluster sits at the real
+// screen's actual top-left (see BentoGrid's own doc comment / Figma's Corner
+// component description), so the auto sharp-corner rule must stay off here.
 export const WeatherCluster: Story = {
-  args: { radius: 60, items: WEATHER_CLUSTER },
+  args: { radius: 60, items: WEATHER_CLUSTER, topLeftIsScreenCorner: false },
 };
 
 export const SpeciesRow: Story = {
-  args: { radius: 60, items: SPECIES_ROW },
+  args: { radius: 60, items: SPECIES_ROW, topLeftIsScreenCorner: false },
 };
