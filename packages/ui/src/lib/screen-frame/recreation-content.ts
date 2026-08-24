@@ -23,10 +23,13 @@
 // correct corners for whichever item is currently expanded instead.
 //
 // Selected-state measurement/status/caption content verified directly off
-// the real Figma text nodes. Not reproduced: the bird/frog/butterfly
-// line-art icons and the frog's real photo (no icon system / image assets
-// wired into @wi/ui yet).
+// the real Figma text nodes. icon/image below are line-art/illustration
+// (see species-icons.ts) rather than the real Figma vector icons or a real
+// frog photo -- there's still no icon system or licensed photo asset in
+// this repo -- but every species slot now renders real content instead of
+// an empty box.
 import type { BentoGridItem } from "../BentoGrid.svelte";
+import { birdIcon, frogIcon, butterflyIcon, giftfroschImage } from "./species-icons";
 
 export const WEATHER_CLUSTER: BentoGridItem[] = [
   // Figma: "S1: WeatherBar (Widget)" @ (660,71) 255x180
@@ -42,7 +45,7 @@ const SPECIES_EXPANDED_HEIGHT = 570;
 
 export const SPECIES_ROW: BentoGridItem[] = [
   // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light" },
+  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", icon: birdIcon },
   // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570 (selected/expanded) -- measurement/
   // status/caption facts read off the actual Figma text nodes (25556:1315/1317/1314).
   {
@@ -61,7 +64,9 @@ export const SPECIES_ROW: BentoGridItem[] = [
     status: "Schutzstatus: am Wenigsten bedroht",
     caption: "Nur die männlichen Frösche kümmern sich um den Nachwuchs",
     accent: "grey-dark",
+    icon: frogIcon,
+    image: giftfroschImage,
   },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
-  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light" },
+  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", icon: butterflyIcon },
 ];

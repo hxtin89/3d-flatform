@@ -15,10 +15,10 @@
 // content + the loader-triggered reveal/retract animation to it -- see
 // @wi/ui's screen-frame/frame.ts and dock.ts for the geometry/docking rules.
 //
-// Not reproduced: the bird/frog/butterfly line-art icons (no icon system
-// wired into @wi/ui content yet) and the frog widget's extra measurement/
-// status block (its own bespoke sub-layout, outside BentoWidget's current
-// prop shape).
+// Species icons are line-art illustration, not the real Figma vectors (see
+// @wi/ui's screen-frame/species-icons.ts). Not reproduced: the frog widget's
+// extra measurement/status block (its own bespoke sub-layout, outside
+// BentoWidget's current prop shape).
 //
 // WEATHER_CLUSTER/SPECIES_ROW content lives in @wi/ui's
 // screen-frame/recreation-content.ts -- shared with BentoGrid.stories.ts and

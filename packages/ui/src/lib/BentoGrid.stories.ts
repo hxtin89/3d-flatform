@@ -48,10 +48,11 @@ export const FlushTwoByTwoGrid: Story = {
 // win over the auto-solver here, per "wire it exactly"), and real Color/Widget
 // Accent mode per widget. Two clusters, each with its own local origin.
 //
-// Not reproduced: the bird/frog/butterfly line-art icons (no icon system wired
-// into @wi/ui content yet) and the frog widget's extra measurement/status block
-// (its own bespoke sub-layout, outside BentoWidget's title/value/description
-// shape) -- both are separate scope from wiring the grid/corner/color pipeline.
+// Species icons are line-art illustration, not the real Figma vectors (see
+// species-icons.ts). Not reproduced: the frog widget's extra measurement/
+// status block (its own bespoke sub-layout, outside BentoWidget's title/
+// value/description shape) -- separate scope from wiring the grid/corner/
+// color pipeline.
 export const WeatherCluster: Story = {
   args: { radius: 60, items: WEATHER_CLUSTER },
 };
