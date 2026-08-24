@@ -99,6 +99,20 @@ export interface GroundPatchMask {
   addTile(object: THREE.Object3D): void
   /** Spend this frame's budget on the queue and upload whatever changed. */
   update(): void
+  /**
+   * Throw away all accumulated coverage and start over from the given tiles.
+   *
+   * The coverage texture is write-once per pixel: a pixel is set to 255 and never
+   * revisited, which is what makes splatting cheap. The cost is that a single frame of
+   * wrong input is baked in permanently — and the floating origin can produce exactly
+   * that, because a rebase moves every world matrix between one frame and the next.
+   * Left alone that shows up as a staircase of stale patches, one step per rebase.
+   *
+   * So on rebase the caller discards and re-splats. It is not cheap — every resident
+   * tile is walked again — but a rebase is rare and the alternative is a mask that can
+   * never recover from one bad frame.
+   */
+  reset(tiles: Iterable<THREE.Object3D>): void
   /** Cells in use, of those available — for diagnostics and the console report. */
   stats(): { cellsUsed: number; cellsAvailable: number; metresPerPixel: number }
   dispose(): void
@@ -462,6 +476,19 @@ export function createGroundPatchMask(opts: {
       lastUploadMs = now
     },
 
+    reset(tiles) {
+      cells.fill(0)
+      indexData.fill(0)
+      cellsUsed = 0
+      indexDirty = true
+      queue.length = 0
+      cursor = 0
+      // Every layer has to go back to the GPU, not just the ones that were dirty:
+      // the old contents are still resident up there.
+      for (let layer = 0; layer < maxCells; layer++) dirtyCells.add(layer)
+      lastUploadMs = -Infinity
+      for (const object of tiles) queue.push(object)
+    },
     stats() {
       return { cellsUsed, cellsAvailable: maxCells, metresPerPixel }
     },

@@ -55,6 +55,12 @@ export interface StreamingCloud {
   setHighPrecision(enabled: boolean): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
+  /**
+   * Every resident point carrier, the same objects `onPointTile` hands out. For
+   * rebuilding something that accumulated from them — the ground-patch mask discards
+   * its coverage on a floating-origin rebase and needs the whole set again.
+   */
+  pointTiles(): THREE.Object3D[]
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
@@ -376,6 +382,15 @@ export function createStreamingCloud(opts: {
       // The scene graph is the registry — every live tile material hangs under
       // the tiles group, and UnloadTilesPlugin keeps disposing them itself.
       tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+    },
+    pointTiles() {
+      const out: THREE.Object3D[] = []
+      // The scene graph is the registry, exactly as it is for the material sweeps
+      // below: UnloadTilesPlugin removes hidden tiles from it on its own.
+      tiles.group.traverse((object: any) => {
+        if (object.isPoints && object.geometry?.getAttribute?.('position')) out.push(object)
+      })
+      return out
     },
     refreshEffects() {
       // Same registry as setHighPrecision: the scene graph holds every live tile
