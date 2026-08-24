@@ -11,7 +11,10 @@ import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
-import { attachOrigin, getEcefRoot, setOriginEnabled } from './origin'
+import {
+  attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, originStats,
+  renderToEcefMatrix, setOriginEnabled,
+} from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
@@ -936,8 +939,27 @@ function updateRainCycle(now: number): void {
 }
 
 // ENU -> ECEF frame of the survey.
+// The survey's ENU frame in two spaces. The ECEF pair is what the manifest means and
+// what anything compared against geodesy needs. The render pair is the same frame
+// shifted by the floating origin, and it is what everything touching `matrixWorld`,
+// `camera.position` or a shader must use — `positionWorld` in TSL is render space.
+//
+// Layers parented to `ecefRoot` are the exception: their local matrix is composed with
+// the root's own transform, so they keep the ECEF frame.
+//
+// With the origin still pinned at (0,0,0) the two pairs are equal, which is what makes
+// stage 2 another "nothing should change" checkpoint.
 const enuFrame = new THREE.Matrix4()
 const enuInverse = new THREE.Matrix4()
+const enuFrameRender = new THREE.Matrix4()
+const enuInverseRender = new THREE.Matrix4()
+
+/** Re-derive the render-space pair. Called when the frame lands, and on every rebase. */
+function refreshOriginDerived(): void {
+  ecefToRenderMatrix(enuFrame, enuFrameRender)
+  renderToEcefMatrix(enuInverse, enuInverseRender)
+  uniforms.enuInverse.value.copy(enuInverseRender)
+}
 const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
@@ -970,11 +992,11 @@ function applyHeightOffset(): void {
 }
 
 function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
-  return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrame)
+  return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrameRender)
 }
 
 function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
-  target.copy(value).applyMatrix4(enuInverse)
+  target.copy(value).applyMatrix4(enuInverseRender)
   target.z -= zOffset
   return target
 }
@@ -1336,7 +1358,7 @@ function updateMaskFollow(): void {
   let missedGround = false
   if (ray.ray.intersectPlane(groundPlane, hitEcef)) {
     cameraGroundRange = camera.position.distanceTo(hitEcef)
-    hitEnu.copy(hitEcef).applyMatrix4(enuInverse)
+    hitEnu.copy(hitEcef).applyMatrix4(enuInverseRender)
     hit2d.set(hitEnu.x, hitEnu.y)
   } else {
     cameraGroundRange = camera.position.distanceTo(cloudCenterEcef)
@@ -2500,7 +2522,8 @@ async function main(): Promise<void> {
   setLoadProgress(0.28, 'Survey area located. Building the scene …')
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()
-  uniforms.enuInverse.value.copy(enuInverse)
+  refreshOriginDerived()
+  // A direction, so the origin's translation cannot touch it.
   enuUp.setFromMatrixColumn(enuFrame, 2).normalize()
 
   if (manifest.areaBbox) {
@@ -2612,7 +2635,7 @@ async function main(): Promise<void> {
     void groundPatchMask.setExtent({
       tilesetUrl: pointTilesetUrl,
       rootTileSet: (stream as any).tiles.rootTileSet,
-      enuInverse,
+      enuInverse: enuInverseRender,
       maxDepth: patch.maskMaxDepth,
     }).then((boxes) => {
       if (!boxes) {
@@ -2634,6 +2657,16 @@ async function main(): Promise<void> {
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },
+    /** Floating origin: the two ENU frames and where the origin currently sits.
+     * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
+    origin: {
+      get stats() { return originStats() },
+      get position() { return getOrigin() },
+      enuFrame,
+      enuFrameRender,
+      enuInverse,
+      enuInverseRender,
+    },
   }
 
   environmentLayer = createEnvironmentLayer({
@@ -2708,7 +2741,7 @@ async function main(): Promise<void> {
       fallbackGroundZ: areaMinZ,
       canopyHeightM: manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM,
       probe: (centreEnu, radiusM) => {
-        const sample = stream?.sampleGroundZ(centreEnu, radiusM, enuInverse)
+        const sample = stream?.sampleGroundZ(centreEnu, radiusM, enuInverseRender)
         if (!sample) return null
         // sampleGroundZ reports the tiles' own ENU height, straight out of
         // enuFrame⁻¹. Everything else here — areaMinZ, the ground plane, the
