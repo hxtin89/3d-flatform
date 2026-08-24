@@ -154,6 +154,8 @@
   .bento-widget__description {
     color: var(--text-secondary);
     font: var(--text-body);
+    /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
+    letter-spacing: var(--text-body-tracking);
     margin: 0;
   }
 </style>

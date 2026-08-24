@@ -192,6 +192,8 @@
   .species-widget__description {
     color: var(--text-secondary);
     font: var(--text-body);
+    /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
+    letter-spacing: var(--text-body-tracking);
     margin: 0;
   }
 
@@ -224,8 +226,8 @@
   }
 
   .species-widget__fact-icon {
-    width: 24px;
-    height: 24px;
+    width: var(--size-icon-lg);
+    height: var(--size-icon-lg);
     flex-shrink: 0;
   }
 
@@ -244,6 +246,8 @@
 
   .species-widget__fact-text {
     font: var(--text-body);
+    /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
+    letter-spacing: var(--text-body-tracking);
   }
 
   .species-widget__visual {

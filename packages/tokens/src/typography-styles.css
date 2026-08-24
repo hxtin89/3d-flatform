@@ -13,4 +13,11 @@
   --text-heading-md: var(--weight-emphasis) var(--size-heading-md) / var(--line-height-heading) var(--family-sans);
   --text-body: var(--weight-body) var(--size-body) / var(--line-height-body) var(--family-sans);
   --text-body-lg: var(--weight-body) var(--size-body-lg) / var(--line-height-body) var(--family-sans);
+  /* The CSS `font` shorthand can't carry letter-spacing, so Figma's real Body/Default
+     binding (get_variable_defs on the live text nodes, e.g. node 25547:2459) -- which
+     tightens tracking to letterSpacing: -1 (-1%, i.e. --letter-spacing-tight) -- needs
+     this companion property applied alongside `font: var(--text-body)`. Display/2XL,
+     Heading/MD and Body/LG all bind letterSpacing: 0, which is already the CSS default,
+     so they don't need one. */
+  --text-body-tracking: var(--letter-spacing-tight);
 }

@@ -74,7 +74,9 @@
     display: inline-flex;
     align-items: center;
     height: 100%;
-    padding: 0 24px;
+    /* Must equal PADDING_X above (space-24) -- kept as a token here since it's a
+       static CSS value; PADDING_X stays a plain number since it feeds JS width math. */
+    padding: 0 var(--space-24);
     white-space: nowrap;
     font-family: var(--family-sans);
     font-weight: var(--weight-heading);
