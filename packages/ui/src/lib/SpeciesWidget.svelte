@@ -28,16 +28,38 @@
     image?: Snippet;
     /** Sets data-accent — background color resolves via the accent-fill CSS custom property, same token set BentoWidget uses. */
     accent?: string;
+    /** Makes the whole card a click target that calls `onSelect` (toggling this species' selected state) — the caller (BentoGrid) owns exclusivity and the expand/collapse animation. */
+    selectable?: boolean;
+    onSelect?: () => void;
   }
 
-  let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default" }: Props = $props();
+  let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect }: Props = $props();
 
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelect?.();
+    }
+  }
 </script>
 
-<div class="species-widget" data-accent={accent} data-selected={selected} style:width="{width}px" style:height="{height}px">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -- role/tabindex are only ever set together, when selectable is true; the linter can't see that correlation across the ternaries. -->
+<div
+  class="species-widget"
+  data-accent={accent}
+  data-selected={selected}
+  data-selectable={selectable}
+  style:width="{width}px"
+  style:height="{height}px"
+  role={selectable ? "button" : undefined}
+  tabindex={selectable ? 0 : undefined}
+  onclick={selectable ? onSelect : undefined}
+  onkeydown={selectable ? handleKeydown : undefined}
+>
   <svg
     class="species-widget__silhouette"
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
@@ -64,20 +86,25 @@
           <div class="species-widget__facts-row">
             {#if measurement}
               <div class="species-widget__fact species-widget__fact--stacked">
-                <svg class="species-widget__fact-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M4 9a5 5 0 0 1 10 0v3a5 2.5 0 0 1-10 0Z" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M9 6.5v6" stroke="currentColor" stroke-width="1.5" />
-                  <rect x="15.5" y="9.25" width="5.5" height="2.5" rx="0.75" stroke="currentColor" stroke-width="1.5" />
+                <!-- Tape measure, sized/proportioned to match the real Figma icon group
+                     (63.33x44.33, read directly off "Group 2" in Frame 1 Desktop). -->
+                <svg class="species-widget__fact-icon species-widget__fact-icon--tape" viewBox="0 0 64 44" fill="none" aria-hidden="true">
+                  <rect x="2" y="2" width="60" height="26" rx="13" stroke="currentColor" stroke-width="2" />
+                  <path d="M14 2v10M24 2v6M34 2v10M44 2v6M54 2v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  <path d="M20 28c0 8 6 14 14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  <rect x="30" y="34" width="14" height="8" rx="2" stroke="currentColor" stroke-width="2" />
                 </svg>
                 <span class="species-widget__fact-text">{measurement}</span>
               </div>
             {/if}
             {#if status}
               <div class="species-widget__fact species-widget__fact--stacked">
-                <svg class="species-widget__fact-icon species-widget__fact-icon--range" viewBox="0 0 96 12" preserveAspectRatio="none" aria-hidden="true">
-                  <circle cx="4" cy="6" r="3" fill="currentColor" />
-                  <line x1="8" y1="6" x2="88" y2="6" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="92" cy="6" r="3" fill="currentColor" />
+                <!-- Range indicator: a plain hairline with rounded end-caps and one tick
+                     mark, matching the real "Line 11" + "Arrow 2" pair (179px wide, tick
+                     ~88% along) rather than a two-dot slider. -->
+                <svg class="species-widget__fact-icon species-widget__fact-icon--range" viewBox="0 0 180 20" preserveAspectRatio="none" aria-hidden="true">
+                  <line x1="2" y1="10" x2="178" y2="10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  <line x1="157" y1="1" x2="157" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
                 </svg>
                 <span class="species-widget__fact-text">{status}</span>
               </div>
@@ -140,8 +167,12 @@
     z-index: 1;
     display: flex;
     flex-direction: column;
-    gap: var(--stack-sm);
-    padding: var(--inset-md);
+    /* Figma's real padding here (measured off the SIRA GIFTFROSCH/SCHNURRVOGEL
+       text-node offsets from their own widget bounds) is ~24-33px, notably
+       more than BentoWidget's --inset-md (12px) -- --inset-xl is the closest
+       existing semantic token to that measured range. */
+    gap: var(--stack-xs);
+    padding: var(--inset-xl);
     height: 100%;
     box-sizing: border-box;
     color: var(--text-primary);
@@ -170,6 +201,10 @@
     gap: var(--stack-sm);
   }
 
+  .species-widget[data-selectable="true"] {
+    cursor: pointer;
+  }
+
   .species-widget__facts-row {
     display: flex;
     gap: var(--inset-lg);
@@ -194,9 +229,17 @@
     flex-shrink: 0;
   }
 
+  .species-widget__fact-icon--tape {
+    /* Matches the real icon group's own 63.33x44.33 aspect ratio. */
+    width: 44px;
+    height: 30px;
+  }
+
   .species-widget__fact-icon--range {
-    width: 96px;
-    height: 12px;
+    /* Matches the real Line 11's 179px width -- scales with everything else via
+       the shared --screen-frame-content-scale transform, same as font sizes. */
+    width: 179px;
+    height: 20px;
   }
 
   .species-widget__fact-text {
