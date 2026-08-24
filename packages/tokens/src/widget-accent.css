@@ -1,11 +1,20 @@
-/* Default mode as the fallback, so a widget with no data-accent still resolves. */
+/* Default mode as the fallback, so a widget with no data-accent still resolves.
+   default/grey-light/grey-dark/gold/forest-green are verified 1:1 against the
+   live Figma file's real accent/fill bindings (get_variable_defs on the actual
+   Weather/Giftfrosch widget instances -- #f7f7f7, #ababab, #737373, #e6ce00,
+   #004432) -- each already equals an existing primitive (gray-100/500/700,
+   accent-500, success-900), so they reference that primitive var() instead of
+   re-stating its literal. blue/green/coral/purple have no Figma binding at
+   all (not used anywhere on the real Bento Grid Recreation content -- only in
+   BentoWidget/BentoGrid's own Storybook variety stories), so they stay
+   scoped literals rather than a fabricated primitive reference. */
 :root {
-  --accent-fill: rgb(247 247 247);
+  --accent-fill: var(--gray-100);
   --label-fill: rgb(255 255 255 / 0.9);
 }
 
 [data-accent="default"] {
-  --accent-fill: rgb(247 247 247);
+  --accent-fill: var(--gray-100);
   --label-fill: rgb(255 255 255 / 0.9);
 }
 
@@ -30,21 +39,21 @@
 }
 
 [data-accent="grey-light"] {
-  --accent-fill: rgb(171 171 171);
+  --accent-fill: var(--gray-500);
   --label-fill: rgb(171 171 171 / 0.9);
 }
 
 [data-accent="grey-dark"] {
-  --accent-fill: rgb(115 115 115);
+  --accent-fill: var(--gray-700);
   --label-fill: rgb(115 115 115 / 0.9);
 }
 
 [data-accent="gold"] {
-  --accent-fill: rgb(230 206 0);
+  --accent-fill: var(--accent-500);
   --label-fill: rgb(230 206 0 / 0.9);
 }
 
 [data-accent="forest-green"] {
-  --accent-fill: rgb(0 68 50);
+  --accent-fill: var(--success-900);
   --label-fill: rgb(0 68 50 / 0.9);
 }

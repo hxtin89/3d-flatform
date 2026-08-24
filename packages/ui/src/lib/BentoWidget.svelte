@@ -131,6 +131,17 @@
     fill: var(--border-focus);
   }
 
+  /* Same illegibility bug already fixed for LabelLine's forest-green pill and
+     SpeciesWidget's grey-dark card: --text-primary (gray-900) stays a near-black
+     default that's invisible over these two dark accent-fills. Figma's real
+     "83%" weather cell (forest-green) and any grey-dark BentoWidget instance
+     both render white text -- reach for --text-on-emphasis, not a raw literal. */
+  .bento-widget[data-accent="forest-green"],
+  .bento-widget[data-accent="grey-dark"] {
+    --text-primary: var(--text-on-emphasis);
+    --text-secondary: var(--gray-300);
+  }
+
   .bento-widget__header {
     display: flex;
     align-items: center;
