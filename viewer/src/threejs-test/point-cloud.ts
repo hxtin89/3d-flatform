@@ -446,10 +446,6 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
   return true
 }
 
-export function isCloudEffectEnabled(effect: CloudEffect): boolean {
-  return effects[effect]
-}
-
 /**
  * Rebuild one material's colour graph under the current flags. Materials record how
  * to rebuild themselves at creation, because the graph is built from things only the

@@ -321,7 +321,6 @@ function applyBenchPreset(): void {
   if (preset === 'strong') {
     if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.25
-    adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
     // A settled Detail p100 view measures ~220 MB. Budgets below that evict
@@ -333,7 +332,6 @@ function applyBenchPreset(): void {
   } else if (preset === 'medium') {
     if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.1
-    adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
     if (options.presetBudgets) {
@@ -345,7 +343,6 @@ function applyBenchPreset(): void {
   } else {
     if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1
-    adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.constrained
     // Previously left at the library default of 96 MB, which thrashes for the
@@ -2250,14 +2247,7 @@ function updateStreaming(now: number): StreamingStats | null {
   // the destination survive until the reveal.
   if (!pointCloudRevealed) return lastStreamStats
 
-  const quality = adaptiveQuality.update({
-    now,
-    fps: fps.fps,
-    visiblePoints: lastStreamStats?.points ?? 0,
-    cameraGroundRange: cameraCloudRange,
-  })
-  // With the brakes toggled off the density ladder speaks alone — the
-  // comparison subject against the Cesium viewer.
+  const quality = adaptiveQuality.update({ cameraGroundRange: cameraCloudRange })
   // Locked, the ladder is bypassed but the brakes below are not: pinning to 1 during
   // the entrance flight would stream the whole survey at full detail for nothing.
   const laddered = bandLockOn ? bandLockSse : quality.sse
@@ -2281,10 +2271,9 @@ function updateStreaming(now: number): StreamingStats | null {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
   }
-  // The band is the density contract: overview far out, detail up close. The
-  // error target alone does not enforce it — a distant camera still fetches
-  // p100 tiles and buries a phone — so the ceiling is set from the same band.
-  // While the loader is up, stay on the cheapest tier.
+  // Density ceiling for the One-LOD tree: it stops a distant camera pulling p100
+  // tiles. Inert on the default APH tree, where there are no request volumes and no
+  // plugin to receive it — see streaming.ts.
   stream.setDensityCeiling(bootLoading ? 0 : 2 - quality.band)
   applyPointSize()
 
