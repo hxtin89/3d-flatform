@@ -624,14 +624,14 @@ export const EXPERIENCE_CONFIG = {
        * ~3 M point overview then takes a couple of seconds of load to fill in, which
        * is invisible because the cloud covers that ground anyway.
        */
-      maskPointsPerFrame: 20_000,
+      maskPointsPerFrame: 100_000,
       /**
        * Shortest gap between mask uploads while coverage is still arriving. The
        * upload is the expensive half — the whole 4.2 MB texture, measured at 10.7 ms,
        * against ~1 ms of splatting — so batching it is what keeps the fill invisible.
        * The final upload is never delayed.
        */
-      maskUploadIntervalMs: 400,
+      maskUploadIntervalMs: 150,
     },
     /** 1 = raw satellite colour, 0 = fully grey. */
     mapSaturation: 1,
