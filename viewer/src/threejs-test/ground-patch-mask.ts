@@ -221,11 +221,22 @@ export function createGroundPatchMask(opts: {
   const queue: THREE.Object3D[] = []
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
-  let splatChecks = 0
-  let splatMinX = Infinity, splatMaxX = -Infinity
-  let splatMinY = Infinity, splatMaxY = -Infinity
 
   const localToEnu = new THREE.Matrix4()
+
+  /**
+   * Is this carrier on screen yet? Walk to the root: the tiles renderer parents a tile's
+   * scene when it becomes visible and UnloadTilesPlugin detaches it again, so reaching a
+   * Scene means the points are being drawn.
+   */
+  function isInScene(object: THREE.Object3D): boolean {
+    let node: THREE.Object3D | null = object
+    while (node) {
+      if ((node as any).isScene) return true
+      node = node.parent
+    }
+    return false
+  }
 
   /** ENU x of a local point, from the matrix elements directly. */
   function enuX(a: ArrayLike<number>, o: number, e: number[]): number {
@@ -431,32 +442,24 @@ export function createGroundPatchMask(opts: {
     update() {
       if (!enuInverse || (!queue.length && !dirtyCells.size && !indexDirty)) return
       let budget = pointsPerFrame
+      // A tile is queued when it *loads*, which is earlier than when it is shown. With
+      // a generous budget the patch would otherwise be painted before its points are
+      // on screen — a black shape arriving ahead of the canopy. So a tile waits at the
+      // back of the queue until the renderer has actually parented it.
+      let deferrals = queue.length
       while (budget > 0 && queue.length) {
         const object = queue[0]
         const position = (object as any).geometry?.getAttribute?.('position')
         if (!position) { queue.shift(); cursor = 0; continue }
+        if (cursor === 0 && !isInScene(object)) {
+          if (deferrals-- <= 0) break
+          queue.push(queue.shift() as THREE.Object3D)
+          continue
+        }
         // Composed now rather than at load time: the tile's place in the world is
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
         localToEnu.multiplyMatrices(enuInverse, object.matrixWorld)
-        // TEMPORARY: accumulate the ENU spread of everything splatted. The survey is
-        // 12.8 x 8.5 km, so a spread much wider than that means coverage is being
-        // written away from it — which is what the stray patches are.
-        {
-          const e = localToEnu.elements as unknown as number[]
-          const px = enuX(position.array as ArrayLike<number>, 0, e)
-          const py = enuY(position.array as ArrayLike<number>, 0, e)
-          splatMinX = Math.min(splatMinX, px); splatMaxX = Math.max(splatMaxX, px)
-          splatMinY = Math.min(splatMinY, py); splatMaxY = Math.max(splatMaxY, py)
-          if (++splatChecks % 25 === 0) {
-            console.info(
-              `[splat-spread] ${splatChecks} tiles | x ${splatMinX.toFixed(0)}..${splatMaxX.toFixed(0)}`
-              + ` (${((splatMaxX - splatMinX) / 1000).toFixed(1)} km)`
-              + ` | y ${splatMinY.toFixed(0)}..${splatMaxY.toFixed(0)}`
-              + ` (${((splatMaxY - splatMinY) / 1000).toFixed(1)} km)`,
-            )
-          }
-        }
         if (cursor === 0 && isRedundant(position)) { queue.shift(); continue }
         const done = splat(position, cursor, budget)
         budget -= done
