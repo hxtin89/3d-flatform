@@ -81,7 +81,9 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
 // 1920-wide desktop frame -- close enough to treat as the same constant);
 // the logo notch's real reach is ~123x58.
 const MOBILE_REFERENCE_WIDTH = 1080
+const MOBILE_REFERENCE_HEIGHT = 1920
 const DESKTOP_REFERENCE_WIDTH = 1920
+const DESKTOP_REFERENCE_HEIGHT = 1080
 const FIGMA_MARGIN_PX = 60
 const FIGMA_TOP_LEFT_NOTCH_PX = { width: 123, height: 58 }
 const WINDOW_CORNER_RADIUS = 60
@@ -110,9 +112,26 @@ export function isPortraitAspect(width: number, height: number): boolean {
   return height >= width * 1.2
 }
 
+// Both dimensions are checked (not just width) because a window can be
+// stretched thin on either axis independently of the other -- a wide-but-
+// short window (e.g. 2200x500) has plenty of width to justify the desktop
+// reference's full scale, but at that scale the species row's real content
+// height (its collapsed/expanded card heights are fixed Figma px, scaled by
+// this same factor) is taller than the window itself, so it pokes out
+// through the frame's own top edge (clipped by `.screen-frame`'s
+// `overflow: hidden`) while the weather cluster and label -- both anchored
+// to opposite corners at that same too-large scale -- collide in the
+// leftover middle. Taking the smaller of the two axis scales (the standard
+// "letterbox"/`object-fit: contain` rule) keeps every docked cluster's real
+// pixel size inside whichever dimension is actually the tighter fit,
+// trading unused margin on the generous axis for guaranteed no overflow --
+// exactly like the 1280x720 and 390x844 reference sizes already get (their
+// two axis scales happen to match, so this is a no-op for both).
 function currentScale(containerWidth: number, containerHeight: number): number {
-  const referenceWidth = isPortraitAspect(containerWidth, containerHeight) ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
-  return containerWidth / referenceWidth
+  const portrait = isPortraitAspect(containerWidth, containerHeight)
+  const referenceWidth = portrait ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
+  const referenceHeight = portrait ? MOBILE_REFERENCE_HEIGHT : DESKTOP_REFERENCE_HEIGHT
+  return Math.min(containerWidth / referenceWidth, containerHeight / referenceHeight)
 }
 
 /**
