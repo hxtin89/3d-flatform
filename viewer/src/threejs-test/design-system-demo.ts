@@ -24,7 +24,7 @@
 // screen-frame/recreation-content.ts -- shared with BentoGrid.stories.ts and
 // Screen.stories.ts so the real Figma data has one source, not three copies.
 import { mount, unmount, type Component } from 'svelte'
-import { HabitatLabelStack, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW } from '@wi/ui'
+import { HabitatLabelStack, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW, EAGLE_LOGO_SVG } from '@wi/ui'
 import '@wi/tokens/css'
 
 export interface DesignSystemDemo {
@@ -45,6 +45,20 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   document.body.append(container)
 
   const frame = createFrame(container)
+
+  // Figma's real eagle mark, fixed at a (165,30) px offset from the frame's
+  // own top-left corner in BOTH Frame 1 and Frame 1 Desktop -- same fixed
+  // offset ScreenFrame.svelte's `.screen-frame__logo` uses for its `logo`
+  // slot, duplicated here (not exported as a shared constant) because this
+  // file already duplicates every other dock/edge choice against
+  // ScreenFrame.svelte rather than factoring out one-off Figma numbers --
+  // see the species/label docks below for the same pattern. z-index 45 sits
+  // above the frame's own mask svg (z-index 40, see frame.ts) but below the
+  // weather/species/label docks (z-index 50, see dock.ts).
+  const logoHost = document.createElement('div')
+  logoHost.innerHTML = EAGLE_LOGO_SVG
+  Object.assign(logoHost.style, { position: 'absolute', zIndex: '45', transformOrigin: 'top left', pointerEvents: 'none' })
+  container.append(logoHost)
 
   const weatherHost = document.createElement('div')
   container.append(weatherHost)
@@ -109,7 +123,11 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   }
 
   function handleResize() {
-    container.style.setProperty('--screen-frame-content-scale', String(frame.getContentScale()))
+    const scale = frame.getContentScale()
+    container.style.setProperty('--screen-frame-content-scale', String(scale))
+    logoHost.style.top = `${30 * scale}px`
+    logoHost.style.left = `${165 * scale}px`
+    logoHost.style.transform = `scale(${scale})`
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
     const nextAlign = isPortrait() ? 'left' : 'right'

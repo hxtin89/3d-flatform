@@ -30,10 +30,15 @@
 // an empty box.
 import type { BentoGridItem } from "../BentoGrid.svelte";
 import { birdIcon, frogIcon, butterflyIcon, giftfroschImage } from "./species-icons";
+import { weatherBarIcon } from "./weather-icons";
 
 export const WEATHER_CLUSTER: BentoGridItem[] = [
-  // Figma: "S1: WeatherBar (Widget)" @ (660,71) 255x180
-  { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
+  // Figma: "S1: WeatherBar (Widget)" @ (660,71) 255x180 -- pairs its two text
+  // lines with real "32/Partly-cloudy"/"32/Wind" icon instances (verified
+  // sitting inside this widget's own bounds in both Frame 1 and Frame 1
+  // Desktop). Weather29/Weather83 below have no icon instance anywhere in
+  // Figma, so they stay bare numbers rather than getting a fabricated glyph.
+  { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", icon: weatherBarIcon, cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
   // Figma: "S1: Weather29 (Widget)" @ (660,251) 180x180
   { id: "weather29", x: 0, y: 180, width: 180, height: 180, value: "29°", description: "Celsius", accent: "gold", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "fill-left", bottomLeft: "convex" } },
   // Figma: "S1: Weather83 (Widget)" @ (840,251) 180x180

@@ -13,3 +13,4 @@ export { dockElement } from "./screen-frame/dock";
 export type { DockConfig, DockEdge, DockMode, Docked } from "./screen-frame/dock";
 export { WEATHER_CLUSTER, SPECIES_ROW } from "./screen-frame/recreation-content";
 export { default as HabitatLabelStack } from "./screen-frame/HabitatLabelStack.svelte";
+export { EAGLE_LOGO_SVG } from "./screen-frame/logo-icon";

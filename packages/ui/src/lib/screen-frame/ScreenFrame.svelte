@@ -14,9 +14,11 @@
     label?: Snippet<["left" | "right"]>;
     /** Renders behind the frame mask, filling the window area (e.g. the real scene/photo this frame is cut around). */
     background?: Snippet;
+    /** Fixed at the frame's own top-left corner, above the mask (Figma's real eagle mark sits at a fixed (165,30) px offset from that corner in BOTH Frame 1 and Frame 1 Desktop -- not proportional to frame width -- so it scales like every other fixed-px value, against getContentScale()). */
+    logo?: Snippet;
   }
 
-  let { revealed = true, weather, species, label, background }: Props = $props();
+  let { revealed = true, weather, species, label, background, logo }: Props = $props();
 
   let container: HTMLDivElement;
   let weatherHost: HTMLDivElement;
@@ -92,6 +94,9 @@
   {#if background}
     <div class="screen-frame__background">{@render background()}</div>
   {/if}
+  {#if logo}
+    <div class="screen-frame__logo">{@render logo()}</div>
+  {/if}
   <div class="screen-frame__weather" bind:this={weatherHost}>
     {#if weather}{@render weather()}{/if}
   </div>
@@ -121,5 +126,19 @@
     position: absolute;
     inset: 0;
     z-index: 0;
+  }
+
+  .screen-frame__logo {
+    position: absolute;
+    /* Fixed Figma px, scaled by the same --screen-frame-content-scale every
+       other fixed-size value (fonts, dock host transforms) scales against --
+       see the `logo` prop doc above for why this is a literal offset instead
+       of a dockElement() edge anchor. */
+    top: calc(30px * var(--screen-frame-content-scale, 1));
+    left: calc(165px * var(--screen-frame-content-scale, 1));
+    transform-origin: top left;
+    transform: scale(var(--screen-frame-content-scale, 1));
+    z-index: 45;
+    pointer-events: none;
   }
 </style>
