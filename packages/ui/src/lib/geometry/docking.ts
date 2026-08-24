@@ -47,10 +47,14 @@ const EPS = 0.5;
 /** How far inside a candidate neighbor's area to probe, relative to the corner point. */
 const PROBE = 1;
 
-function widgetAt(widgets: GridWidget[], x: number, y: number, excludeId: string): boolean {
-  return widgets.some(
+function widgetAt(widgets: GridWidget[], x: number, y: number, excludeId: string): GridWidget | undefined {
+  return widgets.find(
     (w) => w.id !== excludeId && x > w.x - EPS && x < w.x + w.width + EPS && y > w.y - EPS && y < w.y + w.height + EPS,
   );
+}
+
+function contains(w: GridWidget, x: number, y: number): boolean {
+  return x > w.x - EPS && x < w.x + w.width + EPS && y > w.y - EPS && y < w.y + w.height + EPS;
 }
 
 function solveCorner(
@@ -61,14 +65,26 @@ function solveCorner(
   hSign: 1 | -1,
   vSign: 1 | -1,
 ): CornerType {
-  const hasH = widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY - vSign * PROBE, widget.id);
-  const hasV = widgetAt(widgets, hProbeX - hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
-  const hasDiag = widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
+  const hNeighbor = widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY - vSign * PROBE, widget.id);
+  const vNeighbor = widgetAt(widgets, hProbeX - hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
+  const hasDiag = !!widgetAt(widgets, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE, widget.id);
   // Neighbors on both perpendicular sides: 4 widgets meet here in total (this one +
   // the 3 probed cells). If the diagonal cell is ALSO occupied, all 4 quadrants are
   // full -- a flush junction, sharp/no gap. If it's empty, this is the reflex point
   // around a missing quadrant -- round it to smoothly flow around the gap.
-  if (hasH && hasV) return hasDiag ? "none" : "concave";
+  if (hNeighbor && vNeighbor) return hasDiag ? "none" : "concave";
+  // A single perpendicular neighbor whose OWN rectangle reaches past my far
+  // (perpendicular) edge -- e.g. a taller widget beside a shorter one, both
+  // flush at the near end -- leaves no real corner to round: rounding it would
+  // carve a notch out of an otherwise straight, flush seam against that
+  // neighbor's overhang. This is decidable, unlike the genuine Fill-vs-Convex
+  // T-junction ambiguity below (see file header), so it isn't left to
+  // cornerOverrides. Checked against the SAME widget the H/V probe found, not
+  // "is anything in the diagonal cell" -- a widget that merely touches the
+  // diagonal quadrant without bordering this corner (docking.test.ts's L-shape
+  // case) must stay Convex.
+  if (hNeighbor && !vNeighbor && contains(hNeighbor, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE)) return "none";
+  if (vNeighbor && !hNeighbor && contains(vNeighbor, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE)) return "none";
   return "convex";
 }
 

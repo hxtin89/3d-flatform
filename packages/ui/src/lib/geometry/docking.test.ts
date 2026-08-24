@@ -39,6 +39,32 @@ describe("solveDocking", () => {
     expect(results.find((r) => r.id === "left")!.corners[1]).toBe("convex"); // topRight
   });
 
+  it("flushes a corner against a taller neighbor that overhangs past this widget's own edge (Vogel/Giftfrosch)", () => {
+    // Mirrors SPECIES_ROW's real effective geometry with Giftfrosch selected:
+    // Vogel and Giftfrosch share a top edge on Vogel's side, but Giftfrosch is
+    // taller and its own rectangle rises further up than Vogel's top -- a
+    // single-neighbor T-junction, but not an ambiguous one, since the neighbor
+    // itself proves there's no gap to round into.
+    const widgets = [
+      { id: "vogel", x: 0, y: 270, width: 300, height: 300 },
+      { id: "giftfrosch", x: 300, y: 0, width: 360, height: 570 },
+    ];
+    const results = solveDocking(widgets, false);
+    expect(results.find((r) => r.id === "vogel")!.corners[1]).toBe("none"); // topRight
+  });
+
+  it("keeps a lone perpendicular neighbor Convex when it does NOT overhang past the far edge", () => {
+    // Same shape as above but Giftfrosch's top is flush with Vogel's top
+    // instead of rising past it -- a plain T-junction with no derivable
+    // answer, so it must stay the ambiguous Convex default.
+    const widgets = [
+      { id: "vogel", x: 0, y: 0, width: 300, height: 300 },
+      { id: "giftfrosch", x: 300, y: 0, width: 360, height: 300 },
+    ];
+    const results = solveDocking(widgets, false);
+    expect(results.find((r) => r.id === "vogel")!.corners[1]).toBe("convex"); // topRight
+  });
+
   it("lets an explicit override win over the solved default", () => {
     const [result] = solveDocking([
       { id: "a", x: 0, y: 50, width: 100, height: 100, cornerOverrides: { topLeft: "fill-top" } },
