@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
-  vec2, vec3, vec4, float, int, mix, smoothstep, length, max, min, abs, exp, floor, hash,
+  vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
@@ -300,7 +300,19 @@ function groundPatchCoverageAt(u: CloudUniforms, gridPos: any): any {
   // layer and multiplied away instead, because a branch here would be per-fragment.
   const present: any = smoothstep(float(0.5), float(1.5), slot)
   const layer: any = int(max(slot, float(1)).sub(1))
-  return groundPatchMaskNode.sample(withinCell).depth(layer).r.mul(present)
+  // Reject anything outside the lattice. Without this the index texture clamps to its
+  // edge — pinning one layer — while `withinCell` is a fraction that repeats every
+  // cell, so that one cell's contents tile away from the survey for ever, banded along
+  // whichever axis is still in range.
+  //
+  // Latent from the start, but invisible until the floating origin: with positionWorld
+  // at ECEF magnitudes the float32 subtraction lost so much precision that gridPos out
+  // there was noise, and the clamped lookup landed on empty cells. Once the origin sits
+  // near the camera the arithmetic is accurate, the fraction sweeps cleanly, and the
+  // tiling snaps into focus.
+  const inside: any = step(vec2(0), indexUv).mul(step(indexUv, vec2(1)))
+  return groundPatchMaskNode.sample(withinCell).depth(layer).r
+    .mul(present).mul(inside.x).mul(inside.y)
 }
 
 /**
