@@ -55,7 +55,7 @@
     "baseSize": 24,
     "built": true,
     "packageInstalled": false,
-    "subset": ["arrow-left", "arrow-right", "x", "check", "caret-down", "caret-up", "caret-left", "caret-right", "magnifying-glass", "list", "info", "plus", "minus", "sun", "cloud", "wind", "map-pin", "compass", "camera", "leaf", "paw-print", "drop", "thermometer"]
+    "subset": ["arrow-left", "arrow-right", "x", "check", "caret-down", "caret-up", "caret-left", "caret-right", "magnifying-glass", "list", "info", "plus", "minus", "sun", "cloud", "wind", "map-pin", "compass", "camera", "leaf", "paw-print", "drop", "thermometer", "play"]
   },
   "components": {
     "built": ["Corner", "Bento Widget", "Label Line"],
