@@ -2730,6 +2730,7 @@ async function main(): Promise<void> {
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },
+    get controls() { return globe?.controls ?? null },
     /** Floating origin: the two ENU frames and where the origin currently sits.
      * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
     origin: {
