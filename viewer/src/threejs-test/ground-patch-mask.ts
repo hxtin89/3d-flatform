@@ -88,6 +88,13 @@ export interface GroundPatchMask {
     rootTileSet: any
     enuInverse: THREE.Matrix4
     maxDepth: number
+    /**
+     * Survey extent in ENU, from the manifest. Authoritative, so it is preferred over
+     * walking the tileset's node boxes — that walk composes the transforms differently
+     * from the splat and came out 7 km off in y, which left the near half of the survey
+     * outside the lattice and therefore unpainted.
+     */
+    bounds?: { minX: number; minY: number; maxX: number; maxY: number } | null
   }): Promise<number>
   /**
    * Register a loaded point tile for splatting. Cheap: it only queues, so it is
@@ -358,7 +365,7 @@ export function createGroundPatchMask(opts: {
     index,
     grid,
 
-    async setExtent({ tilesetUrl, rootTileSet, enuInverse: inverse, maxDepth }) {
+    async setExtent({ tilesetUrl, rootTileSet, enuInverse: inverse, maxDepth, bounds }) {
       const root = rootTileSet?.root
       const children: any[] = root?.children ?? []
       if (!children.length) return 0
@@ -409,6 +416,14 @@ export function createGroundPatchMask(opts: {
       for (const b of boxes) {
         minX = Math.min(minX, b.cx - b.hx); maxX = Math.max(maxX, b.cx + b.hx)
         minY = Math.min(minY, b.cy - b.hy); maxY = Math.max(maxY, b.cy + b.hy)
+      }
+      if (bounds) {
+        console.info(
+          `[lattice] manifest bounds x ${bounds.minX.toFixed(0)}..${bounds.maxX.toFixed(0)}`
+          + ` y ${bounds.minY.toFixed(0)}..${bounds.maxY.toFixed(0)}`
+          + ` (node boxes said y ${minY.toFixed(0)}..${maxY.toFixed(0)})`,
+        )
+        minX = bounds.minX; maxX = bounds.maxX; minY = bounds.minY; maxY = bounds.maxY
       }
       // A margin of one cell, so coverage never reaches the lattice edge, where
       // clamped sampling would turn it into a hard straight line.

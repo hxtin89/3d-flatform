@@ -565,6 +565,8 @@ function applyGroundPatchExtent(): void {
 }
 /** Guards the one-shot extent fix — the survey rectangle never changes. */
 let groundPatchMaskBuilt = false
+/** Survey extent in ENU for the ground-patch lattice, from the manifest. */
+let maskBoundsEnu: { minX: number; minY: number; maxX: number; maxY: number } | null = null
 let lastFieldTier: PerformanceTier | null = null
 let disposed = false
 
@@ -2623,6 +2625,7 @@ async function main(): Promise<void> {
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
   if (surveyBbox) {
     const [minX, minY, , maxX, maxY] = surveyBbox
+    maskBoundsEnu = { minX, minY, maxX, maxY }
     cloudCenterEnu.set((minX + maxX) / 2, (minY + maxY) / 2, areaMinZ + 40)
     navigationBoundsRadius = Math.max(
       EXPERIENCE_CONFIG.navigation.minimumBoundsRadiusM,
@@ -2703,6 +2706,10 @@ async function main(): Promise<void> {
       rootTileSet: (stream as any).tiles.rootTileSet,
       enuInverse: enuInverseRender,
       maxDepth: patch.maskMaxDepth,
+      // The manifest's own extent, in ENU. Preferred over the tileset's node boxes:
+      // that walk composes transforms differently from the splat and lands ~7 km out in
+      // y, which put the near half of the survey outside the lattice and left it bare.
+      bounds: maskBoundsEnu,
     }).then((boxes) => {
       if (!boxes) {
         console.warn('[ground-patch] tileset carried no usable node boxes — patch stays off')
