@@ -4,6 +4,15 @@
   interface Props {
     text: string;
     fontSize?: number;
+    /** Sora font weight. Defaults to --weight-heading (700/Bold) -- Figma's real "PERUANISCHER"/"AUWALD"
+        headline lines (get_design_context on 25556:1237/1238) both bind Sora Bold. The eyebrow line
+        above them ("Dein Habitat", 25556:1236) is the one exception: Sora Light (300) -- a raw literal,
+        not a token, since the weight scale's real Figma variables (weight/extralight=200 through
+        weight/bold=700, tokens-raw.json) have no 300 stop to alias. Every LabelLine call site used to
+        hardcode --weight-heading unconditionally, so the eyebrow rendered at the same bold weight as the
+        headline beneath it -- the one-weight-throughout gap: two lines of genuinely different Figma
+        weights collapsed to one because this prop didn't exist yet. */
+    fontWeight?: number | string;
     corners?: Corners;
     accent?: string;
     /** Corner radius in px — defaults to the label/pill token (30). */
@@ -15,6 +24,7 @@
   let {
     text,
     fontSize = 34,
+    fontWeight = "var(--weight-heading)",
     corners = ["convex", "convex", "convex", "convex"],
     accent = "default",
     radius = 30,
@@ -48,7 +58,7 @@
   >
     <path d={path} class="label-line__fill" />
   </svg>
-  <span class="label-line__text" style:font-size="{fontSize}px" bind:clientWidth={textWidth}>{text}</span>
+  <span class="label-line__text" style:font-size="{fontSize}px" style:font-weight={fontWeight} bind:clientWidth={textWidth}>{text}</span>
 </div>
 
 <style>
@@ -89,7 +99,6 @@
     padding: 0 var(--space-24);
     white-space: nowrap;
     font-family: var(--family-sans);
-    font-weight: var(--weight-heading);
     color: var(--text-primary);
     box-sizing: border-box;
   }

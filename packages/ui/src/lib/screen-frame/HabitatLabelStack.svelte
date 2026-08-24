@@ -33,7 +33,12 @@
   frame and put a green pill where Figma's real mobile layout has none.
 -->
 <div class="habitat-label-stack" style:align-items={align === "left" ? "flex-start" : "flex-end"}>
-  <LabelLine text="Dein Habitat" fontSize={34} />
+  <!-- fontWeight=300: Sora Light, verified via get_design_context on the real
+       "Dein Habitat" instance (25556:1236) -- see LabelLine's own comment on
+       why this is a raw literal weight rather than a token. The headline
+       lines below keep LabelLine's default (--weight-heading/Bold), their
+       own real Figma binding. -->
+  <LabelLine text="Dein Habitat" fontSize={34} fontWeight={300} />
   <LabelLine text="PERUANISCHER" fontSize={60} accent={align === "right" ? "forest-green" : "default"} />
   <LabelLine text="AUWALD" fontSize={60} accent={align === "right" ? "forest-green" : "default"} corners={["none", "convex", "convex", "convex"]} />
 </div>

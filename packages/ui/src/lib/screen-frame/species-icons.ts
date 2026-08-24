@@ -57,7 +57,18 @@ export const butterflyIcon: Snippet = iconSnippet(`
   <path d="M28 12c-1-3 0-5 2-6M36 12c1-3 0-5-2-6" />
 `);
 
-/** Giftfrosch, selected state -- takes SpeciesWidget's `image` slot instead of `icon`. */
+/** Giftfrosch, selected state -- takes SpeciesWidget's `image` slot instead of `icon`.
+ *
+ * The flat solid-color shapes here used to read as a cartoon emoji face, not a
+ * specimen rendering -- every fill was one constant color with no light on it
+ * at all. This is still hand-drawn SVG, not a licensed photo (see this file's
+ * own header on why -- no asset pipeline exists to pull a real photo from),
+ * but a shaded, textured render is the honest upgrade available within that
+ * constraint: radial-gradient fills stand in for a key light, a fractalNoise
+ * mottle (same feTurbulence-desaturate-recolor recipe ScreenExample.svelte's
+ * habitat-grain filter already uses for the backdrop) stands in for real
+ * mottled dart-frog skin, and a small offset catchlight on each eye is what
+ * actually reads as "wet/alive" instead of "flat printed sticker". */
 export const giftfroschImage: Snippet = createRawSnippet(() => ({
   render: () => `
     <svg viewBox="0 0 120 120" style="width:132px;height:132px" aria-hidden="true">
@@ -66,18 +77,40 @@ export const giftfroschImage: Snippet = createRawSnippet(() => ({
           <stop offset="0%" stop-color="rgb(0 68 50 / 0.35)" />
           <stop offset="100%" stop-color="rgb(0 68 50 / 0)" />
         </radialGradient>
+        <radialGradient id="giftfrosch-body" cx="38%" cy="28%" r="80%">
+          <stop offset="0%" stop-color="rgb(28 122 90)" />
+          <stop offset="55%" stop-color="rgb(0 68 50)" />
+          <stop offset="100%" stop-color="rgb(0 36 26)" />
+        </radialGradient>
+        <radialGradient id="giftfrosch-eye" cx="35%" cy="30%" r="75%">
+          <stop offset="0%" stop-color="rgb(247 232 130)" />
+          <stop offset="100%" stop-color="rgb(214 190 0)" />
+        </radialGradient>
+        <clipPath id="giftfrosch-body-clip">
+          <ellipse cx="60" cy="70" rx="30" ry="22" />
+        </clipPath>
+        <filter id="giftfrosch-skin" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.2" numOctaves="3" seed="7" stitchTiles="stitch" result="noise" />
+          <feColorMatrix in="noise" type="saturate" values="0" result="gray" />
+          <feComponentTransfer in="gray" result="mottle">
+            <feFuncA type="linear" slope="0.6" intercept="-0.15" />
+          </feComponentTransfer>
+        </filter>
       </defs>
       <circle cx="60" cy="60" r="58" fill="url(#giftfrosch-vignette)" />
-      <ellipse cx="60" cy="70" rx="30" ry="22" fill="rgb(0 68 50)" />
+      <ellipse cx="60" cy="70" rx="30" ry="22" fill="url(#giftfrosch-body)" />
+      <rect x="26" y="44" width="68" height="52" filter="url(#giftfrosch-skin)" clip-path="url(#giftfrosch-body-clip)" fill="black" style="mix-blend-mode:overlay" />
       <path d="M34 66c8-6 18-9 26-9s18 3 26 9" stroke="rgb(230 206 0)" stroke-width="5" fill="none" stroke-linecap="round" />
       <path d="M38 78c7 5 14 7 22 7s15-2 22-7" stroke="rgb(249 115 22)" stroke-width="5" fill="none" stroke-linecap="round" />
       <path d="M32 82c-6 4-10 10-11 17M88 82c6 4 10 10 11 17" stroke="rgb(0 68 50)" stroke-width="6" fill="none" stroke-linecap="round" />
-      <circle cx="46" cy="46" r="9" fill="rgb(0 68 50)" />
-      <circle cx="74" cy="46" r="9" fill="rgb(0 68 50)" />
-      <circle cx="46" cy="46" r="4" fill="rgb(230 206 0)" />
-      <circle cx="74" cy="46" r="4" fill="rgb(230 206 0)" />
+      <circle cx="46" cy="46" r="9" fill="url(#giftfrosch-body)" />
+      <circle cx="74" cy="46" r="9" fill="url(#giftfrosch-body)" />
+      <circle cx="46" cy="46" r="4" fill="url(#giftfrosch-eye)" />
+      <circle cx="74" cy="46" r="4" fill="url(#giftfrosch-eye)" />
       <circle cx="46" cy="46" r="1.6" fill="rgb(20 20 20)" />
       <circle cx="74" cy="46" r="1.6" fill="rgb(20 20 20)" />
+      <circle cx="44.8" cy="44.7" r="0.9" fill="rgb(255 255 255 / 0.85)" />
+      <circle cx="72.8" cy="44.7" r="0.9" fill="rgb(255 255 255 / 0.85)" />
     </svg>
   `,
 }));

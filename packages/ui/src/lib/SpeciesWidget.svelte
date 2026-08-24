@@ -319,7 +319,34 @@
     justify-content: center;
     padding: var(--inset-lg);
     border-radius: var(--pill);
-    background: rgb(0 0 0 / 0.12);
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
+    /* Was a flat rgb(0 0 0 / 0.12) disc -- the plate itself was as flat as the
+       line-art it sits behind. A radial highlight/shadow (same
+       light-from-top-left language as the card sheens above) plus a real
+       drop-shadow reads as a lit, embossed badge instead of a tinted circle,
+       and the slow breathe keyframe below gives the row *some* idle motion --
+       previously every card was fully static outside the click-driven
+       expand/collapse. */
+    background: radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0.05) 42%, rgb(0 0 0 / 0.2) 100%);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.18),
+      inset 0 -6px 10px rgb(0 0 0 / 0.2),
+      0 8px 16px rgb(0 0 0 / 0.22);
+    animation: species-icon-breathe 6s ease-in-out infinite;
+  }
+
+  @keyframes species-icon-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.035);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .species-widget__icon-plate {
+      animation: none;
+    }
   }
 </style>
