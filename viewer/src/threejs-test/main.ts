@@ -2122,14 +2122,37 @@ const onCanvasDblClick = (event: MouseEvent) => {
 }
 canvas.addEventListener('dblclick', onCanvasDblClick)
 
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight
+/**
+ * Follow the viewport. Sourced from `window.innerWidth/innerHeight`, which is exactly
+ * the canvas box because #view is `position: fixed; inset: 0`.
+ *
+ * Driven by a ResizeObserver as well as the window event, because the window event is
+ * not reliable in an embedded host: the container can be re-laid-out without one, and
+ * then the backbuffer keeps its old size and the body background shows through below
+ * the frame. The observer sees the element's box change either way.
+ */
+let appliedViewport = ''
+function applyViewportSize(): void {
+  const width = window.innerWidth
+  const height = window.innerHeight
+  if (!width || !height) return
+  const key = `${width}x${height}`
+  if (key === appliedViewport) return
+  appliedViewport = key
+  camera.aspect = width / height
   camera.updateProjectionMatrix()
-  renderer.setSize(window.innerWidth, window.innerHeight)
+  renderer.setSize(width, height)
   globe?.setResolution()
+  // Resolution feeds the SSE pixel measure, so refinement targets would otherwise be
+  // computed against a stale backbuffer.
   stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
   gaussianSplatLayer?.resize()
-})
+  updateFoveationGuides()
+}
+window.addEventListener('resize', applyViewportSize)
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(applyViewportSize).observe(document.documentElement)
+}
 
 // ---------------------------------------------------------------- streaming / HUD / loop
 let flightEndedAt = -Infinity
