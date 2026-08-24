@@ -44,11 +44,31 @@
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
 
+  // Drives the same "pressed" look for mouse and keyboard. Plain :active
+  // covers a mouse click, but a div with role="button" doesn't get :active
+  // from Enter/Space the way a real <button> does -- without this, keyboard
+  // activation would skip the press feedback the task asked to confirm is
+  // shared between the two input paths.
+  let pressed = $state(false);
+  function press() {
+    pressed = true;
+  }
+  function release() {
+    pressed = false;
+  }
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onSelect?.();
-    }
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    // Holding the key down repeats keydown without a keyup in between --
+    // without this guard, selection would toggle on/off on every repeat.
+    if (e.repeat) return;
+    pressed = true;
+    onSelect?.();
+  }
+
+  function handleKeyup(e: KeyboardEvent) {
+    if (e.key === "Enter" || e.key === " ") pressed = false;
   }
 </script>
 
@@ -58,12 +78,18 @@
   data-accent={accent}
   data-selected={selected}
   data-selectable={selectable}
+  data-pressed={pressed}
   style:width="{width}px"
   style:height="{height}px"
   role={selectable ? "button" : undefined}
   tabindex={selectable ? 0 : undefined}
   onclick={selectable ? onSelect : undefined}
   onkeydown={selectable ? handleKeydown : undefined}
+  onkeyup={selectable ? handleKeyup : undefined}
+  onpointerdown={selectable ? press : undefined}
+  onpointerup={selectable ? release : undefined}
+  onpointerleave={selectable ? release : undefined}
+  onpointercancel={selectable ? release : undefined}
 >
   <svg
     class="species-widget__silhouette"
@@ -158,13 +184,33 @@
     position: relative;
     isolation: isolate;
     /* Hover/focus lift -- see BentoWidget's identical pair for why the
-       transform sits on the root and the shadow lives on the silhouette. */
-    transition: transform 220ms ease;
+       transform sits on the root and the shadow lives on the silhouette.
+       filter is here too so releasing a press eases the brightness dip back
+       out at this same relaxed pace, even though pressing it down uses the
+       snappier transition declared on [data-pressed="true"] itself. */
+    transition:
+      transform 220ms ease,
+      filter 220ms ease;
   }
 
   .species-widget:hover,
   .species-widget:focus-visible {
     transform: translateY(-8px) scale(1.015);
+  }
+
+  /* Press feedback (mouse pointerdown or keyboard Enter/Space, see `pressed`
+     state above) -- a quick dip toward the surface plus a brightness pinch,
+     the tactile "this is about to do something" cue the hover lift alone
+     doesn't give before the 480ms expand even starts. Comes after the hover
+     rule so it wins at equal specificity when both apply (hovering, then
+     pressing) -- and it's deliberately much quicker than the hover
+     transition, a press should register as close to instant. */
+  .species-widget[data-pressed="true"] {
+    transform: translateY(-2px) scale(0.975);
+    filter: brightness(0.96);
+    transition:
+      transform 90ms cubic-bezier(0.4, 0, 1, 1),
+      filter 90ms ease;
   }
 
   .species-widget__silhouette {
@@ -184,14 +230,26 @@
       drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
+  /* Shadow tightens toward the surface on press, same physical-push logic as
+     the lift growing the shadow on hover, inverted. */
+  .species-widget[data-pressed="true"] .species-widget__silhouette {
+    filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--accent-fill) 35%, transparent))
+      drop-shadow(0 6px 10px var(--shadow-key)) drop-shadow(0 1px 2px var(--shadow-ambient));
+    transition: filter 90ms ease;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .species-widget,
     .species-widget__silhouette {
       transition: none;
     }
     .species-widget:hover,
-    .species-widget:focus-visible {
+    .species-widget:focus-visible,
+    .species-widget[data-pressed="true"] {
       transform: none;
+    }
+    .species-widget[data-pressed="true"] {
+      filter: none;
     }
   }
 

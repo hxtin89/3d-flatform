@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
   import { Tween } from "svelte/motion";
-  import { cubicOut } from "svelte/easing";
+  import { backOut } from "svelte/easing";
   import BentoWidget from "./BentoWidget.svelte";
   import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
@@ -42,7 +42,16 @@
 
   let { items, radius = 60, topLeftIsScreenCorner = true }: Props = $props();
 
-  const EXPAND_DURATION_MS = 400;
+  // cubicOut landed the expand exactly on target with no character -- a card
+  // being singled out and grown is the one moment in this grid that should
+  // feel like a deliberate, slightly eager response to the click, not a
+  // mechanical resize. backOut's single small overshoot (~10%, no wobble)
+  // reads as "playful but precise" -- neither reference site (colabs.com.au,
+  // alethia.earth) uses literal spring easing (colabs is plain `ease`;
+  // alethia is canvas-driven, no inspectable CSS transitions at all), so this
+  // stays a restrained overshoot rather than an elastic bounce. Bumped from
+  // 400ms so the overshoot has room to actually read before settling.
+  const EXPAND_DURATION_MS = 480;
 
   // `items` is treated as a fixed initial dataset here -- selection state and
   // the tweens below are deliberately seeded ONCE and then owned by BentoGrid
@@ -56,7 +65,7 @@
   // Non-selectable items never need one; their height is static.
   const heightTweens = new Map<string, Tween<number>>();
   for (const item of untrack(() => items)) {
-    if (item.selectable) heightTweens.set(item.id, new Tween(item.selected ? (item.expandedHeight ?? item.height) : item.height, { duration: EXPAND_DURATION_MS, easing: cubicOut }));
+    if (item.selectable) heightTweens.set(item.id, new Tween(item.selected ? (item.expandedHeight ?? item.height) : item.height, { duration: EXPAND_DURATION_MS, easing: backOut }));
   }
 
   $effect(() => {
