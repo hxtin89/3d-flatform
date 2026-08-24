@@ -2270,7 +2270,11 @@ function updateOverdrawReadout(points: number): void {
   // screen directions.
   const idealPerPixel = 1 / ((target * ratio) ** 2)
   overdrawEl.textContent = `${(perPixel * dotArea).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
-  stackingEl.textContent = `${(perPixel / idealPerPixel).toFixed(0)}× · ${perPixel.toFixed(2)} pt/px`
+  // Above the working band the ideal layer is so sparse that the ratio runs to six
+  // digits and reads as a fault. The boot and flight brakes live up there.
+  stackingEl.textContent = target > 32
+    ? `— · ${perPixel.toFixed(2)} pt/px`
+    : `${(perPixel / idealPerPixel).toFixed(0)}× · ${perPixel.toFixed(2)} pt/px`
 }
 
 function updateHud(stats: StreamingStats | null): void {
