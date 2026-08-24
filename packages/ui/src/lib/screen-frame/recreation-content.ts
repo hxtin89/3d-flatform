@@ -32,13 +32,15 @@
 // pinning was never verified against (see BentoGrid.svelte's effectiveItems).
 //
 // Selected-state measurement/status/caption content verified directly off
-// the real Figma text nodes. icon/image below are line-art/illustration
-// (see species-icons.ts) rather than the real Figma vector icons or a real
-// frog photo -- there's still no icon system or licensed photo asset in
-// this repo -- but every species slot now renders real content instead of
-// an empty box.
+// the real Figma text nodes. Vogel/Morphofalter's `image` is Figma's own
+// real illustration for that card (see species-icons.ts/
+// species-illustrations.ts), not a fabricated stand-in, so the row no
+// longer mixes Giftfrosch's finished photo with a generic placeholder icon
+// on the other two. Giftfrosch's own `icon` (frogIcon) stays a plain
+// line-art fallback -- Figma's static file only ever shows Giftfrosch
+// expanded, so there's no real "collapsed Giftfrosch" artwork to pull in.
 import type { BentoGridItem } from "../BentoGrid.svelte";
-import { birdIcon, frogIcon, butterflyIcon, giftfroschImage } from "./species-icons";
+import { frogIcon, giftfroschImage, birdImage, butterflyImage } from "./species-icons";
 import { weatherBarIcon } from "./weather-icons";
 
 export const WEATHER_CLUSTER: BentoGridItem[] = [
@@ -59,7 +61,7 @@ const SPECIES_EXPANDED_HEIGHT = 570;
 
 export const SPECIES_ROW: BentoGridItem[] = [
   // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", icon: birdIcon, cornerOverrides: { topLeft: "fill-top" } },
+  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", image: birdImage, cornerOverrides: { topLeft: "fill-top" } },
   // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570 (selected/expanded) -- measurement/
   // status/caption facts read off the actual Figma text nodes (25556:1315/1317/1314).
   {
@@ -83,5 +85,5 @@ export const SPECIES_ROW: BentoGridItem[] = [
     cornerOverrides: { bottomRight: "fill-left" },
   },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
-  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", icon: butterflyIcon, cornerOverrides: { topLeft: "none", bottomLeft: "none" } },
+  { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", image: butterflyImage, cornerOverrides: { topLeft: "none", bottomLeft: "none" } },
 ];

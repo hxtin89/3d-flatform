@@ -14,7 +14,7 @@
     title?: string;
     /** Latin name, e.g. "pipra fasciicauda". */
     description?: string;
-    /** Unselected (default): shows the `icon` slot. Selected: shows the measurement/status/caption facts plus the `image` slot instead -- reproduces Figma's real "SIRA GIFTFROSCH" vs. "SCHNURRVOGEL"/"BLAUER MORPHOFALTER" distinction (Frame 1 Desktop). */
+    /** Selected: additionally shows the measurement/status/caption facts above the visual -- reproduces Figma's real "SIRA GIFTFROSCH" (selected) vs. "SCHNURRVOGEL"/"BLAUER MORPHOFALTER" (not) distinction (Frame 1 Desktop). Does NOT gate `image` vs `icon` -- see their own doc comments below. */
     selected?: boolean;
     /** e.g. "15-17mm" — selected only. */
     measurement?: string;
@@ -22,9 +22,9 @@
     status?: string;
     /** e.g. "Nur die männlichen Frösche kümmern sich um den Nachwuchs" — selected only. */
     caption?: string;
-    /** Line-art species icon — shown when NOT selected. */
+    /** Generic line-art fallback icon — shown only when `image` is absent (regardless of `selected`). */
     icon?: Snippet;
-    /** Real species photo — shown when selected. */
+    /** Real species photo/illustration — shown whenever present (regardless of `selected`), takes priority over `icon`. */
     image?: Snippet;
     /** Sets data-accent — background color resolves via the accent-fill CSS custom property, same token set BentoWidget uses. */
     accent?: string;
@@ -164,15 +164,21 @@
     {/if}
 
     <div class="species-widget__visual">
-      {#if selected}
-        {#if image}{@render image()}{/if}
+      {#if image}
+        <!-- Shown whenever a real asset exists, regardless of `selected` --
+             gating this on `selected` was the actual bug behind the species
+             row's material mismatch: Vogel/Morphofalter now carry a real
+             `image` (see species-icons.ts) same as Giftfrosch, and it must
+             render in their normal (unselected) state too, not just when
+             expanded. -->
+        {@render image()}
       {:else if icon}
-        <!-- A tinted circular plate behind the line-art icon, not the bare
-             stroke floating on the card fill -- a considered icon TREATMENT
-             (badge, weight, contrast) is the honest fix available without a
-             licensed photo/vector asset pipeline (see species-icons.ts's own
-             header on why these stay line-art), and reads far less like
-             generic dropped-in clip-art than an outline with nothing around it. -->
+        <!-- Fallback for a species with no real asset at all (currently
+             just Giftfrosch's own collapsed state -- Figma's static file
+             never shows it collapsed, see recreation-content.ts). A tinted
+             circular plate behind the line-art icon, not the bare stroke
+             floating on the card fill, reads far less like generic
+             dropped-in clip-art than an outline with nothing around it. -->
         <span class="species-widget__icon-plate">{@render icon()}</span>
       {/if}
     </div>
