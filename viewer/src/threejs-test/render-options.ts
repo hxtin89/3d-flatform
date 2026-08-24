@@ -1,12 +1,12 @@
 /**
  * Runtime toggles for every performance optimisation layered on top of the core
- * zoom-dependent density (the SSE band ladder in adaptive-quality.ts — that one
- * is the comparison subject against the Cesium viewer and never switches off).
+ * zoom-dependent density (the SSE band ladder in adaptive-quality.ts, which never
+ * switches off).
  *
- * Two-level state: `requested` holds the user's individual toggle choices;
- * `effective()` is what the app actually applies. Compare mode overrides
- * `requested` with COMPARE_PROFILE without overwriting it, so leaving compare
- * mode restores the exact prior configuration.
+ * `requested` holds the user's toggle choices; `effective()` is what the app actually
+ * applies. The two were separate because compare mode used to override the whole set
+ * at once; that mode is gone, and the split is kept because `onApply` wants the list of
+ * keys that actually changed.
  */
 
 export interface RenderOptions {
@@ -62,23 +62,6 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   basemapImagery: true,
 }
 
-/** Compare mode: every optimisation off; only the point cloud with the SSE
- * band ladder, navigation and (per user decision) the basemap remain. */
-export const COMPARE_PROFILE: RenderOptions = {
-  leafLoading: false,
-  viewAngleError: false,
-  sseBrakes: false,
-  fogAtmosphere: false,
-  daylightGrading: false,
-  fieldModels: false,
-  markers: false,
-  donationShape: false,
-  dynamicPointSize: false,
-  presetBudgets: false,
-  pixelRatioCap: false,
-  flightPrecisionDrop: false,
-  basemapImagery: true,
-}
 
 export interface RenderOptionRow {
   key: RenderOptionKey
@@ -186,9 +169,7 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
 export interface RenderOptionsController {
   effective(): Readonly<RenderOptions>
   requested(): Readonly<RenderOptions>
-  isCompareMode(): boolean
   setOption(key: RenderOptionKey, on: boolean): void
-  setCompareMode(on: boolean): void
 }
 
 /**
@@ -197,31 +178,24 @@ export interface RenderOptionsController {
  * `effective()` directly instead of subscribing.
  */
 export function createRenderOptions(
-  onApply: (effective: Readonly<RenderOptions>, changed: RenderOptionKey[], compareMode: boolean) => void,
+  onApply: (effective: Readonly<RenderOptions>, changed: RenderOptionKey[]) => void,
 ): RenderOptionsController {
   const requested: RenderOptions = { ...DEFAULT_OPTIONS }
-  let compareMode = false
   let current: RenderOptions = { ...requested }
 
   function recompute(): void {
-    const next: RenderOptions = compareMode ? { ...COMPARE_PROFILE } : { ...requested }
+    const next: RenderOptions = { ...requested }
     const changed = (Object.keys(next) as RenderOptionKey[]).filter((key) => next[key] !== current[key])
     current = next
-    if (changed.length) onApply(current, changed, compareMode)
+    if (changed.length) onApply(current, changed)
   }
 
   return {
     effective: () => current,
     requested: () => requested,
-    isCompareMode: () => compareMode,
     setOption(key, on) {
       if (requested[key] === on) return
       requested[key] = on
-      if (!compareMode) recompute()
-    },
-    setCompareMode(on) {
-      if (compareMode === on) return
-      compareMode = on
       recompute()
     },
   }

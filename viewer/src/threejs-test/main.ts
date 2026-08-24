@@ -75,12 +75,6 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
-/** Cesium comparison: start without the loader benchmark and without the
- * boot-time pixel-ratio cap, then enable compare mode (all optimisations off,
- * only the zoom-dependent density ladder remains). Everything else is also
- * switchable live via the panel — this param covers the construction-time
- * pieces a running session cannot change. */
-const compareParam = params.get('compare') === '1'
 /** Shows the measured heights in the HUD. Implied by freeorbit, but available
  * on its own so the configured zoom stop can be checked while it still bites. */
 const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
@@ -166,11 +160,7 @@ function exposeBenchDebugState(): void {
 
 // The eagle is a real point cloud whose density follows the load progress —
 // the loading animation quietly benchmarks the device's point pipeline.
-// Compare mode skips the probe entirely: the preset is forced to 'strong' and
-// every preset-derived cap is disabled anyway.
-if (compareParam) {
-  loaderEagleFillEl.hidden = false
-} else void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
+void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
@@ -319,7 +309,7 @@ function applyBenchPreset(): void {
   // view distance alone. Set design.maskMode to 2 to hand the lever back.
   const options = renderOptions.effective()
   if (preset === 'strong') {
-    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.25
     adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
@@ -331,7 +321,7 @@ function applyBenchPreset(): void {
       globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
     }
   } else if (preset === 'medium') {
-    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.1
     adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
@@ -343,7 +333,7 @@ function applyBenchPreset(): void {
       globe?.setMemoryBudget(96 * 1024 * 1024, 64 * 1024 * 1024)
     }
   } else {
-    if (!renderOptions.isCompareMode()) setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
+    setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1
     adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
@@ -354,12 +344,10 @@ function applyBenchPreset(): void {
       stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
       globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
     }
-    if (!renderOptions.isCompareMode()) {
-      // Larger points keep the canopy readable at a lower pixel ratio.
-      pointSizeScale = 1.3
-      sizeEl.value = String(pointSizeScale)
-      applyPointSize()
-    }
+    // Larger points keep the canopy readable at a lower pixel ratio.
+    pointSizeScale = 1.3
+    sizeEl.value = String(pointSizeScale)
+    applyPointSize()
   }
   applyPixelRatio()
 }
@@ -418,7 +406,7 @@ const canvas = $<HTMLCanvasElement>('#view')
 const renderer = new WebGPURenderer({ canvas, antialias: false, forceWebGL } as any)
 // A device-independent cap avoids allocating a native 3x iPhone backbuffer while
 // preserving supersampling on ordinary displays. It is never resized per frame.
-renderer.setPixelRatio(compareParam ? window.devicePixelRatio : Math.min(window.devicePixelRatio, 1.25))
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
 // Daylight sky above the globe horizon. The matching distance fog hides the
 // finite map edge without another mesh, texture sample or post-process pass.
@@ -868,9 +856,7 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
 
 const renderOptions = createRenderOptions(applyRenderOptions)
 
-const compareToggleEl = $<HTMLButtonElement>('#compareToggle')
-const compareReloadEl = $<HTMLButtonElement>('#compareReload')
-const compareRowsEl = $<HTMLDivElement>('#compareRows')
+const optionRowsEl = $<HTMLDivElement>('#optionRows')
 const optionButtons = new Map<RenderOptionKey, HTMLButtonElement>()
 const onOptionClick = (key: RenderOptionKey) => {
   renderOptions.setOption(key, !renderOptions.requested()[key])
@@ -894,7 +880,7 @@ for (const rowDef of RENDER_OPTION_ROWS) {
   note.className = 'weather-note'
   note.textContent = rowDef.note
   row.append(label, button, note)
-  compareRowsEl.appendChild(row)
+  optionRowsEl.appendChild(row)
   optionButtons.set(rowDef.key, button)
 }
 // Buttons are created before any option transition occurs, so initialise their
@@ -912,75 +898,6 @@ function syncOptionButtons(): void {
     button.textContent = on ? rowDef.onText : rowDef.offText
   }
 }
-
-/** Pre-compare state of the toggles that live outside render-options (they
- * already had their own controls). Restored verbatim on exit; the cloud intent
- * bypasses localStorage so the stored user preference survives compare mode. */
-let compareLegacySnapshot: {
-  maskMode: number
-  cloudIntent: boolean
-  rainCycle: boolean
-  audioOn: boolean
-  highPrecision: boolean
-} | null = null
-
-function setCompareMode(on: boolean): void {
-  if (on === renderOptions.isCompareMode()) return
-  if (on) {
-    compareLegacySnapshot = {
-      maskMode: uniforms.maskMode.value,
-      cloudIntent: environmentLayer?.getCloudState().intent ?? false,
-      rainCycle: rainCycleEnabled,
-      audioOn: soundToggleEl.classList.contains('is-on'),
-      highPrecision: highPrecisionMatrices,
-    }
-    setMaskMode(0)
-    environmentLayer?.setCloudIntent(false, false)
-    rainCycleEnabled = false
-    rainRequested = false
-    rainVisualActive = false
-    rainLayer?.setEnabled(false)
-    updateRainToggle()
-    void audioLayer?.setEnabled(false)
-    // The comparison wants jitter-free geometry throughout.
-    highPrecisionMatrices = true
-    syncPrecisionToggle()
-  }
-  renderOptions.setCompareMode(on)
-  if (!on && compareLegacySnapshot) {
-    const snapshot = compareLegacySnapshot
-    compareLegacySnapshot = null
-    setMaskMode(snapshot.maskMode)
-    environmentLayer?.setCloudIntent(snapshot.cloudIntent, false)
-    rainCycleEnabled = snapshot.rainCycle
-    rainCycleStartedAt = performance.now()
-    updateRainToggle()
-    if (snapshot.audioOn) void audioLayer?.setEnabled(true)
-    highPrecisionMatrices = snapshot.highPrecision
-    syncPrecisionToggle()
-    appliedHighPrecision = null
-    updateMatrixPrecision(performance.now())
-  }
-  document.body.classList.toggle('compare-mode', on)
-  $('#panel').classList.toggle('compare-mode', on)
-  compareToggleEl.classList.toggle('on', on)
-  compareToggleEl.setAttribute('aria-pressed', String(on))
-  compareToggleEl.textContent = `⚖ Compare mode · ${on ? 'On' : 'Off'}`
-}
-
-const onCompareToggle = () => setCompareMode(!renderOptions.isCompareMode())
-/** Reload with/without ?compare=1 so nobody has to remember the parameter —
- * this also covers the construction-time pieces (pixel-ratio start value,
- * skipped loader benchmark) a live toggle cannot reach. */
-const onCompareReload = () => {
-  const url = new URL(location.href)
-  if (compareParam) url.searchParams.delete('compare')
-  else url.searchParams.set('compare', '1')
-  location.href = url.toString()
-}
-compareReloadEl.textContent = compareParam ? '⟳ Restart · Normal' : '⟳ Restart in compare mode'
-compareToggleEl.addEventListener('click', onCompareToggle)
-compareReloadEl.addEventListener('click', onCompareReload)
 
 cloudToggleEl.disabled = true
 soundToggleEl.disabled = true
@@ -2837,7 +2754,6 @@ async function main(): Promise<void> {
   // ?compare=1: everything above is created normally, then compare mode
   // switches the optimisations off in one atomic pass — same code path as the
   // panel master toggle, so live and boot behaviour cannot drift apart.
-  if (compareParam) setCompareMode(true)
 
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
@@ -2885,8 +2801,6 @@ function dispose(): void {
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
   delete loaderEagleCanvasEl.dataset.benchState
   rainToggleEl.removeEventListener('click', onRainToggle)
-  compareToggleEl.removeEventListener('click', onCompareToggle)
-  compareReloadEl.removeEventListener('click', onCompareReload)
   precisionToggleEl.removeEventListener('click', onPrecisionToggle)
   liftToggleEl.removeEventListener('click', onLiftToggle)
   dofToggleEl.removeEventListener('click', onDofToggle)
