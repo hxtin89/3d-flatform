@@ -11,6 +11,7 @@ import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
+import { attachOrigin, getEcefRoot, setOriginEnabled } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
@@ -78,6 +79,9 @@ const freeOrbit = params.has('freeorbit')
 /** Shows the measured heights in the HUD. Implied by freeorbit, but available
  * on its own so the configured zoom stop can be checked while it still bites. */
 const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
+/** `?noorigin` pins the origin at (0,0,0): the same code path with one value
+ * different, so an A/B compares the real implementation against itself. */
+const originEnabled = !params.has('noorigin')
 /** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
  * measures. The benchmark samples frame times while tiles are still streaming,
  * so a hitch can collapse the median past its 60 fps threshold and pin a
@@ -420,6 +424,19 @@ const scene = new THREE.Scene()
 // transparent black, and the sky came out black. The environment layer keeps both
 // this and the clear colour on the daylight ramp.
 scene.background = new THREE.Color(DAYLIGHT_SKY)
+
+// Floating origin, stage 1: the group is attached and every ECEF-anchored layer hangs
+// under it, but nothing calls rebaseTo yet, so its matrix stays identity and this is a
+// pure pass-through. Reparenting alone must change nothing on screen — that is the
+// checkpoint. Stage 2 routes the ENU matrices through render space, stage 3 turns the
+// rebasing on. See origin.ts for why: positionWorld in TSL is float32, so at ECEF
+// magnitudes every shader effect reading it quantises to ~0.5 m, and the per-material
+// high-precision context does not reach it.
+setOriginEnabled(originEnabled)
+attachOrigin(scene)
+/** Parent for everything anchored in ECEF. Rain and the depth-of-field pass stay on
+ * the scene: the first copies the camera position, the second is post-processing. */
+const ecefRoot = getEcefRoot()
 const distanceFog = new THREE.Fog(
   DAYLIGHT_SKY,
   EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,
@@ -2504,7 +2521,7 @@ async function main(): Promise<void> {
   globe = createGlobe({
     renderer: renderer as any,
     camera,
-    scene,
+    scene: ecefRoot,
     maptilerKey: MAPTILER_KEY,
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
@@ -2540,7 +2557,7 @@ async function main(): Promise<void> {
       : undefined,
     camera,
     renderer,
-    scene,
+    scene: ecefRoot,
     uniforms,
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
@@ -2592,7 +2609,7 @@ async function main(): Promise<void> {
   }
 
   environmentLayer = createEnvironmentLayer({
-    scene,
+    scene: ecefRoot,
     renderer,
     fog: distanceFog,
     uniforms,
@@ -2618,7 +2635,7 @@ async function main(): Promise<void> {
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
-      scene,
+      scene: ecefRoot,
       overlay: $('#markerOverlay'),
       enuFrame,
       zOffset,
@@ -2643,7 +2660,7 @@ async function main(): Promise<void> {
     const shapeEcef = new THREE.Vector3()
     const shapeEnu = new THREE.Vector3()
     donationShapeLayer = createDonationShapeLayer({
-      scene,
+      scene: ecefRoot,
       overlay: $('#markerOverlay'),
       enuFrame,
       zOffset,
@@ -2723,7 +2740,7 @@ async function main(): Promise<void> {
     areaMinZ,
   )
   void createFieldModelLayer({
-    scene,
+    scene: ecefRoot,
     camera,
     enuFrame,
     zOffset,
