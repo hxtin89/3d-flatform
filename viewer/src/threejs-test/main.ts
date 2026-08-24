@@ -1017,10 +1017,6 @@ onRebase((delta) => {
   controls?.zoomPoint?.add(delta)
   controls?.rotationInertiaPivot?.add(delta)
   refreshOriginDerived()
-  // The mask's coverage is write-once per pixel, so a rebase would otherwise leave a
-  // stale patch behind at every origin it passed through — a staircase of them across
-  // the survey. Discard and re-splat from the resident tiles instead.
-  if (groundPatchMaskBuilt && stream) groundPatchMask.reset(stream.pointTiles())
 })
 const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
