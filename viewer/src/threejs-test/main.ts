@@ -12,8 +12,8 @@ import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import {
-  attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, originStats,
-  renderToEcefMatrix, setOriginEnabled,
+  attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, onRebase, originStats,
+  rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { fetchGlobeManifest } from './manifest'
@@ -954,12 +954,70 @@ const enuInverse = new THREE.Matrix4()
 const enuFrameRender = new THREE.Matrix4()
 const enuInverseRender = new THREE.Matrix4()
 
-/** Re-derive the render-space pair. Called when the frame lands, and on every rebase. */
+/**
+ * Everything derived from the origin, in one place: the two render-space ENU matrices,
+ * the shader's ENU uniform, and the two world values cached across frames rather than
+ * living in the scene graph. Called when the frame lands, and on every rebase.
+ *
+ * `maskSphereWorld` is deliberately absent — it is rebuilt from ENU every frame, so it
+ * heals itself.
+ */
 function refreshOriginDerived(): void {
   ecefToRenderMatrix(enuFrame, enuFrameRender)
   renderToEcefMatrix(enuInverse, enuInverseRender)
   uniforms.enuInverse.value.copy(enuInverseRender)
+  if (!enuFrameReady) return
+  enuToWorld(cloudCenterEnu, cloudCenterEcef)
+  groundPlane.setFromNormalAndCoplanarPoint(
+    enuUp, enuToWorld(groundPlanePointEnu, groundPlanePointWorld),
+  )
 }
+
+const originAnchorEcef = new THREE.Vector3()
+const groundPlanePointEnu = new THREE.Vector3()
+const groundPlanePointWorld = new THREE.Vector3()
+
+/**
+ * How far the camera may drift from the origin before it is pulled along. The threshold
+ * scales with viewing range because pan and zoom speeds do too, so a fixed one would
+ * fire once every few seconds at the canopy and dozens of times a second on the
+ * entrance flight. At the 500 m floor the float32 step is 6e-5 m against about 4 cm per
+ * screen pixel at the closest range — four orders of magnitude of headroom.
+ */
+function originThreshold(): number {
+  const range = Number.isFinite(cameraGroundRange)
+    ? cameraGroundRange
+    : EXPERIENCE_CONFIG.atmosphere.fallbackRangeM
+  return THREE.MathUtils.clamp(
+    range * EXPERIENCE_CONFIG.navigation.originRebaseRangeFactor,
+    EXPERIENCE_CONFIG.navigation.originRebaseMinM,
+    EXPERIENCE_CONFIG.navigation.originRebaseMaxM,
+  )
+}
+
+/**
+ * Rebasing onto the camera exactly leaves it at zero distance, so no hysteresis is
+ * needed — it cannot flap. `force` covers teleports (flight starts, boot staging) that
+ * no per-frame speed bounds.
+ */
+function updateOrigin(force = false): void {
+  if (!enuFrameReady) return
+  const threshold = originThreshold()
+  if (!force && camera.position.lengthSq() < threshold * threshold) return
+  rebaseTo(renderToEcef(camera.position, originAnchorEcef))
+}
+
+onRebase((delta) => {
+  camera.position.add(delta)
+  camera.updateMatrixWorld()
+  // GlobeControls keeps three world points across frames; without this the orbit
+  // centre teleports on the first frame after a rebase.
+  const controls = globe?.controls as any
+  controls?.pivotPoint?.add(delta)
+  controls?.zoomPoint?.add(delta)
+  controls?.rotationInertiaPivot?.add(delta)
+  refreshOriginDerived()
+})
 const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
@@ -1541,11 +1599,15 @@ function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
 function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false): void {
   setAimMode(false, false)
   cameraFlight.toCloud(duration, startFromOverview)
+  // startFromOverview snaps the camera 130 km out in one step, far past any per-frame
+  // threshold — rebase now rather than letting the loop catch up.
+  updateOrigin(true)
 }
 
 function flyToPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void {
   setAimMode(false, false)
   cameraFlight.toPoint(targetEnu, endDistanceM, durationMs)
+  updateOrigin(true)
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -2415,6 +2477,10 @@ function loop(now: number): void {
   // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
   // WebGPU-Punktwolke, Wolken-Raymarch, Streaming). Eigener WebGL-Renderer.
   if (gaussianSplatLayer?.isEnabled()) { gaussianSplatLayer.update(); return }
+  // First thing in the frame, so every consumer below — camera writers, both tile
+  // traversals, the mask probe, the layers — sees one origin for the whole frame and
+  // never a shift in the middle of it.
+  updateOrigin()
   cameraFlight.update(now)
   updateCloudReveal()
   updateMatrixPrecision(now)
@@ -2563,11 +2629,11 @@ async function main(): Promise<void> {
       Math.hypot(maxX - minX, maxY - minY) * EXPERIENCE_CONFIG.navigation.surveyBoundsScale,
     )
   }
-  enuToWorld(cloudCenterEnu, cloudCenterEcef)
   uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
-  const planePoint = enuToWorld(new THREE.Vector3(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40))
-  groundPlane.setFromNormalAndCoplanarPoint(enuUp, planePoint)
+  groundPlanePointEnu.set(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40)
   enuFrameReady = true
+  // Now that the frame is ready this fills cloudCenterEcef and the ground plane too.
+  refreshOriginDerived()
 
   globe = createGlobe({
     renderer: renderer as any,
@@ -2790,6 +2856,9 @@ async function main(): Promise<void> {
   )))
   camera.up.copy(enuUp)
   camera.lookAt(enuToWorld(stagingTarget.clone()))
+  // Staging jumps straight to the parcel; pull the origin along before the first
+  // frame so the very first traversal already runs camera-relative.
+  updateOrigin(true)
 
   setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
   setStatus('Adaptive streaming · loading tiles…')
