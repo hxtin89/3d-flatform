@@ -221,6 +221,9 @@ export function createGroundPatchMask(opts: {
   const queue: THREE.Object3D[] = []
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
+  let splatChecks = 0
+  let splatMinX = Infinity, splatMaxX = -Infinity
+  let splatMinY = Infinity, splatMaxY = -Infinity
 
   const localToEnu = new THREE.Matrix4()
 
@@ -436,6 +439,24 @@ export function createGroundPatchMask(opts: {
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
         localToEnu.multiplyMatrices(enuInverse, object.matrixWorld)
+        // TEMPORARY: accumulate the ENU spread of everything splatted. The survey is
+        // 12.8 x 8.5 km, so a spread much wider than that means coverage is being
+        // written away from it — which is what the stray patches are.
+        {
+          const e = localToEnu.elements as unknown as number[]
+          const px = enuX(position.array as ArrayLike<number>, 0, e)
+          const py = enuY(position.array as ArrayLike<number>, 0, e)
+          splatMinX = Math.min(splatMinX, px); splatMaxX = Math.max(splatMaxX, px)
+          splatMinY = Math.min(splatMinY, py); splatMaxY = Math.max(splatMaxY, py)
+          if (++splatChecks % 25 === 0) {
+            console.info(
+              `[splat-spread] ${splatChecks} tiles | x ${splatMinX.toFixed(0)}..${splatMaxX.toFixed(0)}`
+              + ` (${((splatMaxX - splatMinX) / 1000).toFixed(1)} km)`
+              + ` | y ${splatMinY.toFixed(0)}..${splatMaxY.toFixed(0)}`
+              + ` (${((splatMaxY - splatMinY) / 1000).toFixed(1)} km)`,
+            )
+          }
+        }
         if (cursor === 0 && isRedundant(position)) { queue.shift(); continue }
         const done = splat(position, cursor, budget)
         budget -= done
