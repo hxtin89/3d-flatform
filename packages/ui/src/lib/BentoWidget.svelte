@@ -163,13 +163,27 @@
      default that's too dark over these accent-fills. Figma's real "83%" weather
      cell (forest-green), "Leicht bewölkt" WeatherBar cell (grey-light, #ababab --
      lighter than grey-dark's #737373 but still not light enough for gray-900
-     text), and any grey-dark BentoWidget instance all render white text --
-     reach for --text-on-emphasis, not a raw literal. */
+     text), "29°"/"Celsius" (gold, #e6ce00 -- missing from this selector
+     entirely until now, so it silently fell through to the dark default) and
+     any grey-dark BentoWidget instance all render white text -- reach for
+     --text-on-emphasis, not a raw literal.
+
+     --text-secondary here used to read var(--gray-300) -- a guess, not a
+     verified value (gray-300 on grey-light's #ababab fill is a ~1.25:1
+     contrast ratio, nearly invisible, which is exactly the "Nordwest Wind"/
+     "pipra fasciicauda" bug this was supposed to have already fixed).
+     get_variable_defs on the real Figma text nodes settles it: "Nordwest
+     Wind" (25556:970, grey-light) binds text/inverse, "Celsius" (25556:969)
+     binds text/inverse, "Luftfeuchtigkeit" (25556:974, forest-green) binds
+     text/onEmphasis -- Figma uses full white for secondary/description text
+     on every one of these accent fills too, not a dimmed gray. Same token as
+     --text-primary above, not a new one. */
   .bento-widget[data-accent="forest-green"],
   .bento-widget[data-accent="grey-light"],
-  .bento-widget[data-accent="grey-dark"] {
+  .bento-widget[data-accent="grey-dark"],
+  .bento-widget[data-accent="gold"] {
     --text-primary: var(--text-on-emphasis);
-    --text-secondary: var(--gray-300);
+    --text-secondary: var(--text-on-emphasis);
   }
 
   .bento-widget__header {

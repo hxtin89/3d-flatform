@@ -179,13 +179,18 @@
   /* --text-secondary (gray-700) happens to equal grey-dark's own accent-fill
      value -- description/fact text would otherwise be invisible (same color
      as its own background). Figma's real widgets bind dark-fill text to a
-     dedicated "text/onEmphasis" role for exactly this reason -- the token
-     package already has that role (color-semantic.css's --text-on-emphasis),
-     it just wasn't reached for here; there's no "secondary on emphasis"
-     equivalent yet, so --gray-300 stays a scoped literal for that one. */
-  .species-widget[data-accent="grey-dark"] {
+     dedicated "text/onEmphasis" role for exactly this reason. grey-light was
+     missing from this selector entirely (BLAUER MORPHOFALTER/SCHNURRVOGEL's
+     "morpho deidamia"/"pipra fasciicauda" fell through to the unoverridden
+     default, gray-700-on-gray-500, ~2:1 contrast) -- get_variable_defs on
+     the real Figma text nodes (25556:970 "Nordwest Wind", grey-light) shows
+     it binds text/inverse, same full-white role as grey-dark's facts text,
+     not a dimmed secondary. So there IS a "secondary on emphasis" answer --
+     it's just --text-on-emphasis itself, not a separate gray-300 literal. */
+  .species-widget[data-accent="grey-dark"],
+  .species-widget[data-accent="grey-light"] {
     --text-primary: var(--text-on-emphasis);
-    --text-secondary: var(--gray-300);
+    --text-secondary: var(--text-on-emphasis);
   }
 
   .species-widget__content {
