@@ -16,11 +16,26 @@
   fully-rounded standalone pill (default corners), while "AUWALD"'s
   top-left is "none" so it merges seamlessly with "PERUANISCHER" directly
   above it (real corner override read off the Auwald instance).
+
+  The dark forest-green fill on "PERUANISCHER"/"AUWALD" is NOT a
+  per-frame constant -- get_variable_defs on this exact node (25556:657,
+  nested inside Frame 1 MOBILE) resolves only the default text/primary +
+  label/fill bindings, the same pair the plain "Dein Habitat" pill uses;
+  the real mobile composite (get_screenshot on Frame 1 Mobile) shows a
+  plain light pill for all three lines. The dark-green fill only appears
+  on the equivalent DESKTOP instance (25556:1235, inside Frame 1
+  Desktop) -- and even there get_variable_defs reports no bound variable
+  for it either, meaning Figma itself applies it as a one-off literal
+  override on that single instance, not a token. So "forest-green" is
+  reproduced only for the landscape/desktop dock (align: "right",
+  ScreenFrame's own portrait/landscape test) -- applying it to the
+  portrait/mobile dock too (align: "left") was checked against the wrong
+  frame and put a green pill where Figma's real mobile layout has none.
 -->
 <div class="habitat-label-stack" style:align-items={align === "left" ? "flex-start" : "flex-end"}>
   <LabelLine text="Dein Habitat" fontSize={34} />
-  <LabelLine text="PERUANISCHER" fontSize={60} accent="forest-green" />
-  <LabelLine text="AUWALD" fontSize={60} accent="forest-green" corners={["none", "convex", "convex", "convex"]} />
+  <LabelLine text="PERUANISCHER" fontSize={60} accent={align === "right" ? "forest-green" : "default"} />
+  <LabelLine text="AUWALD" fontSize={60} accent={align === "right" ? "forest-green" : "default"} corners={["none", "convex", "convex", "convex"]} />
 </div>
 
 <style>
