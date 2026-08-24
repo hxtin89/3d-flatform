@@ -1,12 +1,24 @@
+/* One canonical scale, not a viewport-media-query breakpoint -- get_variable_defs
+   sampled on the SAME text node across both Frame 1 Mobile and Frame 1 Desktop
+   (e.g. "Leicht bewölkt" and every Body/Default-bound description) resolves to
+   the identical absolute size (Heading/MD 24, Body/Default 16, Display/2XL 60)
+   in both frames. Figma has no separate smaller mobile ramp at all -- responsive
+   scaling is handled entirely by ScreenFrame's own --screen-frame-content-scale
+   transform (frame.ts's currentScale(), applied per-container via dock.ts), which
+   reacts to the CONTAINER's size, not the document viewport. A `@media
+   (min-width: 480px)` block used to sit here with smaller fabricated values below
+   that breakpoint -- since it keys off document width while the transform keys
+   off container width, the two systems fought each other and would double-shrink
+   text on a real narrow phone viewport instead of the transform alone handling it. */
 :root {
   --size-caption: var(--size-12);
-  --size-body: var(--size-14);
-  --size-body-lg: var(--size-16);
-  --size-heading-sm: var(--size-18);
-  --size-heading-md: var(--size-20);
-  --size-heading-lg: var(--size-24);
-  --size-heading-xl: var(--size-28);
-  --size-heading-2xl: var(--size-40);
+  --size-body: var(--size-16);
+  --size-body-lg: var(--size-18);
+  --size-heading-sm: var(--size-20);
+  --size-heading-md: var(--size-24);
+  --size-heading-lg: var(--size-34);
+  --size-heading-xl: var(--size-48);
+  --size-heading-2xl: var(--size-60);
   --line-height-caption: var(--line-height-normal);
   --line-height-body: var(--line-height-normal);
   --line-height-heading: var(--line-height-tight);
@@ -14,24 +26,4 @@
   --weight-emphasis: var(--weight-semibold);
   --weight-heading: var(--weight-bold);
   --weight-meta: var(--weight-extralight);
-}
-
-@media (min-width: 480px) {
-  :root {
-    --size-caption: var(--size-12);
-    --size-body: var(--size-16);
-    --size-body-lg: var(--size-18);
-    --size-heading-sm: var(--size-20);
-    --size-heading-md: var(--size-24);
-    --size-heading-lg: var(--size-34);
-    --size-heading-xl: var(--size-48);
-    --size-heading-2xl: var(--size-60);
-    --line-height-caption: var(--line-height-normal);
-    --line-height-body: var(--line-height-normal);
-    --line-height-heading: var(--line-height-tight);
-    --weight-body: var(--weight-regular);
-    --weight-emphasis: var(--weight-semibold);
-    --weight-heading: var(--weight-bold);
-    --weight-meta: var(--weight-extralight);
-  }
 }
