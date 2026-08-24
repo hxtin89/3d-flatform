@@ -624,6 +624,14 @@ export const EXPERIENCE_CONFIG = {
        * ~3 M point overview then takes a couple of seconds of load to fill in, which
        * is invisible because the cloud covers that ground anyway.
        */
+      /**
+       * Shallowest APH depth allowed to contribute coverage. A coarse node spans square
+       * kilometres with a scatter of points, and blur plus threshold turn that scatter
+       * into solid area — so coarse levels alone paint slabs where there is no visible
+       * canopy. The mask was always meant to come from the finest data; this is what
+       * enforces it. Measured: leaves sit at d7-d9, the survey is covered from d6.
+       */
+      maskMinDepth: 6,
       maskPointsPerFrame: 100_000,
       /**
        * Shortest gap between mask uploads while coverage is still arriving. The

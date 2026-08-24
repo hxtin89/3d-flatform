@@ -254,7 +254,14 @@ export function createStreamingCloud(opts: {
       points += source.geometry?.getAttribute('position')?.count ?? 0
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay
       // readable either way, but taking the tile here keeps the handoff obvious.
-      opts.onPointTile?.(source)
+      //
+      // Only the fine levels. A coarse node covers square kilometres with a scattering
+      // of points, and once the mask blurs and thresholds that it becomes solid area —
+      // so during the boot brake, when only the coarse levels are resident, the patch
+      // would appear as slabs before any canopy is visible.
+      if ((tile?.internal?.depth ?? 0) >= EXPERIENCE_CONFIG.design.groundPatch.maskMinDepth) {
+        opts.onPointTile?.(source)
+      }
       const mesh = buildPointQuads(source)
       if (!mesh) continue
 
