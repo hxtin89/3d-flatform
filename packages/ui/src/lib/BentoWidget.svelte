@@ -248,9 +248,17 @@
        rendering feature of the same bound font/size, not a new type style, so it
        doesn't need Figma verification -- it just stops "29°"/"83%" from having the
        slightly-off digit widths a proportional numeral set gives a scoreboard-style
-       standalone number. */
+       standalone number.
+       font-family is the one piece of Display/2XL this deliberately does NOT keep --
+       `value` on BentoWidget is only ever these two weather readouts (recreation-content.ts),
+       never a heading, so swapping just the family to --family-mono (weight/size/line-height
+       still come from the bundled Sora style above) gives them the tight "instrument
+       reading" character alethia.earth's "-8.3 tCO2E" has instead of the same bold Sora
+       every heading on the screen already uses. */
     font: var(--text-display-2xl);
+    font-family: var(--family-mono);
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
     margin: 0;
   }
 

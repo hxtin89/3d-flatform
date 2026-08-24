@@ -1,3 +1,23 @@
+/* Sora is the real bound family (see --family-sans below) but nothing in this
+   package -- or any consumer (viewer/index.html only loads Inter/JetBrains
+   Mono for the point-cloud app shell, Storybook's preview.ts loads nothing)
+   -- ever actually fetched it. Every "Sora" text on every screen has silently
+   been rendering in the browser's own default font this whole time, which is
+   exactly the "one generic-looking bold sans at every size" polish gap vs.
+   colabs.com.au/alethia.earth: the typeface driving that gap was never the
+   custom one Figma specifies. @import here (not a per-consumer <link>, so
+   every current and future consumer of @wi/tokens/css gets it automatically,
+   same reasoning as importing it once in this package rather than in each
+   of viewer/Storybook) is Google Fonts' own supported loading mechanism.
+   family/mono has no Figma binding at all (get_variable_defs on tokens-raw.json
+   confirms Figma only ever defined family/sans) -- it's a deliberate,
+   non-Figma-bound craft addition for data-*readout* text specifically
+   (weather's "29°"/"83%", species' "15-17mm"), the same category as
+   tabular-nums below: a rendering choice for numbers-as-numbers, borrowing
+   alethia.earth's tight monospace "instrument reading" character, not a new
+   general type style applied anywhere Figma bound Sora. */
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@200;400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap");
+
 /* Bundled text styles, mirroring Figma's named Text Styles (Display/Heading/Body)
    which bundle family+weight+size+line-height as ONE reusable unit -- unlike
    typography-semantic.css's raw scale, which exposes those pieces separately.
@@ -9,6 +29,16 @@
    text unbound to any named style, so --text-body stays a plain composition, not a
    guessed Figma binding). */
 :root {
+  /* Re-declares (doesn't replace) the generated primitive: same "Sora" Figma
+     bound the family to, plus a real fallback stack -- primitives.css (regenerated
+     from tokens-raw.json, see generate.mjs) emits a bare `"Sora"` with nothing after
+     it, so a slow/blocked font fetch fell through to the browser's arbitrary
+     default rather than a sane system sans. This file loads after primitives.css in
+     index.css's import order, so this :root wins the cascade for these two custom
+     properties without needing every `font:`/`font-family` call site (BentoWidget,
+     SpeciesWidget, LabelLine, HabitatLabelStack) to carry its own fallback list. */
+  --family-sans: "Sora", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --family-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --text-display-2xl: var(--weight-heading) var(--size-heading-2xl) / var(--line-height-heading) var(--family-sans);
   --text-heading-md: var(--weight-emphasis) var(--size-heading-md) / var(--line-height-heading) var(--family-sans);
   --text-body: var(--weight-body) var(--size-body) / var(--line-height-body) var(--family-sans);

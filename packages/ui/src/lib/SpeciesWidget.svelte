@@ -133,7 +133,11 @@
                   <path d="M20 28c0 8 6 14 14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
                   <rect x="30" y="34" width="14" height="8" rx="2" stroke="currentColor" stroke-width="2" />
                 </svg>
-                <span class="species-widget__fact-text">{measurement}</span>
+                <!-- A measurement ("15-17mm") is a numeric reading, not a label sentence
+                     like status/caption below it -- distinct modifier class so only this
+                     one fact gets the mono "instrument reading" treatment (see its own
+                     comment), not every fact row indiscriminately. -->
+                <span class="species-widget__fact-text species-widget__fact-text--reading">{measurement}</span>
               </div>
             {/if}
             {#if status}
@@ -370,6 +374,17 @@
     font: var(--text-body);
     /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
     letter-spacing: var(--text-body-tracking);
+  }
+
+  /* Same non-Figma-bound craft addition as BentoWidget's weather value (see its own
+     comment): a measurement is a number, not prose, so it gets the tight mono face
+     that reads as a scientific readout instead of the same Sora body copy status/caption
+     use right next to it -- without this the whole species card was "one generic-looking
+     bold sans at every size" even on the one fact that's actually data, not a sentence. */
+  .species-widget__fact-text--reading {
+    font-family: var(--family-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
   }
 
   .species-widget__visual {
