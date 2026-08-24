@@ -14,8 +14,21 @@
 // APIs (see ScreenFrame.svelte), and dockElement only knows positioning.
 import type { Frame } from './frame'
 
-export type DockEdge = 'top-right' | 'bottom-center' | 'left-center' | 'right-center'
+export type DockEdge = 'top-right' | 'bottom-center' | 'bottom-left' | 'bottom-right' | 'left-center' | 'right-center'
 export type DockMode = 'outer' | 'frame'
+
+// Per-edge: which CSS inset properties anchor it, which direction is "inward"
+// (the sign/axis animateMarginTo's margin should push the element as the
+// frame's window shrinks), and whether centering translate is needed for an
+// edge that isn't corner-anchored on both axes (bottom-center, *-center).
+const EDGE_ANCHOR: Record<DockEdge, { top?: string; right?: string; bottom?: string; left?: string; origin: string; centering: string; inward: (margin: number) => [number, number] }> = {
+  'top-right': { top: '0', right: '0', origin: 'top right', centering: '', inward: (m) => [-m, m] },
+  'bottom-center': { bottom: '0', left: '50%', origin: 'bottom center', centering: 'translateX(-50%) ', inward: (m) => [0, -m] },
+  'bottom-left': { bottom: '0', left: '0', origin: 'bottom left', centering: '', inward: (m) => [m, -m] },
+  'bottom-right': { bottom: '0', right: '0', origin: 'bottom right', centering: '', inward: (m) => [-m, -m] },
+  'left-center': { left: '0', top: '50%', origin: 'left center', centering: 'translateY(-50%) ', inward: (m) => [m, 0] },
+  'right-center': { right: '0', top: '50%', origin: 'right center', centering: 'translateY(-50%) ', inward: (m) => [-m, 0] },
+}
 
 export interface DockConfig {
   /** A function is re-resolved on every update() -- lets a dock switch sides (e.g. left in portrait, right in landscape). */
@@ -43,48 +56,20 @@ export function dockElement(host: HTMLElement, container: HTMLElement, config: D
   host.style.zIndex = '50'
 
   function applyEdgeAnchor(edge: DockEdge) {
-    host.style.top = host.style.right = host.style.bottom = host.style.left = ''
-    if (edge === 'top-right') {
-      host.style.top = '0'
-      host.style.right = '0'
-      host.style.transformOrigin = 'top right'
-    } else if (edge === 'bottom-center') {
-      host.style.bottom = '0'
-      host.style.left = '50%'
-      host.style.transformOrigin = 'bottom center'
-    } else if (edge === 'left-center') {
-      host.style.left = '0'
-      host.style.top = '50%'
-      host.style.transformOrigin = 'left center'
-    } else {
-      host.style.right = '0'
-      host.style.top = '50%'
-      host.style.transformOrigin = 'right center'
-    }
+    const a = EDGE_ANCHOR[edge]
+    host.style.top = a.top ?? ''
+    host.style.right = a.right ?? ''
+    host.style.bottom = a.bottom ?? ''
+    host.style.left = a.left ?? ''
+    host.style.transformOrigin = a.origin
   }
 
   return {
     update() {
       const edge = typeof config.edge === 'function' ? config.edge() : config.edge
       applyEdgeAnchor(edge)
-      let offsetX = 0
-      let offsetY = 0
-      if (config.mode === 'frame') {
-        const margin = frame.getMargin()
-        if (edge === 'top-right') {
-          offsetX = -margin
-          offsetY = margin
-        } else if (edge === 'bottom-center') {
-          offsetY = -margin
-        } else if (edge === 'left-center') {
-          offsetX = margin
-        } else {
-          offsetX = -margin
-        }
-      }
-      const centering =
-        edge === 'bottom-center' ? 'translateX(-50%) ' : edge === 'left-center' || edge === 'right-center' ? 'translateY(-50%) ' : ''
-      host.style.transform = `${centering}translate(${offsetX}px, ${offsetY}px) scale(var(--screen-frame-content-scale, 1))`
+      const [offsetX, offsetY] = config.mode === 'frame' ? EDGE_ANCHOR[edge].inward(frame.getMargin()) : [0, 0]
+      host.style.transform = `${EDGE_ANCHOR[edge].centering}translate(${offsetX}px, ${offsetY}px) scale(var(--screen-frame-content-scale, 1))`
       const hostRect = host.getBoundingClientRect()
       const containerRect = container.getBoundingClientRect()
       config.onRect({

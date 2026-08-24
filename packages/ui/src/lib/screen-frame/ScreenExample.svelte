@@ -1,7 +1,7 @@
 <script lang="ts">
   import ScreenFrame from "./ScreenFrame.svelte";
   import BentoGrid from "../BentoGrid.svelte";
-  import LabelLine from "../LabelLine.svelte";
+  import HabitatLabelStack from "./HabitatLabelStack.svelte";
   import { WEATHER_CLUSTER, SPECIES_ROW } from "./recreation-content";
 
   interface Props {
@@ -30,8 +30,8 @@
     {#snippet species()}
       <BentoGrid items={SPECIES_ROW} radius={60} />
     {/snippet}
-    {#snippet label()}
-      <LabelLine text="Dein Habitat" fontSize={34} accent="forest-green" />
+    {#snippet label(align)}
+      <HabitatLabelStack {align} />
     {/snippet}
   </ScreenFrame>
 </div>

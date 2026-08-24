@@ -1,12 +1,12 @@
 // Proof-of-concept mount for the @wi/ui design-system package inside this
 // Vite+Three.js app. Real content pulled from the "Bento Grid — Recreation"
-// Figma page: Frame 1 (1080x1920, mobile) for layout/sizes, Frame 1 Desktop
-// (1920x1080) for the weather cluster's real desktop position (top-right).
-// Frame 1 Desktop has no finished species-row layout yet (only leftover
-// unstyled placeholder rects outside its own bounds) -- per explicit
-// direction, the species cluster reuses Frame 1's real mobile geometry at
-// every viewport size rather than inventing a desktop arrangement Figma
-// doesn't have.
+// Figma page: Frame 1 (1080x1920, mobile) and Frame 1 Desktop (1920x1080)
+// both have a real, finished species row and habitat label -- but at
+// DIFFERENT dock positions per orientation (species bottom-center on mobile,
+// bottom-left on desktop; label left-center on mobile, bottom-right on
+// desktop), not the same layout just scaled up. Verified by reading both
+// frames' real instance x/y directly from Figma -- see ScreenFrame.svelte's
+// dock wiring for the exact edges this reproduces.
 //
 // The frame/notch/docking engine (createFrame/dockElement) lives in @wi/ui
 // now (packages/ui/src/lib/screen-frame/) -- it used to be viewer-local, but
@@ -24,7 +24,7 @@
 // screen-frame/recreation-content.ts -- shared with BentoGrid.stories.ts and
 // Screen.stories.ts so the real Figma data has one source, not three copies.
 import { mount, unmount, type Component } from 'svelte'
-import { LabelLine, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW } from '@wi/ui'
+import { HabitatLabelStack, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW } from '@wi/ui'
 import '@wi/tokens/css'
 
 export interface DesignSystemDemo {
@@ -59,31 +59,35 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   const speciesHost = document.createElement('div')
   container.append(speciesHost)
-  // Species sits fully inside the window (its bottom edge is flush with
-  // the window's own bottom edge in Figma) -- a generic notch here is
-  // always a no-op, which is correct: no cutout needed at all.
+  // Species sits fully inside the window (its bottom edge is flush with the
+  // window's own bottom edge in Figma) -- a generic notch here is always a
+  // no-op, which is correct: no cutout needed at all. Portrait (Frame 1):
+  // bottom-center. Landscape (Frame 1 Desktop): bottom-left, NOT the same
+  // dock scaled up -- verified against both frames' real instance x/y.
+  const isPortrait = () => container.clientHeight >= container.clientWidth
   const speciesDock = dockElement(speciesHost, container, {
-    edge: 'bottom-center',
+    edge: () => (isPortrait() ? 'bottom-center' : 'bottom-left'),
     mode: 'frame',
     onRect: (rect) => frame.setNotch('species', rect),
   }, frame)
 
-  // The habitat label docks to a side border, not the bottom -- left in
-  // portrait, right in landscape. It's a fully solid pill (no corner
-  // overrides, so no gaps in its own silhouette) -- unlike weather/species
-  // it never needs a frame notch, since there's nothing behind it that
-  // would need to show through.
+  // The habitat label: portrait docks left-center, landscape docks
+  // bottom-right (sitting low next to the species cluster, not vertically
+  // centered) -- same source as the species note above. It's a stack of 3
+  // pills (HabitatLabelStack), not a single line -- see that component for
+  // the real "Test: Label Stack" content this reproduces.
   const labelHost = document.createElement('div')
   container.append(labelHost)
   const labelDock = dockElement(labelHost, container, {
-    edge: () => (container.clientHeight >= container.clientWidth ? 'left-center' : 'right-center'),
+    edge: () => (isPortrait() ? 'left-center' : 'bottom-right'),
     mode: 'frame',
     onRect: () => {},
   }, frame)
 
-  const label = mount(LabelLine as Component, {
+  let labelAlign: 'left' | 'right' = isPortrait() ? 'left' : 'right'
+  let label = mount(HabitatLabelStack as Component, {
     target: labelHost,
-    props: { text: 'Dein Habitat', fontSize: 34, accent: 'forest-green' },
+    props: { align: labelAlign },
   })
 
   const weatherCluster = mount(BentoGrid as Component, {
@@ -108,6 +112,12 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     container.style.setProperty('--screen-frame-content-scale', String(frame.getContentScale()))
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
+    const nextAlign = isPortrait() ? 'left' : 'right'
+    if (nextAlign !== labelAlign) {
+      labelAlign = nextAlign
+      unmount(label)
+      label = mount(HabitatLabelStack as Component, { target: labelHost, props: { align: labelAlign } })
+    }
     updateDocks()
   }
 

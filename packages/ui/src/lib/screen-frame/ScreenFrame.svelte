@@ -8,10 +8,10 @@
     revealed?: boolean;
     /** Docked top-right, reaching into the window's own top-right corner (the concave-elbow notch). */
     weather?: Snippet;
-    /** Docked bottom-center, flush against the window's bottom edge (sits fully inside the window -- no notch). */
+    /** Docked bottom-center in portrait (flush against the window's bottom edge), bottom-left in landscape -- matches Figma's Frame 1/Frame 1 Desktop exactly (verified against both). Sits fully inside the window either way -- no notch. */
     species?: Snippet;
-    /** Docked to a side border -- left in portrait, right in landscape. */
-    label?: Snippet;
+    /** Docked left-center in portrait, bottom-right in landscape -- matches Figma exactly (verified against Frame 1/Frame 1 Desktop). Receives which side it's pinned to, so a multi-line label stack can align itself to match (left-align vs right-align). */
+    label?: Snippet<["left" | "right"]>;
     /** Renders behind the frame mask, filling the window area (e.g. the real scene/photo this frame is cut around). */
     background?: Snippet;
   }
@@ -27,6 +27,7 @@
   let weatherDock: Docked | undefined;
   let speciesDock: Docked | undefined;
   let labelDock: Docked | undefined;
+  let labelAlign: "left" | "right" = $state("left");
 
   function updateDocks() {
     weatherDock?.update();
@@ -38,6 +39,7 @@
     if (!frame) return;
     container.style.setProperty("--screen-frame-content-scale", String(frame.getContentScale()));
     frame.setMargin(revealed ? frame.getTargetMargin() : 0);
+    labelAlign = container.clientHeight >= container.clientWidth ? "left" : "right";
     updateDocks();
   }
 
@@ -52,16 +54,21 @@
       { edge: "top-right", mode: "frame", onRect: (rect) => frame!.setTopRightReach(rect.width, rect.height) },
       frame,
     );
+    // Portrait (Frame 1): bottom-center. Landscape (Frame 1 Desktop): bottom-left --
+    // NOT the same bottom-center dock scaled up. Confirmed by reading the real
+    // Giftfrosch/Vogel/Morphofalter instance x/y in both frames directly from Figma.
     speciesDock = dockElement(
       speciesHost,
       container,
-      { edge: "bottom-center", mode: "frame", onRect: (rect) => frame!.setNotch("species", rect) },
+      { edge: () => (container.clientHeight >= container.clientWidth ? "bottom-center" : "bottom-left"), mode: "frame", onRect: (rect) => frame!.setNotch("species", rect) },
       frame,
     );
+    // Portrait: left-center. Landscape: bottom-right, sitting low next to the
+    // species cluster -- NOT right-center. Same source as the species note above.
     labelDock = dockElement(
       labelHost,
       container,
-      { edge: () => (container.clientHeight >= container.clientWidth ? "left-center" : "right-center"), mode: "frame", onRect: () => {} },
+      { edge: () => (container.clientHeight >= container.clientWidth ? "left-center" : "bottom-right"), mode: "frame", onRect: () => {} },
       frame,
     );
 
@@ -92,7 +99,7 @@
     {#if species}{@render species()}{/if}
   </div>
   <div class="screen-frame__label" bind:this={labelHost}>
-    {#if label}{@render label()}{/if}
+    {#if label}{@render label(labelAlign)}{/if}
   </div>
 </div>
 
