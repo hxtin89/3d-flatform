@@ -2299,6 +2299,8 @@ const fpsEl = $('#fpsv')
 const msEl = $('#msv')
 const visibleEl = $('#visible')
 const pointTilesEl = $('#blocks')
+const overdrawEl = $('#overdraw')
+const stackingEl = $('#stacking')
 const mapTilesEl = $('#mapTiles')
 const densityEl = $('#loaded')
 const lodEl = $('#displayed')
@@ -2311,12 +2313,53 @@ const diagStopEl = $('#diagStop')
 const diagMissingEl = $('#diagMissing')
 if (showDiagnostics) diagStatsEl.hidden = false
 
+/**
+ * Two numbers that the point count alone hides.
+ *
+ * `Overdraw` is fragments shaded per screen pixel — points per pixel times the area of
+ * one dot. The dot area is the multiplier nobody watches: the size is a single uniform
+ * with `sizeAttenuation` off, so every point costs the same fragments however far away
+ * it is, and it grows with the square of the size slider.
+ *
+ * `Stacking` is how far the on-screen point density sits above what one clean layer at
+ * the live error target would give. The target is enforced per tile, but ADD refinement
+ * draws a node together with its children, and a canopy is a volume rather than a
+ * surface — so many points share a pixel and the per-tile guarantee says little about
+ * what actually lands on screen.
+ *
+ * Both are upper bounds: `stats.points` counts the points of every drawn tile, and a
+ * tile is drawn whole even when only part of it is on screen.
+ */
+function updateOverdrawReadout(points: number): void {
+  const canvas = renderer.domElement as HTMLCanvasElement
+  const bufferPixels = canvas.width * canvas.height
+  const target = stream?.tiles.errorTarget ?? 0
+  if (!points || !bufferPixels || !(target > 0)) {
+    overdrawEl.textContent = '—'
+    stackingEl.textContent = '—'
+    return
+  }
+  // Read the ratio off the canvas rather than from the renderer or devicePixelRatio:
+  // the startup resolution cap can put the backbuffer well below the device ratio, and
+  // the backbuffer is what actually gets shaded.
+  const ratio = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
+  const diameter = uniforms.pointSize.value * ratio
+  const dotArea = Math.PI * (diameter / 2) ** 2
+  const perPixel = points / bufferPixels
+  // One clean layer at the live target: points spaced `target` CSS pixels apart in both
+  // screen directions.
+  const idealPerPixel = 1 / ((target * ratio) ** 2)
+  overdrawEl.textContent = `${(perPixel * dotArea).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
+  stackingEl.textContent = `${(perPixel / idealPerPixel).toFixed(0)}× · ${perPixel.toFixed(2)} pt/px`
+}
+
 function updateHud(stats: StreamingStats | null): void {
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
   densityEl.textContent = stats?.density ?? '—'
   lodEl.textContent = `SSE ${sseAuto.toFixed(0)}`
   visibleEl.textContent = stats ? fmtInt(stats.points) : '0'
   pointTilesEl.textContent = String(stats?.visible ?? 0)
+  updateOverdrawReadout(stats?.points ?? 0)
   mapTilesEl.textContent = String(globeStats.visible)
   cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
 
