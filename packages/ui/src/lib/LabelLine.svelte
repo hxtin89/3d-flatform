@@ -33,6 +33,13 @@
 
   const PADDING_X = 24;
 
+  // Same highlight/shadow sheen as BentoWidget/SpeciesWidget (see BentoWidget's
+  // own comment for the full rationale) -- before this, the label stack was
+  // the one surface in the whole composition that stayed a flat, un-lit fill
+  // while every widget around it got this material pass, which is exactly
+  // backwards for the piece that's supposed to read as the screen's hero
+  // headline rather than just another flat card.
+  const sheenId = `label-sheen-${Math.random().toString(36).slice(2, 9)}`;
   let textWidth = $state(0);
   const height = $derived(Math.ceil(fontSize * 1.2) + 12);
   const width = $derived(textWidth + PADDING_X * 2);
@@ -56,7 +63,15 @@
     style:top="{-overflow.top}px"
     aria-hidden="true"
   >
+    <defs>
+      <linearGradient id={sheenId} x1="0" y1="0" x2="0.4" y2="1">
+        <stop offset="0" stop-color="rgb(255 255 255 / 0.16)" />
+        <stop offset="40%" stop-color="rgb(255 255 255 / 0)" />
+        <stop offset="100%" stop-color="rgb(0 0 0 / 0.12)" />
+      </linearGradient>
+    </defs>
     <path d={path} class="label-line__fill" />
+    <path d={path} fill="url(#{sheenId})" class="label-line__sheen" />
   </svg>
   <span class="label-line__text" style:font-size="{fontSize}px" style:font-weight={fontWeight} bind:clientWidth={textWidth}>{text}</span>
 </div>
@@ -65,6 +80,28 @@
   .label-line {
     position: relative;
     display: inline-block;
+    /* A slow, independent float -- distinct from BentoWidget's click/hover
+       lift and the icon-plate's fast breathe -- so the headline stack reads
+       as its own depth plane drifting above the backdrop, not a flat sticker
+       sitting at the same static depth as the small weather/species readouts
+       around it. Alternate (not a full loop back to 0) so it settles at
+       rest on both ends instead of snapping. */
+    animation: label-line-float 9s ease-in-out infinite alternate;
+  }
+
+  @keyframes label-line-float {
+    from {
+      transform: translateY(0);
+    }
+    to {
+      transform: translateY(-5px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .label-line {
+      animation: none;
+    }
   }
 
   .label-line__silhouette {
@@ -72,10 +109,19 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
+    /* Same drop-shadow-hugs-the-silhouette approach as BentoWidget/SpeciesWidget,
+       always on (not hover-gated) since this pill isn't interactive -- it's
+       what actually separates the headline from the photo behind it instead
+       of just being a flat color shape with text on it. */
+    filter: drop-shadow(0 10px 18px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
   .label-line__fill {
     fill: var(--label-fill);
+  }
+
+  .label-line__sheen {
+    pointer-events: none;
   }
 
   /* Figma's real "PERUANISCHER"/"AUWALD" label pills (Frame 1 Desktop's
