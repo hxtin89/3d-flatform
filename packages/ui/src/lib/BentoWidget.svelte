@@ -171,6 +171,17 @@
 
   .bento-widget__sheen {
     pointer-events: none;
+    /* Plain alpha-over-color (the old approach) scales in *absolute* RGB
+       units, so the same 16%-white/12%-black stops that read as an obvious
+       lit-surface gradient on grey/dark-green (low luminance -- lots of
+       headroom to lighten/darken) go almost invisible on gold (#e6ce00,
+       already near-max luminance -- adding ~40/255 of white barely moves a
+       channel already at 230/255). `overlay` blends relative to the base
+       pixel's OWN luminance instead of adding a fixed absolute amount, so it
+       reads as a consistent sheen strength across every accent -- including
+       the one accent this card system didn't have when that scheme was
+       written. */
+    mix-blend-mode: overlay;
   }
 
   .bento-widget__content {
