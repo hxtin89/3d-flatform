@@ -130,12 +130,16 @@ function block(selector, lines) {
 }
 
 // ---- 6. index.css: import order matters (primitives -> semantic -> color/typography -> accent) ----
+// typography-styles.css is hand-authored (bundled Figma-style Font() shorthands
+// composing the generated scale below), not regenerated from tokens-raw.json --
+// still listed here so re-running this script doesn't drop the import.
 {
   const out = [
     `@import "./primitives.css";`,
     `@import "./semantic.css";`,
     `@import "./color-semantic.css";`,
     `@import "./typography-semantic.css";`,
+    `@import "./typography-styles.css";`,
     `@import "./widget-accent.css";`,
   ].join("\n") + "\n";
   writeFileSync(join(outDir, "index.css"), out);

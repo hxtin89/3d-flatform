@@ -18,14 +18,20 @@
 // notch -- are concave/reflex: material fills THREE of the four quadrants
 // around them, so the rounding has to bulge outward into the missing
 // quadrant instead of cutting the corner off. A plain rect-with-rx per
-// notch (the previous approach here) can't express that concave elbow --
-// this builds one continuous path instead, reusing the same
-// "same two endpoints, opposite arc sweep" trick used for the Corner
-// atom's concave type in packages/ui/src/lib/geometry/silhouette.ts.
+// notch can't express that concave elbow -- this builds one continuous
+// path instead, reusing the same "same two endpoints, opposite arc sweep"
+// trick used for the Corner atom's concave type in geometry/silhouette.ts.
 //
 // Margin is live, animatable state (not a fixed computed constant), so the
 // frame can reveal/retract by tweening margin between 0 and its resting
 // value -- see animateMarginTo().
+//
+// Sized against its own `container` element (via ResizeObserver), not the
+// browser window -- this is what lets the SAME engine fill the real
+// viewer's full-viewport container AND a fixed-size Storybook screen
+// example, with no special-casing. The container must establish a
+// positioning context (e.g. `position: relative`) and its own size --
+// this module only reads it, never sets it.
 
 export interface Rect {
   x: number
@@ -38,21 +44,23 @@ export interface Frame {
   /** Sets the margin instantly (no animation) and re-renders the window and every notch. */
   setMargin(px: number): void
   getMargin(): number
-  /** The frame's resting margin for the current viewport -- a real visible border, not a thin sliver. */
+  /** The frame's resting margin for the current container size -- a real visible border, not a thin sliver. */
   getTargetMargin(): number
+  /** containerWidth / referenceFrameWidth (portrait vs. landscape picking Figma's mobile/desktop frame) -- the one scale factor content docked to this frame should size itself against, so it's not re-derived per caller. */
+  getContentScale(): number
   /** How far the weather-cluster notch reaches into the window from its top-right corner. Call every layout pass with the cluster's live rendered size. */
   setTopRightReach(width: number, height: number): void
   /**
-   * Registers/updates a named notch's cutout rect (viewport pixel coords),
-   * for anything docked away from the two corner notches above (e.g. the
-   * species cluster, which sits fully inside the window and so reports a
-   * no-op rect). A plain rect is fine here since there's no concave elbow
-   * to get right for these.
+   * Registers/updates a named notch's cutout rect (container-relative pixel
+   * coords), for anything docked away from the two corner notches above
+   * (e.g. the species cluster, which sits fully inside the window and so
+   * reports a no-op rect). A plain rect is fine here since there's no
+   * concave elbow to get right for these.
    */
   setNotch(id: string, rect: Rect): void
   /** Tweens margin from its current value to `px` over `durationMs`, calling onTick after every frame's setMargin (so callers can reposition frame-docked elements as the margin moves). */
   animateMarginTo(px: number, durationMs: number, onTick?: () => void): Promise<void>
-  /** Recomputes svg/window sizing for the current viewport -- call on resize. */
+  /** Recomputes svg/window sizing for the container's current size -- called automatically on resize, exposed for callers who need to force one. */
   handleResize(): void
   dispose(): void
 }
@@ -65,22 +73,23 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
   return el
 }
 
-// Same reference-frame widths design-system-demo.ts scales widget content
-// against, reused here so the margin and the logo-notch reach stay
-// visually proportional to Figma instead of independent guesses. Rahmen's
-// real margin in Figma is a constant 60px within the 1080-wide mobile
-// frame (~60-70px within the 1920-wide desktop frame -- close enough to
-// treat as the same constant); the logo notch's real reach is ~123x58.
+// Reference-frame widths the caller's content is expected to scale against
+// too (see screen-frame's dock/content-scale usage), reused here so the
+// margin and the logo-notch reach stay visually proportional to Figma
+// instead of independent guesses. Rahmen's real margin in Figma is a
+// constant 60px within the 1080-wide mobile frame (~60-70px within the
+// 1920-wide desktop frame -- close enough to treat as the same constant);
+// the logo notch's real reach is ~123x58.
 const MOBILE_REFERENCE_WIDTH = 1080
 const DESKTOP_REFERENCE_WIDTH = 1920
 const FIGMA_MARGIN_PX = 60
 const FIGMA_TOP_LEFT_NOTCH_PX = { width: 123, height: 58 }
 const WINDOW_CORNER_RADIUS = 60
 
-function currentScale(): number {
-  const isPortrait = window.innerHeight >= window.innerWidth
+function currentScale(containerWidth: number, containerHeight: number): number {
+  const isPortrait = containerHeight >= containerWidth
   const referenceWidth = isPortrait ? MOBILE_REFERENCE_WIDTH : DESKTOP_REFERENCE_WIDTH
-  return window.innerWidth / referenceWidth
+  return containerWidth / referenceWidth
 }
 
 /**
@@ -111,9 +120,9 @@ function windowPath(win: Rect, tl: { width: number; height: number }, tr: { widt
     // adjoining edges reach the vertex exactly and overshoot PAST it (by r,
     // continuing each edge's own direction of travel) before the arc (radius
     // r, centered on the vertex itself) connects the two overshoot points.
-    // A direct short arc between pulled-back endpoints (the previous
-    // approach) still reads as "smooth" but is a much tighter, wrong-shaped
-    // flare than Figma's real one -- see this file's header.
+    // A direct short arc between pulled-back endpoints still reads as
+    // "smooth" but is a much tighter, wrong-shaped flare than Figma's real
+    // one -- see this file's header.
     r > 0 ? `L${x + w - trW},${y + trH + r} A${r},${r} 0 0 1 ${x + w - trW - r},${y + trH} L${x + w - trW},${y + trH}` : '',
     `H${x + w - r}`,
     r > 0 ? `A${r},${r} 0 0 1 ${x + w},${y + trH + r}` : '',
@@ -137,14 +146,14 @@ function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3)
 }
 
-export function createFrame(): Frame {
+export function createFrame(container: HTMLElement): Frame {
   const svg = svgEl('svg')
-  svg.style.position = 'fixed'
+  svg.style.position = 'absolute'
   svg.style.inset = '0'
   svg.style.zIndex = '40'
   svg.style.pointerEvents = 'none'
 
-  const maskId = 'design-system-demo-frame-mask'
+  const maskId = `screen-frame-mask-${Math.random().toString(36).slice(2, 9)}`
   const mask = svgEl('mask', { id: maskId })
   const maskBackground = svgEl('rect', { x: '0', y: '0', fill: 'white' })
   const windowShape = svgEl('path', { fill: 'black' })
@@ -154,7 +163,7 @@ export function createFrame(): Frame {
   gray.setAttribute('mask', `url(#${maskId})`)
 
   svg.append(mask, gray)
-  document.body.append(svg)
+  container.append(svg)
 
   const notchElements = new Map<string, SVGRectElement>()
 
@@ -170,8 +179,10 @@ export function createFrame(): Frame {
   let topRightReach = { width: 0, height: 0 }
 
   function render() {
-    const w = String(window.innerWidth)
-    const h = String(window.innerHeight)
+    const containerWidth = container.clientWidth
+    const containerHeight = container.clientHeight
+    const w = String(containerWidth)
+    const h = String(containerHeight)
     svg.setAttribute('width', w)
     svg.setAttribute('height', h)
     maskBackground.setAttribute('width', w)
@@ -179,9 +190,9 @@ export function createFrame(): Frame {
     gray.setAttribute('width', w)
     gray.setAttribute('height', h)
 
-    const scale = currentScale()
+    const scale = currentScale(containerWidth, containerHeight)
     const topLeftReach = { width: FIGMA_TOP_LEFT_NOTCH_PX.width * scale, height: FIGMA_TOP_LEFT_NOTCH_PX.height * scale }
-    const win: Rect = { x: margin, y: margin, width: window.innerWidth - margin * 2, height: window.innerHeight - margin * 2 }
+    const win: Rect = { x: margin, y: margin, width: containerWidth - margin * 2, height: containerHeight - margin * 2 }
     windowShape.setAttribute('d', windowPath(win, topLeftReach, topRightReach))
   }
   render()
@@ -198,6 +209,9 @@ export function createFrame(): Frame {
     gray.setAttribute('mask', `url(#${maskId})`)
   }, 200)
 
+  const resizeObserver = new ResizeObserver(() => render())
+  resizeObserver.observe(container)
+
   function apply(px: number) {
     margin = px
     render()
@@ -211,7 +225,10 @@ export function createFrame(): Frame {
       return margin
     },
     getTargetMargin() {
-      return FIGMA_MARGIN_PX * currentScale()
+      return FIGMA_MARGIN_PX * currentScale(container.clientWidth, container.clientHeight)
+    },
+    getContentScale() {
+      return currentScale(container.clientWidth, container.clientHeight)
     },
     setTopRightReach(width, height) {
       topRightReach = { width, height }
@@ -247,6 +264,7 @@ export function createFrame(): Frame {
     handleResize: render,
     dispose() {
       cancelAnimationFrame(animationFrame)
+      resizeObserver.disconnect()
       svg.remove()
     },
   }

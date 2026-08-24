@@ -1,0 +1,16 @@
+/* Bundled text styles, mirroring Figma's named Text Styles (Display/Heading/Body)
+   which bundle family+weight+size+line-height as ONE reusable unit -- unlike
+   typography-semantic.css's raw scale, which exposes those pieces separately.
+   Verified against the live Figma file's real variable bindings (get_variable_defs
+   on the actual text nodes) rather than guessed: widget/species titles are bound to
+   "Heading/MD" (Sora SemiBold), values ("29°", "83%") to "Display/2XL" (Sora Bold).
+   Only roles with an actual bound Figma style are defined here -- other Heading/Body
+   sizes aren't ported until a real usage needs them (Figma leaves description-level
+   text unbound to any named style, so --text-body stays a plain composition, not a
+   guessed Figma binding). */
+:root {
+  --text-display-2xl: var(--weight-heading) var(--size-heading-2xl) / var(--line-height-heading) var(--family-sans);
+  --text-heading-md: var(--weight-emphasis) var(--size-heading-md) / var(--line-height-heading) var(--family-sans);
+  --text-body: var(--weight-body) var(--size-body) / var(--line-height-body) var(--family-sans);
+  --text-body-lg: var(--weight-body) var(--size-body-lg) / var(--line-height-body) var(--family-sans);
+}

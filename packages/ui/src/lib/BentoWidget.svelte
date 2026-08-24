@@ -138,18 +138,22 @@
   }
 
   .bento-widget__title {
-    font: var(--weight-heading) var(--size-heading-sm) / var(--line-height-heading) var(--family-sans);
+    /* Figma's real bound style ("Heading/MD", verified via get_variable_defs on the
+       live text nodes): Sora SemiBold 24, not the Bold-heading-sm this used to read. */
+    font: var(--text-heading-md);
     margin: 0;
   }
 
   .bento-widget__value {
-    font: var(--weight-heading) var(--size-heading-2xl) / var(--line-height-tight) var(--family-sans);
+    /* Figma: "Display/2XL", Sora Bold 60/40 -- already matched size-heading-2xl before,
+       now expressed via the bundled style like the other roles. */
+    font: var(--text-display-2xl);
     margin: 0;
   }
 
   .bento-widget__description {
     color: var(--text-secondary);
-    font: var(--weight-body) var(--size-body) / var(--line-height-body) var(--family-sans);
+    font: var(--text-body);
     margin: 0;
   }
 </style>

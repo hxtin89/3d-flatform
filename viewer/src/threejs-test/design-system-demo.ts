@@ -8,20 +8,24 @@
 // every viewport size rather than inventing a desktop arrangement Figma
 // doesn't have.
 //
-// The frame/notch/docking system lives in design-system-frame.ts and
-// design-system-dock.ts -- this file just wires content to them. See those
-// files' headers for the Figma geometry (the real notched-polygon "S1:
-// Photo" shape) and docking rules this was built from.
+// The frame/notch/docking engine (createFrame/dockElement) lives in @wi/ui
+// now (packages/ui/src/lib/screen-frame/) -- it used to be viewer-local, but
+// moved so the same, already Figma-verified math backs both this live app
+// AND the ScreenFrame.svelte Storybook examples. This file just wires real
+// content + the loader-triggered reveal/retract animation to it -- see
+// @wi/ui's screen-frame/frame.ts and dock.ts for the geometry/docking rules.
 //
 // Not reproduced: the bird/frog/butterfly line-art icons (no icon system
 // wired into @wi/ui content yet) and the frog widget's extra measurement/
 // status block (its own bespoke sub-layout, outside BentoWidget's current
 // prop shape).
+//
+// WEATHER_CLUSTER/SPECIES_ROW content lives in @wi/ui's
+// screen-frame/recreation-content.ts -- shared with BentoGrid.stories.ts and
+// Screen.stories.ts so the real Figma data has one source, not three copies.
 import { mount, unmount, type Component } from 'svelte'
-import { LabelLine, BentoGrid, type BentoGridItem } from '@wi/ui'
+import { LabelLine, BentoGrid, createFrame, dockElement, WEATHER_CLUSTER, SPECIES_ROW } from '@wi/ui'
 import '@wi/tokens/css'
-import { createFrame } from './design-system-frame'
-import { dockElement } from './design-system-dock'
 
 export interface DesignSystemDemo {
   /** Animates the frame margin in (grey border appears, docked clusters shift to the window edge). */
@@ -31,68 +35,48 @@ export interface DesignSystemDemo {
   dispose(): void
 }
 
-// Figma frame sizes this layout is scaled against -- portrait viewports use
-// the mobile frame as the scale basis, landscape viewports the desktop one.
-const MOBILE_FRAME = { width: 1080, height: 1920 }
-const DESKTOP_FRAME = { width: 1920, height: 1080 }
-
-const WEATHER_CLUSTER: BentoGridItem[] = [
-  { id: 'weatherBar', x: 0, y: 0, width: 255, height: 180, title: 'Leicht bewölkt', description: 'Nordwest Wind', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'fill-left', bottomLeft: 'none' } },
-  { id: 'weather29', x: 0, y: 180, width: 180, height: 180, value: '29°', description: 'Celsius', accent: 'gold', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'fill-left', bottomLeft: 'convex' } },
-  { id: 'weather83', x: 180, y: 180, width: 180, height: 180, value: '83%', description: 'Luftfeuchtigkeit', accent: 'forest-green', cornerOverrides: { topLeft: 'fill-left', topRight: 'convex', bottomRight: 'fill-top', bottomLeft: 'none' } },
-]
-
-const SPECIES_ROW: BentoGridItem[] = [
-  { id: 'vogel', x: 0, y: 270, width: 300, height: 300, title: 'SCHNURRVOGEL', description: 'pipra fasciicauda', accent: 'grey-light', cornerOverrides: { topLeft: 'fill-top', topRight: 'none', bottomRight: 'none', bottomLeft: 'convex' } },
-  { id: 'giftfrosch', x: 300, y: 0, width: 360, height: 570, title: 'SIRA GIFTFROSCH', description: 'ranitomeya sirensis', accent: 'grey-dark', cornerOverrides: { topLeft: 'convex', topRight: 'convex', bottomRight: 'fill-left', bottomLeft: 'none' } },
-  { id: 'morphofalter', x: 660, y: 270, width: 300, height: 300, title: 'BLAUER MORPHOFALTER', description: 'morpho deidamia', accent: 'grey-light', cornerOverrides: { topLeft: 'none', topRight: 'convex', bottomRight: 'convex', bottomLeft: 'none' } },
-]
-
-function isPortrait(): boolean {
-  return window.innerHeight >= window.innerWidth
-}
-
-/** viewportWidth / referenceFrameWidth, portrait vs. landscape picking the frame -- recomputed on resize. */
-function computeContentScale(): number {
-  const reference = isPortrait() ? MOBILE_FRAME : DESKTOP_FRAME
-  return window.innerWidth / reference.width
-}
-
 export function createDesignSystemDemo(): DesignSystemDemo {
-  const frame = createFrame()
+  // createFrame/dockElement need a real positioning container -- this div
+  // takes over the role the SVG root used to play directly (position:fixed,
+  // full viewport), so the frame's window and every docked host below
+  // resolve position:absolute against IT, not the true viewport.
+  const container = document.createElement('div')
+  Object.assign(container.style, { position: 'fixed', inset: '0' })
+  document.body.append(container)
+
+  const frame = createFrame(container)
 
   const weatherHost = document.createElement('div')
-  document.body.append(weatherHost)
+  container.append(weatherHost)
   // Weather's rect feeds the frame's precise top-right corner notch (with
   // the correct concave elbow) rather than a generic unioned rect -- see
-  // design-system-frame.ts's header for why that distinction matters here.
-  const weatherDock = dockElement(weatherHost, {
+  // @wi/ui's screen-frame/frame.ts header for why that distinction matters here.
+  const weatherDock = dockElement(weatherHost, container, {
     edge: 'top-right',
     mode: 'frame',
     onRect: (rect) => frame.setTopRightReach(rect.width, rect.height),
   }, frame)
 
   const speciesHost = document.createElement('div')
-  document.body.append(speciesHost)
+  container.append(speciesHost)
   // Species sits fully inside the window (its bottom edge is flush with
   // the window's own bottom edge in Figma) -- a generic notch here is
   // always a no-op, which is correct: no cutout needed at all.
-  const speciesDock = dockElement(speciesHost, {
+  const speciesDock = dockElement(speciesHost, container, {
     edge: 'bottom-center',
     mode: 'frame',
     onRect: (rect) => frame.setNotch('species', rect),
   }, frame)
 
   // The habitat label docks to a side border, not the bottom -- left in
-  // portrait, right in landscape, mirroring the same orientation switch
-  // computeContentScale() already uses for MOBILE_FRAME vs DESKTOP_FRAME.
-  // It's a fully solid pill (no corner overrides, so no gaps in its own
-  // silhouette) -- unlike weather/species it never needs a frame notch,
-  // since there's nothing behind it that would need to show through.
+  // portrait, right in landscape. It's a fully solid pill (no corner
+  // overrides, so no gaps in its own silhouette) -- unlike weather/species
+  // it never needs a frame notch, since there's nothing behind it that
+  // would need to show through.
   const labelHost = document.createElement('div')
-  document.body.append(labelHost)
-  const labelDock = dockElement(labelHost, {
-    edge: () => (isPortrait() ? 'left-center' : 'right-center'),
+  container.append(labelHost)
+  const labelDock = dockElement(labelHost, container, {
+    edge: () => (container.clientHeight >= container.clientWidth ? 'left-center' : 'right-center'),
     mode: 'frame',
     onRect: () => {},
   }, frame)
@@ -114,13 +98,6 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   let revealed = false
 
-  function applyContentScale() {
-    const scale = String(computeContentScale())
-    weatherHost.style.setProperty('--design-system-demo-content-scale', scale)
-    speciesHost.style.setProperty('--design-system-demo-content-scale', scale)
-    labelHost.style.setProperty('--design-system-demo-content-scale', scale)
-  }
-
   function updateDocks() {
     weatherDock.update()
     speciesDock.update()
@@ -128,14 +105,13 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   }
 
   function handleResize() {
-    applyContentScale()
+    container.style.setProperty('--screen-frame-content-scale', String(frame.getContentScale()))
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
     updateDocks()
   }
 
-  applyContentScale()
-  updateDocks()
+  handleResize()
   window.addEventListener('resize', handleResize)
 
   // Starts fully retracted (margin 0, full-bleed) -- the caller decides when
@@ -189,9 +165,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
       unmount(weatherCluster)
       unmount(speciesRow)
       frame.dispose()
-      weatherHost.remove()
-      speciesHost.remove()
-      labelHost.remove()
+      container.remove()
       toggleButton.remove()
       if (import.meta.env.DEV) delete (window as any).__designSystemDemo
     },
