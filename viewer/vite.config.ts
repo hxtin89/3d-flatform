@@ -55,6 +55,7 @@ export default defineConfig({
     // is also whitelisted: npm run dev -- --port 4177
     strictPort: true,
     host: true, // listen on all interfaces + print LAN IPs for phone testing
+    allowedHosts: ["wi-dev.mediascenography.com"], // hinter dem NGINX-Reverse-Proxy erlaubte Hosts
     open: '/threejs-test.html', // auto-open the Three.js/WebGPU map app
     proxy: {
       // Proxy tile requests to the local tile server
