@@ -2236,6 +2236,7 @@ const fpsEl = $('#fpsv')
 const msEl = $('#msv')
 const visibleEl = $('#visible')
 const pointTilesEl = $('#blocks')
+const renderScaleEl = $('#renderScale')
 const overdrawEl = $('#overdraw')
 const stackingEl = $('#stacking')
 const mapTilesEl = $('#mapTiles')
@@ -2280,6 +2281,10 @@ function updateOverdrawReadout(points: number): void {
   // the startup resolution cap can put the backbuffer well below the device ratio, and
   // the backbuffer is what actually gets shaded.
   const ratio = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
+  // The ratio is a device property (devicePixelRatio capped by the bench preset), so it
+  // is expected to hold while the pixel counts follow the window. Shown because the two
+  // are easy to confuse and the cap is invisible otherwise.
+  renderScaleEl.textContent = `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
   const diameter = uniforms.pointSize.value * ratio
   const dotArea = Math.PI * (diameter / 2) ** 2
   const perPixel = points / bufferPixels
