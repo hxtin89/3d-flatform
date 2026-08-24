@@ -120,7 +120,7 @@
 
   .bento-widget:hover,
   .bento-widget:focus-within {
-    transform: translateY(-6px);
+    transform: translateY(-8px) scale(1.015);
   }
 
   .bento-widget__silhouette {
@@ -133,9 +133,17 @@
     transition: filter 220ms ease;
   }
 
+  /* The neutral key/ambient pair alone reads as a generic UI-kit card lift --
+     colabs.com.au/alethia.earth's confidence comes partly from color, so the
+     hover lift also throws a glow tinted with the card's OWN verified
+     --accent-fill (color-mix, not a new literal) underneath the existing
+     neutral shadow. Grey/default cards barely tint (their accent-fill IS
+     neutral); gold/forest-green cards get a genuinely saturated lift that
+     was previously indistinguishable from a plain grey one. */
   .bento-widget:hover .bento-widget__silhouette,
   .bento-widget:focus-within .bento-widget__silhouette {
-    filter: drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
+    filter: drop-shadow(0 20px 32px color-mix(in srgb, var(--accent-fill) 45%, transparent))
+      drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
   @media (prefers-reduced-motion: reduce) {

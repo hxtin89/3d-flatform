@@ -164,7 +164,7 @@
 
   .species-widget:hover,
   .species-widget:focus-visible {
-    transform: translateY(-6px);
+    transform: translateY(-8px) scale(1.015);
   }
 
   .species-widget__silhouette {
@@ -175,9 +175,13 @@
     transition: filter 220ms ease;
   }
 
+  /* Same accent-tinted glow as BentoWidget's identical pair (see its own
+     comment) -- reused here rather than re-derived so both widget kinds
+     stay the one shared hover language, not two that quietly drift apart. */
   .species-widget:hover .species-widget__silhouette,
   .species-widget:focus-visible .species-widget__silhouette {
-    filter: drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
+    filter: drop-shadow(0 20px 32px color-mix(in srgb, var(--accent-fill) 45%, transparent))
+      drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
   @media (prefers-reduced-motion: reduce) {

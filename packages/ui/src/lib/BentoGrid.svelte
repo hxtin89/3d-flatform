@@ -153,15 +153,19 @@
        `both` holds the from-state through the delay so cards don't flash
        visible before their turn, and holds the to-state after so a later
        reactive re-render (e.g. the height Tween driving expand/collapse)
-       never replays this -- keyed #each keeps the same DOM node throughout. */
-    animation: bento-cell-enter 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
+       never replays this -- keyed #each keeps the same DOM node throughout.
+       24px/0.97 read as a barely-there settle, not a confident entrance --
+       widened the travel and the starting scale dip (still landing on the
+       same expo-out curve) so the reveal itself carries some of the weight
+       reference sites put on bold motion instead of leaning on color alone. */
+    animation: bento-cell-enter 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
     animation-delay: var(--cell-enter-delay, 0ms);
   }
 
   @keyframes bento-cell-enter {
     from {
       opacity: 0;
-      transform: translateY(24px) scale(0.97);
+      transform: translateY(40px) scale(0.92);
     }
     to {
       opacity: 1;
