@@ -262,9 +262,14 @@ export function createGroundPatchMask(opts: {
   // so a tile landing there names the placement bug.
   let surveyBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null
   const strays: unknown[] = []
-  // DIAGNOSTIC: where each tile's points actually landed, so a stray patch can be
-  // traced back to the tile that painted it. Bounded ring buffer.
-  const splatLog: { url: string; obj: THREE.Object3D; x0: number; x1: number; y0: number; y1: number }[] = []
+  // Where each tile's points actually landed, so a stray patch can be traced back to
+  // the tile that painted it. Bounded ring buffer, and the tile is held weakly: a hard
+  // reference here would keep every unloaded tile's geometry alive for the session.
+  const splatLog: {
+    url: string
+    obj: WeakRef<THREE.Object3D>
+    x0: number; x1: number; y0: number; y1: number
+  }[] = []
 
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
@@ -569,7 +574,7 @@ export function createGroundPatchMask(opts: {
           }
           if (cursor === 0) {
             splatLog.push({
-              url: (object as any).__maskUrl ?? '?', obj: object,
+              url: (object as any).__maskUrl ?? '?', obj: new WeakRef(object),
               x0: Math.round(mnx), x1: Math.round(mxx), y0: Math.round(mny), y1: Math.round(mxy),
             })
             if (splatLog.length > 600) splatLog.shift()
@@ -629,10 +634,11 @@ export function createGroundPatchMask(opts: {
       for (const e of splatLog) {
         if (x < e.x0 - 50 || x > e.x1 + 50 || y < e.y0 - 50 || y > e.y1 + 50) continue
         let now = null
-        const pos = (e.obj as any).geometry?.getAttribute?.('position')
-        if (e.obj.parent && pos) {
-          e.obj.updateWorldMatrix(true, false)
-          const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, e.obj.matrixWorld)
+        const obj = e.obj.deref()
+        const pos = (obj as any)?.geometry?.getAttribute?.('position')
+        if (obj && obj.parent && pos) {
+          obj.updateWorldMatrix(true, false)
+          const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, obj.matrixWorld)
           const el = m.elements as unknown as number[]
           const arr = pos.array as ArrayLike<number>
           const st = (pos as any).itemSize ?? 3
@@ -648,7 +654,7 @@ export function createGroundPatchMask(opts: {
           }
           now = { x0: Math.round(a), x1: Math.round(b), y0: Math.round(c), y1: Math.round(d) }
         }
-        hits.push({ url: e.url.split('/').slice(-2).join('/'), attached: !!e.obj.parent,
+        hits.push({ url: e.url.split('/').slice(-2).join('/'), attached: !!obj?.parent,
           then: { x0: e.x0, x1: e.x1, y0: e.y0, y1: e.y1 }, now })
       }
       return { logged: splatLog.length, hits }
@@ -662,10 +668,11 @@ export function createGroundPatchMask(opts: {
     logDrift(minMetres = 20) {
       const moved = []
       for (const e of splatLog) {
-        const pos = (e.obj as any).geometry?.getAttribute?.('position')
-        if (!e.obj.parent || !pos) continue
-        e.obj.updateWorldMatrix(true, false)
-        const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, e.obj.matrixWorld)
+        const obj = e.obj.deref()
+        const pos = (obj as any)?.geometry?.getAttribute?.('position')
+        if (!obj || !obj.parent || !pos) continue
+        obj.updateWorldMatrix(true, false)
+        const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, obj.matrixWorld)
         const el = m.elements as unknown as number[]
         const arr = pos.array as ArrayLike<number>
         const st = (pos as any).itemSize ?? 3
@@ -685,7 +692,7 @@ export function createGroundPatchMask(opts: {
             then: [e.x0, e.y0], now: [Math.round(a), Math.round(c)] })
         }
       }
-      return { logged: splatLog.length, attached: splatLog.filter((e) => e.obj.parent).length, moved }
+      return { logged: splatLog.length, attached: splatLog.filter((e) => e.obj.deref()?.parent).length, moved }
     },
 
     probeEnu(x, y) {
