@@ -50,8 +50,6 @@ import {
   attachOrigin, ecefToRenderMatrix, getEcefRoot, onRebase, originStats,
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
-import { createPerfProbe, type PerfProbe } from './perf-probe'
-import { installJitterRun } from './jitter-run'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -85,10 +83,6 @@ const freeOrbit = params.has('freeorbit')
  * off the session runs on DEFAULT_OPTIONS and ignores the one stored preference
  * (clouds), so two machines measure the same thing. */
 const panelEnabled = params.get('panel') === '1'
-/** Jitter investigation: rolling frame-time percentiles, pointer-event rate and
- * per-frame rotation delta, plus a scripted gesture so two machines run the
- * same input. Measurement only — it changes nothing about the render. */
-const perfProbeEnabled = params.has('perf')
 /** Cesium comparison: start without the loader benchmark and without the
  * boot-time pixel-ratio cap, then enable compare mode (all optimisations off,
  * only the zoom-dependent density ladder remains). Everything else is also
@@ -151,7 +145,10 @@ let eagleBench: EagleBench | null = null
 let bootLoading = true
 let loaderReadyShown = false
 let loaderDataReady = false
-let startWithSound = true
+/** Ambient sound is opt-in: an unannounced soundscape on first load is the kind
+ * of thing people close the tab over. The loader offers it before the start
+ * button, which is also the browser gesture that would unlock audio. */
+let startWithSound = false
 let loaderTarget = 0
 let loaderDisplayed = 0
 let loaderLastTick = performance.now()
@@ -516,8 +513,6 @@ let atmosphereFar = camera.far
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
 let lastFieldTier: PerformanceTier | null = null
-let perfProbe: PerfProbe | null = null
-let disposeJitterRun: (() => void) | null = null
 let disposed = false
 
 const rainToggleEl = $<HTMLButtonElement>('#rainToggle')
@@ -1369,7 +1364,6 @@ function enforceNavigationBounds(): void {
   navigationCameraEnu.z = navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
   camera.updateMatrixWorld()
-  perfProbe?.noteNavigationClamp()
   // Cancel residual pinch/orbit inertia on the way in, once. Repeating it while
   // the camera rests on the floor is what killed live gestures.
   if (!navigationClamped) {
@@ -1987,16 +1981,6 @@ function loop(now: number): void {
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
-  perfProbe?.frame(now, {
-    points: stats?.points ?? 0,
-    pointTiles: stats?.visible ?? 0,
-    mapTiles: globe?.stats().visible ?? 0,
-    downloads: (stream?.tiles as any)?.downloadQueue?.currJobs ?? 0,
-    cacheBytes: stats?.cacheBytes ?? 0,
-    gpuBytes: stats?.gpuBytes ?? 0,
-    sse: sseAuto,
-    rebases: originStats().rebases,
-  })
   renderer.render(scene, camera)
 }
 
@@ -2022,30 +2006,6 @@ async function main(): Promise<void> {
       + (adapterInfo ? ` adapter=${adapterInfo.vendor ?? '?'} ${adapterInfo.architecture ?? ''} ${adapterInfo.description ?? ''}`.trimEnd() : ''))
   } catch { /* adapter info is best-effort diagnostics */ }
   installGraphicsRecovery(backend)
-  if (perfProbeEnabled) {
-    let adapterLabel = 'unknown'
-    try {
-      const info = backend?.adapter?.info ?? backend?.device?.adapterInfo
-      if (info) adapterLabel = `${info.vendor ?? '?'} ${info.architecture ?? ''} ${info.description ?? ''}`.trim()
-    } catch { /* best effort */ }
-    perfProbe = createPerfProbe({
-      camera,
-      canvas,
-      context: () => ({
-        backend: isWebGPU ? 'WebGPU' : 'WebGL2',
-        adapter: adapterLabel,
-        devicePixelRatio: window.devicePixelRatio,
-        pixelRatio: renderer.getPixelRatio(),
-        viewport: `${window.innerWidth}x${window.innerHeight}`,
-        userAgent: navigator.userAgent,
-        platform: (navigator as any).userAgentData?.platform ?? navigator.platform ?? 'unknown',
-        preset: benchPreset,
-        options: { ...renderOptions.effective() } as unknown as Record<string, boolean>,
-      }),
-    })
-    disposeJitterRun = installJitterRun(canvas)
-    console.info('[perf] probe active — drag to measure, or run __jitter.run({ input: "mouse" })')
-  }
 
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
@@ -2367,10 +2327,6 @@ function dispose(): void {
   loaderProgressRaf = 0
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
-  perfProbe?.dispose()
-  perfProbe = null
-  disposeJitterRun?.()
-  disposeJitterRun = null
   rainLayer?.dispose()
   audioLayer?.dispose()
   keyboardNavigation?.dispose()
