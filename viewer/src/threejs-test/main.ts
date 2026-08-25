@@ -1243,6 +1243,24 @@ function installGraphicsRecovery(backend: any): void {
 
 // ---------------------------------------------------------------- mask and camera range
 const groundPlane = new THREE.Plane()
+/**
+ * Diagnostic: what the ground-patch mask holds under a screen pixel, and which tiles
+ * put it there. Screen coordinates are CSS pixels relative to the canvas.
+ */
+function probeMaskAt(sx: number, sy: number): unknown {
+  const rect = renderer.domElement.getBoundingClientRect()
+  ray.setFromCamera(new THREE.Vector2(
+    (sx / rect.width) * 2 - 1, -(sy / rect.height) * 2 + 1,
+  ), camera)
+  const hit = new THREE.Vector3()
+  if (!ray.ray.intersectPlane(groundPlane, hit)) return { miss: true }
+  const enu = worldToEnu(hit)
+  return {
+    enu: [Math.round(enu.x), Math.round(enu.y)],
+    probe: groundPatchMask.probeEnu(enu.x, enu.y),
+    who: groundPatchMask.whoCovered(enu.x, enu.y),
+  }
+}
 const ray = new THREE.Raycaster()
 const ndc = new THREE.Vector2()
 const hitEcef = new THREE.Vector3()
@@ -2003,14 +2021,43 @@ const onGroundPatchToggle = () => {
 }
 groundPatchToggleEl.addEventListener('click', onGroundPatchToggle)
 syncGroundPatchToggle()
+// Mask debug: flat magenta at full strength wherever the mask claims a pixel. Two
+// rounds of chasing "stray patches" were spent proving which dark shape was the mask
+// and which was a cloud shadow or just dark imagery; this settles that at a glance.
+// It overrides the colour and mix uniforms, so the design values are kept here and
+// restored when it goes off.
+let groundPatchDebug = false
+let groundPatchColorHex: string | number = GROUND_PATCH.color
+let groundPatchColorMix: number = GROUND_PATCH.colorMix
+const applyGroundPatchLook = () => {
+  uniforms.groundPatchColor.value.set(groundPatchDebug ? '#ff00ff' : groundPatchColorHex)
+  uniforms.groundPatchColorMix.value = groundPatchDebug ? 1 : groundPatchColorMix
+}
+const groundPatchDebugToggleEl = $<HTMLButtonElement>('#groundPatchDebugToggle')
+groundPatchDebugToggleEl.addEventListener('click', () => {
+  groundPatchDebug = !groundPatchDebug
+  groundPatchDebugToggleEl.classList.toggle('on', groundPatchDebug)
+  groundPatchDebugToggleEl.setAttribute('aria-pressed', String(groundPatchDebug))
+  groundPatchDebugToggleEl.textContent = `✳ Mask debug · ${groundPatchDebug ? 'On' : 'Off'}`
+  applyGroundPatchLook()
+})
+// Alt-click a magenta patch while debug is on and the console names the tiles whose
+// points painted it, where they landed when splatted, and where they project now. A
+// disagreement between those two is the whole class of bug this module keeps hitting.
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (!groundPatchDebug || !event.altKey) return
+  const rect = renderer.domElement.getBoundingClientRect()
+  const at = probeMaskAt(event.clientX - rect.left, event.clientY - rect.top)
+  console.info('[mask] alt-click', at)
+})
 bindDesignColor('groundPatchColor', GROUND_PATCH.color, (hex) => {
-  uniforms.groundPatchColor.value.set(hex)
+  groundPatchColorHex = hex; applyGroundPatchLook()
 })
 bindDesignSlider('groundPatchAmount', GROUND_PATCH.amount, asPercent, (v) => {
   groundPatchAmount = v; applyGroundPatchAmount()
 })
 bindDesignSlider('groundPatchColorMix', GROUND_PATCH.colorMix, asPercent, (v) => {
-  uniforms.groundPatchColorMix.value = v
+  groundPatchColorMix = v; applyGroundPatchLook()
 })
 bindDesignSlider('groundPatchBrightness', GROUND_PATCH.brightness, asPercent, (v) => {
   uniforms.groundPatchBrightness.value = v
@@ -2737,16 +2784,7 @@ async function main(): Promise<void> {
     get controls() { return globe?.controls ?? null },
     mask: groundPatchMask,
     /** Diagnostic: what the mask holds under a screen pixel. */
-    probeMask(sx: number, sy: number) {
-      const rect = renderer.domElement.getBoundingClientRect()
-      ray.setFromCamera(new THREE.Vector2(
-        (sx / rect.width) * 2 - 1, -(sy / rect.height) * 2 + 1,
-      ), camera)
-      const hit = new THREE.Vector3()
-      if (!ray.ray.intersectPlane(groundPlane, hit)) return { miss: true }
-      const enu = worldToEnu(hit)
-      return groundPatchMask.probeEnu(enu.x, enu.y)
-    },
+    probeMask: probeMaskAt,
     /** Floating origin: the two ENU frames and where the origin currently sits.
      * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
     origin: {

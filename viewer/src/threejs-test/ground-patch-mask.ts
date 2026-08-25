@@ -122,6 +122,10 @@ export interface GroundPatchMask {
    * origin shift.
    */
   setEnuInverse(matrix: THREE.Matrix4): void
+  /** Diagnostic: splatted tiles whose projection has moved since splatting. */
+  logDrift(minMetres?: number): unknown
+  /** Diagnostic: which splatted tiles claim an ENU spot, then and now. */
+  whoCovered(x: number, y: number): unknown
   /**
    * Diagnostic: what the mask holds at one ENU spot, and the depth of the tile
    * whose points put it there. Answers "which tile painted this patch".
@@ -258,6 +262,9 @@ export function createGroundPatchMask(opts: {
   // so a tile landing there names the placement bug.
   let surveyBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null
   const strays: unknown[] = []
+  // DIAGNOSTIC: where each tile's points actually landed, so a stray patch can be
+  // traced back to the tile that painted it. Bounded ring buffer.
+  const splatLog: { url: string; obj: THREE.Object3D; x0: number; x1: number; y0: number; y1: number }[] = []
 
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
@@ -523,7 +530,7 @@ export function createGroundPatchMask(opts: {
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
         localToEnu.multiplyMatrices(enuInverseWorld, object.matrixWorld)
-        if (cursor === 0 && surveyBounds) {
+        if (cursor === 0) {
           // Guard against the bug this module has hit twice: points projected with a
           // matrix from the wrong space land kilometres off, painting coverage where
           // no tile ever is. Checks position, not just size — a tile of ordinary
@@ -542,9 +549,14 @@ export function createGroundPatchMask(opts: {
             if (y < mny) mny = y
             if (y > mxy) mxy = y
           }
+          splatLog.push({
+            url: (object as any).__maskUrl ?? '?', obj: object,
+            x0: Math.round(mnx), x1: Math.round(mxx), y0: Math.round(mny), y1: Math.round(mxy),
+          })
+          if (splatLog.length > 600) splatLog.shift()
           const m = 200
-          if (mnx < surveyBounds.minX - m || mxx > surveyBounds.maxX + m
-            || mny < surveyBounds.minY - m || mxy > surveyBounds.maxY + m) {
+          if (surveyBounds && (mnx < surveyBounds.minX - m || mxx > surveyBounds.maxX + m
+            || mny < surveyBounds.minY - m || mxy > surveyBounds.maxY + m)) {
             const info = {
               url: (object as any).__maskUrl,
               x: [Math.round(mnx), Math.round(mxx)], y: [Math.round(mny), Math.round(mxy)],
@@ -582,6 +594,75 @@ export function createGroundPatchMask(opts: {
     setEnuInverse(matrix) {
       enuInverseWorldSet = true
       enuInverseWorld.copy(matrix)
+    },
+
+    /**
+     * Diagnostic: which splatted tiles claim an ENU spot, where they landed when
+     * they were splatted, and where the same tile projects to right now. A
+     * disagreement between "then" and "now" is a matrix that moved under us.
+     */
+    whoCovered(x, y) {
+      const hits = []
+      for (const e of splatLog) {
+        if (x < e.x0 - 50 || x > e.x1 + 50 || y < e.y0 - 50 || y > e.y1 + 50) continue
+        let now = null
+        const pos = (e.obj as any).geometry?.getAttribute?.('position')
+        if (e.obj.parent && pos) {
+          e.obj.updateWorldMatrix(true, false)
+          const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, e.obj.matrixWorld)
+          const el = m.elements as unknown as number[]
+          const arr = pos.array as ArrayLike<number>
+          const st = (pos as any).itemSize ?? 3
+          let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity
+          const step = Math.max(1, (pos.count / 64) | 0)
+          for (let i = 0; i < pos.count; i += step) {
+            const o = i * st
+            const px = enuX(arr, o, el), py = enuY(arr, o, el)
+            if (px < a) a = px
+            if (px > b) b = px
+            if (py < c) c = py
+            if (py > d) d = py
+          }
+          now = { x0: Math.round(a), x1: Math.round(b), y0: Math.round(c), y1: Math.round(d) }
+        }
+        hits.push({ url: e.url.split('/').slice(-2).join('/'), attached: !!e.obj.parent,
+          then: { x0: e.x0, x1: e.x1, y0: e.y0, y1: e.y1 }, now })
+      }
+      return { logged: splatLog.length, hits }
+    },
+
+    /**
+     * Diagnostic: every splatted tile whose projection has moved since it was
+     * splatted. A non-empty result means the matrix changed under the splat, which
+     * is the shape every stray-patch bug in this module has taken.
+     */
+    logDrift(minMetres = 20) {
+      const moved = []
+      for (const e of splatLog) {
+        const pos = (e.obj as any).geometry?.getAttribute?.('position')
+        if (!e.obj.parent || !pos) continue
+        e.obj.updateWorldMatrix(true, false)
+        const m = new THREE.Matrix4().multiplyMatrices(enuInverseWorld, e.obj.matrixWorld)
+        const el = m.elements as unknown as number[]
+        const arr = pos.array as ArrayLike<number>
+        const st = (pos as any).itemSize ?? 3
+        let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity
+        const step = Math.max(1, (pos.count / 64) | 0)
+        for (let i = 0; i < pos.count; i += step) {
+          const o = i * st
+          const px = enuX(arr, o, el), py = enuY(arr, o, el)
+          if (px < a) a = px
+          if (px > b) b = px
+          if (py < c) c = py
+          if (py > d) d = py
+        }
+        const shift = Math.max(Math.abs(a - e.x0), Math.abs(c - e.y0))
+        if (shift > minMetres) {
+          moved.push({ url: e.url.split('/').slice(-2).join('/'), shift: Math.round(shift),
+            then: [e.x0, e.y0], now: [Math.round(a), Math.round(c)] })
+        }
+      }
+      return { logged: splatLog.length, attached: splatLog.filter((e) => e.obj.parent).length, moved }
     },
 
     probeEnu(x, y) {

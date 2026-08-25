@@ -910,6 +910,11 @@
             <span class="weather-note" id="groundPatchNote">Replaces the satellite imagery with a solid colour where point data exists — the shape follows a coverage mask splatted from the points themselves, so gaps in the survey — the river, the missing strip — keep showing the map</span>
           </div>
           <div class="row">
+            <label class="h" for="groundPatchDebugToggle">Debug</label>
+            <button class="act" id="groundPatchDebugToggle" type="button" aria-pressed="false" aria-describedby="groundPatchDebugNote">✳ Mask debug · Off</button>
+            <span class="weather-note" id="groundPatchDebugNote">Paints the coverage mask in flat magenta at full strength, so every pixel the mask claims is unmistakable — the fastest way to tell a mask fault from a cloud shadow or a dark patch of imagery</span>
+          </div>
+          <div class="row">
             <label class="h" for="groundPatchColorMix">Flat colour vs basemap · <span class="val" id="groundPatchColorMixVal">—</span></label>
             <input type="range" id="groundPatchColorMix" min="0" max="1" step="0.01" />
             <span class="weather-note">0% = the basemap at its own brightness below · 100% = the flat colour · in between blends the two</span>
