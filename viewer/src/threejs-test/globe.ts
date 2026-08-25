@@ -182,9 +182,23 @@ export function createGlobe(opts: {
   // so easing the live position here is read as a smooth step on the *next* frame and
   // previousPointer stays consistent with it.
   const tracker = (controls as any).pointerTracker
-  const pointerTargets: Record<number, THREE.Vector2> = {}
+  const pointerTargets: Record<number, THREE.Vector2 | undefined> = {}
   let smoothingMs: number = EXPERIENCE_CONFIG.navigation.pointerSmoothingMs
   let lastEaseMs = 0
+  // The pointer id is stable for a mouse, so a target left over from the previous drag
+  // would still be there at the next press — and the first frame would ease toward it
+  // before any movement arrived, throwing the view sideways on every click. Targets
+  // therefore live exactly as long as the press does.
+  const originalAddPointer = tracker.addPointer.bind(tracker)
+  tracker.addPointer = (event: PointerEvent) => {
+    originalAddPointer(event)
+    delete pointerTargets[event.pointerId]
+  }
+  const originalDeletePointer = tracker.deletePointer.bind(tracker)
+  tracker.deletePointer = (event: PointerEvent) => {
+    originalDeletePointer(event)
+    delete pointerTargets[event.pointerId]
+  }
   const originalUpdatePointer = tracker.updatePointer.bind(tracker)
   tracker.updatePointer = (event: PointerEvent) => {
     if (smoothingMs <= 0) return originalUpdatePointer(event)
