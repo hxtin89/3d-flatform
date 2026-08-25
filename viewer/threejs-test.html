@@ -346,6 +346,28 @@
       body.splat-solo #peruTimeDock,
       body.splat-solo #attribution,
       body.splat-solo #aimReticle { display: none !important; }
+
+      /* "Clean mode": the cogwheel (#panelChip) hides every piece of app/dev
+         chrome so only the @wi/ui widget layer is left over the point cloud.
+         #panelChip itself is deliberately NOT in this list -- it has to stay on
+         screen to toggle back out, same reasoning as splat-solo above. */
+      body.chrome-hidden #markerOverlay,
+      body.chrome-hidden #hud,
+      body.chrome-hidden #hudChip,
+      body.chrome-hidden #panel,
+      body.chrome-hidden #keyboardGuide,
+      body.chrome-hidden #keyboardGuideToggle,
+      body.chrome-hidden #peruTimeDock,
+      body.chrome-hidden #attribution,
+      body.chrome-hidden #splatHint,
+      body.chrome-hidden #frameToggleButton,
+      body.chrome-hidden #aimReticle { display: none !important; }
+      /* Dimmed while hiding, so the one remaining control reads as "chrome is
+         off" rather than as a stray button over an otherwise clean frame. */
+      body.chrome-hidden #panelChip { opacity: .3; }
+      body.chrome-hidden #panelChip:hover,
+      body.chrome-hidden #panelChip:focus-visible { opacity: 1; }
+
       /* WASD-Hinweis, nur im Solo-Modus sichtbar. */
       #splatHint { display: none; position: fixed; left: 16px; bottom: calc(16px + var(--safe-b, 0px)); z-index: 13;
         flex-direction: column; gap: 9px; align-items: flex-start; pointer-events: none; }

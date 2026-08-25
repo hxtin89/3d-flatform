@@ -196,6 +196,11 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   if (import.meta.env.DEV) {
     toggleButton = document.createElement('button')
     toggleButton.type = 'button'
+    // Dev chrome, not part of the widget set -- the id is what lets
+    // threejs-test.html's `body.chrome-hidden` rule hide this alongside the
+    // fps chip, map billboards, attribution and field-keys button when the
+    // cogwheel is toggled (see main.ts's #panelChip handler).
+    toggleButton.id = 'frameToggleButton'
     toggleButton.textContent = 'Frame ein/aus'
     Object.assign(toggleButton.style, {
       position: 'fixed',

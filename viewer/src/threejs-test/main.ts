@@ -362,7 +362,28 @@ const compactViewport = matchMedia('(max-width: 700px)').matches
 document.body.classList.toggle('hud-open', !compactViewport)
 document.body.classList.toggle('panel-open', !compactViewport)
 $('#hudChip').addEventListener('click', () => document.body.classList.toggle('hud-open'))
-$('#panelChip').addEventListener('click', () => document.body.classList.toggle('panel-open'))
+// The cogwheel is a "clean mode" switch: one tap hides every piece of app/dev
+// chrome (fps chip, map billboards, attribution, field-keys, time dock, the
+// Frame ein/aus button, HUD and this settings panel) so only the @wi/ui widget
+// layer is left over the point cloud. See body.chrome-hidden in
+// threejs-test.html for the full list.
+//
+// It used to open #panel directly. That panel is dev tooling rather than
+// something the composition needs, so it now rides along with the rest of the
+// chrome -- but it would otherwise become unreachable, hence the shortcut
+// below. Shift+S rather than a plain key so it can't fire while the user is
+// typing into one of the panel's own inputs.
+const panelChip = $('#panelChip')
+panelChip.setAttribute('aria-label', 'Toggle interface')
+panelChip.addEventListener('click', () => {
+  const hidden = document.body.classList.toggle('chrome-hidden')
+  panelChip.setAttribute('aria-pressed', String(hidden))
+})
+addEventListener('keydown', (event) => {
+  if (event.shiftKey && (event.code === 'KeyS' || event.key === 'S')) {
+    document.body.classList.toggle('panel-open')
+  }
+})
 document.querySelectorAll<HTMLButtonElement>('.close').forEach((button) => {
   button.addEventListener('click', () => document.body.classList.remove(`${button.dataset.close}-open`))
 })
