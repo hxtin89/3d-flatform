@@ -72,6 +72,9 @@ interface EnvironmentLayerOptions {
   /** Shared density volume, owned by the caller (also drives point-cloud shadows). */
   cloudNoiseTexture: THREE.Data3DTexture
   isWebGPU: boolean
+  /** False keeps the session on defaults instead of the stored cloud intent,
+   * so performance reports describe a known configuration. Default true. */
+  allowStoredPreferences?: boolean
   reducedMotion: boolean
   onCloudStateChange?(state: CloudState): void
 }
@@ -179,7 +182,13 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   const tier = classifyTier(isWebGPU)
   let activeTier = tier
   let storedPreference: string | null = null
-  try { storedPreference = localStorage.getItem(CLOUD_PREFERENCE_KEY) } catch { /* private mode */ }
+  // The cloud intent is the only setting that survives a reload. With the
+  // options panel hidden it must not be read: a machine whose last session had
+  // clouds off would otherwise render a different scene — and report different
+  // frame times — than one that never touched the toggle.
+  if (options.allowStoredPreferences !== false) {
+    try { storedPreference = localStorage.getItem(CLOUD_PREFERENCE_KEY) } catch { /* private mode */ }
+  }
   let cloudIntent = storedPreference === null ? tier !== 'constrained' : storedPreference === 'on'
   let cloudMode: CloudMode = 'off'
   let cloudReason = cloudIntent ? 'Adaptive cloud quality' : 'Clouds are off'

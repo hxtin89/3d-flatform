@@ -322,6 +322,10 @@
       #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px;
                max-height: calc(100vh - 70px - var(--safe-t)); overflow-y: auto; }
       body.panel-open #panel { display: flex; }
+      /* Minimalmodus (Standard): das Optionen-Panel und sein Zahnrad sind weg,
+         die linke Infoleiste bleibt. Mit ?panel=1 wieder da. */
+      body.ui-minimal #panel,
+      body.ui-minimal #panelChip { display: none !important; }
       /* Vergleichsmodus (Cesium-Vergleich): Master überschreibt alle Optimierungen —
          die überschriebenen Regler sind sichtbar ausgegraut, nur die Vergleichs-
          zeilen bleiben bedienbar. */

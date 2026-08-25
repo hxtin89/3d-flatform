@@ -5,3 +5,5 @@ dist/
 .vite/
 *.local
 public/splats/
+.mcp.json
+mcp.json

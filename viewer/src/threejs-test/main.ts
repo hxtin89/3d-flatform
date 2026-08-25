@@ -50,6 +50,8 @@ import {
   attachOrigin, ecefToRenderMatrix, getEcefRoot, onRebase, originStats,
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
+import { createPerfProbe, type PerfProbe } from './perf-probe'
+import { installJitterRun } from './jitter-run'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -76,6 +78,17 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
+/** The settings panel is a development and comparison tool, not part of the
+ * product surface: every row in it changes render behaviour, so leaving it
+ * reachable means a performance report can silently describe a different
+ * configuration than the one being investigated. Off unless `?panel=1`; with it
+ * off the session runs on DEFAULT_OPTIONS and ignores the one stored preference
+ * (clouds), so two machines measure the same thing. */
+const panelEnabled = params.get('panel') === '1'
+/** Jitter investigation: rolling frame-time percentiles, pointer-event rate and
+ * per-frame rotation delta, plus a scripted gesture so two machines run the
+ * same input. Measurement only — it changes nothing about the render. */
+const perfProbeEnabled = params.has('perf')
 /** Cesium comparison: start without the loader benchmark and without the
  * boot-time pixel-ratio cap, then enable compare mode (all optimisations off,
  * only the zoom-dependent density ladder remains). Everything else is also
@@ -358,7 +371,11 @@ const loaderStallTimer = window.setInterval(() => {
 // ---------------------------------------------------------------- overlays
 const compactViewport = matchMedia('(max-width: 700px)').matches
 document.body.classList.toggle('hud-open', !compactViewport)
-document.body.classList.toggle('panel-open', !compactViewport)
+// The panel markup stays in the DOM even when hidden: main.ts resolves every
+// control at boot ($('#size'), $('#precisionToggle'), the generated option and
+// zoom rows), so removing it would only trade a hidden element for null refs.
+document.body.classList.toggle('ui-minimal', !panelEnabled)
+document.body.classList.toggle('panel-open', panelEnabled && !compactViewport)
 $('#hudChip').addEventListener('click', () => document.body.classList.toggle('hud-open'))
 $('#panelChip').addEventListener('click', () => document.body.classList.toggle('panel-open'))
 document.querySelectorAll<HTMLButtonElement>('.close').forEach((button) => {
@@ -484,6 +501,8 @@ let atmosphereFar = camera.far
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
 let lastFieldTier: PerformanceTier | null = null
+let perfProbe: PerfProbe | null = null
+let disposeJitterRun: (() => void) | null = null
 let disposed = false
 
 const rainToggleEl = $<HTMLButtonElement>('#rainToggle')
@@ -1314,6 +1333,7 @@ function enforceNavigationBounds(): void {
   navigationCameraEnu.z = navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
   camera.updateMatrixWorld()
+  perfProbe?.noteNavigationClamp()
   // Cancel residual pinch/orbit inertia at the boundary so it cannot fight the
   // clamp on subsequent frames and produce visible vibration.
   globe.controls.resetState()
@@ -1896,6 +1916,16 @@ function loop(now: number): void {
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
+  perfProbe?.frame(now, {
+    points: stats?.points ?? 0,
+    pointTiles: stats?.visible ?? 0,
+    mapTiles: globe?.stats().visible ?? 0,
+    downloads: (stream?.tiles as any)?.downloadQueue?.currJobs ?? 0,
+    cacheBytes: stats?.cacheBytes ?? 0,
+    gpuBytes: stats?.gpuBytes ?? 0,
+    sse: sseAuto,
+    rebases: originStats().rebases,
+  })
   renderer.render(scene, camera)
 }
 
@@ -1921,6 +1951,30 @@ async function main(): Promise<void> {
       + (adapterInfo ? ` adapter=${adapterInfo.vendor ?? '?'} ${adapterInfo.architecture ?? ''} ${adapterInfo.description ?? ''}`.trimEnd() : ''))
   } catch { /* adapter info is best-effort diagnostics */ }
   installGraphicsRecovery(backend)
+  if (perfProbeEnabled) {
+    let adapterLabel = 'unknown'
+    try {
+      const info = backend?.adapter?.info ?? backend?.device?.adapterInfo
+      if (info) adapterLabel = `${info.vendor ?? '?'} ${info.architecture ?? ''} ${info.description ?? ''}`.trim()
+    } catch { /* best effort */ }
+    perfProbe = createPerfProbe({
+      camera,
+      canvas,
+      context: () => ({
+        backend: isWebGPU ? 'WebGPU' : 'WebGL2',
+        adapter: adapterLabel,
+        devicePixelRatio: window.devicePixelRatio,
+        pixelRatio: renderer.getPixelRatio(),
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        userAgent: navigator.userAgent,
+        platform: (navigator as any).userAgentData?.platform ?? navigator.platform ?? 'unknown',
+        preset: benchPreset,
+        options: { ...renderOptions.effective() } as unknown as Record<string, boolean>,
+      }),
+    })
+    disposeJitterRun = installJitterRun(canvas)
+    console.info('[perf] probe active — drag to measure, or run __jitter.run({ input: "mouse" })')
+  }
 
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
@@ -2052,6 +2106,7 @@ async function main(): Promise<void> {
     originLonLat: manifest.enuOriginLonLat,
     cloudNoiseTexture: cloudNoiseTexture!,
     isWebGPU,
+    allowStoredPreferences: panelEnabled,
     reducedMotion,
     onCloudStateChange: updateCloudControls,
   })
@@ -2241,6 +2296,10 @@ function dispose(): void {
   loaderProgressRaf = 0
   window.clearInterval(loaderStallTimer)
   closeFieldVideo(false)
+  perfProbe?.dispose()
+  perfProbe = null
+  disposeJitterRun?.()
+  disposeJitterRun = null
   rainLayer?.dispose()
   audioLayer?.dispose()
   keyboardNavigation?.dispose()
