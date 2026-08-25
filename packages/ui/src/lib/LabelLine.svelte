@@ -86,28 +86,6 @@
   .label-line {
     position: relative;
     display: inline-block;
-    /* A slow, independent float -- distinct from BentoWidget's click/hover
-       lift and the icon-plate's fast breathe -- so the headline stack reads
-       as its own depth plane drifting above the backdrop, not a flat sticker
-       sitting at the same static depth as the small weather/species readouts
-       around it. Alternate (not a full loop back to 0) so it settles at
-       rest on both ends instead of snapping. */
-    animation: label-line-float 9s ease-in-out infinite alternate;
-  }
-
-  @keyframes label-line-float {
-    from {
-      transform: translateY(0);
-    }
-    to {
-      transform: translateY(-5px);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .label-line {
-      animation: none;
-    }
   }
 
   .label-line__silhouette {
@@ -115,16 +93,6 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
-  }
-
-  /* Same drop-shadow-hugs-the-silhouette approach as BentoWidget/SpeciesWidget, always on (not
-     hover-gated) since this pill isn't interactive -- it's what actually separates the headline
-     from the photo behind it instead of just being a flat color shape with text on it. Gated by
-     data-shadow (not always applied to the class above) so a HabitatLabelStack of several flush
-     LabelLines can render ONE shared shadow around the whole merged pill instead of each line
-     throwing its own shadow across its neighbor -- see LabelLine's `shadow` prop doc. */
-  .label-line__silhouette[data-shadow="true"] {
-    filter: drop-shadow(0 10px 18px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
   .label-line__fill {

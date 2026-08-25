@@ -193,34 +193,6 @@
   .species-widget {
     position: relative;
     isolation: isolate;
-    /* Hover/focus lift -- see BentoWidget's identical pair for why the
-       transform sits on the root and the shadow lives on the silhouette.
-       filter is here too so releasing a press eases the brightness dip back
-       out at this same relaxed pace, even though pressing it down uses the
-       snappier transition declared on [data-pressed="true"] itself. */
-    transition:
-      transform 220ms ease,
-      filter 220ms ease;
-  }
-
-  .species-widget:hover,
-  .species-widget:focus-visible {
-    transform: translateY(-8px) scale(1.015);
-  }
-
-  /* Press feedback (mouse pointerdown or keyboard Enter/Space, see `pressed`
-     state above) -- a quick dip toward the surface plus a brightness pinch,
-     the tactile "this is about to do something" cue the hover lift alone
-     doesn't give before the 480ms expand even starts. Comes after the hover
-     rule so it wins at equal specificity when both apply (hovering, then
-     pressing) -- and it's deliberately much quicker than the hover
-     transition, a press should register as close to instant. */
-  .species-widget[data-pressed="true"] {
-    transform: translateY(-2px) scale(0.975);
-    filter: brightness(0.96);
-    transition:
-      transform 90ms cubic-bezier(0.4, 0, 1, 1),
-      filter 90ms ease;
   }
 
   .species-widget__silhouette {
@@ -228,43 +200,35 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
-    transition: filter 220ms ease;
-  }
-
-  /* Same accent-tinted glow as BentoWidget's identical pair (see its own
-     comment) -- reused here rather than re-derived so both widget kinds
-     stay the one shared hover language, not two that quietly drift apart. */
-  .species-widget:hover .species-widget__silhouette,
-  .species-widget:focus-visible .species-widget__silhouette {
-    filter: drop-shadow(0 20px 32px color-mix(in srgb, var(--accent-fill) 45%, transparent))
-      drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
-  }
-
-  /* Shadow tightens toward the surface on press, same physical-push logic as
-     the lift growing the shadow on hover, inverted. */
-  .species-widget[data-pressed="true"] .species-widget__silhouette {
-    filter: drop-shadow(0 8px 14px color-mix(in srgb, var(--accent-fill) 35%, transparent))
-      drop-shadow(0 6px 10px var(--shadow-key)) drop-shadow(0 1px 2px var(--shadow-ambient));
-    transition: filter 90ms ease;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .species-widget,
-    .species-widget__silhouette {
-      transition: none;
-    }
-    .species-widget:hover,
-    .species-widget:focus-visible,
-    .species-widget[data-pressed="true"] {
-      transform: none;
-    }
-    .species-widget[data-pressed="true"] {
-      filter: none;
-    }
   }
 
   .species-widget__fill {
     fill: var(--accent-fill);
+    /* Hover/press feedback is a COLOR shift only -- no transform lift, no
+       drop-shadow. See BentoWidget's identical rule for why: Figma's cards
+       butt flush against each other, so a lift or shadow visibly breaks the
+       docked seam it's supposed to be continuous across. Press goes a step
+       further than hover in the same direction, so the two read as one
+       gesture deepening rather than two unrelated effects. */
+    transition: fill 180ms ease;
+  }
+
+  .species-widget:hover .species-widget__fill,
+  .species-widget:focus-visible .species-widget__fill {
+    fill: color-mix(in srgb, var(--accent-fill) 86%, white);
+  }
+
+  /* After the hover rule so it wins at equal specificity when both apply, and
+     deliberately quicker -- a press should register as close to instant. */
+  .species-widget[data-pressed="true"] .species-widget__fill {
+    fill: color-mix(in srgb, var(--accent-fill) 74%, white);
+    transition: fill 90ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .species-widget__fill {
+      transition: none;
+    }
   }
 
   .species-widget__sheen {
@@ -402,34 +366,8 @@
     justify-content: center;
     padding: var(--inset-lg);
     border-radius: var(--pill);
-    /* Was a flat rgb(0 0 0 / 0.12) disc -- the plate itself was as flat as the
-       line-art it sits behind. A radial highlight/shadow (same
-       light-from-top-left language as the card sheens above) plus a real
-       drop-shadow reads as a lit, embossed badge instead of a tinted circle,
-       and the slow breathe keyframe below gives the row *some* idle motion --
-       previously every card was fully static outside the click-driven
-       expand/collapse. */
-    background: radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0.05) 42%, rgb(0 0 0 / 0.2) 100%);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.18),
-      inset 0 -6px 10px rgb(0 0 0 / 0.2),
-      0 8px 16px rgb(0 0 0 / 0.22);
-    animation: species-icon-breathe 6s ease-in-out infinite;
-  }
-
-  @keyframes species-icon-breathe {
-    0%,
-    100% {
-      transform: scale(1);
-    }
-    50% {
-      transform: scale(1.035);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .species-widget__icon-plate {
-      animation: none;
-    }
+    /* Flat tinted disc, no drop-shadow or embossing inset -- shadows are out
+       across this component set (see the fill rule above). */
+    background: rgb(0 0 0 / 0.12);
   }
 </style>

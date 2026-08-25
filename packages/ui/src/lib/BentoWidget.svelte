@@ -117,14 +117,6 @@
   .bento-widget {
     position: relative;
     isolation: isolate;
-    /* Hover/focus lift -- transform lives here (not on the silhouette) so the
-       content layer moves with the card instead of just its fill. */
-    transition: transform 220ms ease;
-  }
-
-  .bento-widget:hover,
-  .bento-widget:focus-within {
-    transform: translateY(-8px) scale(1.015);
   }
 
   .bento-widget__silhouette {
@@ -132,37 +124,30 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
-    /* drop-shadow (not box-shadow) so the shadow hugs the card's actual
-       silhouette -- these corners are concave/notched, not a plain rect. */
-    transition: filter 220ms ease;
-  }
-
-  /* The neutral key/ambient pair alone reads as a generic UI-kit card lift --
-     colabs.com.au/alethia.earth's confidence comes partly from color, so the
-     hover lift also throws a glow tinted with the card's OWN verified
-     --accent-fill (color-mix, not a new literal) underneath the existing
-     neutral shadow. Grey/default cards barely tint (their accent-fill IS
-     neutral); gold/forest-green cards get a genuinely saturated lift that
-     was previously indistinguishable from a plain grey one. */
-  .bento-widget:hover .bento-widget__silhouette,
-  .bento-widget:focus-within .bento-widget__silhouette {
-    filter: drop-shadow(0 20px 32px color-mix(in srgb, var(--accent-fill) 45%, transparent))
-      drop-shadow(0 14px 24px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .bento-widget,
-    .bento-widget__silhouette {
-      transition: none;
-    }
-    .bento-widget:hover,
-    .bento-widget:focus-within {
-      transform: none;
-    }
   }
 
   .bento-widget__fill {
     fill: var(--accent-fill);
+    /* Hover/focus feedback is a COLOR shift only -- no transform lift, no
+       drop-shadow. Figma's own frames have neither: the cards are flat fills
+       that butt directly against each other, and any lift/shadow breaks the
+       illusion that adjacent cards are one continuous docked surface (a
+       shadow falls across the neighbour it's supposed to be flush with).
+       color-mix off the card's OWN --accent-fill keeps this one rule correct
+       for every accent (grey/gold/forest-green) instead of a per-accent
+       literal. */
+    transition: fill 180ms ease;
+  }
+
+  .bento-widget:hover .bento-widget__fill,
+  .bento-widget:focus-within .bento-widget__fill {
+    fill: color-mix(in srgb, var(--accent-fill) 86%, white);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bento-widget__fill {
+      transition: none;
+    }
   }
 
   .bento-widget__scrim {

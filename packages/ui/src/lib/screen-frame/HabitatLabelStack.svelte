@@ -64,9 +64,9 @@
   Real "Test: Label Stack (Dein Habitat)" content from Figma: 3 separate Label Line instances
   stacked with zero gap (their y-offsets are exactly flush in both Frame 1 and Frame 1 Desktop),
   each corner-solved by stackCorners() above so the flush, matching-fill edges read as one
-  continuous blob. No per-line shadow (shadow={false}) -- one shared drop-shadow on the wrapper
-  instead, so the shadow hugs the merged outline rather than throwing a seam across each line's
-  neighbor (see LabelLine's `shadow` prop doc).
+  continuous blob. No shadow anywhere (shadow={false}, and none on the wrapper either) -- Figma's
+  own frames have none, and a shadow across flush-stacked lines reads as separate floating chips
+  rather than the single continuous blob the real design is.
 
   Both real instances (mobile 25556:657 and desktop 25556:1235) bind the same plain
   text/primary + label/fill pair -- a light pill with dark text, same as every other card in the
@@ -90,9 +90,5 @@
   .habitat-label-stack {
     display: flex;
     flex-direction: column;
-    /* Single shared shadow for the whole merged silhouette, replacing each LabelLine's own
-       (now-disabled, see shadow={false} above) per-line shadow -- same values LabelLine used, so
-       the stack keeps the same visual weight it had when each line drew its own copy. */
-    filter: drop-shadow(0 10px 18px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 </style>
