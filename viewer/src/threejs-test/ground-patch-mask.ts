@@ -268,6 +268,8 @@ export function createGroundPatchMask(opts: {
 
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
+  // The attribute the in-flight tile started on, so a swap under us is detectable.
+  let slicePosition: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null = null
   let splatChecks = 0
   let splatMinX = Infinity, splatMaxX = -Infinity
   let splatMinY = Infinity, splatMaxY = -Infinity
@@ -473,6 +475,11 @@ export function createGroundPatchMask(opts: {
       // from the ENU origin, never relative to this bounding box. That is what makes
       // the layout stable — a later, larger survey adds cells around these instead
       // of renumbering them, and two areas sharing an origin agree on the lattice.
+      // Without a manifest the extent comes from the node boxes, which have been wrong
+      // by kilometres before now. Bound the guard by whatever extent was settled on, so
+      // it is never simply inert — a weaker bound still catches the multi-kilometre
+      // misplacements, which are the ones that show.
+      if (!surveyBounds) surveyBounds = { minX, minY, maxX, maxY }
       grid.originX = Math.floor(minX / cellSizeM - 1) * cellSizeM
       grid.originY = Math.floor(minY / cellSizeM - 1) * cellSizeM
       grid.cols = Math.min(indexSize, Math.ceil((maxX + cellSizeM - grid.originX) / cellSizeM))
@@ -520,8 +527,18 @@ export function createGroundPatchMask(opts: {
       while (budget > 0 && queue.length) {
         const object = queue[0]
         const position = (object as any).geometry?.getAttribute?.('position')
-        if (!position) { queue.shift(); cursor = 0; continue }
-        if (cursor === 0 && !isDisplayed(object)) {
+        if (!position) { queue.shift(); cursor = 0; slicePosition = null; continue }
+        // A tile bigger than one frame's budget is splatted over several frames, and
+        // it can be unloaded between them: UnloadTilesPlugin disposes the geometry and
+        // detaches the scene, which leaves a half-splatted tile being read through a
+        // buffer nobody owns and a matrix nobody maintains. The remaining points then
+        // land wherever that resolves to — a solid block of coverage kilometres from
+        // any tile. So every slice is re-checked, not just the first: if the buffer
+        // was swapped under us the tile is dropped, and the displayed test is repeated
+        // rather than trusted from the frame it started in.
+        if (cursor > 0 && position !== slicePosition) { queue.shift(); cursor = 0; slicePosition = null; continue }
+        if (!isDisplayed(object)) {
+          if (cursor > 0) { queue.shift(); cursor = 0; slicePosition = null; continue }
           if (deferrals-- <= 0) break
           queue.push(queue.shift() as THREE.Object3D)
           continue
@@ -530,12 +547,13 @@ export function createGroundPatchMask(opts: {
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
         localToEnu.multiplyMatrices(enuInverseWorld, object.matrixWorld)
-        if (cursor === 0) {
-          // Guard against the bug this module has hit twice: points projected with a
-          // matrix from the wrong space land kilometres off, painting coverage where
-          // no tile ever is. Checks position, not just size — a tile of ordinary
-          // extent dropped a few kilometres away is the shape that bug takes.
-          // Silent unless it fires.
+        {
+          // Guard against the bugs this module has hit: points projected through a
+          // matrix from the wrong space, or read after their tile was unloaded, land
+          // kilometres off and paint coverage where no tile ever is. Checks position,
+          // not just size — a tile of ordinary extent dropped a few kilometres away is
+          // the shape both bugs take. Runs on every slice, because the slices after
+          // the first are exactly where a tile goes bad. Silent unless it fires.
           const e2 = localToEnu.elements as unknown as number[]
           let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity
           const arr = position.array as ArrayLike<number>
@@ -549,11 +567,13 @@ export function createGroundPatchMask(opts: {
             if (y < mny) mny = y
             if (y > mxy) mxy = y
           }
-          splatLog.push({
-            url: (object as any).__maskUrl ?? '?', obj: object,
-            x0: Math.round(mnx), x1: Math.round(mxx), y0: Math.round(mny), y1: Math.round(mxy),
-          })
-          if (splatLog.length > 600) splatLog.shift()
+          if (cursor === 0) {
+            splatLog.push({
+              url: (object as any).__maskUrl ?? '?', obj: object,
+              x0: Math.round(mnx), x1: Math.round(mxx), y0: Math.round(mny), y1: Math.round(mxy),
+            })
+            if (splatLog.length > 600) splatLog.shift()
+          }
           const m = 200
           if (surveyBounds && (mnx < surveyBounds.minX - m || mxx > surveyBounds.maxX + m
             || mny < surveyBounds.minY - m || mxy > surveyBounds.maxY + m)) {
@@ -562,14 +582,17 @@ export function createGroundPatchMask(opts: {
               x: [Math.round(mnx), Math.round(mxx)], y: [Math.round(mny), Math.round(mxy)],
             }
             strays.push(info)
-            console.error('[mask] tile outside the survey', info)
+            console.error('[mask] tile outside the survey — skipped', info)
+            queue.shift(); cursor = 0; slicePosition = null
+            continue
           }
         }
         if (cursor === 0 && isRedundant(position)) { queue.shift(); continue }
+        slicePosition = position
         const done = splat(position, cursor, budget)
         budget -= done
         cursor += done
-        if (cursor >= position.count) { queue.shift(); cursor = 0 }
+        if (cursor >= position.count) { queue.shift(); cursor = 0; slicePosition = null }
       }
 
       if (!dirtyCells.size && !indexDirty) return
