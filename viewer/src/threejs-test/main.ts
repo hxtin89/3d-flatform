@@ -1012,12 +1012,11 @@ function updateOrigin(force = false): void {
 onRebase((delta) => {
   camera.position.add(delta)
   camera.updateMatrixWorld()
-  // GlobeControls keeps three world points across frames; without this the orbit
-  // centre teleports on the first frame after a rebase.
-  const controls = globe?.controls as any
-  controls?.pivotPoint?.add(delta)
-  controls?.zoomPoint?.add(delta)
-  controls?.rotationInertiaPivot?.add(delta)
+  // These three points of GlobeControls are deliberately NOT shifted. The comment they
+  // came with said the orbit centre would teleport without it, but measured they sit at
+  // full ECEF magnitude (6.39e6) while the camera is 80 m from the render origin — they
+  // live in the globe's own frame, which the ECEF root already carries. Adding the
+  // render delta moved them by 8913 m per rebase, which is the error, not the cure.
   refreshOriginDerived()
 })
 const cloudCenterEnu = new THREE.Vector3()
@@ -1966,7 +1965,9 @@ function bindShaderEffectToggle(
 }
 
 bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog', DESIGN.groundFog.enabled)
-bindShaderEffectToggle('cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows')
+bindShaderEffectToggle(
+  'cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows', EXPERIENCE_CONFIG.pointLighting.cloudShadowsEnabled,
+)
 // Distance fog is three's own scene fog, so switching it off is a matter of taking
 // it off the scene — with no fog there, the node materials build without it. The
 // device tier can also disable it (see the fogAtmosphere case), and that still wins.

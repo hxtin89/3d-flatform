@@ -433,6 +433,9 @@ export const EXPERIENCE_CONFIG = {
     // the environment layer because it rides the daylight ramp there.
     /** Base depth of the drifting canopy shadows, before the layer multiplies it
      * by daylight and halves it when the visible clouds are off. */
+    /** Canopy cloud shadows on at startup. Off while the ground patch is being judged:
+     * both draw dark shapes on the ground and they are easy to mistake for each other. */
+    cloudShadowsEnabled: false,
     cloudShadowStrength: 1,
     /** Metres per period of the shadow noise — the grain size. Smaller means
      * finer, busier dappling; larger means broad continental shadows. */
