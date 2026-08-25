@@ -2,8 +2,9 @@
 // Vite+Three.js app. Real content pulled from the "Bento Grid — Recreation"
 // Figma page: Frame 1 (1080x1920, mobile) and Frame 1 Desktop (1920x1080)
 // both have a real, finished species row and habitat label -- but at
-// DIFFERENT dock positions per orientation (species bottom-center on mobile,
-// bottom-left on desktop; label left-center on mobile, bottom-right on
+// DIFFERENT dock positions per orientation (label left-center on mobile,
+// bottom-right on desktop; species row spanning the window's full width on
+// mobile, at its own fixed size in the window's bottom-left corner on
 // desktop), not the same layout just scaled up. Verified by reading both
 // frames' real instance x/y directly from Figma -- see ScreenFrame.svelte's
 // dock wiring for the exact edges this reproduces.
@@ -73,22 +74,29 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   const speciesHost = document.createElement('div')
   container.append(speciesHost)
-  // Which corner arrangement species/label are currently docked to -- see
-  // fitsPortraitArrangement's doc comment (measures the species row's real
-  // rendered height against the label's, since a container-aspect-ratio
-  // guess breaks down for any near-square size). Read by the edge closures
-  // below, written once per handleResize() pass after a first updateDocks()
-  // pass has given both hosts their real, current-content rects.
+  // Whether the label drops to the wide-frame corner, and whether the
+  // species row is stretched to span the window's full width -- both
+  // decided from real measured rects in handleResize() below, mirroring
+  // ScreenFrame.svelte's layout()/speciesScale() (which carry the full
+  // reasoning for the three arrangements and where the fill/no-fill
+  // crossover comes from).
   let useWideArrangement = false
+  let speciesFillsWidth = true
+  function speciesScale(): number {
+    const natural = speciesHost.offsetWidth
+    if (!speciesFillsWidth || natural <= 0) return frame.getContentScale()
+    return (container.clientWidth - 2 * frame.getMargin()) / natural
+  }
   // Species sits fully inside the window (its bottom edge is flush with the
   // window's own bottom edge in Figma) -- a generic notch here is always a
-  // no-op, which is correct: no cutout needed at all. Tall-frame arrangement
-  // (Frame 1): bottom-center. Wide-frame arrangement (Frame 1 Desktop):
-  // bottom-left, NOT the same dock scaled up -- verified against both
-  // frames' real instance x/y.
+  // no-op, which is correct: no cutout needed at all. Docked bottom-left at
+  // every size: that's Frame 1 Desktop's real instance x/y, and it's also
+  // Frame 1 mobile's, since there the row is exactly as wide as the window
+  // (960 inside 1080 - 2x60) and so fills it from that same corner.
   const speciesDock = dockElement(speciesHost, container, {
-    edge: () => (useWideArrangement ? 'bottom-left' : 'bottom-center'),
+    edge: 'bottom-left',
     mode: 'frame',
+    scale: speciesScale,
     onRect: (rect) => frame.setNotch('species', rect),
   }, frame)
 
@@ -139,13 +147,19 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     logoHost.style.transform = `scale(${scale})`
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
-    // First pass positions species/label with the previous pass's
-    // arrangement, purely so both hosts report their real, current-content
-    // rects; species' own top edge doesn't depend on which horizontal
-    // arrangement is picked (bottom-center and bottom-left are both
-    // bottom-anchored), so this reading is never stale.
+    // Same fixed-order three-arrangement pick as ScreenFrame.svelte's
+    // layout() -- start optimistic (row filling the window's width, label
+    // left-center), then step down only as far as the measured rects
+    // actually force. Fixed order, so the result is a pure function of the
+    // container's size rather than of the previous pass.
+    speciesFillsWidth = true
+    useWideArrangement = false
     updateDocks()
-    useWideArrangement = !fitsPortraitArrangement(speciesHost, labelHost, container)
+    if (!fitsPortraitArrangement(speciesHost, labelHost, container)) {
+      speciesFillsWidth = false
+      updateDocks()
+      useWideArrangement = !fitsPortraitArrangement(speciesHost, labelHost, container)
+    }
     const nextAlign = useWideArrangement ? 'right' : 'left'
     if (nextAlign !== labelAlign) {
       labelAlign = nextAlign

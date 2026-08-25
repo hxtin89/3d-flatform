@@ -34,6 +34,16 @@ export interface DockConfig {
   /** A function is re-resolved on every update() -- lets a dock switch sides (e.g. left in portrait, right in landscape). */
   edge: DockEdge | (() => DockEdge)
   mode: DockMode
+  /**
+   * Overrides the shared --screen-frame-content-scale for THIS dock only,
+   * re-resolved on every update() (so it can track the live, animating
+   * margin). Everything docked to the frame normally scales by the one
+   * shared factor; the species row is the exception, because Figma authors
+   * it exactly as wide as the mobile frame's window (960 inside 1080-120),
+   * i.e. as a fill-the-window band rather than a fixed-size cluster -- see
+   * ScreenFrame.svelte's speciesScale().
+   */
+  scale?: () => number
   /** Called with the host's rect in CONTAINER-relative coordinates (matching the Frame svg's own coordinate space), not viewport-relative. */
   onRect: (rect: Rect) => void
 }
@@ -60,9 +70,13 @@ export interface Docked {
  * fixed ratio threshold that's safe for one species dataset (or one
  * expand/collapse state) is wrong for another. Measuring the actual boxes
  * -- both already docked/rendered by the time this runs -- is the only
- * check that can't drift out of sync with real content. False means both
- * the species and label docks should use the wide-frame corners
- * (bottom-left / bottom-right) instead of bottom-center / left-center.
+ * check that can't drift out of sync with real content. It reads whatever
+ * size the species row is CURRENTLY rendered at, so callers can ask it the
+ * same question twice: once with the row filling the window's width, and
+ * again with the row back at Figma's own content scale (see
+ * ScreenFrame.svelte's layout()). False means the label can't clear the
+ * species row at the container's vertical midpoint and has to drop to the
+ * wide-frame corner (bottom-right) instead of left-center.
  */
 export function fitsPortraitArrangement(speciesHost: HTMLElement, labelHost: HTMLElement, container: HTMLElement): boolean {
   const speciesTop = speciesHost.getBoundingClientRect().top - container.getBoundingClientRect().top
@@ -89,7 +103,8 @@ export function dockElement(host: HTMLElement, container: HTMLElement, config: D
       const edge = typeof config.edge === 'function' ? config.edge() : config.edge
       applyEdgeAnchor(edge)
       const [offsetX, offsetY] = config.mode === 'frame' ? EDGE_ANCHOR[edge].inward(frame.getMargin()) : [0, 0]
-      host.style.transform = `${EDGE_ANCHOR[edge].centering}translate(${offsetX}px, ${offsetY}px) scale(var(--screen-frame-content-scale, 1))`
+      const scale = config.scale ? String(config.scale()) : 'var(--screen-frame-content-scale, 1)'
+      host.style.transform = `${EDGE_ANCHOR[edge].centering}translate(${offsetX}px, ${offsetY}px) scale(${scale})`
       const hostRect = host.getBoundingClientRect()
       const containerRect = container.getBoundingClientRect()
       config.onRect({

@@ -57,3 +57,28 @@ export const MediumPortrait: Story = {
 export const MediumLandscape: Story = {
   args: { width: 1500, height: 850 },
 };
+
+// The band that used to strand the species row floating bottom-center with a
+// symmetric gap on each side (measured 47px/side at 600x900, 97px at 700x900,
+// 197px at 900x900): tall enough for the frame's height to be the binding
+// dimension, so the window kept getting wider while the fixed-size row did
+// not. 600x900 now fills the window's width; 700x900/800x900 are just past
+// the fill crossover and hug the window's bottom-left corner instead -- see
+// ScreenFrame.svelte's layout() for where that crossover comes from.
+export const FillCrossoverBelow: Story = {
+  args: { width: 700, height: 900 },
+};
+
+export const FillCrossoverNearSquare: Story = {
+  args: { width: 800, height: 900 },
+};
+
+// The two extremes -- neither is a realistic window, both are where a scale
+// picked against the wrong axis used to overflow or clip.
+export const ExtremeWideShort: Story = {
+  args: { width: 2200, height: 500 },
+};
+
+export const ExtremeNarrowTall: Story = {
+  args: { width: 300, height: 1400 },
+};
