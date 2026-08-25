@@ -20,6 +20,26 @@ export default defineConfig({
   // package routes those files through vite-plugin-svelte, which is what
   // actually knows how to compile them.
   optimizeDeps: { exclude: ['@wi/ui'] },
+  resolve: {
+    // In dev, resolve @wi/ui to its SOURCE rather than its packaged dist.
+    //
+    // dist is a build artifact, so every edit to packages/ui/src needs an
+    // `svelte-package` run before this app can see it -- and nothing enforces
+    // that. Editing a component, reloading here, and seeing the OLD component
+    // looks exactly like the edit not working, which is a very expensive thing
+    // to debug (and worse for an agent, which will "fix" a bug that is already
+    // fixed). On top of that, Vite caches the resolved dependency, so even a
+    // correct rebuild can keep serving the previous copy until
+    // node_modules/.vite is cleared.
+    //
+    // Pointing at source removes both failure modes: HMR reacts to the real
+    // files and there is no artifact to go stale. Dev only -- a production
+    // build still consumes the packaged dist, so this cannot mask a packaging
+    // bug (`npm run build` in packages/ui is still what publint checks).
+    alias: process.env.NODE_ENV === 'production'
+      ? {}
+      : { '@wi/ui': resolve(__dirname, '../packages/ui/src/lib/index.ts') },
+  },
   server: {
     port: 5177,
     host: true, // listen on all interfaces + print LAN IPs for phone testing

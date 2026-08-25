@@ -313,6 +313,18 @@ export function createFrame(container: HTMLElement): Frame {
       setNotchRect(el, rect, 40)
     },
     animateMarginTo(target, durationMs, onTick) {
+      // A zero (or negative) duration is a JUMP, and jumping through the
+      // animation path is wrong twice over: (now - startTime) / 0 is NaN on the
+      // first tick, which applies a NaN margin and collapses the frame; and it
+      // still waits on a rAF, which a throttled or backgrounded tab may never
+      // deliver -- so the promise hangs on exactly the code path a caller picked
+      // BECAUSE it wanted the result immediately. Apply and resolve inline.
+      if (!(durationMs > 0)) {
+        cancelAnimationFrame(animationFrame)
+        apply(target)
+        onTick?.()
+        return Promise.resolve()
+      }
       return new Promise((resolve) => {
         cancelAnimationFrame(animationFrame)
         const start = margin

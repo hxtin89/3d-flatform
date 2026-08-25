@@ -5,6 +5,10 @@ node_modules/
 dist/
 .svelte-kit/
 storybook-static/
+# `vite build` inside packages/ui emits a static SvelteKit app here as a
+# by-product of `npm run build` (which runs it before svelte-package).
+# Nothing consumes it -- consumers read dist/.
+packages/ui/build/
 .turbo/
 .env
 !viewer/.env.example

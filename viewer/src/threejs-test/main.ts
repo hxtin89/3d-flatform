@@ -77,6 +77,18 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
+/** `?clean=1` — deterministic screenshot/review state, reached in ONE navigation.
+ *
+ * Puts the page straight into the state a visual comparison needs: loading
+ * screen skipped, every piece of dev chrome hidden (see body.chrome-hidden),
+ * and the frame already at its resting margin so the widgets sit where they
+ * finally sit. Without it that state takes three separate script injections
+ * after load, each racing the layout — and getting the order wrong silently
+ * yields a half-revealed frame that looks like a real layout bug.
+ *
+ * The point cloud still streams in behind as usual; this only touches the UI
+ * layer, so it is a review aid, not a second rendering path. */
+const cleanMode = params.get('clean') === '1'
 /** Cesium comparison: start without the loader benchmark and without the
  * boot-time pixel-ratio cap, then enable compare mode (all optimisations off,
  * only the zoom-dependent density ladder remains). Everything else is also
@@ -115,6 +127,10 @@ const loaderSoundOptEl = $<HTMLButtonElement>('#loaderSoundOpt')
 const loaderSoundOptLabelEl = $('#loaderSoundOptLabel')
 const loaderEagleCanvasEl = $<HTMLCanvasElement>('#loaderEagleCanvas')
 const loaderEagleFillEl = $<HTMLDivElement>('#loaderEagleFill')
+if (cleanMode) {
+  loaderEl.style.display = 'none'
+  document.body.classList.add('chrome-hidden')
+}
 const debugProgressRaw = import.meta.env.DEV ? params.get('eagleProgress') : null
 const debugProgressParsed = debugProgressRaw === null ? Number.NaN : Number(debugProgressRaw)
 const loaderDebugProgress = Number.isFinite(debugProgressParsed)
@@ -375,6 +391,7 @@ $('#hudChip').addEventListener('click', () => document.body.classList.toggle('hu
 // typing into one of the panel's own inputs.
 const panelChip = $('#panelChip')
 panelChip.setAttribute('aria-label', 'Toggle interface')
+panelChip.setAttribute('aria-pressed', String(cleanMode))
 panelChip.addEventListener('click', () => {
   const hidden = document.body.classList.toggle('chrome-hidden')
   panelChip.setAttribute('aria-pressed', String(hidden))
@@ -2085,6 +2102,9 @@ async function main(): Promise<void> {
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
   designSystemDemo = createDesignSystemDemo()
+  // ?clean=1 skips the loader, so the reveal its start button normally triggers
+  // never fires. Jump the frame straight to its resting margin instead.
+  if (cleanMode) void designSystemDemo.reveal(0)
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
