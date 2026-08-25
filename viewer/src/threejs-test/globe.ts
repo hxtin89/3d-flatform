@@ -28,7 +28,7 @@ export interface Globe {
    * comment where it is installed — this exists because a mouse reports whole
    * device pixels far more coarsely than the frame rate consumes them.
    */
-  setPointerSmoothing(ms: number): void
+  setPointerResponse(ms: number): void
   ellipsoid: any
   update(constrainCamera?: () => void): void
   setResolution(): void
@@ -183,7 +183,7 @@ export function createGlobe(opts: {
   // previousPointer stays consistent with it.
   const tracker = (controls as any).pointerTracker
   const pointerTargets: Record<number, THREE.Vector2 | undefined> = {}
-  let smoothingMs: number = EXPERIENCE_CONFIG.navigation.pointerSmoothingMs
+  let responseMs: number = EXPERIENCE_CONFIG.navigation.pointerResponseMs
   let lastEaseMs = 0
   // The pointer id is stable for a mouse, so a target left over from the previous drag
   // would still be there at the next press — and the first frame would ease toward it
@@ -201,7 +201,7 @@ export function createGlobe(opts: {
   }
   const originalUpdatePointer = tracker.updatePointer.bind(tracker)
   tracker.updatePointer = (event: PointerEvent) => {
-    if (smoothingMs <= 0) return originalUpdatePointer(event)
+    if (responseMs <= 0) return originalUpdatePointer(event)
     const id = event.pointerId
     const live = tracker.pointerPositions[id]
     if (!live) return originalUpdatePointer(event)
@@ -221,16 +221,16 @@ export function createGlobe(opts: {
     const now = performance.now()
     const elapsed = lastEaseMs ? Math.min(now - lastEaseMs, 100) : 0
     lastEaseMs = now
-    if (smoothingMs <= 0 || elapsed <= 0) return
+    if (responseMs <= 0 || elapsed <= 0) return
     // Time-based, so the feel does not change with frame rate.
-    const alpha = 1 - Math.exp(-elapsed / smoothingMs)
+    const alpha = 1 - Math.exp(-elapsed / responseMs)
     for (const id in tracker.pointerPositions) {
       const target = pointerTargets[id as unknown as number]
       if (target) tracker.pointerPositions[id].lerp(target, alpha)
     }
   }
-  const setPointerSmoothing = (ms: number) => {
-    smoothingMs = Math.max(0, ms)
+  const setPointerResponse = (ms: number) => {
+    responseMs = Math.max(0, ms)
     // Drop any easing in flight, or turning it off would leave a stale offset behind.
     for (const id in tracker.pointerPositions) {
       const target = pointerTargets[id as unknown as number]
@@ -250,7 +250,7 @@ export function createGlobe(opts: {
   return {
     tiles,
     controls,
-    setPointerSmoothing,
+    setPointerResponse,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget,
     getMemoryBudget() {

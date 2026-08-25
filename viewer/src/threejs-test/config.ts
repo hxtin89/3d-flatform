@@ -176,8 +176,9 @@ export const EXPERIENCE_CONFIG = {
     originRebaseMaxM: 20_000,
     originRebaseRangeFactor: 4,
     /**
-     * Time constant, in milliseconds, for easing the rotation pointer toward where the
-     * mouse actually is. 0 disables it.
+     * Response time, in milliseconds, for easing the rotation pointer toward where the
+     * mouse actually is. 0 disables it. Named to match keyboard.responseMs, which is
+     * the same constant in the same expression on the other input.
      *
      * A mouse reports whole device pixels at roughly 125 Hz while the frame runs at
      * 120-160, so measured over a real drag: 699 pointer events across 2065 rotating
@@ -188,9 +189,12 @@ export const EXPERIENCE_CONFIG = {
      * keyboard, which is time-based to begin with.
      *
      * The library's own damping does not cover this: inertia is applied only once the
-     * drag is released, not during it.
+     * drag is released, not during it. Keyboard navigation, by contrast, has always
+     * eased its velocity with this very expression at 110 ms — see keyboard.responseMs,
+     * which the slider marks on its own track for comparison. This closes a gap on the
+     * mouse side rather than introducing anything new.
      */
-    pointerSmoothingMs: 50,
+    pointerResponseMs: 50,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.

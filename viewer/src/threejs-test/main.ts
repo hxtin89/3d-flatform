@@ -1998,15 +1998,15 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
   refreshEffectShaders()
 })
 
-// Pointer smoothing for mouse rotation. See navigation.pointerSmoothingMs for the
+// Pointer smoothing for mouse rotation. See navigation.pointerResponseMs for the
 // measurement that motivates it; the toggle is here so the latency it costs can be
 // judged against the judder it removes.
 const NAV = EXPERIENCE_CONFIG.navigation
-let pointerSmoothingOn = NAV.pointerSmoothingMs > 0
-let pointerSmoothingMs: number = NAV.pointerSmoothingMs
+let pointerSmoothingOn = NAV.pointerResponseMs > 0
+let pointerResponseMs: number = NAV.pointerResponseMs
 const pointerSmoothingToggleEl = $<HTMLButtonElement>('#pointerSmoothingToggle')
 const applyPointerSmoothing = () => {
-  globe?.setPointerSmoothing(pointerSmoothingOn ? pointerSmoothingMs : 0)
+  globe?.setPointerResponse(pointerSmoothingOn ? pointerResponseMs : 0)
 }
 pointerSmoothingToggleEl.addEventListener('click', () => {
   pointerSmoothingOn = !pointerSmoothingOn
@@ -2015,20 +2015,20 @@ pointerSmoothingToggleEl.addEventListener('click', () => {
   pointerSmoothingToggleEl.textContent = `〜 Smoothing · ${pointerSmoothingOn ? 'On' : 'Off'}`
   applyPointerSmoothing()
 })
-bindDesignSlider('pointerSmoothingMs', NAV.pointerSmoothingMs, (v) => `${Math.round(v)} ms`, (v) => {
-  pointerSmoothingMs = v; applyPointerSmoothing()
+bindDesignSlider('pointerResponseMs', NAV.pointerResponseMs, (v) => `${Math.round(v)} ms`, (v) => {
+  pointerResponseMs = v; applyPointerSmoothing()
 })
 // Mark the keyboard's own time constant on the mouse slider's track. Keyboard
 // navigation has always eased its velocity with the same 1 - exp(-dt/tau) that this
 // slider drives, so its value belongs on this scale rather than in a sentence — and
 // it is read from the config, so the two cannot drift apart.
 {
-  const track = $<HTMLElement>('#pointerSmoothingTrack')
-  const slider = $<HTMLInputElement>('#pointerSmoothingMs')
+  const track = $<HTMLElement>('#pointerResponseTrack')
+  const slider = $<HTMLInputElement>('#pointerResponseMs')
   const max = Number(slider.max) || 1
   const ref = Math.min(EXPERIENCE_CONFIG.keyboard.responseMs, max)
   track.style.setProperty('--ref', `${(ref / max) * 100}%`)
-  $<HTMLElement>('#pointerSmoothingRefLabel').textContent = `keyboard ${Math.round(ref)}`
+  $<HTMLElement>('#pointerResponseRefLabel').textContent = `keyboard ${Math.round(ref)}`
 }
 
 // Ground patch under the point cloud. Off both zeroes the amount and compiles the
