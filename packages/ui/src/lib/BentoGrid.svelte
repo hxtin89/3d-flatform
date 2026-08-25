@@ -7,6 +7,7 @@
   import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
   import { silhouette } from "./geometry/silhouette";
+  import { createLiquidField, createAccentResolver } from "./geometry/liquid-field";
 
   /** A grid rect plus the content BentoWidget (or SpeciesWidget, when kind: "species") needs to render it. */
   export interface BentoGridItem extends GridWidget {
@@ -38,9 +39,35 @@
     radius?: number;
     /** Whether this grid's own local (min-x, min-y) widget is genuinely the real app screen's top-left (gets a sharp corner there) -- see solveDocking's doc comment. Defaults to true (matches the generic/isolated docking-test layouts); real sub-compositions that sit elsewhere on the screen (the weather cluster, the species row) must pass `false`. */
     topLeftIsScreenCorner?: boolean;
+    /**
+     * Draw the cluster as one continuous liquid field (geometry/liquid-field.ts)
+     * instead of one hand-cornered SVG silhouette per widget. Defaults on;
+     * falls back to the per-widget silhouettes automatically when WebGL2 is
+     * unavailable, and can be forced off here for a pure-vector render.
+     */
+    liquid?: boolean;
+    /**
+     * How far apart two widgets can be and still fuse, px -- the `k` of the
+     * field's circular smooth-min, so the neck/fillet it creates is a true
+     * circular arc of exactly this radius.
+     *
+     * 0 is a PLAIN union: outer corners rounded at `radius`, inner corners
+     * left sharp. That is exactly what Figma's species row renders, and it is
+     * already fully continuous under animation -- the corner *snapping* came
+     * from docking.ts's discrete classifier, not from the union itself, so
+     * blend 0 fixes the snapping without changing a single shape.
+     *
+     * Raise it toward `radius` for the liquid/mercury look: inner corners
+     * fillet, and separated widgets neck together before they touch. Figma's
+     * WEATHER cluster is authored this way (its Fill-Left/Fill-Top atoms are
+     * exactly this fillet), while its species row is not -- so there is no
+     * single value that matches every cluster in the reference. Defaults to
+     * `radius`; pass 0 per-cluster where Figma keeps the corners sharp.
+     */
+    blend?: number;
   }
 
-  let { items, radius = 60, topLeftIsScreenCorner = true }: Props = $props();
+  let { items, radius = 60, topLeftIsScreenCorner = true, liquid = true, blend = radius }: Props = $props();
 
   // cubicOut landed the expand exactly on target with no character -- a card
   // being singled out and grown is the one moment in this grid that should
@@ -104,9 +131,63 @@
     width: Math.max(...items.map((item) => item.x + item.width)),
     height: Math.max(...items.map((item) => item.y + item.height)),
   });
+
+  // --- liquid field -------------------------------------------------------
+  //
+  // One implicit surface for the whole cluster, replacing the per-widget SVG
+  // silhouettes. See geometry/liquid-field.ts for why this removes the
+  // corner-snapping entirely (short version: the discrete corner classifier
+  // IS the discontinuity, and a filleted union field has no classifier).
+  //
+  // The SVG path is still computed above and still handed to each widget --
+  // it stays the fallback whenever WebGL2 is unavailable, so this is additive
+  // rather than a hard cutover.
+  let fieldCanvas: HTMLCanvasElement | undefined = $state();
+  let gridEl: HTMLDivElement | undefined = $state();
+  let fieldActive = $state(false);
+
+  // Fillets and necks reach past the widget rects, so the canvas has to be
+  // bigger than the grid's own box or they'd be clipped at the edge.
+  const pad = $derived(radius * 2);
+
+  $effect(() => {
+    if (!liquid || !fieldCanvas || !gridEl) return;
+    const field = createLiquidField(fieldCanvas);
+    if (!field) return; // no WebGL2 -> per-widget SVG fallback stays visible
+    const accents = createAccentResolver(gridEl);
+    fieldActive = true;
+
+    // A render-effect (not a plain $effect) so it re-runs on every Tween tick
+    // during expand/collapse, keeping the field in lockstep with the DOM
+    // content layered on top of it.
+    const stop = $effect.root(() => {
+      $effect(() => {
+        field.render(
+          effectiveItems.map((item) => ({
+            x: item.x,
+            y: item.y,
+            width: item.width,
+            height: item.height,
+            color: accents.resolve(item.accent ?? "default"),
+          })),
+          { radius, blend, width: bounds.width + pad * 2, height: bounds.height + pad * 2, pad },
+        );
+      });
+    });
+
+    return () => {
+      stop();
+      accents.dispose();
+      field.dispose();
+      fieldActive = false;
+    };
+  });
 </script>
 
-<div class="bento-grid" style:width="{bounds.width}px" style:height="{bounds.height}px">
+<div class="bento-grid" bind:this={gridEl} style:width="{bounds.width}px" style:height="{bounds.height}px">
+  {#if liquid}
+    <canvas class="bento-grid__field" bind:this={fieldCanvas} style:left="{-pad}px" style:top="{-pad}px" aria-hidden="true"></canvas>
+  {/if}
   {#each effectiveItems as item, i (item.id)}
     {@const result = solved[i]}
     <div class="bento-grid__cell" style:left="{item.x}px" style:top="{item.y}px" style:--cell-enter-delay="{i * 70}ms">
@@ -117,6 +198,7 @@
           height={item.height}
           corners={result.corners}
           {radius}
+          silhouette={!fieldActive}
           title={item.title}
           description={item.description}
           selected={selectedId === item.id}
@@ -136,6 +218,7 @@
           height={item.height}
           corners={result.corners}
           {radius}
+          silhouette={!fieldActive}
           title={item.title}
           value={item.value}
           description={item.description}
@@ -154,8 +237,20 @@
     position: relative;
   }
 
+  /* Sits behind every cell's content layer. Inline left/top pull it out by
+     `pad` so the fillets/necks that reach past the widget rects aren't
+     clipped; width/height are set from JS in device px (see liquid-field's
+     render()). */
+  .bento-grid__field {
+    position: absolute;
+    z-index: 0;
+    pointer-events: none;
+  }
+
   .bento-grid__cell {
     position: absolute;
+    /* Above the field canvas, so widget text/icons stay on top of the shape. */
+    z-index: 1;
     /* Staggered rise-and-fade on first mount (index-driven delay set inline
        above) -- the static grid otherwise just appears fully-formed, which
        reads flat next to reference sites that reveal their cards on scroll.

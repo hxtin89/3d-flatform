@@ -31,9 +31,11 @@
     /** Makes the whole card a click target that calls `onSelect` (toggling this species' selected state) — the caller (BentoGrid) owns exclusivity and the expand/collapse animation. */
     selectable?: boolean;
     onSelect?: () => void;
+    /** Set false when the parent BentoGrid draws the whole cluster as one liquid field (geometry/liquid-field.ts) -- this widget then contributes only its content layer, and the shape comes from the shared field instead. */
+    silhouette?: boolean;
   }
 
-  let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect }: Props = $props();
+  let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect, silhouette = true }: Props = $props();
 
   // Same highlight/shadow sheen as BentoWidget (see its own comment) -- the
   // two non-selected species cards (Vogel/Morphofalter) share the identical
@@ -91,6 +93,7 @@
   onpointerleave={selectable ? release : undefined}
   onpointercancel={selectable ? release : undefined}
 >
+  {#if silhouette}
   <svg
     class="species-widget__silhouette"
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
@@ -110,6 +113,7 @@
     <path d={path} class="species-widget__fill" />
     <path d={path} fill="url(#{sheenId})" class="species-widget__sheen" />
   </svg>
+  {/if}
 
   <div class="species-widget__content">
     {#if title || description}

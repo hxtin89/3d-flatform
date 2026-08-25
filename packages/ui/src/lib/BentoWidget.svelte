@@ -23,6 +23,8 @@
     state?: "default" | "selected";
     /** Sets data-accent — corner/background colors resolve via the accent-fill/label-fill CSS custom properties. */
     accent?: string;
+    /** Set false when the parent BentoGrid draws the whole cluster as one liquid field (geometry/liquid-field.ts) -- this widget then contributes only its content layer, and the shape comes from the shared field instead. */
+    silhouette?: boolean;
   }
 
   let {
@@ -41,6 +43,7 @@
     imageSrc,
     state = "default",
     accent = "default",
+    silhouette = true,
   }: Props = $props();
 
   const clipId = `bento-clip-${Math.random().toString(36).slice(2, 9)}`;
@@ -66,6 +69,7 @@
   style:width="{width}px"
   style:height="{height}px"
 >
+  {#if silhouette}
   <svg
     class="bento-widget__silhouette"
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
@@ -93,6 +97,7 @@
     {/if}
     <path d={path} fill="url(#{sheenId})" class="bento-widget__sheen" />
   </svg>
+  {/if}
 
   <div class="bento-widget__content">
     {#if title}<h3 class="bento-widget__title">{title}</h3>{/if}

@@ -63,3 +63,41 @@ export const WeatherCluster: Story = {
 export const SpeciesRow: Story = {
   args: { radius: 60, items: SPECIES_ROW, topLeftIsScreenCorner: false },
 };
+
+// --- liquid field blend sweep -------------------------------------------
+//
+// The `blend` knob on the liquid field (see BentoGrid's prop doc and
+// geometry/liquid-field.ts). All four render the SAME rects; only how the
+// field fuses them differs. Every one of them is fully continuous under the
+// expand/collapse animation -- corner snapping came from docking.ts's
+// discrete classifier, which the field replaces entirely, so even blend 0 is
+// snap-free.
+//
+// Figma is not internally consistent here, which is why this is a knob and
+// not a constant: its species row keeps inner corners SHARP (= blend 0),
+// while its weather cluster fillets them (= blend 60, its Fill-Left/Fill-Top
+// atoms being exactly that fillet). Click a card in any of these to watch the
+// expand morph.
+export const LiquidBlendNone: Story = {
+  args: { radius: 60, items: SPECIES_ROW, topLeftIsScreenCorner: false, blend: 0 },
+};
+
+export const LiquidBlendSubtle: Story = {
+  args: { radius: 60, items: SPECIES_ROW, topLeftIsScreenCorner: false, blend: 24 },
+};
+
+export const LiquidBlendFull: Story = {
+  args: { radius: 60, items: SPECIES_ROW, topLeftIsScreenCorner: false, blend: 60 },
+};
+
+// Deliberately separated rects, to show the metaball behaviour the blend
+// enables: at blend 0 these are three islands; at blend 60 they neck
+// together before touching.
+export const LiquidBlendGapped: Story = {
+  args: {
+    radius: 60,
+    topLeftIsScreenCorner: false,
+    blend: 60,
+    items: SPECIES_ROW.map((item, i) => ({ ...item, x: item.x + i * 40 })),
+  },
+};
