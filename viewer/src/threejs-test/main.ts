@@ -2041,11 +2041,13 @@ groundPatchDebugToggleEl.addEventListener('click', () => {
   groundPatchDebugToggleEl.textContent = `✳ Mask debug · ${groundPatchDebug ? 'On' : 'Off'}`
   applyGroundPatchLook()
 })
-// Alt-click a magenta patch while debug is on and the console names the tiles whose
-// points painted it, where they landed when splatted, and where they project now. A
+// Click a magenta patch while debug is on and the console names the tiles whose points
+// painted it, where they landed when splatted, and where they project now. A
 // disagreement between those two is the whole class of bug this module keeps hitting.
+// Any click, no modifier: a missed modifier costs a whole round trip, and console
+// noise while a debug mode is on costs nothing.
 renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (!groundPatchDebug || !event.altKey) return
+  if (!groundPatchDebug) return
   const rect = renderer.domElement.getBoundingClientRect()
   const at = probeMaskAt(event.clientX - rect.left, event.clientY - rect.top)
   console.info('[mask] alt-click', at)
