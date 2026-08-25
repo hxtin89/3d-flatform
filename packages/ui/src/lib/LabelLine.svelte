@@ -14,11 +14,16 @@
         weights collapsed to one because this prop didn't exist yet. */
     fontWeight?: number | string;
     corners?: Corners;
-    accent?: string;
     /** Corner radius in px — defaults to the label/pill token (30). */
     radius?: number;
     /** Called whenever this line's resolved (width, height) changes, so a parent stack can position the next line flush beneath it. */
     onResize?: (size: { width: number; height: number }) => void;
+    /** Set false when a parent (HabitatLabelStack) renders several LabelLines flush together as one
+        merged silhouette -- a per-line drop-shadow there would throw a seam-shadow across the
+        neighboring line and read as separate floating chips instead of one continuous blob (see
+        HabitatLabelStack's own comment). Defaults true so a standalone LabelLine (Storybook) still
+        gets its own shadow. */
+    shadow?: boolean;
   }
 
   let {
@@ -26,9 +31,9 @@
     fontSize = 34,
     fontWeight = "var(--weight-heading)",
     corners = ["convex", "convex", "convex", "convex"],
-    accent = "default",
     radius = 30,
     onResize,
+    shadow = true,
   }: Props = $props();
 
   const PADDING_X = 24;
@@ -53,9 +58,10 @@
   });
 </script>
 
-<div class="label-line" data-accent={accent} style:width="{width}px" style:height="{height}px">
+<div class="label-line" style:width="{width}px" style:height="{height}px">
   <svg
     class="label-line__silhouette"
+    data-shadow={shadow}
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"
     width={svgWidth}
     height={svgHeight}
@@ -109,10 +115,15 @@
     z-index: 0;
     /* left/top set inline per-instance -- Concave/Fill-* corners reach past the box. */
     pointer-events: none;
-    /* Same drop-shadow-hugs-the-silhouette approach as BentoWidget/SpeciesWidget,
-       always on (not hover-gated) since this pill isn't interactive -- it's
-       what actually separates the headline from the photo behind it instead
-       of just being a flat color shape with text on it. */
+  }
+
+  /* Same drop-shadow-hugs-the-silhouette approach as BentoWidget/SpeciesWidget, always on (not
+     hover-gated) since this pill isn't interactive -- it's what actually separates the headline
+     from the photo behind it instead of just being a flat color shape with text on it. Gated by
+     data-shadow (not always applied to the class above) so a HabitatLabelStack of several flush
+     LabelLines can render ONE shared shadow around the whole merged pill instead of each line
+     throwing its own shadow across its neighbor -- see LabelLine's `shadow` prop doc. */
+  .label-line__silhouette[data-shadow="true"] {
     filter: drop-shadow(0 10px 18px var(--shadow-key)) drop-shadow(0 2px 4px var(--shadow-ambient));
   }
 
@@ -122,16 +133,6 @@
 
   .label-line__sheen {
     pointer-events: none;
-  }
-
-  /* Figma's real "PERUANISCHER"/"AUWALD" label pills (Frame 1 Desktop's
-     composited render, not the isolated component thumbnail) sit on a dark
-     forest-green fill and use white text -- --text-primary alone renders
-     near-illegible dark-grey-on-dark-green. Same class of fix as
-     SpeciesWidget's grey-dark override, using the semantic role built for
-     exactly this (text-on-emphasis) rather than a raw gray literal. */
-  .label-line[data-accent="forest-green"] .label-line__text {
-    color: var(--text-on-emphasis);
   }
 
   .label-line__text {
