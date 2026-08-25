@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { computeCornerRadii, wedgeTargets, type LiquidWidget } from "./liquid-field";
+import { computeCornerRadii, wedgeTargets, roundTargets, type LiquidWidget } from "./liquid-field";
 import type { Corners } from "./silhouette";
+import { solveDocking } from "./docking";
+import { WEATHER_CLUSTER } from "../screen-frame/recreation-content";
 
 const R = 60;
 const COLOR: [number, number, number, number] = [0, 0, 0, 1];
@@ -95,5 +97,43 @@ describe("computeCornerRadii", () => {
   it("rounds every corner fully once a widget is isolated", () => {
     const lone: LiquidWidget[] = [{ x: 0, y: 0, width: 300, height: 300, color: COLOR }];
     expect(cornersOf(computeCornerRadii(lone, R, R), 0)).toEqual([R, R, R, R]);
+  });
+
+  it("never buries a Fill wedge under a square neighbour", () => {
+    // A Fill/Concave wedge reaches OUTWARD, which in a flush layout means it
+    // reaches into the neighbour sharing that edge. It is only ever visible if
+    // that neighbour's own corner at the same point is a convex round pulling
+    // its box back to make room -- Figma draws BOTH halves of every seam. A
+    // neighbour left square ('none') covers the wedge completely and the seam
+    // silently flattens into a butt-join, with no error anywhere: the wedge is
+    // still rendered, just occluded. Guards the weather cluster, where all
+    // three seams were authored square and so every wedge in it was invisible.
+    const solved = solveDocking(WEATHER_CLUSTER);
+    const cornerAt = (w: (typeof WEATHER_CLUSTER)[number], c: number): [number, number] => [
+      c === 0 || c === 3 ? w.x : w.x + w.width,
+      c < 2 ? w.y : w.y + w.height,
+    ];
+
+    // Coincident corners are exactly the seams: two widgets meeting at the same
+    // vertex, each owning one half of it. (A wedge whose vertex lands mid-edge
+    // of a neighbour -- weatherBar's bottom-right against weather83's top edge
+    // -- reaches into the frame margin instead, so it is never occluded and is
+    // not a seam.)
+    let seams = 0;
+    for (const [i, item] of WEATHER_CLUSTER.entries()) {
+      const wedge = wedgeTargets(solved[i].corners);
+      for (let c = 0; c < 4; c++) {
+        if (Math.max(wedge[c * 2], wedge[c * 2 + 1]) === 0) continue;
+        const [cx, cy] = cornerAt(item, c);
+        for (const [j, other] of WEATHER_CLUSTER.entries()) {
+          if (j === i) continue;
+          const k = [0, 1, 2, 3].find((n) => cornerAt(other, n)[0] === cx && cornerAt(other, n)[1] === cy);
+          if (k === undefined) continue;
+          seams++;
+          expect(roundTargets(solved[j].corners)[k], `${other.id} must round to reveal ${item.id}'s wedge`).toBe(1);
+        }
+      }
+    }
+    expect(seams, "the weather cluster's three interlocking seams").toBe(3);
   });
 });

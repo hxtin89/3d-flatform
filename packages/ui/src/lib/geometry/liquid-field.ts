@@ -64,6 +64,20 @@ export interface LiquidWidget {
    * authored shape; in between it is a partially-grown wedge.
    */
   wedge?: readonly number[]
+  /**
+   * Per-corner box roundness as 4 numbers in 0..1, for [topLeft, topRight,
+   * bottomRight, bottomLeft] -- see roundTargets. When present this REPLACES
+   * computeCornerRadii's neighbour-proximity guess for this widget.
+   *
+   * The proximity guess cannot express the shape Figma actually draws at an
+   * interlocking seam: a corner that touches a neighbour but is still a full
+   * convex round, with the neighbour's Fill wedge curling in behind it. Given
+   * only the distance to the neighbour (zero) it must call that corner square,
+   * which squares off the round AND buries the neighbour's wedge under the
+   * resulting rectangle. The authored corner type knows the difference, so pass
+   * it here whenever it's available and keep proximity as the fallback.
+   */
+  round?: readonly number[]
 }
 
 /**
@@ -93,6 +107,23 @@ export function wedgeTargets(corners: readonly CornerType[] | undefined): number
       out[c * 2 + 1] = 1
     }
   }
+  return out
+}
+
+/**
+ * Maps authored corner treatments to the continuous box-roundness amounts the
+ * field consumes -- 1 for a plain convex round, 0 for everything else.
+ *
+ * 'none' is square by definition. A Fill/Concave corner is square too, but for
+ * a different reason: its wedge is what supplies the material there, and
+ * rounding the box as well pulls it back from the vertex while the wedge sits
+ * outside it (see the wedge fade in render). Both land on 0, so this is a plain
+ * per-corner amount that eases in lockstep with the wedge amounts.
+ */
+export function roundTargets(corners: readonly CornerType[] | undefined): number[] {
+  const out = new Array(4).fill(0)
+  if (!corners) return out
+  for (let c = 0; c < 4; c++) if (corners[c] === "convex") out[c] = 1
   return out
 }
 
@@ -413,15 +444,21 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
       // everything else.
       const padded = widgets.slice(0, count).map((w) => ({ ...w, x: w.x + options.pad, y: w.y + options.pad }))
       const cornerData = computeCornerRadii(padded, options.radius, options.radius)
-      // A corner carrying a Fill/Concave wedge must keep its BOX corner sharp:
-      // the wedge is what supplies the material there. Rounding it as well
-      // pulls the box back from the vertex while the wedge sits outside it,
-      // leaving a notch between the two so the wedge reads as a detached tab.
-      // Faded by the wedge amount rather than switched, so the box corner
+      // The authored corner type wins wherever the caller supplies one: it is
+      // the only thing that knows a corner can touch a neighbour and still be a
+      // full convex round (see LiquidWidget.round). Proximity stays as the
+      // fallback for widgets with no authored corners.
+      //
+      // Either way, a corner carrying a Fill/Concave wedge must keep its BOX
+      // corner sharp: the wedge is what supplies the material there. Rounding it
+      // as well pulls the box back from the vertex while the wedge sits outside
+      // it, leaving a notch between the two so the wedge reads as a detached
+      // tab. Faded by the wedge amount rather than switched, so the box corner
       // un-rounds at exactly the rate the wedge grows in.
       for (let i = 0; i < count; i++) {
         const w = widgets[i]
         for (let c = 0; c < 4; c++) {
+          if (w.round) cornerData[i * 4 + c] = options.radius * w.round[c]
           const amount = w.wedge ? Math.max(w.wedge[c * 2], w.wedge[c * 2 + 1]) : 0
           cornerData[i * 4 + c] *= 1 - amount
         }

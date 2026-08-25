@@ -59,11 +59,21 @@ export const WEATHER_CLUSTER: BentoGridItem[] = [
   // sitting inside this widget's own bounds in both Frame 1 and Frame 1
   // Desktop). Weather29/Weather83 below have no icon instance anywhere in
   // Figma, so they stay bare numbers rather than getting a fabricated glyph.
-  { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", icon: weatherBarIcon, cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-left", bottomLeft: "none" } },
+  //
+  // Every Fill corner in this cluster is HALF of a seam: the widget carrying it
+  // bulges into its neighbour, and the neighbour's facing corner is a plain
+  // 'convex' round that pulls its own box back to make room. Pinning that
+  // facing corner 'none' (as an earlier version did on all three seams) leaves
+  // the neighbour a full square, which buries the Fill wedge underneath it --
+  // the wedge still renders, it's just occluded, so the seam reads as a flat
+  // butt-join instead of Figma's interlocking curve. Confirmed corner by corner
+  // against the Figma raster: at each seam the occluding widget shows a real
+  // r=60 convex arc with the other widget's colour filling in behind it.
+  { id: "weatherBar", x: 0, y: 0, width: 255, height: 180, title: "Leicht bewölkt", description: "Nordwest Wind", accent: "grey-light", icon: weatherBarIcon, cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-left", bottomLeft: "convex" } },
   // Figma: "S1: Weather29 (Widget)" @ (660,251) 180x180
-  { id: "weather29", x: 0, y: 180, width: 180, height: 180, value: "29°", description: "Celsius", accent: "gold", cornerOverrides: { topLeft: "fill-top", topRight: "none", bottomRight: "fill-left", bottomLeft: "convex" } },
+  { id: "weather29", x: 0, y: 180, width: 180, height: 180, value: "29°", description: "Celsius", accent: "gold", cornerOverrides: { topLeft: "fill-top", topRight: "convex", bottomRight: "fill-left", bottomLeft: "convex" } },
   // Figma: "S1: Weather83 (Widget)" @ (840,251) 180x180
-  { id: "weather83", x: 180, y: 180, width: 180, height: 180, value: "83%", description: "Luftfeuchtigkeit", accent: "forest-green", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-top", bottomLeft: "none" } },
+  { id: "weather83", x: 180, y: 180, width: 180, height: 180, value: "83%", description: "Luftfeuchtigkeit", accent: "forest-green", cornerOverrides: { topLeft: "fill-left", topRight: "convex", bottomRight: "fill-top", bottomLeft: "convex" } },
 ];
 
 const SPECIES_COLLAPSED_HEIGHT = 300;

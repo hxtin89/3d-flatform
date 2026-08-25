@@ -7,7 +7,7 @@
   import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
   import { silhouette } from "./geometry/silhouette";
-  import { createLiquidField, createAccentResolver, wedgeTargets } from "./geometry/liquid-field";
+  import { createLiquidField, createAccentResolver, wedgeTargets, roundTargets } from "./geometry/liquid-field";
 
   /** A grid rect plus the content BentoWidget (or SpeciesWidget, when kind: "species") needs to render it. */
   export interface BentoGridItem extends GridWidget {
@@ -222,7 +222,13 @@
     const stop = $effect.root(() => {
       $effect(() => {
         cornerFrame; // re-render while the corner morph is still settling
-        const targets = new Map(effectiveItems.map((item, i) => [item.id, wedgeTargets(solved[i].corners)]));
+        // One eased vector per widget: 8 wedge amounts followed by 4 box-roundness
+        // amounts, so both halves of a corner morph in lockstep (a corner that
+        // trades its round for a wedge must un-round at exactly the rate the
+        // wedge grows, or the two briefly overlap or briefly leave a notch).
+        const targets = new Map(
+          effectiveItems.map((item, i) => [item.id, [...wedgeTargets(solved[i].corners), ...roundTargets(solved[i].corners)]]),
+        );
         stepCorners(targets);
         field.render(
           effectiveItems.map((item) => ({
@@ -232,7 +238,8 @@
             height: item.height,
             color: accents.resolve(item.accent ?? "default"),
             // Eased amounts, not the raw solved types -- see stepCorners.
-            wedge: cornerNow.get(item.id),
+            wedge: cornerNow.get(item.id)?.slice(0, 8),
+            round: cornerNow.get(item.id)?.slice(8),
           })),
           { radius, blend, width: bounds.width + pad * 2, height: bounds.height + pad * 2, pad },
         );

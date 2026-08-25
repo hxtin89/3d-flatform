@@ -142,10 +142,18 @@ function currentScale(containerWidth: number, containerHeight: number): number {
  * (that reads as smooth but is a much tighter, wrong flare than Figma's
  * real one). `tl`/`tr` are how far each notch reaches into the window from
  * that corner (width = horizontal reach, height = vertical reach).
+ *
+ * `radius` is the already-SCALED corner radius. It has to be passed in rather
+ * than read from WINDOW_CORNER_RADIUS directly: that constant is Figma px
+ * against the 1080-wide mobile frame, and the margin and notch reach are both
+ * scaled by currentScale() before they get here. Leaving the radius unscaled
+ * made the window's corners hold a fixed 60 CSS px at every viewport, so at
+ * the viewer's ~0.49 scale they were about twice as round as the photo they
+ * are meant to match in Figma.
  */
-function windowPath(win: Rect, tl: { width: number; height: number }, tr: { width: number; height: number }): string {
-  const r = Math.max(0, Math.min(60, tl.width, tl.height, tr.width, tr.height, win.width / 2, win.height / 2))
-  const R = Math.max(0, Math.min(WINDOW_CORNER_RADIUS, win.width / 2, win.height / 2))
+function windowPath(win: Rect, tl: { width: number; height: number }, tr: { width: number; height: number }, radius: number): string {
+  const r = Math.max(0, Math.min(radius, tl.width, tl.height, tr.width, tr.height, win.width / 2, win.height / 2))
+  const R = Math.max(0, Math.min(radius, win.width / 2, win.height / 2))
   const { x, y, width: w, height: h } = win
   const tlW = tl.width
   const tlH = tl.height
@@ -252,7 +260,7 @@ export function createFrame(container: HTMLElement): Frame {
     const scale = currentScale(containerWidth, containerHeight)
     const topLeftReach = { width: FIGMA_TOP_LEFT_NOTCH_PX.width * scale, height: FIGMA_TOP_LEFT_NOTCH_PX.height * scale }
     const win: Rect = { x: margin, y: margin, width: containerWidth - margin * 2, height: containerHeight - margin * 2 }
-    windowShape.setAttribute('d', windowPath(win, topLeftReach, topRightReach))
+    windowShape.setAttribute('d', windowPath(win, topLeftReach, topRightReach, WINDOW_CORNER_RADIUS * scale))
   }
   render()
 
