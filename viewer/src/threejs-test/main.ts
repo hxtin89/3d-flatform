@@ -1340,22 +1340,42 @@ function isZoomInBlocked(): boolean {
 }
 
 /** Final local guard against touch inertia crossing the point-cloud floor. */
+/** Deadband around the navigation floor.
+ *
+ * GlobeControls keeps the camera a fixed radius off the ellipsoid and nudges it
+ * by fractions of a metre every frame; clamping on any breach at all turned that
+ * into a per-frame tug of war. Measured in Safari: 159 clamps in 10 s — every
+ * second frame — and each one called resetState(), which cancels whatever mouse
+ * gesture is in progress. That is felt as stutter, not as a boundary. */
+const NAVIGATION_FLOOR_DEADBAND_M = 0.5
+let navigationClamped = false
+
 function enforceNavigationBounds(): void {
   if (!globe || freeOrbit) return
 
   worldToEnu(camera.position, navigationCameraEnu)
   const dx = navigationCameraEnu.x - cloudCenterEnu.x
   const dy = navigationCameraEnu.y - cloudCenterEnu.y
-  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) return
-  if (navigationCameraEnu.z >= navigationFloorZ) return
+  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) {
+    navigationClamped = false
+    return
+  }
+  if (navigationCameraEnu.z >= navigationFloorZ - NAVIGATION_FLOOR_DEADBAND_M) {
+    // Back above the band with room to spare: the next real breach may reset again.
+    if (navigationCameraEnu.z > navigationFloorZ + NAVIGATION_FLOOR_DEADBAND_M) navigationClamped = false
+    return
+  }
 
   navigationCameraEnu.z = navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
   camera.updateMatrixWorld()
   perfProbe?.noteNavigationClamp()
-  // Cancel residual pinch/orbit inertia at the boundary so it cannot fight the
-  // clamp on subsequent frames and produce visible vibration.
-  globe.controls.resetState()
+  // Cancel residual pinch/orbit inertia on the way in, once. Repeating it while
+  // the camera rests on the floor is what killed live gestures.
+  if (!navigationClamped) {
+    navigationClamped = true
+    globe.controls.resetState()
+  }
 }
 
 function setMaskMode(mode: number): void {
