@@ -4,7 +4,7 @@
 import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
-  Fn, If, Discard, uniform, attribute, positionWorld, texture, texture3D, uv,
+  Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
@@ -24,7 +24,25 @@ export interface CloudUniforms {
   /** Colour the surround fades toward, and how strongly geometry takes it. */
   maskSurroundColor: any
   maskSurroundAmount: any
+  /** Fixed drawn diameter in CSS pixels — the comparison path, see sizeSpacingMix. */
   pointSize: any
+  /**
+   * Drawn size from each tile's own point spacing. `sizeSpacingMix` blends between
+   * the fixed diameter above (0) and the spacing-derived one (1); both are always
+   * compiled, so switching modes is a uniform write rather than a rebuild of every
+   * live tile material. See createCloudMaterial for the expression.
+   */
+  sizeSpacingMix: any
+  /** Diameter as a multiple of that tile's on-screen spacing. 1 = touching dots. */
+  sizeCoverage: any
+  sizeMinPx: any
+  sizeMaxPx: any
+  /**
+   * CSS pixels per metre at one metre of view depth: `0.5 * height_css * P[1][1]`.
+   * The reciprocal of the renderer's own `sseDenominator`, so a spacing pushed
+   * through it lands in the same units as the screen-space error target.
+   */
+  sizePxPerMetre: any
   /** Basemap-only grading (the point cloud has its own). */
   mapSaturation: any
   mapBrightness: any
@@ -118,6 +136,11 @@ export function createUniforms(): CloudUniforms {
     maskSurroundColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.surroundColor)),
     maskSurroundAmount: uniform(EXPERIENCE_CONFIG.design.surroundTint),
     pointSize: uniform(2),
+    sizeSpacingMix: uniform(1),
+    sizeCoverage: uniform(EXPERIENCE_CONFIG.lod.pointSize.coverage),
+    sizeMinPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.minPx),
+    sizeMaxPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.maxPx),
+    sizePxPerMetre: uniform(1),
     groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
       ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),
     groundPatchColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.design.groundPatch.color)),
@@ -489,13 +512,36 @@ export function applyMatrixPrecision(material: any): void {
  * a >1 device pixel ratio is smaller than a CSS pixel, which is what tore holes
  * into the canopy. `colorItemSize` is 4 for RGBA tiles and 3 for RGB.
  */
-export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): PointsNodeMaterial {
+export function createCloudMaterial(
+  u: CloudUniforms,
+  colorItemSize = 3,
+  /** This tile's own mean point spacing in metres — see tileSpacingMetres in
+   * streaming.ts. Baked into the material rather than shared, which tile-owned
+   * materials make free: they already have to be per tile because
+   * UnloadTilesPlugin disposes them independently. */
+  spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
+): PointsNodeMaterial {
   const material = new PointsNodeMaterial()
   if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
   material.transparent = false
   material.depthWrite = true
+  // Three's own attenuation cannot serve this tree: `refine: ADD` draws every level
+  // in one pass, so there is no single world size to attenuate. The size is built
+  // below instead, from this tile's spacing and each point's own view depth.
   material.sizeAttenuation = false
-  material.sizeNode = u.pointSize
+  // sizeNode is a diameter in CSS pixels (PointsNodeMaterial multiplies by screenDPR
+  // afterwards), which is the same unit the screen-space error target is in — so at
+  // coverage 1 a point is exactly as wide as the gap to its neighbour.
+  const spacingPx = float(spacingM)
+    .mul(u.sizeCoverage)
+    .mul(u.sizePxPerMetre)
+    // The point centre, not a quad corner: setupPositionView derives positionView
+    // from positionNode, which is the instanced position below. Floored so a point
+    // sitting on the eye cannot divide by zero.
+    .div(positionView.z.negate().max(float(0.001)))
+  // Both paths always compiled, so the mode switch is a uniform write rather than a
+  // shader rebuild across every live tile material.
+  material.sizeNode = mix(u.pointSize, spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx), u.sizeSpacingMix)
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')

@@ -17,6 +17,7 @@ import {
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
+import { densityBandForUri } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
@@ -457,43 +458,42 @@ const fps = new Fps()
 // falls back to renderer.render, so there is one render path either way.
 const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scene, camera })
 
-/** Point size follows camera height continuously — tied to the three SSE bands
- * it visibly stepped mid-zoom. The slider stays a live multiplier on top of the
- * curve so it survives every camera move. */
+/** Live multiplier on the drawn point size, on top of whichever mode is active. */
 let pointSizeScale = 1
-let cameraAltitude = 0
-let lastAppliedPointSize = -1
+const scratchViewportSize = new THREE.Vector2()
+/** Design-panel state for the size derivation — see EXPERIENCE_CONFIG.lod.pointSize. */
+let sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
+let sizeMinPx: number = EXPERIENCE_CONFIG.lod.pointSize.minPx
+let sizeMaxPx: number = EXPERIENCE_CONFIG.lod.pointSize.maxPx
 
-/** Interpolate the measured anchors linearly in log(height), held flat outside
- * the calibrated range. */
-function basePointSizeForHeight(heightM: number): number {
-  const anchors = EXPERIENCE_CONFIG.lod.pointSizeByHeightM
-  const height = Math.max(1, heightM)
-  if (height <= anchors[0][0]) return anchors[0][1]
-  const last = anchors[anchors.length - 1]
-  if (height >= last[0]) return last[1]
-  for (let i = 1; i < anchors.length; i++) {
-    const [hiH, hiPx] = anchors[i]
-    if (height > hiH) continue
-    const [loH, loPx] = anchors[i - 1]
-    const t = (Math.log(height) - Math.log(loH)) / (Math.log(hiH) - Math.log(loH))
-    return loPx + (hiPx - loPx) * t
-  }
-  return last[1]
-}
-
+/**
+ * Push the point-size uniforms.
+ *
+ * The size itself is computed per point in the shader, from its tile's own spacing
+ * and its own view depth (see createCloudMaterial). What is set here is the scale
+ * that turns metres at unit depth into CSS pixels — `0.5 * height_css * P[1][1]`,
+ * the reciprocal of the renderer's `sseDenominator`, which is what puts the drawn
+ * diameter in the same unit as the screen-space error target.
+ *
+ * Mode off (Cesium comparison): one fixed size for every level, so the comparison
+ * shows raw density instead of size-masked holes.
+ */
 function applyPointSize(): void {
-  // Curve off (compare mode): one fixed base like Cesium's pointSize, so the
-  // comparison shows raw density instead of size-masked holes.
-  const base = renderOptions.effective().dynamicPointSize
-    ? basePointSizeForHeight(cameraAltitude)
-    : EXPERIENCE_CONFIG.lod.fixedPointSizePx
-  const pixels = base * EXPERIENCE_CONFIG.lod.pointSizeMultiplier * pointSizeScale
-  // The uniform is read by every tile material each frame; skip sub-pixel churn.
-  if (Math.abs(pixels - lastAppliedPointSize) < 0.02) return
-  lastAppliedPointSize = pixels
-  uniforms.pointSize.value = pixels
-  $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${pixels.toFixed(1)}px`
+  const spacingMode = renderOptions.effective().dynamicPointSize
+  const height = renderer.getSize(scratchViewportSize).y
+  uniforms.sizePxPerMetre.value = 0.5 * height * camera.projectionMatrix.elements[5]
+  uniforms.sizeSpacingMix.value = spacingMode ? 1 : 0
+  uniforms.sizeCoverage.value = sizeCoverage * pointSizeScale
+  uniforms.sizeMinPx.value = sizeMinPx
+  uniforms.sizeMaxPx.value = Math.max(sizeMaxPx, sizeMinPx)
+  uniforms.pointSize.value = EXPERIENCE_CONFIG.lod.fixedPointSizePx * pointSizeScale
+
+  // What a point at the error target resolves to — the size the cloud is tuned
+  // around, with the per-tile sizes scattered about it by construction.
+  const nominal = spacingMode
+    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * sseAuto, sizeMinPx, sizeMaxPx)
+    : uniforms.pointSize.value
+  $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${nominal.toFixed(1)}px${spacingMode ? ' at target' : ''}`
 }
 
 let globe: Globe | null = null
@@ -842,7 +842,6 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         donationShapeLayer?.setVisible(effective.donationShape)
         break
       case 'dynamicPointSize':
-        lastAppliedPointSize = -1
         applyPointSize()
         break
       case 'presetBudgets':
@@ -1482,7 +1481,6 @@ function updateMaskFollow(): void {
       1 / EXPERIENCE_CONFIG.lod.maxTiltRangeFactor,
     )
     cameraCloudRange = Math.hypot(altitude / tiltSin, outside)
-    cameraAltitude = altitude
     rangeDebug = {
       altitude, outside, range: cameraCloudRange, groundRange: cameraGroundRange,
     }
@@ -1867,16 +1865,29 @@ function updateFoveationTiles(): void {
   foveationTilesEl.replaceChildren(...nodes)
 }
 
+const POINT_SIZE = EXPERIENCE_CONFIG.lod.pointSize
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
 const asOffset = (value: number) =>
   value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
-// The fidelity control itself. It shares a panel with foveation because the
-// foveation factors multiply this target: their two readouts only mean anything
-// against a base you can see. What the target resolves to is written by the frame
-// loop, so this slider only stores it.
+// The fidelity control itself, and the three knobs that turn it into a drawn size.
+// They share a panel with foveation because the foveation factors multiply this
+// target: its two readouts only mean anything against a base you can see. What the
+// target resolves to is written by the frame loop, so this slider only stores it.
 bindDesignSlider('sseTarget', EXPERIENCE_CONFIG.lod.sse, (v) => `${v} px apart`, (v) => {
   sseTarget = v
+})
+bindDesignSlider('sizeCoverage', POINT_SIZE.coverage, (v) => `${v.toFixed(2)}× spacing`, (v) => {
+  sizeCoverage = v
+  applyPointSize()
+})
+bindDesignSlider('sizeMinPx', POINT_SIZE.minPx, (v) => `${v.toFixed(1)} px`, (v) => {
+  sizeMinPx = v
+  applyPointSize()
+})
+bindDesignSlider('sizeMaxPx', POINT_SIZE.maxPx, (v) => `${v.toFixed(1)} px`, (v) => {
+  sizeMaxPx = v
+  applyPointSize()
 })
 bindDesignSlider('foveationWidth', FOVEATION.width, asScreenHeights, (v) => {
   foveationSettings.width = v
@@ -2331,8 +2342,9 @@ function applyViewportSize(): void {
   renderer.setSize(width, height)
   globe?.setResolution()
   // Resolution feeds the SSE pixel measure, so refinement targets would otherwise be
-  // computed against a stale backbuffer.
+  // computed against a stale backbuffer. Same measure drives the drawn point size.
   stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  applyPointSize()
   gaussianSplatLayer?.resize()
   updateFoveationGuides()
 }
@@ -2487,7 +2499,13 @@ function updateOverdrawReadout(points: number): void {
   // is expected to hold while the pixel counts follow the window. Shown because the two
   // are easy to confuse and the cap is invisible otherwise.
   renderScaleEl.textContent = `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
-  const diameter = uniforms.pointSize.value * ratio
+  // Nominal, not measured: with the size derived per tile there is no single diameter
+  // any more. This is the one a point at the error target resolves to, which is what
+  // the cloud is tuned around — the per-tile sizes scatter about it by construction.
+  const nominalPx = renderOptions.effective().dynamicPointSize
+    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * target, sizeMinPx, sizeMaxPx)
+    : uniforms.pointSize.value
+  const diameter = nominalPx * ratio
   const dotArea = Math.PI * (diameter / 2) ** 2
   const perPixel = points / bufferPixels
   // One clean layer at the live target: points spaced `target` CSS pixels apart in both
@@ -3018,6 +3036,37 @@ async function main(): Promise<void> {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask,
+  }
+  // Where the drawn point size comes from, per visible tile: the band it belongs to,
+  // the spacing read off it, and what that spacing resolves to at the current target.
+  // The one place the derivation can be checked against the depth it came from — a
+  // d9 leaf should land near half a metre, a d0 node in the tens of metres.
+  ;(window as any).__spacing = () => {
+    const byBand = new Map<string, { tiles: number; min: number; max: number }>()
+    for (const tile of (stream?.tiles.visibleTiles ?? []) as Set<any>) {
+      let spacing = NaN
+      tile?.engineData?.scene?.traverse((object: any) => {
+        const value = object?.material?.userData?.pointSpacingM
+        if (typeof value === 'number') spacing = value
+      })
+      if (!Number.isFinite(spacing)) continue
+      const band = densityBandForUri(String(tile?.content?.uri ?? ''))
+      const entry = byBand.get(band) ?? { tiles: 0, min: Infinity, max: -Infinity }
+      entry.tiles++
+      entry.min = Math.min(entry.min, spacing)
+      entry.max = Math.max(entry.max, spacing)
+      byBand.set(band, entry)
+    }
+    return [...byBand.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([band, entry]) => ({
+        band,
+        tiles: entry.tiles,
+        spacingM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
+        pxAtTarget: Number(THREE.MathUtils.clamp(
+          sizeCoverage * pointSizeScale * sseAuto, sizeMinPx, sizeMaxPx,
+        ).toFixed(2)),
+      }))
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()

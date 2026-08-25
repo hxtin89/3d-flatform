@@ -26,7 +26,7 @@ export interface RenderOptions {
   markers: boolean
   /** Donation shape: protected-parcel outline, 1 m² grid and area chip. */
   donationShape: boolean
-  /** Camera-height point-size curve; off = fixed base size × slider. */
+  /** Per-tile point size from that tile's spacing; off = fixed base size × slider. */
   dynamicPointSize: boolean
   /** Bench-preset memory budgets; off = fixed high budgets. */
   presetBudgets: boolean
@@ -131,10 +131,10 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
   },
   {
     key: 'dynamicPointSize',
-    label: 'Dynamic point size',
-    onText: '⚫ Size curve · On',
-    offText: '⚫ Size curve · Off',
-    note: 'Point size follows camera height (masks density holes); off = fixed size × slider',
+    label: 'Point size from spacing',
+    onText: '⚫ Size · Per tile',
+    offText: '⚫ Size · Fixed',
+    note: 'Each tile is drawn at its own point spacing, projected — so a coarse level and a leaf in the same frame get different sizes. Off = one fixed size for all of them × slider',
   },
   {
     key: 'presetBudgets',

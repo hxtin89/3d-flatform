@@ -128,22 +128,34 @@ export const EXPERIENCE_CONFIG = {
        */
       followAmount: 1,
     },
-    // Drawn point size in CSS pixels as a continuous function of camera height
-    // over the cloud floor — three fixed bands visibly stepped while zooming.
-    // Anchors are measured preferences: zoom all the way in (~82 m, APH d6),
-    // then count zoom-out presses. Interpolated linearly in log(height) and held
-    // flat outside the range, so the far end never thins out into holes.
-    pointSizeByHeightM: [
-      [82, 3.9],
-      [171, 4.0],
-      [613, 3.0],
-      [1088, 2.5],
-    ] as const,
-    // The one knob for overall point fatness. Everything above is multiplied by
-    // it, the UI slider multiplies on top. Dialled in on the slider at 0.8x, which
-    // lands the close-range size around 3.1 px.
-    pointSizeMultiplier: 0.8,
-    // Base size when the height curve above is toggled off (Cesium comparison:
+    /**
+     * Drawn point size, derived per tile from that tile's own point spacing.
+     *
+     * `sse` above is a point spacing in CSS pixels, and three's `sizeNode` is a
+     * diameter in CSS pixels, so the two share a unit: a dot as wide as the
+     * spacing is a dot that exactly touches its neighbours. `coverage` is that
+     * multiple, and the size is computed in the shader from the tile's spacing and
+     * the point's own view depth — see point-cloud.ts.
+     *
+     * A single world size cannot serve this tree. `refine: ADD` puts every level in
+     * the frame at once, so a d0 point covering ~30 m of ground and a d9 leaf
+     * covering ~0.5 m are drawn in the same pass.
+     *
+     * This replaced a hand-tuned curve over *camera height* (3.9 px at 82 m down to
+     * 2.5 px at 1088 m). Height is only a proxy for distance, so under tilt the
+     * near and far edges of the frame were given the same pixel size.
+     */
+    pointSize: {
+      /** Dot diameter as a multiple of that tile's on-screen point spacing. */
+      coverage: 1,
+      /** Below roughly 1.2 device pixels the canopy holes come back. */
+      minPx: 1.4,
+      /** Ceiling, so a tile seen from arm's length does not paint the screen. */
+      maxPx: 6,
+      /** Used when a tile reports neither a geometric error nor a usable footprint. */
+      fallbackSpacingM: 0.5,
+    },
+    // Base size when the per-tile spacing above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,
     // Horizontal slack on the pipeline's viewer request volumes, in multiples

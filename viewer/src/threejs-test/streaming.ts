@@ -92,6 +92,36 @@ const MIB = 1024 * 1024
 // Reused by the ground probe so a per-frame sample allocates nothing.
 const scratchMatrix = new THREE.Matrix4()
 const scratchVector = new THREE.Vector3()
+// Reused by tileSpacingMetres, which runs once per loaded tile.
+const spacingBox = new THREE.Box3()
+const spacingObb = new THREE.Matrix4()
+const spacingSize = new THREE.Vector3()
+
+/**
+ * This tile's own mean point spacing in metres — what the drawn point size is
+ * derived from (see createCloudMaterial).
+ *
+ * Internal APH nodes carry it directly: the pipeline writes `geometricError =
+ * sqrt(footprint area / point count)`, which is exactly that spacing. Leaves are
+ * written with `geometricError: 0` so they can never refine further, so for those
+ * the footprint is measured instead — and a leaf's bounding volume *is* its content
+ * bounds, since it has no children to union in, which makes the two routes agree.
+ */
+export function tileSpacingMetres(tile: any, points: number): number {
+  const error = typeof tile?.geometricError === 'number' ? tile.geometricError : 0
+  if (error > 0) return error
+
+  const volume = tile?.engineData?.boundingVolume
+  if (volume && points > 0) {
+    volume.getOBB(spacingBox, spacingObb)
+    spacingBox.getSize(spacingSize)
+    // x and y are the horizontal extents: the pipeline builds the box from ENU
+    // content bounds with z up, and no stage rescales the axes.
+    const area = spacingSize.x * spacingSize.y
+    if (area > 1e-6) return Math.sqrt(area / points)
+  }
+  return EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM
+}
 
 const DEFAULT_LIMITS: StreamingLimits = {
   cacheMinTiles: 48,
@@ -212,7 +242,7 @@ export function createStreamingCloud(opts: {
 
   /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
    * the tile carries no usable position buffer. */
-  function buildPointQuads(source: THREE.Points): THREE.Mesh | null {
+  function buildPointQuads(source: THREE.Points, tile: any): THREE.Mesh | null {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
@@ -234,7 +264,12 @@ export function createStreamingCloud(opts: {
     }
     geometry.instanceCount = position.count
 
-    const mesh = new THREE.Mesh(geometry, createCloudMaterial(uniforms, color?.itemSize ?? 3))
+    const spacing = tileSpacingMetres(tile, position.count)
+    const material = createCloudMaterial(uniforms, color?.itemSize ?? 3, spacing)
+    // Read back by the tile trace in main.ts — the one place the derived size can
+    // be checked against the depth the tile came from.
+    material.userData.pointSpacingM = spacing
+    const mesh = new THREE.Mesh(geometry, material)
     // A Mesh, not a Sprite: WebGPUUtils.getPrimitiveTopology only names a
     // topology for isMesh, and Mesh avoids Sprite's own culling and raycasting.
     mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
@@ -256,7 +291,7 @@ export function createStreamingCloud(opts: {
       // readable either way, but taking the tile here keeps the handoff obvious.
       opts.onPointTile?.(source, String(url ?? ''))
 
-      const mesh = buildPointQuads(source)
+      const mesh = buildPointQuads(source, tile)
       if (!mesh) continue
 
       // TilesRenderer collected the tile's geometries and materials during
