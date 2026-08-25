@@ -7,7 +7,7 @@
   import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
   import { silhouette } from "./geometry/silhouette";
-  import { createLiquidField, createAccentResolver } from "./geometry/liquid-field";
+  import { createLiquidField, createAccentResolver, wedgeTargets } from "./geometry/liquid-field";
 
   /** A grid rect plus the content BentoWidget (or SpeciesWidget, when kind: "species") needs to render it. */
   export interface BentoGridItem extends GridWidget {
@@ -153,6 +153,62 @@
   // bigger than the grid's own box or they'd be clipped at the edge.
   const pad = $derived(radius * 2);
 
+  // --- corner morph -------------------------------------------------------
+  //
+  // solveDocking's output is a set of discrete corner TYPES, and it is
+  // recomputed every frame from the animating rects -- so the outward
+  // Fill/Concave wedges it implies flip on and off instantly. That is the same
+  // classifier discontinuity the field was built to remove, sneaking back in
+  // through the corner data rather than the geometry.
+  //
+  // So the wedge amounts are eased rather than assigned: each corner holds a
+  // live (outX, outY) pair that chases the authored target. At rest it sits
+  // exactly on the target, which is why the still frames match Figma; in
+  // between it is a partially grown wedge, so a corner changing type sweeps
+  // out or retracts instead of popping.
+  //
+  // Exponential easing on a plain rAF, not a Tween: the target can change
+  // mid-flight (every frame of an expand, in principle) and this always
+  // chases whatever the current target is, with no restart and no queued
+  // animation to cancel.
+  // Chosen so the corner morph settles in step with the expand rather than
+  // trailing it: an exponential chase reaches the epsilon below in
+  // ln(eps)/ln(1-ease) frames, which at 0.22 is ~28 frames ~= 465ms against
+  // EXPAND_DURATION_MS of 480. At 0.16 it took ~667ms, so corners were still
+  // visibly drifting after the card had stopped moving.
+  const CORNER_EASE = 0.22;
+  const CORNER_EPSILON = 0.001;
+  let cornerFrame = $state(0);
+  let cornerRaf = 0;
+  const cornerNow = new Map<string, number[]>();
+
+  function stepCorners(targets: Map<string, number[]>) {
+    let moving = false;
+    for (const [id, target] of targets) {
+      let live = cornerNow.get(id);
+      if (!live) {
+        // First sight of this widget: start ON target, so the initial paint is
+        // the correct resting shape rather than an animation from nothing.
+        cornerNow.set(id, [...target]);
+        continue;
+      }
+      for (let i = 0; i < live.length; i++) {
+        const delta = target[i] - live[i];
+        if (Math.abs(delta) < CORNER_EPSILON) live[i] = target[i];
+        else {
+          live[i] += delta * CORNER_EASE;
+          moving = true;
+        }
+      }
+    }
+    if (moving && cornerRaf === 0) {
+      cornerRaf = requestAnimationFrame(() => {
+        cornerRaf = 0;
+        cornerFrame++;
+      });
+    }
+  }
+
   $effect(() => {
     if (!liquid || !fieldCanvas || !gridEl) return;
     const field = createLiquidField(fieldCanvas);
@@ -165,16 +221,18 @@
     // content layered on top of it.
     const stop = $effect.root(() => {
       $effect(() => {
+        cornerFrame; // re-render while the corner morph is still settling
+        const targets = new Map(effectiveItems.map((item, i) => [item.id, wedgeTargets(solved[i].corners)]));
+        stepCorners(targets);
         field.render(
-          effectiveItems.map((item, i) => ({
+          effectiveItems.map((item) => ({
             x: item.x,
             y: item.y,
             width: item.width,
             height: item.height,
             color: accents.resolve(item.accent ?? "default"),
-            // Only the outward fill-*/concave treatments are read from here --
-            // see LiquidWidget.corners for why convex/none deliberately are not.
-            corners: solved[i].corners,
+            // Eased amounts, not the raw solved types -- see stepCorners.
+            wedge: cornerNow.get(item.id),
           })),
           { radius, blend, width: bounds.width + pad * 2, height: bounds.height + pad * 2, pad },
         );

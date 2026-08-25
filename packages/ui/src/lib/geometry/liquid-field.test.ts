@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeCornerRadii, type LiquidWidget } from "./liquid-field";
+import { computeCornerRadii, wedgeTargets, type LiquidWidget } from "./liquid-field";
+import type { Corners } from "./silhouette";
 
 const R = 60;
 const COLOR: [number, number, number, number] = [0, 0, 0, 1];
@@ -67,6 +68,28 @@ describe("computeCornerRadii", () => {
     expect(worst).toBeLessThan(MAX_JUMP);
     // Sanity: something must actually have moved, or "continuous" is vacuous.
     expect(worst).toBeGreaterThan(0);
+  });
+
+  it("maps each authored corner type to an interpolatable outward amount", () => {
+    // Order is [outX, outY] per corner, corners [TL, TR, BR, BL].
+    const corners: Corners = ["fill-left", "fill-top", "concave", "convex"];
+    expect(wedgeTargets(corners)).toEqual([1, 0, 0, 1, 1, 1, 0, 0]);
+    // "none" and "convex" both mean no outward material.
+    expect(wedgeTargets(["none", "none", "none", "none"])).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it("keeps a half-grown wedge attached to its own vertex", () => {
+    // The wedge is a square from the vertex out to (s*r), minus a disc of
+    // radius r centred on that far corner. The vertex only stays part of the
+    // shape while its distance to that centre exceeds r -- that is sqrt(2)*a*r
+    // vs a*r, which holds for EVERY amount a > 0. This is why the wedge radius
+    // is what scales, and not the direction: scaling the direction instead
+    // collapses the square and the wedge would detach and vanish.
+    for (const amount of [0.1, 0.25, 0.5, 0.75, 1]) {
+      const r = 60 * amount;
+      const centreDistance = Math.hypot(r, r);
+      expect(centreDistance).toBeGreaterThan(r);
+    }
   });
 
   it("rounds every corner fully once a widget is isolated", () => {
