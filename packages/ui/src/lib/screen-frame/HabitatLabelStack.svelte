@@ -28,17 +28,31 @@
    * neighbors, so the 3 stacked pills read as ONE continuous notched blob (Figma's real "Test:
    * Label Stack" node 25556:657/1235) instead of 3 separate chips with a gap between them.
    *
-   * Verified directly against get_design_context's Tailwind output for all 3 real instances on
-   * BOTH Frame 1 Mobile (25556:658/667/682, left-aligned) and Frame 1 Desktop (25556:1236/1237/1238,
-   * right-aligned, exact mirror image) -- their native per-corner radius classes reduce to exactly
-   * this rule: the ANCHOR side (whichever edge every line shares -- left on mobile, right on
-   * desktop) is flat/sharp top-to-bottom with NO rounding anywhere, not even at the very top or
-   * bottom of the stack. All rounding lives on the FREE side, and only where a line's free edge
-   * isn't already covered by a wider neighbor immediately above/below it: convex where no neighbor
-   * reaches this far out (a true exterior corner, including the very top and very bottom lines),
-   * none where a wider neighbor's own edge continues flush past this point (the notch's inner
-   * corner -- rounding it would carve a notch out of what's actually a flat pass-through, per the
-   * Label Line component's own "CORNER DIRECTION RULES" doc on node 25556:301).
+   * Re-derived by measuring Figma's actual rasterised frames pixel-by-pixel (full-frame PNG export
+   * of 25547:2424 / 25556:1097, boundary traced per scanline and circle-fitted), because the earlier
+   * reading of the instances' radius metadata missed the Corner ATOMS layered on top of them: this
+   * stack's seams are not plain rounded/sharp corners at all, they are Fill-Left and Fill-Top
+   * fillets that reach PAST each line's own box. Two distinct things were wrong:
+   *
+   * 1. FREE SIDE, where a line meets a WIDER neighbor. This used to emit "none" (a hard 90deg inner
+   *    corner). Figma emits "fill-left": the narrower line's free edge sweeps OUT past itself by r
+   *    and lands tangent on the wider line's edge, so the step between the two reads as one smooth
+   *    S rather than a stair. Confirmed on all four such seams -- mobile "Dein Habitat" bottom-right
+   *    (arc centred (354,947) in page space) and "AUWALD" top-right (centre (420,1091)), and their
+   *    desktop mirrors "Dein Habitat" bottom-left (centre (1560,657)) and "AUWALD" top-left
+   *    (centre (1494,801)). All four fit r=30 to within antialiasing.
+   *
+   * 2. ANCHOR SIDE CAPS, i.e. the two corners that close the stack at its very top and very bottom
+   *    on the shared edge. Mobile's stack sits flush against the screen frame's left margin and
+   *    fillets INTO it with Fill-Top at both caps -- the light fill visibly bulges up past the top
+   *    edge (arc centre (90,894)) and down past the bottom edge (centre (90,1175)). Desktop's stack
+   *    is flush against the right margin but is authored WITHOUT those fillets: scanning the rows
+   *    just above y=634 and just below y=855 finds no fill left of x=1854 at all, so both caps are
+   *    plain "none" there. Not symmetric, but that is what the reference renders, hence the
+   *    align-dependent cap below rather than one shared rule.
+   *
+   * The anchor side BETWEEN lines stays "none" in both frames: tracing the shared edge top-to-bottom
+   * finds no bite taken out of it anywhere, so nothing is rounded at those interior seams.
    *
    * NOT solved via geometry/docking.ts's solveDocking: that generic prober is tuned for widgets
    * that can differ in extent on BOTH axes. Here every line shares the exact same anchor-side
@@ -47,13 +61,21 @@
    * "convex" for the anchor-side corners between lines instead of the "none" Figma actually uses.
    */
   function stackCorners(lineWidths: number[], anchor: "left" | "right"): Corners[] {
+    const last = lineWidths.length - 1;
+    // A free-side corner only rounds where this line's own edge is the outermost one: convex at a
+    // true exterior corner, fill-left where the neighbor overhangs it, none where they end flush.
+    const free = (neighbor: number | undefined, w: number): CornerType =>
+      neighbor === undefined || neighbor < w ? "convex" : neighbor > w ? "fill-left" : "none";
+
     return lineWidths.map((w, i) => {
-      const prev = i > 0 ? lineWidths[i - 1] : undefined;
-      const next = i < lineWidths.length - 1 ? lineWidths[i + 1] : undefined;
-      const freeTop: CornerType = prev === undefined || prev < w ? "convex" : "none";
-      const freeBottom: CornerType = next === undefined || next < w ? "convex" : "none";
+      const freeTop = free(i > 0 ? lineWidths[i - 1] : undefined, w);
+      const freeBottom = free(i < last ? lineWidths[i + 1] : undefined, w);
+      const capTop: CornerType = anchor === "left" && i === 0 ? "fill-top" : "none";
+      const capBottom: CornerType = anchor === "left" && i === last ? "fill-top" : "none";
       // Corners order is [topLeft, topRight, bottomRight, bottomLeft] (geometry/silhouette.ts).
-      return anchor === "left" ? ["none", freeTop, freeBottom, "none"] : [freeTop, "none", "none", freeBottom];
+      return anchor === "left"
+        ? [capTop, freeTop, freeBottom, capBottom]
+        : [freeTop, capTop, capBottom, freeBottom];
     });
   }
 

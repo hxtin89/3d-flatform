@@ -25,7 +25,14 @@
 // flush/sharp ('none'), not rounded and NOT a Fill-Left bulge -- an earlier
 // version of this file had Giftfrosch's bottom-right wrong as "fill-left",
 // which rendered a visible curved notch bulging into Morphofalter that
-// Figma's real frame does not have. These are pinned; every other corner in this
+// Figma's real frame does not have. The OTHER seam -- Vogel's bottom-right
+// against Giftfrosch's bottom-left -- is equally flush and needed pinning too:
+// solveDocking called both of them 'convex', which bit a rounded notch out of
+// each side of the join and let the photo show through as a dark keyhole at the
+// foot of the row. Sampling Figma's own raster straight across that seam
+// (Frame 1 Mobile, y=1840 and y=1856) steps from Vogel's 171,171,171 to
+// Giftfrosch's 115,115,115 at x=360 with no photo pixel in between at all, so
+// both corners are 'none'. These are pinned; every other corner in this
 // row keeps solveDocking's solved default since Figma's static file only
 // ever shows ONE arrangement (Giftfrosch selected) and those corners were
 // not independently verified for the other two expand states. BentoGrid
@@ -64,7 +71,7 @@ const SPECIES_EXPANDED_HEIGHT = 570;
 
 export const SPECIES_ROW: BentoGridItem[] = [
   // Figma: "S1: Vogel (Widget)" @ (60,1560) 300x300 -- normalized against the row's own origin (60,1290)
-  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", image: birdImage, cornerOverrides: { topLeft: "fill-top" } },
+  { id: "vogel", x: 0, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "SCHNURRVOGEL", description: "pipra fasciicauda", accent: "grey-light", image: birdImage, cornerOverrides: { topLeft: "fill-top", bottomRight: "none" } },
   // Figma: "S1: Giftfrosch (Widget)" @ (360,1290) 360x570 (selected/expanded) -- measurement/
   // status/caption facts read off the actual Figma text nodes (25556:1315/1317/1314).
   {
@@ -89,7 +96,8 @@ export const SPECIES_ROW: BentoGridItem[] = [
     // screenshot comparison against the real Figma seam (a plain 90deg
     // corner, no curve), and consistent with Morphofalter's own matching
     // bottomLeft below, which was already correctly pinned to "none".
-    cornerOverrides: { bottomRight: "none" },
+    // bottomLeft is the other half of the Vogel seam pinned above -- same measurement, same reason.
+    cornerOverrides: { bottomRight: "none", bottomLeft: "none" },
   },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
   { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", image: butterflyImage, cornerOverrides: { topLeft: "none", bottomLeft: "none" } },

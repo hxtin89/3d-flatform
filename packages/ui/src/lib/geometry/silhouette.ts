@@ -63,7 +63,10 @@ function tr(type: CornerType, r: number, w: number): CornerResult {
       return { arrivalInset: 0, departureInset: r, extra: `L${w + r},0 A${r},${r} 0 0 0 ${w},${r}` };
     case "fill-top":
       // Horizontal (top) edge is flush, stops early; loop reaches up; vertical (right) edge is sharp.
-      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 ${w},${-r} L${w},0` };
+      // sweep 0 puts the arc centre on (w-r,-r) -- the reach square's corner DIAGONALLY OPPOSITE the
+      // vertex -- so the loop is a concave fillet (square minus disc). sweep 1 would centre it on the
+      // vertex itself and add a convex quarter-disc blob instead. See tl/bl's note below.
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 0 ${w},${-r} L${w},0` };
   }
 }
 
@@ -97,7 +100,12 @@ function bl(type: CornerType, r: number, h: number): CornerResult {
       return { arrivalInset: 0, departureInset: r, extra: `L${-r},${h} A${r},${r} 0 0 0 0,${h - r}` };
     case "fill-top":
       // Horizontal (bottom) edge is flush, stops early; loop reaches down; vertical (left) edge is sharp.
-      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 1 0,${h + r} L0,${h}` };
+      // sweep 0 -> centre (r,h+r), the reach square's corner diagonally opposite the vertex, giving the
+      // concave fillet every other Fill-* case already produced. This was `1`, which centres the arc on
+      // the vertex (0,h) and renders a convex quarter-disc bulge -- the exact opposite curvature.
+      // Measured against Figma's own "AUWALD" line (25556:682): its bottom-left fillet traces a circle
+      // centred at (90,1175) in Frame 1 Mobile page space, i.e. (r, h+r), not the vertex (60,1145).
+      return { arrivalInset: r, departureInset: 0, extra: `A${r},${r} 0 0 0 0,${h + r} L0,${h}` };
   }
 }
 
