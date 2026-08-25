@@ -112,6 +112,21 @@ const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-ima
 
 // ---------------------------------------------------------------- dom helpers
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector(selector) as T
+/**
+ * Write to the DOM only when the text actually changed.
+ *
+ * Every `textContent` assignment invalidates style and layout even when the new
+ * string equals the old one, and the HUD alone used to issue about fifteen of
+ * them per frame — measured at 1809 writes per second, which is what filled the
+ * Safari timeline with back-to-back "layout is no longer valid" entries and cost
+ * more main-thread time than parsing every tileset in the scene.
+ */
+const setText = (element: Element, text: string): void => {
+  if (element.textContent !== text) element.textContent = text
+}
+const setClass = (element: Element, className: string): void => {
+  if (element.className !== className) element.className = className
+}
 const fmtInt = (value: number) => Math.round(value).toLocaleString('en-US')
 const fmtMiB = (value: number) => `${Math.round(value / (1024 * 1024))} MB`
 const setStatus = (text: string) => { $('#status').textContent = text }
@@ -565,10 +580,10 @@ function updateTimeControls(state: DaylightState): void {
     timeValueEl.textContent = state.timeLabel
     timeSliderEl.value = String(state.peruMinutes)
   }
-  timeModeEl.textContent = state.live ? 'LIVE · PET' : 'MANUAL · PET'
+  setText(timeModeEl, state.live ? 'LIVE · PET' : 'MANUAL · PET')
   timeModeEl.classList.toggle('is-live', state.live)
-  timeNowEl.hidden = state.live
-  timeDockEl.dataset.phase = state.phase
+  if (timeNowEl.hidden !== state.live) timeNowEl.hidden = state.live
+  if (timeDockEl.dataset.phase !== state.phase) timeDockEl.dataset.phase = state.phase
   const hour = Math.floor(state.peruMinutes / 60)
   const minute = state.peruMinutes % 60
   const phaseLabel = state.phase === 'night'
@@ -579,8 +594,12 @@ function updateTimeControls(state: DaylightState): void {
         ? 'Sonnenuntergang'
         : 'Tageslicht'
   const accessibleTime = `${hour}:${String(minute).padStart(2, '0')} Uhr, Peru, ${phaseLabel}`
-  timeSliderEl.setAttribute('aria-valuetext', accessibleTime)
-  timeDockToggleEl.setAttribute('aria-label', `${state.live ? 'Livezeit' : 'Manuelle Zeit'}: ${accessibleTime}`)
+  // Attribute writes invalidate too, and screen readers only need this when it
+  // changes — which is once a minute, not 120 times a second.
+  if (timeSliderEl.getAttribute('aria-valuetext') !== accessibleTime) {
+    timeSliderEl.setAttribute('aria-valuetext', accessibleTime)
+    timeDockToggleEl.setAttribute('aria-label', `${state.live ? 'Livezeit' : 'Manuelle Zeit'}: ${accessibleTime}`)
+  }
 }
 
 const onCloudToggle = () => {
@@ -1821,35 +1840,45 @@ const diagMissingEl = $('#diagMissing')
 const diagOriginEl = $('#diagOrigin')
 if (showDiagnostics) diagStatsEl.hidden = false
 
+/** The readout is a diagnostic, not an animation: its slowest input (the fps
+ * meter) only recomputes every 250 ms, so refreshing it per frame bought
+ * nothing and cost a full style/layout invalidation each time. */
+const HUD_INTERVAL_MS = 125
+let lastHudUpdate = -Infinity
+
 function updateHud(stats: StreamingStats | null): void {
+  const now = performance.now()
+  updateZoomPanel(now)
+  if (now - lastHudUpdate < HUD_INTERVAL_MS) return
+  lastHudUpdate = now
+
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
-  densityEl.textContent = stats?.density ?? '—'
-  lodEl.textContent = `SSE ${sseAuto.toFixed(0)}`
-  visibleEl.textContent = stats ? fmtInt(stats.points) : '0'
-  pointTilesEl.textContent = String(stats?.visible ?? 0)
-  mapTilesEl.textContent = String(globeStats.visible)
-  cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
+  setText(densityEl, stats?.density ?? '—')
+  setText(lodEl, `SSE ${sseAuto.toFixed(0)}`)
+  setText(visibleEl, stats ? fmtInt(stats.points) : '0')
+  setText(pointTilesEl, String(stats?.visible ?? 0))
+  setText(mapTilesEl, String(globeStats.visible))
+  setText(cacheEl, `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`)
 
   const value = fps.fps
-  fpsEl.textContent = value ? value.toFixed(0) : '—'
-  msEl.textContent = fps.frameMs ? fps.frameMs.toFixed(1) : '—'
+  setText(fpsEl, value ? value.toFixed(0) : '—')
+  setText(msEl, fps.frameMs ? fps.frameMs.toFixed(1) : '—')
   const className = value >= 58 ? 'good' : value >= 40 ? 'warn' : 'bad'
-  fpsEl.className = `v ${className}`
-  chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
-  chipFpsEl.className = className
-  updateZoomPanel(performance.now())
+  setClass(fpsEl, `v ${className}`)
+  setText(chipFpsEl, value ? `${value.toFixed(0)} fps` : '—')
+  setClass(chipFpsEl, className)
 
   // Fly to the height that looks right, read it off here, put it into
   // navigation.zoomStopHeightM.
   if (!showDiagnostics) return
-  diagAltitudeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.altitude)} m` : '—'
-  diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
-  diagStopEl.textContent = `${Math.round(navigationClearance)} m`
-  diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+  setText(diagAltitudeEl, rangeDebug ? `${Math.round(rangeDebug.altitude)} m` : '—')
+  setText(diagRangeEl, rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—')
+  setText(diagStopEl, `${Math.round(navigationClearance)} m`)
+  setText(diagMissingEl, String(stats?.missingTiles ?? 0))
   // How far the camera has drifted from the render origin, and how often it has
   // been pulled back. A steadily climbing rebase count while standing still
   // would mean the threshold is fighting something.
-  diagOriginEl.textContent = `${Math.round(camera.position.length())} m · ${originStats().rebases}×`
+  setText(diagOriginEl, `${Math.round(camera.position.length())} m · ${originStats().rebases}×`)
 }
 
 function loop(now: number): void {

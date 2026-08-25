@@ -70,6 +70,19 @@ export function createPerfProbe(opts: {
   let coalescedEvents = 0
   let pointerEventsThisFrame = 0
   let maxPointerEventsPerFrame = 0
+  // Tasks the browser itself flags as blocking. The frame-time window only sees
+  // work inside rAF; a long task can also sit between frames (a parse, a GPU
+  // upload, a style recalculation) and still be felt as a hitch.
+  const longTasks: number[] = []
+  let longTaskObserver: PerformanceObserver | null = null
+  try {
+    longTaskObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) longTasks.push(Number(entry.duration.toFixed(1)))
+      if (longTasks.length > 200) longTasks.splice(0, longTasks.length - 200)
+    })
+    longTaskObserver.observe({ entryTypes: ['longtask'] })
+  } catch { /* Safari has no longtask observer; the frame window still works */ }
+
   let navigationClamps = 0
   let dragging = false
   let dragFrames = 0
@@ -135,6 +148,12 @@ export function createPerfProbe(opts: {
         over64ms: sorted.filter((value) => value > 64).length,
         over32ms: sorted.filter((value) => value > 32).length,
       },
+      longTasks: {
+        count: longTasks.length,
+        max: longTasks.length ? Math.max(...longTasks) : 0,
+        over100ms: longTasks.filter((value) => value > 100).length,
+        supported: longTaskObserver !== null,
+      },
       navigation: {
         clamps: navigationClamps,
         clampsPerSecond: seconds > 0 ? Number((navigationClamps / seconds).toFixed(1)) : 0,
@@ -185,6 +204,7 @@ export function createPerfProbe(opts: {
     coalescedEvents = 0
     maxPointerEventsPerFrame = 0
     navigationClamps = 0
+    longTasks.length = 0
     dragFrames = 0
     peakSample = null
   }
@@ -239,6 +259,7 @@ export function createPerfProbe(opts: {
         `pointer   ${data.pointer.eventsPerSecond}/s  max/frame ${data.pointer.maxEventsPerFrame}  coalesced ${data.pointer.coalescedPerEvent}`,
         `rotation  p50 ${data.rotationDegPerFrame.p50}°  p95 ${data.rotationDegPerFrame.p95}°  max ${data.rotationDegPerFrame.max}°`,
         `pan       p50 ${data.panMetresPerFrame.p50}m  p95 ${data.panMetresPerFrame.p95}m  max ${data.panMetresPerFrame.max}m`,
+        `long task ${data.longTasks.count}  max ${data.longTasks.max}ms  >100ms ${data.longTasks.over100ms}`,
         `nav clamp ${data.navigation.clampsPerSecond}/s${data.navigation.clampedEveryFrame ? '  ← every frame, drags are cancelled' : ''}`,
         `points ${sample.points.toLocaleString('en-US')}  tiles ${sample.pointTiles}/${sample.mapTiles}  drag frames ${dragFrames}`,
       ].join('\n')
@@ -247,6 +268,7 @@ export function createPerfProbe(opts: {
       canvas.removeEventListener('pointerdown', onPointerDown, { capture: true } as any)
       document.removeEventListener('pointerup', onPointerUp, { capture: true } as any)
       document.removeEventListener('pointermove', onPointerMove, { capture: true } as any)
+      longTaskObserver?.disconnect()
       overlay.remove()
       delete (window as any).__perf
     },

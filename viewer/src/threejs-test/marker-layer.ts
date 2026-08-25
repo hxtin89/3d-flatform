@@ -370,7 +370,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       && Math.abs(projected.x) < 1.08
       && Math.abs(projected.y) < 1.08
 
-    marker.label.hidden = !visible
+    if (marker.label.hidden !== !visible) marker.label.hidden = !visible
     if (!visible) return null
     const halfWidth = marker.labelWidth * 0.5
     const labelHeight = marker.labelHeight
@@ -384,8 +384,12 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       labelHeight + 7,
       window.innerHeight - 7,
     )
-    marker.label.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%)`
-    marker.label.style.opacity = opacity.toFixed(3)
+    // Style writes invalidate whether or not the value changed, and a parked
+    // camera produces the same numbers frame after frame.
+    const transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%)`
+    if (marker.label.style.transform !== transform) marker.label.style.transform = transform
+    const nextOpacity = opacity.toFixed(3)
+    if (marker.label.style.opacity !== nextOpacity) marker.label.style.opacity = nextOpacity
     return {
       left: x - halfWidth,
       right: x + halfWidth,
@@ -431,7 +435,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
             MIN_TEMPERATURE,
             MAX_TEMPERATURE,
           )
-          marker.valueElement.textContent = `${value.toFixed(1).replace('.', ',')} °C`
+          const reading = `${value.toFixed(1).replace('.', ',')} °C`
+          if (marker.valueElement.textContent !== reading) marker.valueElement.textContent = reading
         }
       }
       mediaHead.scale.setScalar(focusedActionId === mediaAction.id ? 1.45 : 1)
@@ -445,7 +450,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
 
       root.updateMatrixWorld(true)
       if (nextMode === 'pins') {
-        for (const marker of markers) marker.label.hidden = true
+        for (const marker of markers) if (!marker.label.hidden) marker.label.hidden = true
         return
       }
 

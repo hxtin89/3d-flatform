@@ -659,7 +659,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   }
 
   function updateLabel(camera: THREE.PerspectiveCamera): void {
-    if (!visible) { label.hidden = true; return }
+    if (!visible) { if (!label.hidden) label.hidden = true; return }
     if (measuredViewportWidth !== window.innerWidth || labelWidth === 0) {
       label.hidden = false
       labelWidth = label.offsetWidth
@@ -672,7 +672,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     const onScreen = viewPosition.z < 0
       && projected.z > -1 && projected.z < 1
       && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1
-    label.hidden = !onScreen
+    if (label.hidden !== !onScreen) label.hidden = !onScreen
     if (!onScreen) return
     const half = labelWidth * 0.5
     const x = THREE.MathUtils.clamp(
@@ -681,7 +681,8 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     const y = THREE.MathUtils.clamp(
       (-projected.y * 0.5 + 0.5) * window.innerHeight, labelHeight + 7, window.innerHeight - 7,
     )
-    label.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%)`
+    const transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%)`
+    if (label.style.transform !== transform) label.style.transform = transform
   }
 
   return {
