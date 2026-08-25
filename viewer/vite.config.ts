@@ -11,6 +11,15 @@ const useHttps = process.env.VITE_HTTPS === '1';
 
 export default defineConfig({
   plugins: [cesium(), svelte(), ...(useHttps ? [basicSsl()] : [])],
+  // @wi/ui ships real .svelte sources in its dist. Vite's dep pre-bundler is
+  // esbuild, which cannot compile those -- when it pre-bundles the package, a
+  // component's entire source file can end up served as a stylesheet, so its
+  // scoped CSS silently never applies. The symptom is subtle and looks like a
+  // layout bug rather than a build one: position/z-index rules go missing, so
+  // absolutely-positioned children collapse into normal flow. Excluding the
+  // package routes those files through vite-plugin-svelte, which is what
+  // actually knows how to compile them.
+  optimizeDeps: { exclude: ['@wi/ui'] },
   server: {
     port: 5177,
     host: true, // listen on all interfaces + print LAN IPs for phone testing

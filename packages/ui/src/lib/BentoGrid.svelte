@@ -57,17 +57,20 @@
      * from docking.ts's discrete classifier, not from the union itself, so
      * blend 0 fixes the snapping without changing a single shape.
      *
-     * Raise it toward `radius` for the liquid/mercury look: inner corners
-     * fillet, and separated widgets neck together before they touch. Figma's
-     * WEATHER cluster is authored this way (its Fill-Left/Fill-Top atoms are
-     * exactly this fillet), while its species row is not -- so there is no
-     * single value that matches every cluster in the reference. Defaults to
-     * `radius`; pass 0 per-cluster where Figma keeps the corners sharp.
+     * Raise it toward `radius` for the metaball look: separated widgets neck
+     * together before they touch, like mercury.
+     *
+     * Defaults to 0, because that is what reproduces Figma. Above 0 the smin
+     * fillets EVERY reflex junction uniformly, which the reference does not do
+     * -- Figma's outward bulges are per-corner authored Fill-Left/Fill-Top
+     * atoms (drawn by the field's sdWedge, driven by cornerOverrides), not a
+     * global blend. So blend is a deliberate stylistic departure, not the way
+     * to reach the reference shape.
      */
     blend?: number;
   }
 
-  let { items, radius = 60, topLeftIsScreenCorner = true, liquid = true, blend = radius }: Props = $props();
+  let { items, radius = 60, topLeftIsScreenCorner = true, liquid = true, blend = 0 }: Props = $props();
 
   // cubicOut landed the expand exactly on target with no character -- a card
   // being singled out and grown is the one moment in this grid that should
@@ -163,12 +166,15 @@
     const stop = $effect.root(() => {
       $effect(() => {
         field.render(
-          effectiveItems.map((item) => ({
+          effectiveItems.map((item, i) => ({
             x: item.x,
             y: item.y,
             width: item.width,
             height: item.height,
             color: accents.resolve(item.accent ?? "default"),
+            // Only the outward fill-*/concave treatments are read from here --
+            // see LiquidWidget.corners for why convex/none deliberately are not.
+            corners: solved[i].corners,
           })),
           { radius, blend, width: bounds.width + pad * 2, height: bounds.height + pad * 2, pad },
         );

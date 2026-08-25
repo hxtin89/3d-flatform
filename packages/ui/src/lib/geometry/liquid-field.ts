@@ -44,13 +44,37 @@
 // SVG's default edge AA at the same device pixel ratio -- this is not a
 // crispness tradeoff.
 
+import type { CornerType } from "./silhouette"
+
 export interface LiquidWidget {
   x: number
   y: number
   width: number
   height: number
-  /** Resolved rgba, 0..1 per channel -- see resolveAccentColor(). */
+  /** Resolved rgba, 0..1 per channel -- see createAccentResolver(). */
   color: [number, number, number, number]
+  /**
+   * The AUTHORED corner treatments, [topLeft, topRight, bottomRight, bottomLeft].
+   *
+   * Only the outward ones matter here (fill-left / fill-top / concave), because
+   * those are material the field cannot derive: they bulge past the widget's own
+   * box, and no union of rects can produce them. convex/none are NOT read from
+   * here -- they come from computeCornerRadii's continuous neighbour-distance
+   * solve instead, which agrees with the authored value at rest in both real
+   * clusters while still easing rather than flipping mid-animation.
+   */
+  corners?: readonly CornerType[]
+}
+
+/**
+ * Outward direction of a corner's wedge in corner-local space (material at
+ * +x/+y). Identical for all four corners because the shader works corner-local:
+ * "away horizontally" is always -x there, "away vertically" always -y.
+ */
+const WEDGE_DIRECTION: Partial<Record<CornerType, [number, number]>> = {
+  "fill-left": [-1, 1],
+  "fill-top": [1, -1],
+  concave: [-1, -1],
 }
 
 export interface LiquidRenderOptions {
@@ -87,7 +111,48 @@ uniform int uCount;
 uniform vec4 uRects[${MAX_WIDGETS}];
 uniform vec4 uColors[${MAX_WIDGETS}];
 uniform vec4 uCorners[${MAX_WIDGETS}];
+// Per corner (x=TL, y=TR, z=BR, w=BL), the outward direction of that corner's
+// Fill/Concave wedge in corner-local space, or 0 for no wedge. See sdWedge.
+uniform vec4 uWedgeX[${MAX_WIDGETS}];
+uniform vec4 uWedgeY[${MAX_WIDGETS}];
+uniform float uRadius;
 uniform float uBlend;
+
+float sdBoxSharp(vec2 p, vec2 b) {
+  vec2 d = abs(p) - b;
+  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+/**
+ * One Corner atom, in corner-local coords (vertex at origin, the widget's own
+ * material filling +x/+y).
+ *
+ * This is Figma's atom verbatim: an r-square placed in an OUTWARD quadrant,
+ * minus a disc of radius r centred on that square's far corner -- exactly the
+ * boolean "Rectangle minus Ellipse" the real component is built from. It is the
+ * piece a union-of-rects can never produce, because Fill-Left / Fill-Top /
+ * Concave ADD material beyond the widget's own box rather than removing it.
+ *
+ * s selects the quadrant, and is the same for all four corners because the
+ * caller works in corner-local space: (-1,+1) reaches away horizontally
+ * (Fill-Left), (+1,-1) vertically (Fill-Top), (-1,-1) diagonally (Concave).
+ */
+float sdWedge(vec2 q, vec2 s, float r) {
+  if (s.x == 0.0 && s.y == 0.0) return 1e9;
+  vec2 c = s * r;
+  vec2 lo = min(vec2(0.0), c);
+  vec2 hi = max(vec2(0.0), c);
+  float box = sdBoxSharp(q - (hi + lo) * 0.5, (hi - lo) * 0.5);
+  return max(box, -(length(q - c) - r));
+}
+
+/** p -> corner-local coords for corner k (0=TL, 1=TR, 2=BR, 3=BL). */
+vec2 cornerLocal(vec2 p, vec2 b, int k) {
+  if (k == 0) return p + b;
+  if (k == 1) return vec2(b.x - p.x, p.y + b.y);
+  if (k == 2) return b - p;
+  return vec2(p.x + b.x, b.y - p.y);
+}
 
 // Per-corner radius, picked by which quadrant of the box p falls in.
 // Order is (topLeft, topRight, bottomRight, bottomLeft) to match the Corners
@@ -131,7 +196,17 @@ void main() {
     if (i >= uCount) break;
     vec4 r = uRects[i];
     vec2 hs = r.zw * 0.5;
-    float di = sdRoundBox(p - (r.xy + hs), hs, uCorners[i]);
+    vec2 pl = p - (r.xy + hs);
+    float di = sdRoundBox(pl, hs, uCorners[i]);
+
+    // Union in this widget's Fill/Concave corner atoms. Unrolled rather than
+    // looped so the corner index stays a constant expression.
+    vec4 wx = uWedgeX[i];
+    vec4 wy = uWedgeY[i];
+    di = min(di, sdWedge(cornerLocal(pl, hs, 0), vec2(wx.x, wy.x), uRadius));
+    di = min(di, sdWedge(cornerLocal(pl, hs, 1), vec2(wx.y, wy.y), uRadius));
+    di = min(di, sdWedge(cornerLocal(pl, hs, 2), vec2(wx.z, wy.z), uRadius));
+    di = min(di, sdWedge(cornerLocal(pl, hs, 3), vec2(wx.w, wy.w), uRadius));
     blended = (i == 0) ? di : sminCircular(blended, di, uBlend);
     // Colour comes from the NEAREST widget by its own un-blended distance, so
     // adjacent widgets of different accents meet on a hard seam (as Figma
@@ -253,6 +328,9 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
   const uRects = gl.getUniformLocation(program, 'uRects')
   const uColors = gl.getUniformLocation(program, 'uColors')
   const uCorners = gl.getUniformLocation(program, 'uCorners')
+  const uWedgeX = gl.getUniformLocation(program, 'uWedgeX')
+  const uWedgeY = gl.getUniformLocation(program, 'uWedgeY')
+  const uRadius = gl.getUniformLocation(program, 'uRadius')
   const uBlend = gl.getUniformLocation(program, 'uBlend')
 
   gl.enable(gl.BLEND)
@@ -260,6 +338,8 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
 
   const rectData = new Float32Array(MAX_WIDGETS * 4)
   const colorData = new Float32Array(MAX_WIDGETS * 4)
+  const wedgeXData = new Float32Array(MAX_WIDGETS * 4)
+  const wedgeYData = new Float32Array(MAX_WIDGETS * 4)
 
   return {
     render(widgets, options) {
@@ -279,8 +359,16 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
       const count = Math.min(widgets.length, MAX_WIDGETS)
       rectData.fill(0)
       colorData.fill(0)
+      wedgeXData.fill(0)
+      wedgeYData.fill(0)
       for (let i = 0; i < count; i++) {
         const w = widgets[i]
+        for (let c = 0; c < 4; c++) {
+          const dir = w.corners && WEDGE_DIRECTION[w.corners[c]]
+          if (!dir) continue
+          wedgeXData[i * 4 + c] = dir[0]
+          wedgeYData[i * 4 + c] = dir[1]
+        }
         // Everything is uploaded in DEVICE pixels, so the field is evaluated
         // at true screen resolution rather than being sampled at CSS px and
         // upscaled -- this is what keeps the edge as crisp as vector.
@@ -296,6 +384,16 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
       // everything else.
       const padded = widgets.slice(0, count).map((w) => ({ ...w, x: w.x + options.pad, y: w.y + options.pad }))
       const cornerData = computeCornerRadii(padded, options.radius, options.radius)
+      // A corner carrying a Fill/Concave wedge must keep its BOX corner sharp:
+      // the wedge is what supplies the material there. Rounding it as well
+      // pulls the box back from the vertex while the wedge sits outside it,
+      // leaving a notch between the two so the wedge reads as a detached tab
+      // instead of a smooth continuation.
+      for (let i = 0; i < count; i++) {
+        for (let c = 0; c < 4; c++) {
+          if (wedgeXData[i * 4 + c] !== 0 || wedgeYData[i * 4 + c] !== 0) cornerData[i * 4 + c] = 0
+        }
+      }
       for (let i = 0; i < cornerData.length; i++) cornerData[i] *= dpr
 
       gl.uniform2f(uResolution, pxW, pxH)
@@ -303,6 +401,9 @@ export function createLiquidField(canvas: HTMLCanvasElement): LiquidField | null
       gl.uniform4fv(uRects, rectData)
       gl.uniform4fv(uColors, colorData)
       gl.uniform4fv(uCorners, cornerData)
+      gl.uniform4fv(uWedgeX, wedgeXData)
+      gl.uniform4fv(uWedgeY, wedgeYData)
+      gl.uniform1f(uRadius, options.radius * dpr)
       gl.uniform1f(uBlend, Math.max(0.0001, options.blend * dpr))
 
       gl.clearColor(0, 0, 0, 0)
