@@ -704,11 +704,11 @@
         <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       </div>
       <details class="design-section" open>
-        <summary>Pointer smoothing (test)</summary>
+        <summary>Mouse input (test)</summary>
         <div class="row">
-          <label class="h" for="pointerSmoothingToggle">Rotation</label>
+          <label class="h" for="pointerSmoothingToggle">Pointer</label>
           <button class="act on" id="pointerSmoothingToggle" type="button" aria-pressed="true" aria-describedby="pointerSmoothingNote">〜 Smoothing · On</button>
-          <span class="weather-note" id="pointerSmoothingNote">A mouse sends whole pixels, and fewer times per second than we draw. Off jumps in steps</span>
+          <span class="weather-note" id="pointerSmoothingNote">The mouse reports whole pixels, and only about every third frame &mdash; off, the view stalls, then jumps a whole step</span>
         </div>
         <div class="row">
           <label class="h" for="pointerResponseMs">Response · <span class="val" id="pointerResponseMsVal">—</span></label>
@@ -717,7 +717,7 @@
             <span class="ref-tick" aria-hidden="true"></span>
             <span class="ref-label" id="pointerResponseRefLabel" aria-hidden="true"></span>
           </span>
-          <span class="weather-note">Higher is smoother, and later. The mark is what the keyboard already uses</span>
+          <span class="weather-note">Higher is smoother, but more latency</span>
         </div>
       </details>
       <details class="design-section" open>

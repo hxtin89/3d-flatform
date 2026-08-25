@@ -1998,7 +1998,9 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
   refreshEffectShaders()
 })
 
-// Pointer smoothing for mouse rotation. See navigation.pointerResponseMs for the
+// Pointer smoothing. Covers panning as well as rotation: EnvironmentControls derives
+// both from the same pointerTracker (_updatePosition and _updateRotation, :959 and
+// :960), so easing the pointer reaches both. See navigation.pointerResponseMs for the
 // measurement that motivates it; the toggle is here so the latency it costs can be
 // judged against the judder it removes.
 const NAV = EXPERIENCE_CONFIG.navigation
