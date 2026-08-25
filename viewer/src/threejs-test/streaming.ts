@@ -84,6 +84,7 @@ export interface StreamingLimits {
 
 const MIB = 1024 * 1024
 
+
 // Reused by the ground probe so a per-frame sample allocates nothing.
 const scratchMatrix = new THREE.Matrix4()
 const scratchVector = new THREE.Vector3()
@@ -95,9 +96,13 @@ const DEFAULT_LIMITS: StreamingLimits = {
   cacheMaxBytes: 96 * MIB,
   gpuBytesTarget: 64 * MIB,
   maxDownloads: 6,
-  maxParses: 2,
-  maxProcesses: 4,
-  maxTilesProcessed: 120,
+  // Parsing and node processing are deliberately serialised: with two parses in
+  // flight, four tiles regularly landed in the same frame and their uploads
+  // stacked into one 60 ms hitch. One at a time costs a little latency and
+  // removes the pile-up.
+  maxParses: 1,
+  maxProcesses: 1,
+  maxTilesProcessed: 1,
 }
 
 export function createStreamingCloud(opts: {

@@ -1664,6 +1664,9 @@ window.addEventListener('resize', () => {
 // ---------------------------------------------------------------- streaming / HUD / loop
 let flightEndedAt = -Infinity
 let wasFlying = false
+/** When the last drag/orbit ended, so the refinement ramp can ease back in. */
+let gestureEndedAt = -Infinity
+let wasGesturing = false
 let appliedHighPrecision: boolean | null = null
 
 /**
@@ -1694,6 +1697,18 @@ function updateCloudReveal(): void {
     entranceFlightPending = false
     setPointCloudRevealed(true)
   }
+}
+
+/** True while the user is dragging, orbiting or pinching.
+ *
+ * Streaming during a gesture is what is left of the stutter: measured while
+ * orbiting with tiles still arriving, p95 was 34 ms and 42 of 470 frames ran
+ * past 32 ms, purely from refinement work. The camera is moving, so the finest
+ * level is not readable anyway — holding refinement back until the gesture ends
+ * costs nothing visible and removes the hitching. */
+function isGestureActive(): boolean {
+  // EnvironmentControls.state: 0 = NONE. Anything else is an active interaction.
+  return (globe?.controls as any)?.state !== 0 && globe !== null
 }
 
 function updateMatrixPrecision(now: number): void {
@@ -1803,6 +1818,10 @@ function updateStreaming(now: number): StreamingStats | null {
   // the destination survive until the reveal.
   if (!pointCloudRevealed) return lastStreamStats
 
+  const gesturing = isGestureActive()
+  if (wasGesturing && !gesturing) gestureEndedAt = now
+  wasGesturing = gesturing
+
   const quality = adaptiveQuality.update({
     now,
     fps: fps.fps,
@@ -1820,8 +1839,11 @@ function updateStreaming(now: number): StreamingStats | null {
       bootLoading
         ? EXPERIENCE_CONFIG.lod.bootSse
         : flightSseFloor({
-          flying: cameraFlight.active,
-          msSinceLanding: now - flightEndedAt,
+          // A drag is the same situation as a flight for streaming purposes:
+          // the view is moving, and every tile that arrives mid-gesture pays a
+          // GPU upload inside the frame the user is watching.
+          flying: cameraFlight.active || isGestureActive(),
+          msSinceLanding: now - Math.max(flightEndedAt, gestureEndedAt),
           targetSse: quality.sse,
         }),
     )
