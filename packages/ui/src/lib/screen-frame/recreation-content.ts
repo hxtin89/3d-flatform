@@ -19,10 +19,13 @@
 // cornerOverrides below are pinned only where solveDocking's plain-T-junction
 // default ('convex') diverges from Figma's real authored Corner atoms
 // (confirmed against Figma's own component instances, Giftfrosch-selected
-// arrangement): Vogel's top-left is a Fill-Top bulge (not a plain round),
-// Giftfrosch's bottom-right is a Fill-Left bulge toward Morphofalter, and
-// Morphofalter's left-side corners (touching Giftfrosch) are flush/sharp
-// ('none'), not rounded. These three are pinned; every other corner in this
+// arrangement, via zoomed screenshot comparison): Vogel's top-left is a
+// Fill-Top bulge (not a plain round); Giftfrosch's bottom-right and
+// Morphofalter's left-side corners (the seam where the two meet) are all
+// flush/sharp ('none'), not rounded and NOT a Fill-Left bulge -- an earlier
+// version of this file had Giftfrosch's bottom-right wrong as "fill-left",
+// which rendered a visible curved notch bulging into Morphofalter that
+// Figma's real frame does not have. These are pinned; every other corner in this
 // row keeps solveDocking's solved default since Figma's static file only
 // ever shows ONE arrangement (Giftfrosch selected) and those corners were
 // not independently verified for the other two expand states. BentoGrid
@@ -82,7 +85,11 @@ export const SPECIES_ROW: BentoGridItem[] = [
     accent: "grey-dark",
     icon: frogIcon,
     image: giftfroschImage,
-    cornerOverrides: { bottomRight: "fill-left" },
+    // Sharp/flush ("none"), not a Fill-Left bulge -- confirmed via zoomed
+    // screenshot comparison against the real Figma seam (a plain 90deg
+    // corner, no curve), and consistent with Morphofalter's own matching
+    // bottomLeft below, which was already correctly pinned to "none".
+    cornerOverrides: { bottomRight: "none" },
   },
   // Figma: "S1: Morphofalter (Widget)" @ (720,1560) 300x300
   { id: "morphofalter", x: 660, y: 270, width: 300, height: SPECIES_COLLAPSED_HEIGHT, expandedHeight: SPECIES_EXPANDED_HEIGHT, kind: "species", selectable: true, title: "BLAUER MORPHOFALTER", description: "morpho deidamia", accent: "grey-light", image: butterflyImage, cornerOverrides: { topLeft: "none", bottomLeft: "none" } },
