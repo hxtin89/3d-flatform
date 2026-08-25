@@ -1434,6 +1434,9 @@ function updateMaskFollow(): void {
     ? 1 - smooth01(vignetteSideAngleDeg, vignetteTopAngleDeg, cameraPitchDeg())
     : 0
   if (enuFrameReady) sideAnchorEnu2d(sideAnchor2d)
+  // The fovea slides toward the bottom edge on the same curve, so the two features
+  // anchor alike and there is one definition of "how far into side view we are".
+  foveation?.setTilt(sideFactor)
 
   let missedGround = false
   if (ray.ray.intersectPlane(groundPlane, hitEcef)) {
@@ -1772,7 +1775,9 @@ function updateFoveationGuides(): void {
   const width = window.innerWidth
   const height = window.innerHeight
   const unit = height / 2
-  const centreY = unit - foveationSettings.offsetY * unit
+  // The effective centre, not the slider: with followTilt on, the core moves without
+  // anyone touching a control, and a guide that ignored that would be a lie.
+  const centreY = unit - (foveation?.coreCentreY() ?? foveationSettings.offsetY) * unit
   const halfW = foveationSettings.width * unit
   const halfH = foveationSettings.height * unit
   foveationGuideCoreEl.setAttribute('x', String(width / 2 - halfW))
@@ -1892,6 +1897,23 @@ bindDesignSlider('foveationHeight', FOVEATION.height, asScreenHeights, (v) => {
 })
 bindDesignSlider('foveationOffsetY', FOVEATION.offsetY, asOffset, (v) => {
   foveationSettings.offsetY = v
+  updateFoveationGuides()
+})
+const foveationFollowToggleEl = $<HTMLButtonElement>('#foveationFollowToggle')
+const syncFoveationFollowToggle = () => {
+  const on = foveationSettings.followTilt
+  foveationFollowToggleEl.classList.toggle('on', on)
+  foveationFollowToggleEl.setAttribute('aria-pressed', String(on))
+  foveationFollowToggleEl.textContent = `↧ Follow tilt · ${on ? 'On' : 'Off'}`
+  updateFoveationGuides()
+}
+foveationFollowToggleEl.addEventListener('click', () => {
+  foveationSettings.followTilt = !foveationSettings.followTilt
+  syncFoveationFollowToggle()
+})
+syncFoveationFollowToggle()
+bindDesignSlider('foveationFollowAmount', FOVEATION.followAmount, asScreenHeights, (v) => {
+  foveationSettings.followAmount = v
   updateFoveationGuides()
 })
 bindDesignSlider('foveationFalloff', FOVEATION.falloff, asScreenHeights, (v) => {
@@ -2625,6 +2647,10 @@ function loop(now: number): void {
   updateLoaderVisual(now, stats, globe?.stats().visible ?? 0)
 
   updateHud(stats)
+  // Redrawn per frame, not only when a slider moves: with followTilt on the core
+  // travels as the camera pitches, and a guide that only updated on input would show
+  // the wrong place. Cheap — it returns immediately while the guides are hidden.
+  updateFoveationGuides()
   // Spends a fixed point budget on whatever tiles have arrived and returns
   // immediately once the queue is empty, which it is for all but the first
   // seconds after a tile loads.

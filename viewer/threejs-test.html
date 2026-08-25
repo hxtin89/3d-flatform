@@ -753,9 +753,19 @@
           <span class="weather-note">Blend width out to the corner value. Narrow = visible ring. The dashed outline is where it ends</span>
         </div>
         <div class="row">
-          <label class="h" for="foveationOffsetY">Core position · <span class="val" id="foveationOffsetYVal">—</span></label>
+          <label class="h" for="foveationFollowToggle">Core follows pitch</label>
+          <button class="act on" id="foveationFollowToggle" type="button" aria-pressed="true" aria-describedby="foveationFollowNote">↧ Follow tilt · On</button>
+          <span class="weather-note" id="foveationFollowNote">Looking down, the nearest ground is the middle of the frame. Looking across, it is the bottom edge. On, the core slides down as you tilt &mdash; the same pitch curve the vignette anchors on</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationFollowAmount">Travel · <span class="val" id="foveationFollowAmountVal">—</span></label>
+          <input type="range" id="foveationFollowAmount" min="0" max="1" step="0.01" />
+          <span class="weather-note">How far down the core goes in full side view. 1 reaches the bottom edge</span>
+        </div>
+        <div class="row">
+          <label class="h" for="foveationOffsetY">Core bias · <span class="val" id="foveationOffsetYVal">—</span></label>
           <input type="range" id="foveationOffsetY" min="-1" max="1" step="0.01" />
-          <span class="weather-note">-1 bottom edge, 0 centre, +1 top</span>
+          <span class="weather-note">Shifts the core on top of the pitch travel. -1 down, 0 none, +1 up</span>
         </div>
         <div class="row">
           <label class="h" for="foveationCentre">Core detail · <span class="val" id="foveationCentreVal">—</span></label>

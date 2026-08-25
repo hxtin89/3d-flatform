@@ -44,11 +44,18 @@ export interface FoveationSettings {
   falloff: number
   /**
    * Where the fovea sits on the projected image: -1 is the bottom edge, 0 the
-   * centre, +1 the top. Under tilt the near ground fills the lower screen and the
-   * horizon the upper, so the best place for the core is an open question — hence a
-   * slider rather than a constant.
+   * centre, +1 the top. With followTilt on this is a bias added to the tilt-driven
+   * position rather than the position itself.
    */
   offsetY: number
+  /**
+   * Slide the fovea toward the bottom edge as the camera tilts. The tilt itself is
+   * supplied by the caller through setTilt, so the pitch curve lives in one place and
+   * this module stays a pure image-space calculation.
+   */
+  followTilt: boolean
+  /** How far down the fovea travels at full side view, in half screen heights. */
+  followAmount: number
 }
 
 export interface FoveationStats {
@@ -87,6 +94,14 @@ export interface TileRegion {
 
 export interface Foveation {
   readonly settings: FoveationSettings
+  /**
+   * How far into side view the camera is: 0 looking down, 1 looking across. Supplied
+   * by the caller so the pitch curve is defined once — the vignette's — instead of
+   * twice. Only read while followTilt is on.
+   */
+  setTilt(sideFactor: number): void
+  /** Where the core actually sits this frame, bias and tilt included. */
+  coreCentreY(): number
   /** Reset the per-frame counters. Call immediately before the tiles update. */
   beginFrame(): void
   stats(): FoveationStats
@@ -108,6 +123,8 @@ const scratchBox = new THREE.Box3()
 const scratchObbMatrix = new THREE.Matrix4()
 const scratchCorner = new THREE.Vector3()
 
+const clamp01 = (x: number) => Math.min(Math.max(x, 0), 1)
+
 const smoothstep01 = (x: number) => {
   const t = Math.min(Math.max(x, 0), 1)
   return t * t * (3 - 2 * t)
@@ -128,6 +145,21 @@ export function createFoveation(
   let bestCore = 0
   let bestPeriphery = 0
   let windowStartMs = 0
+  let tilt = 0
+
+  /**
+   * The core's centre on the projected image this frame.
+   *
+   * Looking down, the ground you are closest to is the middle of the frame; looking
+   * across the canopy it is the bottom edge, with the top of the frame kilometres
+   * out. So the core slides down as the camera tilts, and offsetY becomes a bias on
+   * top of that rather than the position itself. Clamped to the frame so a bias
+   * cannot push the core off the image entirely.
+   */
+  const coreCentreY = () => {
+    const followed = settings.followTilt ? -settings.followAmount * clamp01(tilt) : 0
+    return Math.min(Math.max(settings.offsetY + followed, -1), 1)
+  }
 
   // Tile bounding volumes live in the tiles' own root frame, not in world space —
   // the renderer pushes the camera down into that frame rather than lifting the
@@ -207,8 +239,9 @@ export function createFoveation(
     // they overlap, however far out the tile's own corners reach. The tile box is the
     // bounds of the projected corners rather than their hull, which errs toward
     // keeping the core budget — the safe direction.
-    const coreMinY = settings.offsetY - settings.height
-    const coreMaxY = settings.offsetY + settings.height
+    const centreY = coreCentreY()
+    const coreMinY = centreY - settings.height
+    const coreMaxY = centreY + settings.height
     const dx = Math.max(footprint.minX - settings.width, -settings.width - footprint.maxX, 0)
     const dy = Math.max(coreMinY - footprint.maxY, footprint.minY - coreMaxY, 0)
     footprint.nearest = Math.hypot(dx, dy)
@@ -346,6 +379,12 @@ export function createFoveation(
       }
       return out
     },
+    setTilt(sideFactor) {
+      tilt = sideFactor
+    },
+
+    coreCentreY,
+
     stats() {
       const target = tiles.errorTarget || 0
       return {

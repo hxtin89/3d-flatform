@@ -103,8 +103,33 @@ export const EXPERIENCE_CONFIG = {
       height: 0.35,
       // How far past the core the blend to the corner factor takes, same unit.
       falloff: 1.25,
-      // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top.
+      // Fovea centre on the projected image: -1 bottom edge, 0 centre, +1 top. With
+      // followTilt on this is a bias added to the tilt-driven position rather than the
+      // position itself.
       offsetY: 0,
+      /**
+       * Slide the fovea toward the bottom edge as the camera tilts, reusing the
+       * vignette's own pitch curve (design.vignettePosition.sideAngleDeg and
+       * topAngleDeg) so the two features anchor alike.
+       *
+       * Looking down, what you are closest to is the middle of the frame. Looking
+       * across the canopy it is the bottom edge — the top of the frame is kilometres
+       * away. A fixed centre therefore spends the core budget on the far field exactly
+       * when the near field needs it most.
+       *
+       * The vignette gets this for free because its anchor is a world point that blends
+       * onto the camera itself, and a ground point at the camera lands at the bottom of
+       * the screen. That anchor cannot simply be projected here: at zero forward offset
+       * it sits *on* the camera, where the projection is degenerate. So the pitch curve
+       * is shared instead of the anchor, which is also smoother — no term running to
+       * infinity as the camera levels out.
+       */
+      followTilt: true,
+      /**
+       * How far down the fovea travels at full side view, in half screen heights.
+       * 1 puts it on the bottom edge, 0.5 halfway there.
+       */
+      followAmount: 1,
     },
     // Drawn point size in CSS pixels as a continuous function of camera height
     // over the cloud floor — three fixed bands visibly stepped while zooming.
