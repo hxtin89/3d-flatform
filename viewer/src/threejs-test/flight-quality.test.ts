@@ -3,13 +3,13 @@ import test from 'node:test'
 import { EXPERIENCE_CONFIG } from './config.ts'
 import { flightSseFloor } from './flight-quality.ts'
 
-const { flightSse, flightSseRampMs, aphDetailSse } = EXPERIENCE_CONFIG.lod
-const floor = (msSinceLanding: number, targetSse = aphDetailSse, flying = false) =>
+const { flightSse, flightSseRampMs, sse } = EXPERIENCE_CONFIG.lod
+const floor = (msSinceLanding: number, targetSse = sse, flying = false) =>
   flightSseFloor({ flying, msSinceLanding, targetSse })
 
 test('the flight is pinned to the coarse floor regardless of elapsed time', () => {
-  assert.equal(floor(0, aphDetailSse, true), flightSse)
-  assert.equal(floor(99_999, aphDetailSse, true), flightSse)
+  assert.equal(floor(0, sse, true), flightSse)
+  assert.equal(floor(99_999, sse, true), flightSse)
 })
 
 test('the ramp starts at the flight floor and releases after its duration', () => {
@@ -25,7 +25,7 @@ test('the ramp falls monotonically and passes the midpoint in log space', () => 
   // Halfway through, smoothstep is exactly 0.5, so log-interpolation lands on
   // the geometric mean — the point of ramping in log space rather than linearly.
   const half = floor(flightSseRampMs / 2)
-  assert.ok(Math.abs(half - Math.sqrt(flightSse * aphDetailSse)) < 1e-9)
+  assert.ok(Math.abs(half - Math.sqrt(flightSse * sse)) < 1e-9)
 })
 
 test('the ramp always stays between its two endpoints', () => {

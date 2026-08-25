@@ -16,8 +16,8 @@ import {
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
+import { densityCeilingForRange } from './viewer-request-volume'
 import { fetchGlobeManifest } from './manifest'
-import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
@@ -318,7 +318,6 @@ function applyBenchPreset(): void {
   if (preset === 'strong') {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.25
-    adaptiveQuality.setPressureFloor(1)
     environmentLayer?.applyMeasuredTier('strong')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
     // A settled Detail p100 view measures ~220 MB. Budgets below that evict
@@ -330,7 +329,6 @@ function applyBenchPreset(): void {
   } else if (preset === 'medium') {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1.1
-    adaptiveQuality.setPressureFloor(1.4)
     environmentLayer?.applyMeasuredTier('balanced')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
     if (options.presetBudgets) {
@@ -342,7 +340,6 @@ function applyBenchPreset(): void {
   } else {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
     presetPixelRatioCap = 1
-    adaptiveQuality.setPressureFloor(2)
     environmentLayer?.applyMeasuredTier('constrained')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.constrained
     // Previously left at the library default of 96 MB, which thrashes for the
@@ -455,7 +452,6 @@ const camera = new THREE.PerspectiveCamera(
   EXPERIENCE_CONFIG.atmosphere.maximumFarM,
 )
 const uniforms = createUniforms()
-const adaptiveQuality = new AdaptiveQualityController(pointTree === 'aph' ? APH_BAND_SSE : undefined)
 const fps = new Fps()
 // Owns the frame's draw call: it either routes the scene through the DoF pass or
 // falls back to renderer.render, so there is one render path either way.
@@ -515,7 +511,13 @@ let audioLayer: AudioLayer | null = null
 let modelTransformEditor: ModelTransformEditor | null = null
 let cloudNoiseTexture: THREE.Data3DTexture | null = null
 let lastStreamStats: StreamingStats | null = null
+/** The one fidelity control, in CSS pixels of on-screen point spacing. The design
+ * panel writes it; nothing else does. */
+let sseTarget: number = EXPERIENCE_CONFIG.lod.sse
+/** What the streamer is actually running at: sseTarget, or a brake above it. */
 let sseAuto = 256
+/** One-LOD tiers the camera may load — 0 = p02 only. Sticky, hence held here. */
+let densityCeiling = 0
 let cameraGroundRange = Infinity
 /** Refinement distance. Kept apart from cameraGroundRange, which measures the
  * screen-centre look-at point and runs to kilometres near the horizon. */
@@ -1865,28 +1867,17 @@ function updateFoveationTiles(): void {
   foveationTilesEl.replaceChildren(...nodes)
 }
 
-// Band lock. Not part of foveation, but it sits in the same panel because it is what
-// makes the two multipliers comparable: without it the base moves under you.
-const BAND_LOCK = EXPERIENCE_CONFIG.lod.bandLock
-let bandLockOn: boolean = BAND_LOCK.enabled
-let bandLockSse: number = BAND_LOCK.sse
-const bandLockToggleEl = $<HTMLButtonElement>('#bandLockToggle')
-const syncBandLockToggle = () => {
-  bandLockToggleEl.classList.toggle('on', bandLockOn)
-  bandLockToggleEl.setAttribute('aria-pressed', String(bandLockOn))
-  bandLockToggleEl.textContent = bandLockOn ? '🔒 Band · Locked' : '🔒 Band · Ladder'
-}
-bandLockToggleEl.addEventListener('click', () => {
-  bandLockOn = !bandLockOn
-  syncBandLockToggle()
-})
-syncBandLockToggle()
-
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
 const asOffset = (value: number) =>
   value === 0 ? 'centre' : `${value > 0 ? 'up' : 'down'} ${Math.abs(value).toFixed(2)}`
-bindDesignSlider('bandLockSse', BAND_LOCK.sse, (v) => `SSE ${v}`, (v) => { bandLockSse = v })
+// The fidelity control itself. It shares a panel with foveation because the
+// foveation factors multiply this target: their two readouts only mean anything
+// against a base you can see. What the target resolves to is written by the frame
+// loop, so this slider only stores it.
+bindDesignSlider('sseTarget', EXPERIENCE_CONFIG.lod.sse, (v) => `${v} px apart`, (v) => {
+  sseTarget = v
+})
 bindDesignSlider('foveationWidth', FOVEATION.width, asScreenHeights, (v) => {
   foveationSettings.width = v
   updateFoveationGuides()
@@ -2403,45 +2394,37 @@ function updateStreaming(now: number): StreamingStats | null {
   // the destination survive until the reveal.
   if (!pointCloudRevealed) return lastStreamStats
 
-  const quality = adaptiveQuality.update({
-    now,
-    fps: fps.fps,
-    visiblePoints: lastStreamStats?.points ?? 0,
-    cameraGroundRange: cameraCloudRange,
-  })
-  // With the brakes toggled off the density ladder speaks alone — the
-  // comparison subject against the Cesium viewer.
-  // Locked, the ladder is bypassed but the brakes below are not: pinning to 1 during
-  // the entrance flight would stream the whole survey at full detail for nothing.
-  const laddered = bandLockOn ? bandLockSse : quality.sse
+  // One number decides fidelity: how far apart the drawn points may sit on screen.
+  // It is not scaled by camera range — the renderer's own error quotient already
+  // divides by distance, so a constant here means constant on-screen point spacing
+  // at every range. The brakes below are the only things allowed to raise it, and
+  // both are about *time* rather than distance: frames nobody sees.
   const targetSse = renderOptions.effective().leafLoading
     // Low SSE forces the selected APH branches through to their leaves. It is
     // deliberately scoped to the current camera frustum by TilesRenderer.
     ? 0.25
     : renderOptions.effective().sseBrakes
       ? Math.max(
-        laddered,
+        sseTarget,
         bootLoading
           ? EXPERIENCE_CONFIG.lod.bootSse
           : flightSseFloor({
             flying: cameraFlight.active,
             msSinceLanding: now - flightEndedAt,
-            targetSse: laddered,
+            targetSse: sseTarget,
           }),
       )
-      : laddered
+      : sseTarget
   if (Math.abs(targetSse - sseAuto) > 0.25) {
     sseAuto = targetSse
     stream.setErrorTarget(sseAuto)
   }
-  // The band is the density contract: overview far out, detail up close. The
-  // error target alone does not enforce it — a distant camera still fetches
-  // p100 tiles and buries a phone — so the ceiling is set from the same band.
-  // While the loader is up, stay on the cheapest tier.
-  //
-  // Only under ?tree=one-lod. On the default APH tree there are no request volumes, so
-  // ViewerRequestVolumePlugin is never registered and this is an optional-chain no-op.
-  stream.setDensityCeiling(bootLoading ? 0 : 2 - quality.band)
+  // Only under ?tree=one-lod, where the density tiers live in separate documents and
+  // the error target alone does not keep p100 dormant. On the default APH tree there
+  // are no request volumes, ViewerRequestVolumePlugin is never registered, and this is
+  // an optional-chain no-op. While the loader is up, stay on the cheapest tier.
+  densityCeiling = bootLoading ? 0 : densityCeilingForRange(cameraCloudRange, densityCeiling)
+  stream.setDensityCeiling(densityCeiling)
   applyPointSize()
 
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
@@ -2563,9 +2546,9 @@ let lastFoveationTilesMs = 0
 /** Pitch next to the resulting error targets, so a liked slider position can be
  * written down against the camera angle that produced it. */
 function updateFoveationReadout(): void {
-  // The two factors multiply a base that moves with camera range, so the multiplier
-  // alone is not a number anyone can act on. Written here rather than in the slider's
-  // own format callback because the base changes without the slider being touched.
+  // The two factors multiply the error target, so the multiplier alone is not a number
+  // anyone can act on. Written here rather than in the slider's own format callback
+  // because the brakes move the base without the slider being touched.
   foveationCentreValEl.textContent =
     `${foveationSettings.centreFactor.toFixed(2)}× · SSE ${(sseAuto * foveationSettings.centreFactor).toFixed(1)}`
   foveationEdgeValEl.textContent =
@@ -2579,7 +2562,7 @@ function updateFoveationReadout(): void {
   }
   const { core, periphery, coreSse, edgeSse } = foveation.stats()
   foveationReadoutEl.textContent =
-    `${cameraPitchDeg().toFixed(0)}° down · base ${sseAuto.toFixed(1)}${bandLockOn ? ' locked' : ''}`
+    `${cameraPitchDeg().toFixed(0)}° down · base ${sseAuto.toFixed(1)}`
     + ` · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
 }
 

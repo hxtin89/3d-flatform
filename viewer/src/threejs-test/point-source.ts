@@ -4,11 +4,10 @@
 //   2. resolve (zoom band + camera position) -> one concrete tileset URL.
 // No three.js state lives here; main.ts owns the renderer and the swap itself.
 import { EXPERIENCE_CONFIG } from './config'
-import { APH_BAND_SSE, ONE_LOD_BAND_SSE } from './adaptive-quality'
 import type { GlobeManifest, ManifestArea } from './manifest'
 import type { StreamingLimits } from './streaming'
 
-/** 0 = detail, 1 = explore, 2 = overview — same indices as AdaptiveQualityState. */
+/** 0 = detail, 1 = explore, 2 = overview. */
 export type ZoomBand = 0 | 1 | 2
 
 /** Assignment value meaning "whatever the session's base tree is". */
@@ -31,7 +30,6 @@ export interface PointPack {
   available: boolean
   requestVolumes: boolean
   limits?: Partial<StreamingLimits>
-  ladder: readonly number[]
   /** areaId -> dataset path. Global packs use the single key `*`. */
   datasets: Map<string, string>
   tilesetFile: string
@@ -47,7 +45,6 @@ export interface ResolvedSource {
   label: string
   requestVolumes: boolean
   limits?: Partial<StreamingLimits>
-  ladder: readonly number[]
 }
 
 export interface PointSourceController {
@@ -132,7 +129,6 @@ export function createPointSource(opts: {
       // reference runs a 1 GiB cache, the One-LOD defaults would evict
       // close-range nodes as fast as they arrive.
       limits: { cacheMinBytes: 256 * MIB, cacheMaxBytes: 768 * MIB, cacheMaxTiles: 1200, gpuBytesTarget: 384 * MIB },
-      ladder: APH_BAND_SSE,
       datasets: new Map([[GLOBAL_AREA, manifest.adaptiveHierarchyDataset]]),
       tilesetFile: manifest.adaptiveHierarchyTilesetFile,
     },
@@ -143,15 +139,13 @@ export function createPointSource(opts: {
       status: 'ready',
       available: true,
       requestVolumes: true,
-      ladder: ONE_LOD_BAND_SSE,
       datasets: new Map([[GLOBAL_AREA, manifest.oneLodTreeDataset]]),
       tilesetFile: manifest.oneLodTreeTilesetFile,
     },
   ]
 
   // Manifest packs. Single-density trees carry no viewer request volumes, so the
-  // VRV plugin would only add traversal cost, and their nodes are the p02/p10/p100
-  // ones — the One-LOD ladder, never the APH one.
+  // VRV plugin would only add traversal cost.
   for (const [key, entry] of Object.entries(manifest.globalDatasets)) {
     packs.push({
       id: `global:${key}`,
@@ -161,7 +155,6 @@ export function createPointSource(opts: {
       available: entry.status === 'ready',
       requestVolumes: false,
       limits: limitsForDataset(entry.dataset),
-      ladder: ONE_LOD_BAND_SSE,
       datasets: entry.status === 'ready' ? new Map([[GLOBAL_AREA, entry.dataset]]) : new Map(),
       tilesetFile: 'tileset.json',
     })
@@ -182,7 +175,6 @@ export function createPointSource(opts: {
           available: false,
           requestVolumes: false,
           limits: limitsForDataset(entry.dataset),
-          ladder: ONE_LOD_BAND_SSE,
           datasets: new Map(),
           tilesetFile: 'tileset.json',
         }
@@ -222,7 +214,6 @@ export function createPointSource(opts: {
       label: pack.label,
       requestVolumes: pack.requestVolumes,
       limits: pack.limits,
-      ladder: pack.ladder,
     }
   }
 

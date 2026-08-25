@@ -1,5 +1,32 @@
 import * as THREE from 'three'
 
+import { EXPERIENCE_CONFIG } from './config'
+
+/**
+ * Highest One-LOD tier a camera at this range may load: 0 = p02, 1 = p10, 2 = p100.
+ *
+ * Only the `?tree=one-lod` comparison route needs this. There the tiers live in
+ * separate documents, and the screen-space error alone does not keep p100 dormant —
+ * a distant camera fetches full-density tiles and buries a phone. The default APH
+ * tree is one continuous quadtree where the error target governs on its own, and
+ * this plugin is not even registered for it.
+ *
+ * Sticky, like the density ladder it was carved out of: a tier is only left once the
+ * range is a clear margin past its edge. This gates *loading*, so flapping on an
+ * edge costs real fetches.
+ */
+export function densityCeilingForRange(range: number, previous: number): number {
+  if (!Number.isFinite(range)) return 0
+  const edges = [EXPERIENCE_CONFIG.lod.detailMaxHeightM, EXPERIENCE_CONFIG.lod.exploreMaxHeightM]
+  const margin = EXPERIENCE_CONFIG.lod.bandHysteresis
+  // Work in bands — 0 nearest, 2 furthest — because the edges are ordered that way.
+  // The ceiling is their inverse: nearest camera, densest tier allowed.
+  let band = 2 - Math.max(0, Math.min(2, Math.round(previous)))
+  while (band < edges.length && range > edges[band] * (1 + margin)) band++
+  while (band > 0 && range < edges[band - 1] * (1 - margin)) band--
+  return 2 - band
+}
+
 type RequestVolume = {
   box?: number[]
   sphere?: number[]

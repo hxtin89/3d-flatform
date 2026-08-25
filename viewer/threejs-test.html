@@ -721,21 +721,16 @@
         </div>
       </details>
       <details class="design-section" open>
-        <summary>Foveated detail (test)</summary>
+        <summary>Detail (test)</summary>
+        <div class="row">
+          <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>
+          <input type="range" id="sseTarget" min="0.5" max="32" step="0.5" />
+          <span class="weather-note">The one detail control: how far apart the drawn points may sit on screen. A tile keeps refining while its own points project wider than this. Distance is already inside that measure, so one value covers every camera range. Boot and flight brakes still raise it temporarily</span>
+        </div>
         <div class="row">
           <label class="h" for="foveationToggle">Foveation</label>
           <button class="act" id="foveationToggle" type="button" aria-pressed="false" aria-describedby="foveationNote">◎ Fovea · Off</button>
           <span class="weather-note" id="foveationNote">Full detail in a core, coarser outward. Distance is already handled per tile — this only picks <em>where in the frame</em></span>
-        </div>
-        <div class="row">
-          <label class="h" for="bandLockToggle">Band lock</label>
-          <button class="act" id="bandLockToggle" type="button" aria-pressed="false" aria-describedby="bandLockNote">🔒 Band · Ladder</button>
-          <span class="weather-note" id="bandLockNote">Pins the base SSE instead of taking it from the 4/8/16 ladder. The ladder's hysteresis means the same height can carry 4 or 8 depending on which way you flew in — locked, the two multipliers below sit on a constant. Boot and flight brakes still apply</span>
-        </div>
-        <div class="row">
-          <label class="h" for="bandLockSse">Locked base · <span class="val" id="bandLockSseVal">—</span></label>
-          <input type="range" id="bandLockSse" min="0.5" max="64" step="0.5" />
-          <span class="weather-note">Only in effect while the lock is on</span>
         </div>
         <div class="row">
           <label class="h" for="foveationWidth">Core width · <span class="val" id="foveationWidthVal">—</span></label>

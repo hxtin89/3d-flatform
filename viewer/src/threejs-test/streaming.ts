@@ -8,7 +8,7 @@ import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
   POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
-import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
+import { denserBand, densityBandForUri, type DensityBand } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import { EXPERIENCE_CONFIG } from './config'
 

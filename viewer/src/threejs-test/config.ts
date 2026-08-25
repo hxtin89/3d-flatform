@@ -24,30 +24,37 @@ export const EXPERIENCE_CONFIG = {
     cloudRevealProgress: { strong: 0.55, medium: 0.85, constrained: 1 },
   },
   lod: {
-    // Distance at which each density band takes over. Named "Height" because the
-    // metric used to be plain altitude; it is now the slant range to the ground ahead
-    // (see maxTiltRangeFactor), so these edges are only heights when looking straight
-    // down. At 45 degrees the detail edge below is reached at 106 m of altitude.
-    // Distance alone decides density; frame rate is paid for elsewhere (vignette
-    // mask, parrot count, cloud quality).
-    // Must stay above navigation.zoomStopHeightM, otherwise the finest band is
-    // unreachable: the camera never gets closer than the zoom stop.
+    /**
+     * The one fidelity control: how far apart the drawn points may sit on screen,
+     * in CSS pixels.
+     *
+     * This is the renderer's `errorTarget`, and for this data it reads literally.
+     * A tile's `geometricError` is `sqrt(area / pointCount)` — its own mean point
+     * spacing in metres — so the renderer's `geometricError / (distance *
+     * sseDenominator)` is that spacing projected onto the image. A tile refines
+     * while its projected spacing is wider than this number.
+     *
+     * Because that quotient already contains the distance, one constant covers
+     * every camera range: constant spacing on screen means near-constant point
+     * count whether the camera is 80 m or 5 km out. The three-band ladder this
+     * replaced (16 / 8 / 4 by camera range) counted distance a second time, which
+     * only made far views coarser than the pixel budget required.
+     *
+     * 4 was the old detail band and matches the Cesium reference: measured on
+     * desktop WebGPU it selects ~10M points at a held 60 fps, so the quad
+     * expansion three.js needs (WebGPU has no sized point primitive) still fits
+     * inside the frame budget.
+     */
+    sse: 4,
+    // Camera ranges at which the One-LOD-Tree density ceiling opens up p10 and
+    // p100 — the ?tree=one-lod comparison route only, where the tiers live in
+    // separate documents and the error target alone cannot keep p100 dormant.
+    // Named "Height" because the metric used to be plain altitude; it is the slant
+    // range to the ground ahead (see maxTiltRangeFactor), so these are only heights
+    // when looking straight down.
     detailMaxHeightM: 150,
     exploreMaxHeightM: 2_500,
-    // Screen-space error target per band, coarse to fine.
-    overviewSse: 256,
-    exploreSse: 124,
-    detailSse: 64,
-    // Same three bands against the Adaptive Point Hierarchy, whose nodes carry
-    // far more points. These match the Cesium reference ladder (far 16 /
-    // approach 8 / detail 4). Measured on desktop WebGPU: SSE 4 selects ~10M
-    // points at a held 60 fps, so the quad expansion three.js needs (WebGPU has
-    // no sized point primitive) still fits inside the frame budget. Weak devices
-    // are handled by the pressure controller, not by a coarser ladder here.
-    aphDetailSse: 4,
-    aphExploreSse: 8,
-    aphOverviewSse: 16,
-    // Margin a band keeps past its edge, so drift cannot flip the level.
+    // Margin the ceiling keeps past an edge, so drift cannot flip the tier.
     bandHysteresis: 0.15,
     /**
      * Correct the screen-space error for the angle the ground is seen at — see
@@ -60,32 +67,22 @@ export const EXPERIENCE_CONFIG = {
       minCosine: 0.1,
     },
     /**
-     * Ceiling on how much the view angle may stretch the refinement distance.
+     * Ceiling on how much the view angle may stretch the camera's reported range.
      *
-     * The distance is the slant range to the ground ahead, altitude / sin(pitch),
+     * The range is the slant distance to the ground ahead, altitude / sin(pitch),
      * which goes to infinity as the camera levels out. The raycast version of this
      * was dropped for exactly that reason — it swung kilometres per degree near the
      * horizon. Clamping the sine instead keeps the metric analytic and bounded: at 6
      * the range can reach six times the altitude and no further.
+     *
+     * Since the error target became a constant this feeds only the HUD readout and
+     * the One-LOD density ceiling; the APH refinement path does not read it.
      */
     maxTiltRangeFactor: 6,
-    /**
-     * Pin the screen-space error target instead of taking it from the band ladder.
-     * A testing aid: the ladder plus its hysteresis means the same camera height can
-     * carry either 4 or 8 depending on which way you arrived, so two settings
-     * compared across a band edge are not comparable at all. Locked, everything the
-     * foveation factors multiply is a constant. The boot and flight brakes still
-     * apply on top, and leaf loading still overrides both.
-     */
-    bandLock: {
-      enabled: false,
-      sse: 8,
-    },
-    // Foveated detail: redistribute the band above across the image instead of
-    // raising it everywhere. The factors multiply whatever screen-space error the
-    // adaptive controller has chosen, so the band still follows camera range and
-    // foveation only decides where inside the frame that budget lands. Off by
-    // default until the position below is measured against real camera pitches.
+    // Foveated detail: redistribute the error target across the image instead of
+    // raising it everywhere. The factors multiply whatever screen-space error is
+    // set, so foveation only decides where inside the frame that budget lands. Off
+    // by default until the position below is measured against real camera pitches.
     foveation: {
       enabled: false,
       // Below 1 buys detail in the core; 1 leaves the core exactly as it is today.
