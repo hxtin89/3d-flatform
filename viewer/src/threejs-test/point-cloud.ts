@@ -471,6 +471,31 @@ export function rebuildEffectMaterial(material: any): void {
 }
 
 /** Apply the current precision mode to one already-built material. */
+/**
+ * Swap the model-view matrix source on a live material.
+ *
+ * Toggling this changes a few scattered pixels, which looks alarming and is not.
+ * Nothing about the colour changes: every colour term in this file derives from
+ * `positionWorld`, which three defines as `modelWorldMatrix * positionLocal` and which
+ * therefore never sees the matrix this swaps. What changes is only the clip position and
+ * the depth — measured with the floating origin active, 0.0016 px laterally and 0.1 mm
+ * in depth.
+ *
+ * That is enough to flip individual pixels, for two reasons that both need only a
+ * sub-millimetre change:
+ *   - the depth test picks a different winner. Overdraw runs about 20x, so ~20 quads
+ *     cover each pixel; wherever the two frontmost sit within 0.1 mm of each other, the
+ *     rounding decides which one is drawn, and each point carries its own colour.
+ *   - a quad's hard edge flips. Points are ~4 px quads cut to a circle by Discard() with
+ *     antialias off, so a pixel centre sitting on that edge switches between drawn and
+ *     discarded, revealing whatever is behind it.
+ *
+ * Both scatter isolated pixels rather than shifting anything, which is exactly what it
+ * looks like. With hard-edged points at more than one per pixel the image is a step
+ * function of position: it cannot be bit-identical under any change, however small. What
+ * matters is that nothing moves — see navigation.originRebase* for why the error is this
+ * small in the first place.
+ */
 export function applyMatrixPrecision(material: any): void {
   if (!material) return
   const next = highPrecisionMatrices ? HIGH_PRECISION_CONTEXT : null

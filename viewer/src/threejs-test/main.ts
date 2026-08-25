@@ -410,7 +410,13 @@ document.querySelectorAll<HTMLButtonElement>('.close').forEach((button) => {
 
 // ---------------------------------------------------------------- renderer / scene
 const canvas = $<HTMLCanvasElement>('#view')
-const renderer = new WebGPURenderer({ canvas, antialias: false, forceWebGL } as any)
+// GPU timing behind ?gputime, because trackTimestamp is a constructor parameter and
+// cannot be flipped later. Wall-clock frame time is useless for comparing GPU cost on a
+// vsync-locked display — it snaps to whole refresh intervals — so measuring anything
+// about shading cost needs the real timestamps.
+const renderer = new WebGPURenderer({
+  canvas, antialias: false, forceWebGL, trackTimestamp: params.has('gputime'),
+} as any)
 // A device-independent cap avoids allocating a native 3x iPhone backbuffer while
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
@@ -2785,6 +2791,16 @@ async function main(): Promise<void> {
     get range() { return rangeDebug },
     get controls() { return globe?.controls ?? null },
     mask: groundPatchMask,
+    /**
+     * GPU milliseconds for the last frame. Zero unless started with ?gputime, and the
+     * query pool has to be resolved before info carries anything, so this is async.
+     * Wall-clock frame time cannot answer questions about shading cost on a vsync-locked
+     * display: it snaps to whole refresh intervals.
+     */
+    async resolveGpuMs() {
+      await (renderer as any).resolveTimestampsAsync?.()
+      return (renderer.info as any).render?.timestamp ?? 0
+    },
     /** Diagnostic: what the mask holds under a screen pixel. */
     probeMask: probeMaskAt,
     /** Floating origin: the two ENU frames and where the origin currently sits.
