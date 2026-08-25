@@ -23,6 +23,12 @@ import type { MemoryBudgetSnapshot } from './streaming'
 export interface Globe {
   tiles: TilesRenderer
   controls: GlobeControls
+  /**
+   * Time constant in ms for easing the rotation pointer, 0 to disable. See the
+   * comment where it is installed — this exists because a mouse reports whole
+   * device pixels far more coarsely than the frame rate consumes them.
+   */
+  setPointerSmoothing(ms: number): void
   ellipsoid: any
   update(constrainCamera?: () => void): void
   setResolution(): void
@@ -163,6 +169,61 @@ export function createGlobe(opts: {
   controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true
 
+  // Ease the rotation pointer toward where the mouse actually is, once per frame.
+  //
+  // The controls derive rotation from (pointer - previousPointer), and previousPointer
+  // is refreshed once per frame by pointerTracker.updateFrame(). A mouse, though,
+  // reports whole device pixels at its own rate, so most frames see no movement and
+  // the occasional one sees a whole pixel step — a visible judder on mouse rotation
+  // that the keyboard, being time-based, never had. The library's damping only applies
+  // inertia after the drag is released, so it does not help here.
+  //
+  // updateFrame() runs at EnvironmentControls.js:1033, after _updateRotation() at :960,
+  // so easing the live position here is read as a smooth step on the *next* frame and
+  // previousPointer stays consistent with it.
+  const tracker = (controls as any).pointerTracker
+  const pointerTargets: Record<number, THREE.Vector2> = {}
+  let smoothingMs: number = EXPERIENCE_CONFIG.navigation.pointerSmoothingMs
+  let lastEaseMs = 0
+  const originalUpdatePointer = tracker.updatePointer.bind(tracker)
+  tracker.updatePointer = (event: PointerEvent) => {
+    if (smoothingMs <= 0) return originalUpdatePointer(event)
+    const id = event.pointerId
+    const live = tracker.pointerPositions[id]
+    if (!live) return originalUpdatePointer(event)
+    // Let the original compute the raw position, then keep it as the target and put the
+    // eased value back, so nothing downstream ever sees the raw jump.
+    const eased = live.clone()
+    const ok = originalUpdatePointer(event)
+    if (ok) {
+      ;(pointerTargets[id] ??= new THREE.Vector2()).copy(live)
+      live.copy(eased)
+    }
+    return ok
+  }
+  const originalUpdateFrame = tracker.updateFrame.bind(tracker)
+  tracker.updateFrame = () => {
+    originalUpdateFrame()
+    const now = performance.now()
+    const elapsed = lastEaseMs ? Math.min(now - lastEaseMs, 100) : 0
+    lastEaseMs = now
+    if (smoothingMs <= 0 || elapsed <= 0) return
+    // Time-based, so the feel does not change with frame rate.
+    const alpha = 1 - Math.exp(-elapsed / smoothingMs)
+    for (const id in tracker.pointerPositions) {
+      const target = pointerTargets[id as unknown as number]
+      if (target) tracker.pointerPositions[id].lerp(target, alpha)
+    }
+  }
+  const setPointerSmoothing = (ms: number) => {
+    smoothingMs = Math.max(0, ms)
+    // Drop any easing in flight, or turning it off would leave a stale offset behind.
+    for (const id in tracker.pointerPositions) {
+      const target = pointerTargets[id as unknown as number]
+      if (target) tracker.pointerPositions[id].copy(target)
+    }
+  }
+
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
   setResolution()
 
@@ -175,6 +236,7 @@ export function createGlobe(opts: {
   return {
     tiles,
     controls,
+    setPointerSmoothing,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget,
     getMemoryBudget() {

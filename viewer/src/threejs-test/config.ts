@@ -175,6 +175,22 @@ export const EXPERIENCE_CONFIG = {
     originRebaseMinM: 500,
     originRebaseMaxM: 20_000,
     originRebaseRangeFactor: 4,
+    /**
+     * Time constant, in milliseconds, for easing the rotation pointer toward where the
+     * mouse actually is. 0 disables it.
+     *
+     * A mouse reports whole device pixels at roughly 125 Hz while the frame runs at
+     * 120-160, so measured over a real drag: 699 pointer events across 2065 rotating
+     * frames, every step exactly 0.8 CSS px (one device pixel at dpr 1.25), and a p90
+     * angular jerk of 8.7e-3 rad against a per-pixel quantum of 6.4e-3. Two frames in
+     * three the rotation does not move at all and the third jumps a whole step, which
+     * is the one-pixel judder that only ever showed on mouse rotation and never on the
+     * keyboard, which is time-based to begin with.
+     *
+     * The library's own damping does not cover this: inertia is applied only once the
+     * drag is released, not during it.
+     */
+    pointerSmoothingMs: 50,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.

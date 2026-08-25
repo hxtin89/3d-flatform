@@ -694,6 +694,19 @@
         <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       </div>
       <details class="design-section" open>
+        <summary>Pointer smoothing (test)</summary>
+        <div class="row">
+          <label class="h" for="pointerSmoothingToggle">Rotation</label>
+          <button class="act on" id="pointerSmoothingToggle" type="button" aria-pressed="true" aria-describedby="pointerSmoothingNote">〜 Smoothing · On</button>
+          <span class="weather-note" id="pointerSmoothingNote">A mouse reports whole device pixels at about 125 Hz while the frame runs at 120–160, so two frames in three the rotation does not move and the third jumps a whole pixel step — measured at a p90 angular jerk of 8.7e-3 rad against a pixel quantum of 6.4e-3. This eases the pointer toward its raw position on a time constant instead, which costs a little latency. Off is the old behaviour, for comparison</span>
+        </div>
+        <div class="row">
+          <label class="h" for="pointerSmoothingMs">Time constant · <span class="val" id="pointerSmoothingMsVal">—</span></label>
+          <input type="range" id="pointerSmoothingMs" min="0" max="160" step="5" />
+          <span class="weather-note">Higher is smoother and laggier. Around 50 ms spreads one pixel step over three or four frames, which is where the steps stop being visible without the drag feeling detached</span>
+        </div>
+      </details>
+      <details class="design-section" open>
         <summary>Foveated detail (test)</summary>
         <div class="row">
           <label class="h" for="foveationToggle">Foveation</label>

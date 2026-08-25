@@ -1998,6 +1998,27 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
   refreshEffectShaders()
 })
 
+// Pointer smoothing for mouse rotation. See navigation.pointerSmoothingMs for the
+// measurement that motivates it; the toggle is here so the latency it costs can be
+// judged against the judder it removes.
+const NAV = EXPERIENCE_CONFIG.navigation
+let pointerSmoothingOn = NAV.pointerSmoothingMs > 0
+let pointerSmoothingMs: number = NAV.pointerSmoothingMs
+const pointerSmoothingToggleEl = $<HTMLButtonElement>('#pointerSmoothingToggle')
+const applyPointerSmoothing = () => {
+  globe?.setPointerSmoothing(pointerSmoothingOn ? pointerSmoothingMs : 0)
+}
+pointerSmoothingToggleEl.addEventListener('click', () => {
+  pointerSmoothingOn = !pointerSmoothingOn
+  pointerSmoothingToggleEl.classList.toggle('on', pointerSmoothingOn)
+  pointerSmoothingToggleEl.setAttribute('aria-pressed', String(pointerSmoothingOn))
+  pointerSmoothingToggleEl.textContent = `〜 Smoothing · ${pointerSmoothingOn ? 'On' : 'Off'}`
+  applyPointerSmoothing()
+})
+bindDesignSlider('pointerSmoothingMs', NAV.pointerSmoothingMs, (v) => `${Math.round(v)} ms`, (v) => {
+  pointerSmoothingMs = v; applyPointerSmoothing()
+})
+
 // Ground patch under the point cloud. Off both zeroes the amount and compiles the
 // patch out of the tile shaders, so it costs nothing; switching it back on restores
 // whatever the slider was left at.
