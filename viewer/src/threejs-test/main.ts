@@ -2018,6 +2018,18 @@ pointerSmoothingToggleEl.addEventListener('click', () => {
 bindDesignSlider('pointerSmoothingMs', NAV.pointerSmoothingMs, (v) => `${Math.round(v)} ms`, (v) => {
   pointerSmoothingMs = v; applyPointerSmoothing()
 })
+// Mark the keyboard's own time constant on the mouse slider's track. Keyboard
+// navigation has always eased its velocity with the same 1 - exp(-dt/tau) that this
+// slider drives, so its value belongs on this scale rather than in a sentence — and
+// it is read from the config, so the two cannot drift apart.
+{
+  const track = $<HTMLElement>('#pointerSmoothingTrack')
+  const slider = $<HTMLInputElement>('#pointerSmoothingMs')
+  const max = Number(slider.max) || 1
+  const ref = Math.min(EXPERIENCE_CONFIG.keyboard.responseMs, max)
+  track.style.setProperty('--ref', `${(ref / max) * 100}%`)
+  $<HTMLElement>('#pointerSmoothingRefLabel').textContent = `keyboard ${Math.round(ref)}`
+}
 
 // Ground patch under the point cloud. Off both zeroes the amount and compiles the
 // patch out of the tile shaders, so it costs nothing; switching it back on restores
