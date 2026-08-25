@@ -968,6 +968,9 @@ function refreshOriginDerived(): void {
   ecefToRenderMatrix(enuFrame, enuFrameRender)
   renderToEcefMatrix(enuInverse, enuInverseRender)
   uniforms.enuInverse.value.copy(enuInverseRender)
+  // The mask projects tile points through this too, and its tiles' matrixWorld is
+  // render space like everything else under ecefRoot.
+  groundPatchMask.setEnuInverse(enuInverseRender)
   if (!enuFrameReady) return
   enuToWorld(cloudCenterEnu, cloudCenterEcef)
   groundPlane.setFromNormalAndCoplanarPoint(
@@ -2682,7 +2685,7 @@ async function main(): Promise<void> {
     uniforms,
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
-    onPointTile: (object) => groundPatchMask.addTile(object),
+    onPointTile: (object, url) => groundPatchMask.addTile(object, url),
   })
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
@@ -2732,6 +2735,18 @@ async function main(): Promise<void> {
     get sse() { return sseAuto },
     get range() { return rangeDebug },
     get controls() { return globe?.controls ?? null },
+    mask: groundPatchMask,
+    /** Diagnostic: what the mask holds under a screen pixel. */
+    probeMask(sx: number, sy: number) {
+      const rect = renderer.domElement.getBoundingClientRect()
+      ray.setFromCamera(new THREE.Vector2(
+        (sx / rect.width) * 2 - 1, -(sy / rect.height) * 2 + 1,
+      ), camera)
+      const hit = new THREE.Vector3()
+      if (!ray.ray.intersectPlane(groundPlane, hit)) return { miss: true }
+      const enu = worldToEnu(hit)
+      return groundPatchMask.probeEnu(enu.x, enu.y)
+    },
     /** Floating origin: the two ENU frames and where the origin currently sits.
      * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
     origin: {

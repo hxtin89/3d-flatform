@@ -49,6 +49,16 @@
 //   - coverage only ever grows, so unloading a tile never takes it away and the
 //     mask cannot flicker.
 //
+// The projection is the part that has bitten twice. Coverage comes from each tile's
+// points via `renderToEnu x tile.matrixWorld`, and both factors have to be from the
+// same space and the same moment. First failure: splatting at load time, before the
+// renderer had parented the tile, so matrixWorld was not composed yet — hence the
+// queue and updateWorldMatrix here. Second: the floating origin made matrixWorld
+// render space while this module was still handed the ECEF-to-ENU matrix, so every
+// tile splatted after a rebase landed off by the origin shift and painted coverage
+// out in empty forest. Hence setEnuInverse, which the origin owner must call on every
+// rebase, and the out-of-bounds guard in update() that would have caught both.
+//
 // Because it accumulates, the mask also sharpens by itself: the overview LOD covers
 // the whole footprint at ~4 m sampling within a second or two, and every finer tile
 // the camera pulls in refines the edges for free.
@@ -103,9 +113,22 @@ export interface GroundPatchMask {
    * The object is read on a later frame rather than now, because at load time its
    * world matrix has not been composed yet.
    */
-  addTile(object: THREE.Object3D): void
+  addTile(object: THREE.Object3D, url?: string): void
   /** Spend this frame's budget on the queue and upload whatever changed. */
   update(): void
+  /**
+   * The render-space-to-ENU matrix the splat path projects points with. Must be
+   * re-supplied whenever the floating origin moves, or coverage lands off by the
+   * origin shift.
+   */
+  setEnuInverse(matrix: THREE.Matrix4): void
+  /**
+   * Diagnostic: what the mask holds at one ENU spot, and the depth of the tile
+   * whose points put it there. Answers "which tile painted this patch".
+   */
+  probeEnu(x: number, y: number): unknown
+  /** Allocated-cell map plus any tile whose ENU span is implausibly wide. */
+  debugCells(): { grid: any; map: string[]; cellsUsed: number; strays: unknown[] }
   /** Cells in use, of those available — for diagnostics and the console report. */
   stats(): { cellsUsed: number; cellsAvailable: number; metresPerPixel: number }
   dispose(): void
@@ -218,6 +241,11 @@ export function createGroundPatchMask(opts: {
   const grid = { cols: 0, rows: 0, cellSizeM, originX: 0, originY: 0, indexSize }
 
   let enuInverse: THREE.Matrix4 | null = null
+  // Render space, not ECEF. Tiles' matrixWorld is relative to the floating origin,
+  // so projecting their points needs the matrix that accounts for it. Kept separate
+  // from enuInverse because the node-box walk in setExtent reads ECEF box centres.
+  const enuInverseWorld = new THREE.Matrix4()
+  let enuInverseWorldSet = false
   let cellsUsed = 0
   let indexDirty = false
   let lastUploadMs = -Infinity
@@ -226,6 +254,11 @@ export function createGroundPatchMask(opts: {
 
   /** Tiles waiting for the extent, or for their turn at the frame budget. */
   const queue: THREE.Object3D[] = []
+  // The surveyed rectangle from the manifest. Coverage outside it cannot be real,
+  // so a tile landing there names the placement bug.
+  let surveyBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null
+  const strays: unknown[] = []
+
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
   let splatChecks = 0
@@ -424,6 +457,7 @@ export function createGroundPatchMask(opts: {
           + ` (node boxes said y ${minY.toFixed(0)}..${maxY.toFixed(0)})`,
         )
         minX = bounds.minX; maxX = bounds.maxX; minY = bounds.minY; maxY = bounds.maxY
+        surveyBounds = { minX, minY, maxX, maxY }
       }
       // A margin of one cell, so coverage never reaches the lattice edge, where
       // clamped sampling would turn it into a hard straight line.
@@ -459,54 +493,17 @@ export function createGroundPatchMask(opts: {
       }
 
       enuInverse = inverse
+      if (!enuInverseWorldSet) enuInverseWorld.copy(inverse)
       return boxes.length
     },
 
-    addTile(object) {
+    addTile(object, url) {
+      if (url !== undefined) (object as any).__maskUrl = url
       queue.push(object)
     },
 
     update() {
       if (!enuInverse) return
-      // Watchdog: does one fixed tile's computed ENU move? A tile's position in the
-      // survey never changes, so if this shifts, one of the two factors in
-      // `enuInverse x matrixWorld` is from a different moment than the other. The size
-      // of the shift says which: a rebase delta is kilometres.
-      // Re-arm when the tracked tile is unloaded, resetting the baseline so the swap
-      // cannot look like drift.
-      if (probeObject && !probeObject.parent) { probeObject = null; probeLastX = null; probeLastY = null }
-      if (!probeObject) {
-        for (const candidate of queue) {
-          if (candidate.parent && (candidate as any).geometry?.getAttribute?.('position')) {
-            probeObject = candidate; probeLastX = null; probeLastY = null
-            break
-          }
-        }
-      }
-      if (probeObject && probeObject.parent) {
-        const pos = (probeObject as any).geometry?.getAttribute?.('position')
-        if (pos) {
-          probeObject.updateWorldMatrix(true, false)
-          probeMatrix.multiplyMatrices(enuInverse, probeObject.matrixWorld)
-          const e = probeMatrix.elements as unknown as number[]
-          const px = enuX(pos.array as ArrayLike<number>, 0, e)
-          const py = enuY(pos.array as ArrayLike<number>, 0, e)
-          if (probeLastX !== null && probeLastY !== null) {
-            const shift = Math.hypot(px - probeLastX, py - probeLastY)
-            if (shift > 1) {
-              console.warn(
-                `[enu-probe] same tile moved ${shift.toFixed(0)} m in ENU:`
-                + ` (${probeLastX.toFixed(0)},${probeLastY.toFixed(0)})`
-                + ` -> (${px.toFixed(0)},${py.toFixed(0)})`
-                + ` | worldTranslation ${probeObject.matrixWorld.elements[12].toFixed(0)},`
-                + `${probeObject.matrixWorld.elements[13].toFixed(0)},`
-                + `${probeObject.matrixWorld.elements[14].toFixed(0)}`,
-              )
-            }
-          }
-          probeLastX = px; probeLastY = py
-        }
-      }
       if (!queue.length && !dirtyCells.size && !indexDirty) return
       let budget = pointsPerFrame
       // Tiles that are loaded but not yet shown go to the back rather than blocking the
@@ -525,23 +522,35 @@ export function createGroundPatchMask(opts: {
         // Composed now rather than at load time: the tile's place in the world is
         // only settled once the renderer has parented it and updated the graph.
         object.updateWorldMatrix(true, false)
-        localToEnu.multiplyMatrices(enuInverse, object.matrixWorld)
-        // TEMPORARY: accumulate the ENU spread of everything splatted. The survey is
-        // 12.8 x 8.5 km, so a spread much wider than that means coverage is being
-        // written away from it — which is what the stray patches are.
-        {
-          const e = localToEnu.elements as unknown as number[]
-          const px = enuX(position.array as ArrayLike<number>, 0, e)
-          const py = enuY(position.array as ArrayLike<number>, 0, e)
-          splatMinX = Math.min(splatMinX, px); splatMaxX = Math.max(splatMaxX, px)
-          splatMinY = Math.min(splatMinY, py); splatMaxY = Math.max(splatMaxY, py)
-          if (++splatChecks % 25 === 0) {
-            console.info(
-              `[splat-spread] ${splatChecks} tiles | x ${splatMinX.toFixed(0)}..${splatMaxX.toFixed(0)}`
-              + ` (${((splatMaxX - splatMinX) / 1000).toFixed(1)} km)`
-              + ` | y ${splatMinY.toFixed(0)}..${splatMaxY.toFixed(0)}`
-              + ` (${((splatMaxY - splatMinY) / 1000).toFixed(1)} km)`,
-            )
+        localToEnu.multiplyMatrices(enuInverseWorld, object.matrixWorld)
+        if (cursor === 0 && surveyBounds) {
+          // Guard against the bug this module has hit twice: points projected with a
+          // matrix from the wrong space land kilometres off, painting coverage where
+          // no tile ever is. Checks position, not just size — a tile of ordinary
+          // extent dropped a few kilometres away is the shape that bug takes.
+          // Silent unless it fires.
+          const e2 = localToEnu.elements as unknown as number[]
+          let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity
+          const arr = position.array as ArrayLike<number>
+          const st = (position as any).itemSize ?? 3
+          const step = Math.max(1, (position.count / 64) | 0)
+          for (let i = 0; i < position.count; i += step) {
+            const o = i * st
+            const x = enuX(arr, o, e2), y = enuY(arr, o, e2)
+            if (x < mnx) mnx = x
+            if (x > mxx) mxx = x
+            if (y < mny) mny = y
+            if (y > mxy) mxy = y
+          }
+          const m = 200
+          if (mnx < surveyBounds.minX - m || mxx > surveyBounds.maxX + m
+            || mny < surveyBounds.minY - m || mxy > surveyBounds.maxY + m) {
+            const info = {
+              url: (object as any).__maskUrl,
+              x: [Math.round(mnx), Math.round(mxx)], y: [Math.round(mny), Math.round(mxy)],
+            }
+            strays.push(info)
+            console.error('[mask] tile outside the survey', info)
           }
         }
         if (cursor === 0 && isRedundant(position)) { queue.shift(); continue }
@@ -570,6 +579,51 @@ export function createGroundPatchMask(opts: {
       lastUploadMs = now
     },
 
+    setEnuInverse(matrix) {
+      enuInverseWorldSet = true
+      enuInverseWorld.copy(matrix)
+    },
+
+    probeEnu(x, y) {
+      const gx = Math.floor((x - grid.originX) / metresPerPixel)
+      const gy = Math.floor((y - grid.originY) / metresPerPixel)
+      const col = Math.floor(gx / cellPx), row = Math.floor(gy / cellPx)
+      if (col < 0 || row < 0 || col >= grid.cols || row >= grid.rows) {
+        return { enu: [Math.round(x), Math.round(y)], outside: true }
+      }
+      const slot = indexData[row * indexSize + col]
+      if (!slot) return { enu: [Math.round(x), Math.round(y)], cell: [col, row], allocated: false }
+      const layer = slot - 1
+      const at = layer * cellPx * cellPx + (gy - row * cellPx) * cellPx + (gx - col * cellPx)
+      // Fill fraction over the surrounding 40 m, which is what the shader blurs over.
+      const r = Math.round(40 / metresPerPixel)
+      let covered = 0, total = 0
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const qx = gx + dx, qy = gy + dy
+          if (qx < col * cellPx || qx >= (col + 1) * cellPx) continue
+          if (qy < row * cellPx || qy >= (row + 1) * cellPx) continue
+          const q = layer * cellPx * cellPx + (qy - row * cellPx) * cellPx + (qx - col * cellPx)
+          total++
+          if (cells[q] === 255) covered++
+        }
+      }
+      return {
+        enu: [Math.round(x), Math.round(y)], cell: [col, row], layer,
+        covered: cells[at] === 255,
+        localFill: +(covered / Math.max(total, 1)).toFixed(3),
+      }
+    },
+
+    debugCells() {
+      const rows: string[] = []
+      for (let row = grid.rows - 1; row >= 0; row--) {
+        let line = ''
+        for (let col = 0; col < grid.cols; col++) line += indexData[row * indexSize + col] ? '#' : '.'
+        rows.push(line)
+      }
+      return { grid: { ...grid }, map: rows, cellsUsed, strays }
+    },
     stats() {
       return { cellsUsed, cellsAvailable: maxCells, metresPerPixel }
     },

@@ -123,7 +123,7 @@ export function createStreamingCloud(opts: {
    * The ground-patch mask uses it to accumulate coverage from the same tiles the
    * renderer was going to download anyway — see ground-patch-mask.
    */
-  onPointTile?: (object: THREE.Object3D) => void
+  onPointTile?: (object: THREE.Object3D, url: string) => void
   /** The root tileset itself was unreachable (404/403) — this cloud will stay empty. */
   onRootError?: (url: string, error: unknown) => void
 }): StreamingCloud {
@@ -254,7 +254,8 @@ export function createStreamingCloud(opts: {
       points += source.geometry?.getAttribute('position')?.count ?? 0
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay
       // readable either way, but taking the tile here keeps the handoff obvious.
-      opts.onPointTile?.(source)
+      opts.onPointTile?.(source, String(url ?? ''))
+
       const mesh = buildPointQuads(source)
       if (!mesh) continue
 
