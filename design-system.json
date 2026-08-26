@@ -113,7 +113,10 @@
       "Label Line",
       "Species Card",
       "Detail Info",
-      "Habitat Label Stack"
+      "Habitat Label Stack",
+      "Media Card",
+      "Play Button",
+      "Scrubber"
     ],
     "meta": {
       "Corner": {
@@ -216,6 +219,27 @@
           ]
         },
         "note": "Three Label Line instances stacked flush (gap 0) so shared edges fuse. Align follows the docked edge: Left portrait, Right landscape.",
+        "docPath": null
+      },
+      "Media Card": {
+        "status": "draft",
+        "properties": [
+          "(none yet — Author/Duration/Image are direct edits)"
+        ],
+        "bindings": "fill accent/fill; radius card/outer; padding+gap Spacing/Semantic; text text/primary + size/body",
+        "note": "Thumbnail fills, Meta hugs its text, so the card absorbs its cell and the thumbnail takes the slack. Scrubber is absolutely pinned to the thumbnail’s lower edge, NOT stacked below it — below the image it is accent-on-accent and invisible. Padding is asymmetric (8 left/top/bottom, 24 right) because the image sits nearly flush left while the meta text needs air.",
+        "docPath": null
+      },
+      "Play Button": {
+        "status": "draft",
+        "bindings": "fill accent/fill @50% fill opacity; radius pill",
+        "note": "Glyph sits 4px right of true centre — optical centring for a triangle, copied from Figma. Do not “fix” to 15/15.",
+        "docPath": null
+      },
+      "Scrubber": {
+        "status": "draft",
+        "bindings": "both segments accent/fill (Remaining at 50%)",
+        "note": "Progress = resize Elapsed; Remaining fills the rest. One component covers every width and percentage, no variant per state. Square ends, matching Figma.",
         "docPath": null
       }
     },
