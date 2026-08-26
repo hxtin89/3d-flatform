@@ -270,14 +270,31 @@ void main() {
     else if (di < runnerUp) { runnerUp = di; }
   }
 
-  // Analytic AA on the outer edge.
-  float edgeAA = fwidth(blended);
+  // Analytic AA on the outer edge. Clamped, not raw: the blended distance is a min() of
+  // per-widget distances, so it is non-differentiable along the ridge midway
+  // between two widgets -- the gradient flips from pointing at one to pointing
+  // at the other, and fwidth spikes to many pixels there. Left unbounded that
+  // widens the feather far past the edge it is meant to soften, so alpha leaks
+  // along the ridge and draws a faint diagonal line across empty space. A
+  // feather is only ever meant to be about a pixel wide; the floor keeps the
+  // zero-gradient case well defined, for the same reason as the seam feather.
+  float edgeAA = clamp(fwidth(blended), 1e-4, 2.0);
   float alpha = 1.0 - smoothstep(-edgeAA, edgeAA, blended);
 
   // A one-pixel feather on the colour seam only -- enough to kill stair-steps
   // if a seam is ever off-axis, far too tight to read as a gradient.
   float seam = (runnerUp - nearest) * 0.5;
-  float seamAA = fwidth(seam);
+  // fwidth(seam) is EXACTLY zero across any region where the two nearest
+  // widgets' distance fields have parallel gradients -- e.g. the triangular
+  // wedge of an end widget whose nearest edge is the cluster's outer edge,
+  // where moving in x changes both distances by the same amount. smoothstep
+  // with edge0 == edge1 is undefined in GLSL, and drivers here return 0, which
+  // multiplied the alpha to zero and bit a 45-degree chevron out of the first
+  // and last widget -- apex exactly on the widget centre, edges exactly on its
+  // diagonals, which is that region's boundary. Flooring the width keeps the
+  // feather a true one-pixel feather wherever the seam really varies, and makes
+  // the constant-seam case resolve to 1 (fully opaque) instead of undefined.
+  float seamAA = max(fwidth(seam), 1e-4);
   alpha *= smoothstep(-seamAA, seamAA, seam + seamAA);
 
   outColor = vec4(col.rgb, col.a * alpha);
