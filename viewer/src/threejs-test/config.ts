@@ -67,6 +67,23 @@ export const EXPERIENCE_CONFIG = {
     // of the chunk footprint. 1 = hug the chunk exactly, which leaves gaps the
     // camera can sit in without ever opening p10/p100.
     requestVolumeXyScale: 2.5,
+    // Distance cutoff for point tiles, scaled by camera height over the floor:
+    // beyond D = clamp(height × factor, min, max) tiles are neither fetched nor
+    // drawn, and the point shader discards what ancestors still cover. Up to
+    // R = max(height × detailFactor, detailMin) tiles refine at full error;
+    // beyond R the error is scaled by (R / d)², so the far field refines
+    // shallower — the "foveation" that keeps a horizon view from tripling the
+    // point count. Points shrink to nothing between fadeStart × D and D, so
+    // the cutoff never shows as an edge; the scene fog stays on its own range
+    // (the basemap must not turn into a wall of haze a few km out).
+    distanceCutoffHeightFactor: 6,
+    distanceCutoffMinM: 1_500,
+    distanceCutoffMaxM: 12_000,
+    distanceDetailHeightFactor: 3,
+    distanceDetailMinM: 200,
+    distanceFadeStart: 0.6,
+    // Scene fog: far = height × cutoff factor (no ceiling), near = this fraction.
+    distanceFogNearFraction: 0.45,
     // While the fullscreen loader is up the camera already sits at its staging
     // position inside the detail band. Nothing of it is visible, so refinement
     // is held coarse until boot completes — otherwise the loader waits on tiles
@@ -98,6 +115,12 @@ export const EXPERIENCE_CONFIG = {
     // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
     maximumOrbitDegrees: 72,
+    // Mouse orbit easing: a 125 Hz mouse against a 120/144 Hz display leaves
+    // frames with 0 or 2 pointer events, which the controls turn into 0/2× camera
+    // steps. This filter applies part of each delta at once and draws the rest
+    // in over this time constant (ms). 0 = raw, ?ease=<ms> overrides.
+    mouseOrbitEaseMs: 50,
+    mouseOrbitImmediateShare: 0.35,
     minimumBoundsRadiusM: 2_500,
     surveyBoundsScale: 0.6,
     // Floating origin: how far the camera may drift from the render origin
@@ -118,6 +141,10 @@ export const EXPERIENCE_CONFIG = {
     maximumZoomSpeedMps: 9_000,
     zoomRangeFactor: 0.8,
     responseMs: 110,
+    // Arrow keys: orbit around the screen-centre ground point (left/right) and
+    // tilt (up/down), degrees per second, smoothed with the same responseMs.
+    orbitDegPerS: 60,
+    tiltDegPerS: 45,
   },
   accessibility: {
     // CSS-pixel radius around the viewport centre for keyboard targeting.

@@ -7,7 +7,8 @@
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { texture } from 'three/tsl'
-import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
+import { TilesRenderer } from '3d-tiles-renderer'
+import { SmoothedGlobeControls } from './smoothed-globe-controls'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import { applyHighPrecisionAlways, maskDimNode, type CloudUniforms } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -18,7 +19,7 @@ import type { MemoryBudgetSnapshot } from './streaming'
 
 export interface Globe {
   tiles: TilesRenderer
-  controls: GlobeControls
+  controls: SmoothedGlobeControls
   ellipsoid: any
   update(constrainCamera?: () => void): void
   setResolution(): void
@@ -40,8 +41,10 @@ export function createGlobe(opts: {
   cameraClearance: number
   /** shared mask uniforms — the vignette fades the imagery to black with the cloud */
   uniforms: CloudUniforms
+  /** Mouse-orbit easing time constant, ms; 0 = raw library behaviour. */
+  mouseOrbitEaseMs: number
 }): Globe {
-  const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms } = opts
+  const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms, mouseOrbitEaseMs } = opts
 
   const tiles = new TilesRenderer()
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
@@ -106,7 +109,10 @@ export function createGlobe(opts: {
     })
   })
 
-  const controls = new GlobeControls(scene, camera, renderer.domElement, tiles)
+  const controls = new SmoothedGlobeControls(scene, camera, renderer.domElement, tiles, {
+    easeMs: mouseOrbitEaseMs,
+    immediateShare: EXPERIENCE_CONFIG.navigation.mouseOrbitImmediateShare,
+  })
   // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
   // hard clearance from the globe, while minDistance prevents a zoom pivot
   // from pulling the camera through the surface. A 72° orbit ceiling keeps the

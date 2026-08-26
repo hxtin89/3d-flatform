@@ -513,7 +513,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     uniforms.goldenFactor.value = 0
     uniforms.cloudShadowStrength.value = 0
     renderer.setClearColor(daySky, 1)
-    fog.color.copy(dayFog)
+    // Fog and clear colour must match: the fogged globe meets the sky at the
+    // horizon, and any difference draws a hard line there.
+    fog.color.copy(daySky)
     hemisphere.color.copy(daySky).lerp(whiteAmbient, 0.4)
     hemisphere.groundColor.set(0x163a2d)
     hemisphere.intensity = 1.1
@@ -561,7 +563,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     uniforms.cloudShadowStrength.value = EXPERIENCE_CONFIG.pointLighting.cloudShadowStrength
       * daylight * (cloudMode !== 'off' ? 1 : 0.5)
     renderer.setClearColor(state.skyColor, 1)
-    fog.color.copy(state.fogColor)
+    fog.color.copy(state.skyColor)
     hemisphere.color.copy(state.skyColor).lerp(state.lightColor, 0.4)
     hemisphere.groundColor.set(0x163a2d).multiplyScalar(0.5 + daylight * 0.5)
     hemisphere.intensity = state.ambientIntensity

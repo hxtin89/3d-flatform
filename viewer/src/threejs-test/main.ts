@@ -76,6 +76,11 @@ const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
 const freeOrbit = params.has('freeorbit')
+/** Mouse-orbit easing time constant; ?ease=0 restores the raw library step for A/B. */
+const easeParam = Number(params.get('ease'))
+const mouseOrbitEaseMs = params.has('ease') && Number.isFinite(easeParam)
+  ? Math.max(0, easeParam)
+  : EXPERIENCE_CONFIG.navigation.mouseOrbitEaseMs
 /** The settings panel is a development and comparison tool, not part of the
  * product surface: every row in it changes render behaviour, so leaving it
  * reachable means a performance report can silently describe a different
@@ -510,6 +515,10 @@ let benchPreset: BenchPreset = 'medium'
 let entranceFlightPending = false
 let pointCloudRevealed = true
 let atmosphereFar = camera.far
+/** Point distance cutoff (metres), smoothed like the far plane; see config.lod. */
+let distanceCutoff: number = EXPERIENCE_CONFIG.lod.distanceCutoffMaxM
+/** Fog far distance following the same height rule, uncapped; smoothed. */
+let fogRange: number = EXPERIENCE_CONFIG.lod.distanceCutoffMaxM
 let atmosphereFarScale: number = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.strong
 let lastAtmosphereUpdate = -Infinity
 let lastFieldTier: PerformanceTier | null = null
@@ -1104,6 +1113,7 @@ onRebase((delta) => {
   controls?.pivotPoint?.add(delta)
   controls?.zoomPoint?.add(delta)
   controls?.rotationInertiaPivot?.add(delta)
+  keyboardNavigation?.shiftPivot(delta)
   refreshOriginDerived()
 })
 
@@ -1514,8 +1524,30 @@ function updateAtmosphere(now: number, snap = false): void {
 
   camera.far = atmosphereFar
   camera.updateProjectionMatrix()
-  distanceFog.near = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogNearFactor
-  distanceFog.far = atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogFarFactor
+  // The fog hides the foveated far field: its range follows the cutoff rule
+  // (height × factor) but without the cutoff's ceiling — capped at 12 km the
+  // whole globe turned to haze during the entrance flight.
+  const lod = EXPERIENCE_CONFIG.lod
+  const fogFar = Math.min(atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogFarFactor, fogRange)
+  distanceFog.far = fogFar
+  distanceFog.near = Math.min(atmosphereFar * EXPERIENCE_CONFIG.atmosphere.fogNearFactor, fogFar * lod.distanceFogNearFraction)
+}
+
+/** Point tiles and points beyond this range are dropped; scales with camera height. */
+function updateDistanceCutoff(snap = false): void {
+  const lod = EXPERIENCE_CONFIG.lod
+  const target = THREE.MathUtils.clamp(
+    cameraAltitude * lod.distanceCutoffHeightFactor,
+    lod.distanceCutoffMinM,
+    lod.distanceCutoffMaxM,
+  )
+  distanceCutoff = snap ? target : THREE.MathUtils.lerp(distanceCutoff, target, EXPERIENCE_CONFIG.atmosphere.distanceSmoothing)
+  const fogTarget = Math.max(cameraAltitude * lod.distanceCutoffHeightFactor, lod.distanceCutoffMinM)
+  fogRange = snap ? fogTarget : THREE.MathUtils.lerp(fogRange, fogTarget, EXPERIENCE_CONFIG.atmosphere.distanceSmoothing)
+  uniforms.cutoffDistance.value = distanceCutoff
+  uniforms.fadeDistance.value = distanceCutoff * lod.distanceFadeStart
+  const detailRange = Math.max(cameraAltitude * lod.distanceDetailHeightFactor, lod.distanceDetailMinM)
+  stream?.setDistanceCutoff(distanceCutoff, detailRange)
 }
 
 // ---------------------------------------------------------------- fly-to
@@ -1914,7 +1946,7 @@ function updateHud(stats: StreamingStats | null): void {
   // How far the camera has drifted from the render origin, and how often it has
   // been pulled back. A steadily climbing rebase count while standing still
   // would mean the threshold is fighting something.
-  setText(diagOriginEl, `${Math.round(camera.position.length())} m · ${originStats().rebases}×`)
+  setText(diagOriginEl, `${Math.round(camera.position.length())} m · ${originStats().rebases}× · cut ${Math.round(distanceCutoff)} m`)
 }
 
 function loop(now: number): void {
@@ -1939,6 +1971,7 @@ function loop(now: number): void {
   )
   globe?.update(enforceNavigationBounds)
   updateMaskFollow()
+  updateDistanceCutoff()
   updateAtmosphere(now)
   const stats = updateStreaming(now)
   const daylightState = environmentLayer?.update(
@@ -2085,6 +2118,7 @@ async function main(): Promise<void> {
     maptilerKey: MAPTILER_KEY,
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
+    mouseOrbitEaseMs,
   })
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)

@@ -1,8 +1,9 @@
 import * as THREE from 'three'
-import type { GlobeControls } from '3d-tiles-renderer'
+import type { SmoothedGlobeControls } from './smoothed-globe-controls'
 import { EXPERIENCE_CONFIG } from './config'
 
 const MOVE_CODES = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'])
+const ROTATE_CODES = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'])
 const SHIFT_CODES = new Set(['ShiftLeft', 'ShiftRight'])
 const ACTION_CODES = new Set(['KeyC', 'Enter', 'Escape'])
 const REQUIRED_NAVIGATION_TASKS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'zoom-in', 'zoom-out'])
@@ -16,12 +17,14 @@ export interface KeyboardNavigation {
     zoomStopM?: number,
   ): void
   setAimActive(active: boolean): void
+  /** Floating-origin rebase: keep the held arrow-key orbit pivot in place. */
+  shiftPivot(delta: THREE.Vector3): void
   dispose(): void
 }
 
 export function createKeyboardNavigation(options: {
   camera: THREE.PerspectiveCamera
-  controls: GlobeControls
+  controls: SmoothedGlobeControls
   guide: HTMLElement
   guideToggle: HTMLButtonElement
   guideClose: HTMLButtonElement
@@ -31,9 +34,10 @@ export function createKeyboardNavigation(options: {
   onDismissAim(): boolean
 }): KeyboardNavigation {
   const { camera, controls, guide, guideToggle, guideClose, aimToggle } = options
-  const controlState = controls as GlobeControls & {
+  const controlState = controls as SmoothedGlobeControls & {
     pivotPoint?: THREE.Vector3
     needsUpdate?: boolean
+    rotationInertia?: THREE.Vector2
   }
   const pressed = new Set<string>()
   const completedTasks = new Set<string>()
@@ -48,6 +52,11 @@ export function createKeyboardNavigation(options: {
   let guideDismissTimer = 0
   let lastUpdate = performance.now()
   let zoomVelocity = 0
+  // Arrow-key orbit: pivot frozen at the first press, velocities in rad/s.
+  let orbitVelocity = 0
+  let tiltVelocity = 0
+  let orbitPivotHeld = false
+  const orbitPivot = new THREE.Vector3()
 
   const localUp = new THREE.Vector3()
   const screenForward = new THREE.Vector3()
@@ -125,7 +134,15 @@ export function createKeyboardNavigation(options: {
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (isTextEntryTarget(event.target)) return
-    if (!MOVE_CODES.has(event.code) && !SHIFT_CODES.has(event.code) && !ACTION_CODES.has(event.code)) return
+    if (!MOVE_CODES.has(event.code) && !ROTATE_CODES.has(event.code) && !SHIFT_CODES.has(event.code) && !ACTION_CODES.has(event.code)) return
+    // EnvironmentControls listens for keydown on the canvas (which pointerdown
+    // focuses) and calls resetState() for W/A/S/D and the arrow keys — even
+    // with flight disabled. That cancels a running right-button orbit. This
+    // listener runs in the capture phase, so stopping here keeps the event
+    // from the library while everything below still runs.
+    if ((MOVE_CODES.has(event.code) || ROTATE_CODES.has(event.code)) && event.target === controls.domElement) {
+      event.stopPropagation()
+    }
     if (!shortcutsEnabled) return
     if (event.code === 'Enter' && isNativeActivationTarget(event.target)) return
     pressed.add(event.code)
@@ -133,6 +150,8 @@ export function createKeyboardNavigation(options: {
     if (MOVE_CODES.has(event.code)) {
       if (event.code === 'Space') markNavigationTask(hasShift() ? 'zoom-out' : 'zoom-in')
       else markNavigationTask(event.code)
+      event.preventDefault()
+    } else if (ROTATE_CODES.has(event.code)) {
       event.preventDefault()
     } else if (event.code === 'KeyC') {
       event.preventDefault()
@@ -146,9 +165,9 @@ export function createKeyboardNavigation(options: {
   }
 
   const onKeyUp = (event: KeyboardEvent) => {
-    if (!MOVE_CODES.has(event.code) && !SHIFT_CODES.has(event.code) && !ACTION_CODES.has(event.code)) return
+    if (!MOVE_CODES.has(event.code) && !ROTATE_CODES.has(event.code) && !SHIFT_CODES.has(event.code) && !ACTION_CODES.has(event.code)) return
     pressed.delete(event.code)
-    if (MOVE_CODES.has(event.code)) event.preventDefault()
+    if (MOVE_CODES.has(event.code) || ROTATE_CODES.has(event.code)) event.preventDefault()
     syncGuide()
   }
 
@@ -156,6 +175,9 @@ export function createKeyboardNavigation(options: {
     pressed.clear()
     panVelocity.set(0, 0, 0)
     zoomVelocity = 0
+    orbitVelocity = 0
+    tiltVelocity = 0
+    orbitPivotHeld = false
     syncGuide()
   }
   const onPointerChange = () => syncGuide()
@@ -165,7 +187,7 @@ export function createKeyboardNavigation(options: {
     if (shortcutsEnabled) options.onToggleAim()
   }
 
-  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keydown', onKeyDown, { capture: true })
   window.addEventListener('keyup', onKeyUp)
   window.addEventListener('blur', clearPressed)
   document.addEventListener('visibilitychange', clearPressed)
@@ -183,6 +205,9 @@ export function createKeyboardNavigation(options: {
       if (!enabled || !controls.enabled) {
         panVelocity.set(0, 0, 0)
         zoomVelocity = 0
+        orbitVelocity = 0
+        tiltVelocity = 0
+        orbitPivotHeld = false
         return
       }
 
@@ -240,6 +265,7 @@ export function createKeyboardNavigation(options: {
         frameDelta.copy(panVelocity).multiplyScalar(seconds)
         camera.position.add(frameDelta)
         controlState.pivotPoint?.add(frameDelta)
+        if (orbitPivotHeld) orbitPivot.add(frameDelta)
         moved = true
       }
       if (Math.abs(zoomVelocity) > 0.1) {
@@ -248,10 +274,34 @@ export function createKeyboardNavigation(options: {
         moved = true
       }
 
+      // Arrow keys: orbit/tilt about the ground point under the screen centre,
+      // frozen for the duration of the hold so the pivot never wanders.
+      const orbitInput = (pressed.has('ArrowLeft') ? 1 : 0) - (pressed.has('ArrowRight') ? 1 : 0)
+      const tiltInput = (pressed.has('ArrowUp') ? 1 : 0) - (pressed.has('ArrowDown') ? 1 : 0)
+      if ((orbitInput || tiltInput) && !orbitPivotHeld) {
+        controls.getPivotPoint(orbitPivot)
+        orbitPivotHeld = true
+        controlState.rotationInertia?.set(0, 0)
+      }
+      const orbitTarget = orbitInput * THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.keyboard.orbitDegPerS)
+      const tiltTarget = tiltInput * THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.keyboard.tiltDegPerS)
+      orbitVelocity += (orbitTarget - orbitVelocity) * blend
+      tiltVelocity += (tiltTarget - tiltVelocity) * blend
+      const rotating = Math.abs(orbitVelocity) > 1e-4 || Math.abs(tiltVelocity) > 1e-4
+      if (rotating && orbitPivotHeld) {
+        controls.orbitBy(orbitVelocity * seconds, tiltVelocity * seconds, orbitPivot)
+        moved = true
+      } else if (!rotating) {
+        orbitPivotHeld = false
+      }
+
       if (moved) {
         camera.updateMatrixWorld()
         controlState.needsUpdate = true
       }
+    },
+    shiftPivot(delta) {
+      if (orbitPivotHeld) orbitPivot.add(delta)
     },
     setAimActive(active) {
       aimActive = active
@@ -259,7 +309,7 @@ export function createKeyboardNavigation(options: {
     },
     dispose() {
       window.clearTimeout(guideDismissTimer)
-      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', clearPressed)
       document.removeEventListener('visibilitychange', clearPressed)

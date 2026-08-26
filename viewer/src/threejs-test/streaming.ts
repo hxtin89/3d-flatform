@@ -10,6 +10,7 @@ import {
 } from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
+import { installDistanceLod } from './distance-lod'
 import { EXPERIENCE_CONFIG } from './config'
 
 export interface StreamingStats {
@@ -39,6 +40,8 @@ export interface StreamingCloud {
   setErrorTarget(v: number): void
   /** 0 = p02, 1 = p10, 2 = p100. */
   setDensityCeiling(level: number): void
+  /** Tiles farther than this (metres) are neither fetched nor drawn; Infinity = off. */
+  setDistanceCutoff(cutoffM: number, detailRangeM: number): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
@@ -174,6 +177,8 @@ export function createStreamingCloud(opts: {
   let maskActive = false
   tiles.registerPlugin(regionPlugin as any)
 
+  const distanceLod = installDistanceLod(tiles)
+
   const unloadPlugin = new UnloadTilesPlugin({
     delay: 350,
     bytesTarget: limits.gpuBytesTarget,
@@ -286,6 +291,9 @@ export function createStreamingCloud(opts: {
     },
     setDensityCeiling(level: number) {
       requestVolumePlugin?.setDensityCeiling(level)
+    },
+    setDistanceCutoff(cutoffM: number, detailRangeM: number) {
+      distanceLod.setCutoff(cutoffM, detailRangeM)
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes

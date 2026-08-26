@@ -6,7 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
   vec2, vec3, vec4, float, mix, smoothstep, length, max,
-  context, highpModelViewMatrix,
+  context, highpModelViewMatrix, positionView,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -33,6 +33,11 @@ export interface CloudUniforms {
   goldenFactor: any
   warmRimColor: any
   canopyBaseZ: any
+  /** View-space depth beyond which points are discarded (metres); matches the
+   * tile cutoff so ancestors do not leak points past the fog. */
+  cutoffDistance: any
+  /** Point size starts shrinking here and reaches zero at cutoffDistance. */
+  fadeDistance: any
   canopyTopZ: any
 }
 
@@ -63,6 +68,8 @@ export function createUniforms(): CloudUniforms {
     warmRimColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.pointLighting.warmRim)),
     canopyBaseZ: uniform(0),
     canopyTopZ: uniform(140),
+    cutoffDistance: uniform(1e9),
+    fadeDistance: uniform(1e9),
   }
 }
 
@@ -143,7 +150,9 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   material.transparent = false
   material.depthWrite = true
   material.sizeAttenuation = false
-  material.sizeNode = u.pointSize
+  // Distance fade: quads shrink to nothing towards the cutoff instead of
+  // blending to a fog colour that would not match what lies behind them.
+  material.sizeNode = u.pointSize.mul(smoothstep(u.cutoffDistance, u.fadeDistance, positionView.z.negate()))
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
@@ -156,6 +165,9 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     // Round dots instead of squares. The mask discard below already costs this
     // material its early-z, so the extra rejection is effectively free.
     If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
+    // Distance cutoff: the traversal already drops far tiles, but ancestors whose
+    // volume contains the camera still carry points out to the horizon.
+    If(positionView.z.negate().greaterThan(u.cutoffDistance), () => Discard())
 
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
     const distance = length(enu.xy.sub(u.maskCenter))
