@@ -116,7 +116,10 @@
       "Habitat Label Stack",
       "Media Card",
       "Play Button",
-      "Scrubber"
+      "Scrubber",
+      "Map Pin",
+      "Changelog Row",
+      "Changelog Rail"
     ],
     "meta": {
       "Corner": {
@@ -166,7 +169,8 @@
           "Corner Bottom Left"
         ],
         "docPath": "design-system/docs/components/LabelLine.doc.json",
-        "note": "Moved from the Bento Grid — Recreation canvas onto the Components page with a doc card (2026-08-26)."
+        "note": "Moved from the Bento Grid — Recreation canvas onto the Components page with a doc card (2026-08-26).",
+        "donationLabel": "Figma’s “S2: SpendenLabel” is this component with Corner Top Right and Corner Bottom Right set to Fill-Top -- NOT a separate component. Verified by rebuilding the silhouette; see “Test: Donation Label (= Label Line)” on the Components page."
       },
       "Species Card": {
         "status": "draft",
@@ -240,6 +244,30 @@
         "status": "draft",
         "bindings": "both segments accent/fill (Remaining at 50%)",
         "note": "Progress = resize Elapsed; Remaining fills the rest. One component covers every width and percentage, no variant per state. Square ends, matching Figma.",
+        "docPath": null
+      },
+      "Map Pin": {
+        "status": "draft",
+        "variants": {
+          "Content": [
+            "Icon",
+            "Photo"
+          ]
+        },
+        "bindings": "disc accent/fill (50% icon / 20% photo) + border/focus stroke 3; radius pill; stem border/focus",
+        "note": "Stem is a SIBLING of the disc, not a child, so the disc stays a clean circle and the pin hugs to 103x220. Plate opacity differs by content on purpose: a photo tinted at 50% reads flat.",
+        "docPath": null
+      },
+      "Changelog Row": {
+        "status": "draft",
+        "bindings": "fill bg/muted (placeholder, swap for the entry image); stroke bg/muted 5; radius card/outer",
+        "note": "Set instances to Fill container horizontally so the row takes its column width.",
+        "docPath": null
+      },
+      "Changelog Rail": {
+        "status": "draft",
+        "bindings": "fill accent/fill; radius card/outer on the two edge-facing corners only; label text/primary",
+        "note": "Only the two edge-facing corners round -- the strip is flush to the viewport on the other side, so rounding all four would float it off the edge.",
         "docPath": null
       }
     },
