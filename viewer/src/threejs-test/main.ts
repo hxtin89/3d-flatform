@@ -1058,6 +1058,123 @@ function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.V
   return target.set(value.x, value.y, value.z + zOffset).applyMatrix4(enuFrameRender)
 }
 
+const pivotCamEnu = new THREE.Vector3()
+const pivotEnu = new THREE.Vector3()
+const pivotDirEnu = new THREE.Vector3()
+const pivotStepEnu = new THREE.Vector3()
+const pivotSampleXY = new THREE.Vector2()
+let pivotOnCanopy: boolean = EXPERIENCE_CONFIG.navigation.pivotOnCanopy
+
+/**
+ * Walk the click ray from the terrain up to the canopy, and report where it lands.
+ *
+ * Raising the terrain hit straight up would be wrong: it would leave the ray the user
+ * clicked along. At 18 degrees of pitch a 90 m rise is about 290 m of travel along that
+ * ray, so the pivot would no longer sit under the cursor at all. Each pass therefore
+ * samples the canopy where it currently stands, then moves to where the ray crosses that
+ * height. Three passes is plenty — each lands much closer than the last — and any pass
+ * that cannot get an answer leaves the pivot where the controls put it.
+ *
+ * sampleGroundZ reports the tiles' own ENU height while everything here works in the
+ * ground-snapped frame, so zOffset comes off exactly once. Same correction, and the same
+ * reason, as the donation shape's probe.
+ */
+const pivotCorrected = new THREE.Vector3()
+let pivotPressState = 0
+
+/**
+ * Why the last press did or did not move the pivot. Kept because this correction fails
+ * quietly by design — no resident points means no answer — and "nothing happened" is
+ * otherwise indistinguishable from "the feature is off". Read it from __wild.pivotDebug.
+ */
+interface PivotDebug {
+  reason: string | null
+  passes: { pass: number; canopyZ: number; radius: number; distance: number }[]
+  movedM?: number
+  pivotEnuZ?: number
+  camEnuZ?: number
+  zOffset?: number
+}
+let pivotDebug: PivotDebug = { reason: null, passes: [] }
+
+/**
+ * Correct the pivot once per press, at the start of the frame that first sees a drag.
+ *
+ * Deliberately not a pointerdown listener: the controls register theirs inside
+ * createGlobe, so ours would have to be added afterwards to run second, and that
+ * ordering is invisible at the call site and easy to break. The state flag is explicit —
+ * the controls set it in their own pointerdown, so by the first frame of a drag the
+ * pivot exists, and correcting it here happens before the same frame's controls.update()
+ * reads it.
+ */
+function updateCanopyPivot(): void {
+  const controls = globe?.controls as any
+  if (!controls) return
+  const state: number = controls.state ?? 0
+  const pressStarted = state !== 0 && pivotPressState === 0
+  pivotPressState = state
+  if (!pressStarted || !controls.pivotPoint) return
+  if (!canopyPivot(controls.pivotPoint, pivotCorrected)) return
+  controls.pivotPoint.copy(pivotCorrected)
+  // Keep the marker honest even though globe.update removes it before rendering.
+  if (controls.pivotMesh) {
+    controls.pivotMesh.position.copy(pivotCorrected)
+    controls.pivotMesh.updateMatrixWorld()
+  }
+}
+
+function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
+  const debug: PivotDebug = { reason: null, passes: [] }
+  pivotDebug = debug
+  if (!pivotOnCanopy) { debug.reason = 'toggle off'; return false }
+  if (!stream) { debug.reason = 'no stream'; return false }
+  if (!enuFrameReady) { debug.reason = 'enu frame not ready'; return false }
+  worldToEnu(camera.position, pivotCamEnu)
+  worldToEnu(pivotWorld, pivotEnu)
+  pivotDirEnu.copy(pivotEnu).sub(pivotCamEnu)
+  if (pivotDirEnu.lengthSq() < 1e-6) { debug.reason = 'degenerate ray'; return false }
+  pivotDirEnu.normalize()
+  // Looking level or upward there is no crossing to find.
+  if (pivotDirEnu.z > -1e-3) { debug.reason = `ray not descending (z ${pivotDirEnu.z.toFixed(4)})`; return false }
+  debug.pivotEnuZ = +pivotEnu.z.toFixed(2)
+  debug.camEnuZ = +pivotCamEnu.z.toFixed(2)
+  debug.zOffset = +zOffset.toFixed(2)
+
+  // Widening radii, because the answer has to come from whatever LOD is resident: at d0
+  // the point spacing is tens of metres, so a footprint tuned for close range finds
+  // nothing at all. And if no radius has support — pointing past the loaded tiles, which
+  // is exactly the far, shallow view this fix is for — fall back to the manifest's own
+  // canopy height rather than silently leaving the pivot on the terrain.
+  const baseRadius = EXPERIENCE_CONFIG.navigation.pivotSampleRadiusM
+  const radii = [baseRadius, baseRadius * 3, baseRadius * 9]
+  const nominalCanopyZ = areaMinZ + zOffset + areaSpan
+  pivotStepEnu.copy(pivotEnu)
+  for (let pass = 0; pass < 3; pass++) {
+    pivotSampleXY.set(pivotStepEnu.x, pivotStepEnu.y)
+    let canopyZ: number | null = null
+    let used = 0
+    for (const radius of radii) {
+      const sample = stream.sampleGroundZ(pivotSampleXY, radius, enuInverseRender)
+      if (sample) { canopyZ = sample.canopyZ - zOffset; used = radius; break }
+    }
+    if (canopyZ === null) { canopyZ = nominalCanopyZ; used = -1 }
+    // Only ever move up the ray, toward the camera. Outside the surveyed area the
+    // nominal canopy plane can sit below the ground, and pushing the pivot down through
+    // the terrain would be worse than leaving it alone.
+    if (canopyZ <= pivotEnu.z) { debug.reason = 'canopy at or below the terrain hit'; return false }
+    const distance = (canopyZ - pivotCamEnu.z) / pivotDirEnu.z
+    debug.passes.push({ pass, canopyZ: +canopyZ.toFixed(2), radius: used, distance: +distance.toFixed(1) })
+    if (!(distance > 0)) { debug.reason = `crossing behind the camera (${distance.toFixed(1)} m)`; return false }
+    const moved = Math.abs(distance - pivotCamEnu.distanceTo(pivotStepEnu))
+    pivotStepEnu.copy(pivotCamEnu).addScaledVector(pivotDirEnu, distance)
+    if (moved < 0.5) break
+  }
+  enuToWorld(pivotStepEnu, target)
+  debug.reason = 'corrected'
+  debug.movedM = +pivotStepEnu.distanceTo(pivotEnu).toFixed(2)
+  return true
+}
+
 function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
   target.copy(value).applyMatrix4(enuInverseRender)
   target.z -= zOffset
@@ -2041,6 +2158,17 @@ pointerSmoothingToggleEl.addEventListener('click', () => {
   pointerSmoothingToggleEl.textContent = `〜 Smoothing · ${pointerSmoothingOn ? 'On' : 'Off'}`
   applyPointerSmoothing()
 })
+const pivotCanopyToggleEl = $<HTMLButtonElement>('#pivotCanopyToggle')
+const syncPivotCanopyToggle = () => {
+  pivotCanopyToggleEl.classList.toggle('on', pivotOnCanopy)
+  pivotCanopyToggleEl.setAttribute('aria-pressed', String(pivotOnCanopy))
+  pivotCanopyToggleEl.textContent = `⌖ On canopy · ${pivotOnCanopy ? 'On' : 'Off'}`
+}
+pivotCanopyToggleEl.addEventListener('click', () => {
+  pivotOnCanopy = !pivotOnCanopy
+  syncPivotCanopyToggle()
+})
+syncPivotCanopyToggle()
 bindDesignSlider('pointerResponseMs', NAV.pointerResponseMs, (v) => `${Math.round(v)} ms`, (v) => {
   pointerResponseMs = v; applyPointerSmoothing()
 })
@@ -2604,6 +2732,7 @@ function loop(now: number): void {
     isZoomInBlocked(),
     navigationClearance,
   )
+  updateCanopyPivot()
   globe?.update(enforceNavigationBounds)
   updateMaskFollow()
   updateAtmosphere(now)
@@ -2846,6 +2975,8 @@ async function main(): Promise<void> {
     get sse() { return sseAuto },
     get range() { return rangeDebug },
     get controls() { return globe?.controls ?? null },
+    /** Why the last press did or did not lift the pivot onto the canopy. */
+    get pivotDebug() { return pivotDebug },
     mask: groundPatchMask,
     /** Diagnostic: what the mask holds under a screen pixel. */
     probeMask: probeMaskAt,

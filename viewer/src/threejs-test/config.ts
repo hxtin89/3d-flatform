@@ -229,6 +229,25 @@ export const EXPERIENCE_CONFIG = {
      * mouse side rather than introducing anything new.
      */
     pointerResponseMs: 50,
+    /**
+     * Move the rotation and pan pivot from the terrain up onto the canopy.
+     *
+     * EnvironmentControls picks the pivot by raycasting the scene, and the only thing it
+     * can hit is the draped basemap: the cloud is instanced quads whose base geometry
+     * holds four corner offsets, and the carrier Points is parked at drawRange 0 — see
+     * the comment on sampleGroundZ, which exists for the same reason. So the pivot lands
+     * on the terrain while you are looking at a canopy 20 to 90 m above it, and orbiting
+     * about a point that far below what you see sweeps the view out from under the
+     * cursor. Measured at 18 degrees of pitch: 330 px of slide for a 48 px drag, against
+     * 7 px at 70 degrees. It is parallax, and it scales as 1/sin(pitch).
+     */
+    pivotOnCanopy: true,
+    /**
+     * Footprint radius for the canopy height sample under the pivot, in metres. Small
+     * enough to follow a clearing edge, large enough that the percentile has support —
+     * sampleGroundZ reports how many cells backed the answer.
+     */
+    pivotSampleRadiusM: 20,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.
