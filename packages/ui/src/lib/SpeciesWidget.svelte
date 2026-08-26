@@ -145,7 +145,7 @@
               </div>
             {/if}
             {#if status}
-              <div class="species-widget__fact species-widget__fact--stacked">
+              <div class="species-widget__fact species-widget__fact--stacked species-widget__fact--status">
                 <!-- Range indicator: a plain hairline with rounded end-caps and one tick
                      mark, matching the real "Line 11" + "Arrow 2" pair (179px wide, tick
                      ~88% along) rather than a two-dot slider. -->
@@ -313,6 +313,16 @@
     gap: var(--stack-xs);
   }
 
+  /* The status column is authored at a fixed 211px in Figma -- the same width in
+     Frame 1 Mobile (25547:2462) and Frame 1 Desktop (25556:1317) -- and wraps
+     after the colon: "Schutzstatus:" / "am Wenigsten bedroht". Left to size
+     itself it comes out wider, fits "Schutzstatus: am Wenigsten" on the first
+     line, and breaks in the middle of the phrase instead. */
+  .species-widget__fact--status {
+    width: 211px;
+    flex-shrink: 0;
+  }
+
   .species-widget__fact--inline {
     display: flex;
     align-items: flex-start;
@@ -342,6 +352,9 @@
     font: var(--text-body);
     /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
     letter-spacing: var(--text-body-tracking);
+    /* Honour the authored newlines in `status`/`caption` (see
+       recreation-content.ts) while still wrapping normally on top of them. */
+    white-space: pre-line;
   }
 
   /* Same non-Figma-bound craft addition as BentoWidget's weather value (see its own
@@ -353,6 +366,12 @@
     font-family: var(--family-mono);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
+    /* One line, always. This sits in a flex column beside the much longer
+       status column, so it shrinks below its own content and breaks after the
+       hyphen -- "15-" / "17mm" -- which Figma never does. Its real text node is
+       87px wide in BOTH Frame 1 Mobile (25547:2460) and Frame 1 Desktop
+       (25556:1315), i.e. authored as a single unbroken reading. */
+    white-space: nowrap;
   }
 
   .species-widget__visual {

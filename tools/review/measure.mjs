@@ -106,25 +106,33 @@ if (cmd === 'diff') {
   // Several named regions of the same image in ONE browser launch -- measuring
   // four regions of two images as eight separate invocations spends most of its
   // time starting chromium.
-  //   measure.mjs regions <img.png> name=x,y,w,h [name=x,y,w,h ...]
+  //   measure.mjs regions <img.png> name=x,y,w,h[,lumMin] [...]
+  //
+  // The optional 5th number switches the foreground test from "differs from the
+  // region's background colour" to "brighter than lumMin". The background test
+  // only works over a flat ground like the frame margin; over the photo
+  // everything differs from everything, and the profile just traces the photo.
+  // A brightness cut is what isolates a light widget sitting ON the photo.
   const [imgPath, ...specs] = rest
   await toPixels(await load(imgPath), 'c')
   const parsed = specs.map((sp) => {
     const [name, nums] = sp.split('=')
-    const [x, y, w, h] = nums.split(',').map(Number)
-    return { name, x, y, w, h }
+    const [x, y, w, h, lumMin] = nums.split(',').map(Number)
+    return { name, x, y, w, h, lumMin: Number.isFinite(lumMin) ? lumMin : null }
   })
   const out = await page.evaluate((regions) => {
     const c = document.getElementById('c')
     const D = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data
     const at = (px, py) => { const i = (py * c.width + px) * 4; return [D[i], D[i + 1], D[i + 2]] }
-    const measure = ({ name, x, y, w, h }) => {
+    const measure = ({ name, x, y, w, h, lumMin }) => {
       const counts = new Map()
       for (let px = x; px < x + w; px++) for (const py of [y, y + h - 1]) {
         const k = at(px, py).join(','); counts.set(k, (counts.get(k) ?? 0) + 1)
       }
       const bg = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split(',').map(Number)
-      const isBg = (px, py) => { const p = at(px, py); return Math.abs(p[0]-bg[0]) + Math.abs(p[1]-bg[1]) + Math.abs(p[2]-bg[2]) < 30 }
+      const isBg = lumMin === null
+        ? (px, py) => { const p = at(px, py); return Math.abs(p[0]-bg[0]) + Math.abs(p[1]-bg[1]) + Math.abs(p[2]-bg[2]) < 30 }
+        : (px, py) => { const p = at(px, py); return (p[0] + p[1] + p[2]) / 3 < lumMin }
       let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, lum = 0, n = 0
       for (let py = y; py < y + h; py++) for (let px = x; px < x + w; px++) {
         const p = at(px, py); lum += (p[0] + p[1] + p[2]) / 3; n++

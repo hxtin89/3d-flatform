@@ -97,8 +97,15 @@ export const SPECIES_ROW: BentoGridItem[] = [
     title: "SIRA GIFTFROSCH",
     description: "ranitomeya sirensis",
     measurement: "15-17mm",
-    status: "Schutzstatus: am Wenigsten bedroht",
-    caption: "Nur die männlichen Frösche kümmern sich um den Nachwuchs",
+    // The line breaks are AUTHORED, not the result of wrapping. Figma's own text
+    // nodes carry a hard newline -- "Schutzstatus:" / "am Wenigsten bedroht" and
+    // "Nur die männlichen Frösche" / "kümmern sich um den Nachwuchs" (desktop
+    // 25556:1317 and 25556:1314, mobile 25547:2462 and 25547:2459). Left to wrap
+    // on width these broke mid-phrase instead, which reads as a layout bug and
+    // is one -- but the fix is the content, not the container, so the break
+    // survives whatever width the card ends up at.
+    status: "Schutzstatus:\nam Wenigsten bedroht",
+    caption: "Nur die männlichen Frösche\nkümmern sich um den Nachwuchs",
     accent: "grey-dark",
     icon: frogIcon,
     image: giftfroschImage,
