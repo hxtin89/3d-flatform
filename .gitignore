@@ -13,3 +13,4 @@ packages/ui/build/
 .env
 !viewer/.env.example
 !.env.example
+.gauntlet/

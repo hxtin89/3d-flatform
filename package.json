@@ -38,6 +38,7 @@
     "viewer:install": "cd viewer && npm install"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "sirv-cli": "^2.0.2",
     "turbo": "^2.3.0"
   }
