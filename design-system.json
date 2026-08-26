@@ -168,25 +168,33 @@
       "Species Card": {
         "status": "draft",
         "variants": {
+          "Position": [
+            "Standalone",
+            "Row Left",
+            "Row Middle",
+            "Row Middle Raised",
+            "Row Right"
+          ],
           "State": [
             "Collapsed",
             "Expanded"
           ]
         },
         "properties": [
-          "Corner Top Left",
-          "Corner Top Right",
-          "Corner Bottom Right",
-          "Corner Bottom Left",
+          "Position",
+          "State",
           "Title",
-          "Subtitle",
-          "State"
+          "Subtitle"
         ],
         "accent": "Color/Widget Accent mode (Grey Light | Grey Dark | Gold | Forest Green | ...)",
         "note": "Fluid: set an instance to Fill/Fill in an auto-layout cell. Header hugs, Detail hugs, Visual fills. Corner atoms are ABSOLUTE 120x120 overlays with corner constraints so the fillet radius never scales with the card.",
         "docPath": null,
         "bindings": "fill accent/fill; radius card/outer; text text/onEmphasis + Typography size vars; padding/gap Spacing/Semantic",
-        "openGap": "Illustration is an image-filled RECTANGLE, so it cannot be an INSTANCE_SWAP slot -- designers swap its fill directly. Corner TYPE is still chosen by hand per instance; nothing in Figma derives it from adjacency."
+        "cornerModel": "Position owns all four corners. Each corner is TWO things that must agree: the card's own per-corner radius (card/outer for convex, 0 for everything else) AND the Corner atom overlay (empty for convex/none; paints accent/fill outward for fill-left/fill-top; carves bg/subtle for concave). Binding all four radii to card/outer -- as the first build did -- leaves every None corner rounded, so flush neighbours never fuse.",
+        "openGaps": [
+          "Illustration is an image-filled RECTANGLE so it cannot be an INSTANCE_SWAP slot; swap its fill directly.",
+          "Position is a preset per layout slot, not a solver. New arrangements need new Position values; the code side (solveDocking) is what actually derives corners from adjacency."
+        ]
       },
       "Detail Info": {
         "status": "draft",
