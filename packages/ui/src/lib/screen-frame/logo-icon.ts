@@ -1,7 +1,9 @@
 // Real content for ScreenFrame's `logo` slot -- Figma's Frame 1/Frame 1
 // Desktop both place a flying-eagle mark ("Vector", id 25547:2451 mobile /
 // 25556:1042 desktop, identical 114x68 path in both) at the same fixed
-// (165,30) offset from the frame's own top-left corner, sitting over the
+// (51,30) offset from the frame's own top-left corner -- see ScreenFrame's
+// `logo` prop for why that is 51 and not the 165 the node metadata reports.
+// Sitting over the
 // grey Rahmen margin and the photo's top-left notch -- our frame had no
 // content there at all. Path is the exact outline exported from that Figma
 // node (get_design_context), not redrawn, since Figma's own vector is the

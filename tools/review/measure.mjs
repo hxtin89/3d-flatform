@@ -102,7 +102,48 @@ if (cmd === 'diff') {
     return { bg, bbox: maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }, profile }
   }, { x, y, w, h })
   console.log(JSON.stringify(out, null, 1))
+} else if (cmd === 'regions') {
+  // Several named regions of the same image in ONE browser launch -- measuring
+  // four regions of two images as eight separate invocations spends most of its
+  // time starting chromium.
+  //   measure.mjs regions <img.png> name=x,y,w,h [name=x,y,w,h ...]
+  const [imgPath, ...specs] = rest
+  await toPixels(await load(imgPath), 'c')
+  const parsed = specs.map((sp) => {
+    const [name, nums] = sp.split('=')
+    const [x, y, w, h] = nums.split(',').map(Number)
+    return { name, x, y, w, h }
+  })
+  const out = await page.evaluate((regions) => {
+    const c = document.getElementById('c')
+    const D = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data
+    const at = (px, py) => { const i = (py * c.width + px) * 4; return [D[i], D[i + 1], D[i + 2]] }
+    const measure = ({ name, x, y, w, h }) => {
+      const counts = new Map()
+      for (let px = x; px < x + w; px++) for (const py of [y, y + h - 1]) {
+        const k = at(px, py).join(','); counts.set(k, (counts.get(k) ?? 0) + 1)
+      }
+      const bg = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split(',').map(Number)
+      const isBg = (px, py) => { const p = at(px, py); return Math.abs(p[0]-bg[0]) + Math.abs(p[1]-bg[1]) + Math.abs(p[2]-bg[2]) < 30 }
+      let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, lum = 0, n = 0
+      for (let py = y; py < y + h; py++) for (let px = x; px < x + w; px++) {
+        const p = at(px, py); lum += (p[0] + p[1] + p[2]) / 3; n++
+        if (!isBg(px, py)) { if (px < minX) minX = px; if (px > maxX) maxX = px; if (py < minY) minY = py; if (py > maxY) maxY = py }
+      }
+      const step = Math.max(1, Math.round(h / 16))
+      const profile = []
+      for (let py = y; py < y + h; py += step) {
+        let l = null, r = null
+        for (let px = x; px < x + w; px++) if (!isBg(px, py)) { l = px; break }
+        for (let px = x + w - 1; px >= x; px--) if (!isBg(px, py)) { r = px; break }
+        if (l !== null) profile.push(`y${py}:${l}-${r}`)
+      }
+      return { name, bg: bg.join(','), meanLum: +(lum / n).toFixed(1), bbox: maxX < 0 ? null : [minX, minY, maxX - minX + 1, maxY - minY + 1], profile }
+    }
+    return regions.map(measure)
+  }, parsed)
+  console.log(JSON.stringify(out, null, 1))
 } else {
-  console.log('usage: measure.mjs diff <a> <b> [heat.png] | measure.mjs box <img> <x> <y> <w> <h>')
+  console.log('usage: measure.mjs diff <a> <b> [heat.png] | measure.mjs box <img> <x> <y> <w> <h> | measure.mjs regions <img> name=x,y,w,h ...')
 }
 await browser.close()

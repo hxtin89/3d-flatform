@@ -210,24 +210,15 @@ export function createFrame(container: HTMLElement): Frame {
   const gray = svgEl('rect', { x: '0', y: '0', fill: 'var(--gray-200)' })
   gray.setAttribute('mask', `url(#${maskId})`)
 
-  // Same light-from-top-left/shadow-at-bottom-right sheen BentoWidget layers
-  // over every card fill (see its own doc comment) -- applied here too so the
-  // margin reads as the same deliberately art-directed material as the cards
-  // sitting on it, not a flat CSS-default grey letterbox behind them.
-  const sheenId = `screen-frame-sheen-${Math.random().toString(36).slice(2, 9)}`
-  const sheenGradient = svgEl('linearGradient', { id: sheenId, x1: '0', y1: '0', x2: '0.4', y2: '1' })
-  const sheenStops: [string, string][] = [
-    ['0', 'rgb(255 255 255 / 0.35)'],
-    ['40%', 'rgb(255 255 255 / 0)'],
-    ['100%', 'rgb(0 0 0 / 0.08)'],
-  ]
-  for (const [offset, color] of sheenStops) sheenGradient.append(svgEl('stop', { offset, 'stop-color': color }))
-  const defs = svgEl('defs')
-  defs.append(sheenGradient)
-  const graySheen = svgEl('rect', { x: '0', y: '0', fill: `url(#${sheenId})` })
-  graySheen.setAttribute('mask', `url(#${maskId})`)
-
-  svg.append(defs, mask, gray, graySheen)
+  // NO sheen over the margin. An earlier version layered the same
+  // light-from-top-left/shadow-at-bottom-right gradient here that BentoWidget
+  // puts on its card fills, so the margin would read as art-directed material
+  // rather than a flat grey letterbox. Measured against the Figma raster that
+  // is simply wrong: Figma's margin is a dead-flat rgb(220,220,220) on every
+  // frame, while the sheen spread ours across 28 luminance levels corner to
+  // corner (231 top-left to 203 bottom-right). Figma is the spec for how this
+  // looks, so the margin stays flat.
+  svg.append(mask, gray)
   container.append(svg)
 
   const notchElements = new Map<string, SVGRectElement>()
@@ -254,8 +245,6 @@ export function createFrame(container: HTMLElement): Frame {
     maskBackground.setAttribute('height', h)
     gray.setAttribute('width', w)
     gray.setAttribute('height', h)
-    graySheen.setAttribute('width', w)
-    graySheen.setAttribute('height', h)
 
     const scale = currentScale(containerWidth, containerHeight)
     const topLeftReach = { width: FIGMA_TOP_LEFT_NOTCH_PX.width * scale, height: FIGMA_TOP_LEFT_NOTCH_PX.height * scale }
@@ -274,8 +263,6 @@ export function createFrame(container: HTMLElement): Frame {
   setTimeout(() => {
     gray.removeAttribute('mask')
     gray.setAttribute('mask', `url(#${maskId})`)
-    graySheen.removeAttribute('mask')
-    graySheen.setAttribute('mask', `url(#${maskId})`)
   }, 200)
 
   const resizeObserver = new ResizeObserver(() => render())

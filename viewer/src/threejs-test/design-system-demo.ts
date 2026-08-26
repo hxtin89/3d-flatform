@@ -47,7 +47,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
 
   const frame = createFrame(container)
 
-  // Figma's real eagle mark, fixed at a (165,30) px offset from the frame's
+  // Figma's real eagle mark, fixed at a (51,30) px offset from the frame's
   // own top-left corner in BOTH Frame 1 and Frame 1 Desktop -- same fixed
   // offset ScreenFrame.svelte's `.screen-frame__logo` uses for its `logo`
   // slot, duplicated here (not exported as a shared constant) because this
@@ -143,7 +143,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     const scale = frame.getContentScale()
     container.style.setProperty('--screen-frame-content-scale', String(scale))
     logoHost.style.top = `${30 * scale}px`
-    logoHost.style.left = `${165 * scale}px`
+    logoHost.style.left = `${51 * scale}px`
     logoHost.style.transform = `scale(${scale})`
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
