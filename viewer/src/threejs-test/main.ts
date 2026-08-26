@@ -134,7 +134,9 @@ let eagleBench: EagleBench | null = null
 let bootLoading = true
 let loaderReadyShown = false
 let loaderDataReady = false
-let startWithSound = true
+// Off unless the loader chip is used to opt in: the ambient bed is a choice, not part of
+// the experience, and the speaker button at the bottom of the HUD turns it on any time.
+let startWithSound = false
 let loaderTarget = 0
 let loaderDisplayed = 0
 let loaderLastTick = performance.now()
@@ -281,12 +283,17 @@ function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMa
 
 const onLoaderRetry = () => location.reload()
 loaderRetryEl.addEventListener('click', onLoaderRetry)
-const onLoaderSoundOpt = () => {
-  startWithSound = !startWithSound
+/** One place writes the chip, so its wording can never disagree with startWithSound. */
+const syncLoaderSoundOpt = () => {
   loaderSoundOptEl.setAttribute('aria-pressed', String(startWithSound))
   loaderSoundOptLabelEl.textContent = startWithSound ? 'With ambient sound' : 'Without ambient sound'
 }
+const onLoaderSoundOpt = () => {
+  startWithSound = !startWithSound
+  syncLoaderSoundOpt()
+}
 loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
+syncLoaderSoundOpt()
 /** Turn the loader benchmark into start settings: strong devices skip the
  * vignette trick and render full quality; weak ones start conservative so the
  * experience never dips below the target frame rate. Runtime guards remain. */

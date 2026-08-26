@@ -704,16 +704,19 @@
         <div id="zoomPackRows"><span class="weather-note">Reading available density packs…</span></div>
       </div>
       <details class="design-section" open>
+        <summary>Pivot (test)</summary>
+        <div class="row">
+          <label class="h" for="pivotCanopyToggle">Turn around</label>
+          <button class="act on" id="pivotCanopyToggle" type="button" aria-pressed="true" aria-describedby="pivotCanopyNote">⌖ On canopy · On</button>
+          <span class="weather-note" id="pivotCanopyNote">Pivot point right under the clicked point, on the canopy. Also affects panning. Off = pivot point on the basemap</span>
+        </div>
+      </details>
+      <details class="design-section" open>
         <summary>Mouse input (test)</summary>
         <div class="row">
           <label class="h" for="pointerSmoothingToggle">Pointer</label>
           <button class="act on" id="pointerSmoothingToggle" type="button" aria-pressed="true" aria-describedby="pointerSmoothingNote">〜 Smoothing · On</button>
           <span class="weather-note" id="pointerSmoothingNote">The mouse reports whole pixels, and only about every third frame. Without smoothing the view waits, then jumps a whole step</span>
-        </div>
-        <div class="row">
-          <label class="h" for="pivotCanopyToggle">Pivot</label>
-          <button class="act on" id="pivotCanopyToggle" type="button" aria-pressed="true" aria-describedby="pivotCanopyNote">⌖ On canopy · On</button>
-          <span class="weather-note" id="pivotCanopyNote">Right-drag turns around the point you clicked. Off, that point sits on the map surface under the canopy, so the trees swing out from under the cursor &mdash; worst when tilted</span>
         </div>
         <div class="row">
           <label class="h" for="pointerResponseMs">Response · <span class="val" id="pointerResponseMsVal">—</span></label>
@@ -747,6 +750,9 @@
           <input type="range" id="sizeMaxPx" min="2" max="16" step="0.5" />
           <span class="weather-note">Ceiling in CSS pixels, so a coarse tile seen from arm's length cannot paint the screen</span>
         </div>
+      </details>
+      <details class="design-section">
+        <summary>Foveated detail (test)</summary>
         <div class="row">
           <label class="h" for="foveationToggle">Foveation</label>
           <button class="act" id="foveationToggle" type="button" aria-pressed="false" aria-describedby="foveationNote">◎ Fovea · Off</button>
