@@ -10,7 +10,15 @@
       "consumingApp": "C:\\Projects\\3d-flatform\\viewer (Vite + TS, Three.js WebGPURenderer, DOM overlays over full-screen canvas — runtime weight/per-frame cost matters)",
       "deploy": "static build, Apache under /livingdashboard/, no Node runtime -> SvelteKit adapter-static, no SSR",
       "designFrame": "1080x1920 = 360 logical px, mobile-first, 30px layout grid",
-      "excluded": ["react", "shadcn", "shadcn-svelte", "tailwind", "mui", "css-in-js", "framer-motion/FLIP layout-animation libs"],
+      "excluded": [
+        "react",
+        "shadcn",
+        "shadcn-svelte",
+        "tailwind",
+        "mui",
+        "css-in-js",
+        "framer-motion/FLIP layout-animation libs"
+      ],
       "cornerAsCodeComponent": false
     }
   },
@@ -43,11 +51,27 @@
     "primitivesBuilt": true,
     "semanticBuilt": true,
     "stylesBuilt": true,
-    "collections": ["_Color/Primitive", "Spacing/Primitive", "_Radius/Primitive", "_Border/Primitive", "_Typography/Primitive", "Color/Semantic", "Spacing/Semantic", "Typography/Semantic", "Radius/Semantic", "Border/Semantic"],
-    "styleGroups": ["Text", "Elevation"],
+    "collections": [
+      "_Color/Primitive",
+      "Spacing/Primitive",
+      "_Radius/Primitive",
+      "_Border/Primitive",
+      "_Typography/Primitive",
+      "Color/Semantic",
+      "Spacing/Semantic",
+      "Typography/Semantic",
+      "Radius/Semantic",
+      "Border/Semantic"
+    ],
+    "styleGroups": [
+      "Text",
+      "Elevation"
+    ],
     "lastSync": null
   },
-  "sheets": { "built": true },
+  "sheets": {
+    "built": true
+  },
   "icons": {
     "library": "phosphor",
     "version": "v2.0.8",
@@ -55,14 +79,135 @@
     "baseSize": 24,
     "built": true,
     "packageInstalled": false,
-    "subset": ["arrow-left", "arrow-right", "x", "check", "caret-down", "caret-up", "caret-left", "caret-right", "magnifying-glass", "list", "info", "plus", "minus", "sun", "cloud", "wind", "map-pin", "compass", "camera", "leaf", "paw-print", "drop", "thermometer", "play"]
+    "subset": [
+      "arrow-left",
+      "arrow-right",
+      "x",
+      "check",
+      "caret-down",
+      "caret-up",
+      "caret-left",
+      "caret-right",
+      "magnifying-glass",
+      "list",
+      "info",
+      "plus",
+      "minus",
+      "sun",
+      "cloud",
+      "wind",
+      "map-pin",
+      "compass",
+      "camera",
+      "leaf",
+      "paw-print",
+      "drop",
+      "thermometer",
+      "play"
+    ]
   },
   "components": {
-    "built": ["Corner", "Bento Widget", "Label Line"],
+    "built": [
+      "Corner",
+      "Bento Widget",
+      "Label Line",
+      "Species Card",
+      "Detail Info",
+      "Habitat Label Stack"
+    ],
     "meta": {
-      "Corner": { "status": "beta", "variants": { "Type": ["Convex", "None", "Concave", "Fill-Left", "Fill-Top"], "Size": ["Large", "Small"] }, "docPath": "design-system/docs/components/Corner.doc.json" },
-      "Bento Widget": { "status": "beta", "variants": ["Default", "Selected"], "properties": ["Title", "Value", "Description", "Icon", "Expanded", "Has Image", "Corner Top Left", "Corner Top Right", "Corner Bottom Right", "Corner Bottom Left"], "docPath": "design-system/docs/components/BentoWidget.doc.json" },
-      "Label Line": { "status": "beta", "properties": ["Text", "Corner Top Left", "Corner Top Right", "Corner Bottom Right", "Corner Bottom Left"], "docPath": "design-system/docs/components/LabelLine.doc.json" }
+      "Corner": {
+        "status": "beta",
+        "variants": {
+          "Type": [
+            "Convex",
+            "None",
+            "Concave",
+            "Fill-Left",
+            "Fill-Top"
+          ],
+          "Size": [
+            "Large",
+            "Small"
+          ]
+        },
+        "docPath": "design-system/docs/components/Corner.doc.json"
+      },
+      "Bento Widget": {
+        "status": "beta",
+        "variants": [
+          "Default",
+          "Selected"
+        ],
+        "properties": [
+          "Title",
+          "Value",
+          "Description",
+          "Icon",
+          "Expanded",
+          "Has Image",
+          "Corner Top Left",
+          "Corner Top Right",
+          "Corner Bottom Right",
+          "Corner Bottom Left"
+        ],
+        "docPath": "design-system/docs/components/BentoWidget.doc.json"
+      },
+      "Label Line": {
+        "status": "beta",
+        "properties": [
+          "Text",
+          "Corner Top Left",
+          "Corner Top Right",
+          "Corner Bottom Right",
+          "Corner Bottom Left"
+        ],
+        "docPath": "design-system/docs/components/LabelLine.doc.json",
+        "note": "Moved from the Bento Grid — Recreation canvas onto the Components page with a doc card (2026-08-26)."
+      },
+      "Species Card": {
+        "status": "draft",
+        "variants": {
+          "State": [
+            "Collapsed",
+            "Expanded"
+          ]
+        },
+        "properties": [
+          "Title",
+          "Subtitle",
+          "Illustration",
+          "Detail",
+          "Corner Top Left",
+          "Corner Top Right",
+          "Corner Bottom Right",
+          "Corner Bottom Left"
+        ],
+        "accent": "Color/Widget Accent mode (Grey Light | Grey Dark | Gold | Forest Green | ...)",
+        "note": "Fluid: set an instance to Fill/Fill in an auto-layout cell. Header hugs, Detail hugs, Visual fills. Corner atoms are ABSOLUTE 120x120 overlays with corner constraints so the fillet radius never scales with the card.",
+        "docPath": null
+      },
+      "Detail Info": {
+        "status": "draft",
+        "properties": [
+          "Reading",
+          "Status Text",
+          "Caption"
+        ],
+        "note": "Both line breaks are authored, not wrapped — Figma's text nodes carry a hard newline. Status column fixed at 211px. Glyphs are clones of Figma's own tape/rule/info vectors, not redraws.",
+        "docPath": null
+      },
+      "Habitat Label Stack": {
+        "status": "draft",
+        "variants": {
+          "Align": [
+            "Left",
+            "Right"
+          ]
+        },
+        "note": "Three Label Line instances stacked flush (gap 0) so shared edges fuse. Align follows the docked edge: Left portrait, Right landscape.",
+        "docPath": null
+      }
     },
     "instanceSwapUpgradePending": []
   },
@@ -75,7 +220,9 @@
     "existingApp": "viewer (pre-existing standalone Vite+TS app, now a pnpm workspace member; keeps its own tooling, consumes packages/ui as a workspace dependency)"
   },
   "sync": {
-    "platforms": ["vanilla-css"],
+    "platforms": [
+      "vanilla-css"
+    ],
     "customAdapters": [],
     "lastRun": "2026-08-20T12:23:00.000Z",
     "note": "Verified 2026-08-20: fetched all 11 variable collections live from Figma (figma_get_variables) and diffed every value against packages/tokens/scripts/tokens-raw.json -- byte-for-byte identical, no drift. Regenerated CSS anyway as an idempotency check (no diff). The pipeline is still ad-hoc (generate.mjs reads a manual JSON snapshot, not a live pull on every run) rather than the formal token-sync-layer/DTCG pipeline, but the snapshot itself is now confirmed current as of this timestamp."
@@ -110,5 +257,12 @@
     "completedAt": null,
     "journalScaffolded": false
   },
-  "completedSkills": ["figma-environment-setup", "design-system-audit", "token-builder", "token-sheet-builder", "icon-system-builder", "component-builder"]
+  "completedSkills": [
+    "figma-environment-setup",
+    "design-system-audit",
+    "token-builder",
+    "token-sheet-builder",
+    "icon-system-builder",
+    "component-builder"
+  ]
 }
