@@ -174,18 +174,19 @@
           ]
         },
         "properties": [
-          "Title",
-          "Subtitle",
-          "Illustration",
-          "Detail",
           "Corner Top Left",
           "Corner Top Right",
           "Corner Bottom Right",
-          "Corner Bottom Left"
+          "Corner Bottom Left",
+          "Title",
+          "Subtitle",
+          "State"
         ],
         "accent": "Color/Widget Accent mode (Grey Light | Grey Dark | Gold | Forest Green | ...)",
         "note": "Fluid: set an instance to Fill/Fill in an auto-layout cell. Header hugs, Detail hugs, Visual fills. Corner atoms are ABSOLUTE 120x120 overlays with corner constraints so the fillet radius never scales with the card.",
-        "docPath": null
+        "docPath": null,
+        "bindings": "fill accent/fill; radius card/outer; text text/onEmphasis + Typography size vars; padding/gap Spacing/Semantic",
+        "openGap": "Illustration is an image-filled RECTANGLE, so it cannot be an INSTANCE_SWAP slot -- designers swap its fill directly. Corner TYPE is still chosen by hand per instance; nothing in Figma derives it from adjacency."
       },
       "Detail Info": {
         "status": "draft",
@@ -195,7 +196,8 @@
           "Caption"
         ],
         "note": "Both line breaks are authored, not wrapped — Figma's text nodes carry a hard newline. Status column fixed at 211px. Glyphs are clones of Figma's own tape/rule/info vectors, not redraws.",
-        "docPath": null
+        "docPath": null,
+        "bindings": "text text/onEmphasis + size/body; gap Spacing/Semantic"
       },
       "Habitat Label Stack": {
         "status": "draft",
