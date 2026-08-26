@@ -14,3 +14,10 @@ export type { DockConfig, DockEdge, DockMode, Docked } from "./screen-frame/dock
 export { WEATHER_CLUSTER, SPECIES_ROW } from "./screen-frame/recreation-content";
 export { default as HabitatLabelStack } from "./screen-frame/HabitatLabelStack.svelte";
 export { EAGLE_LOGO_SVG } from "./screen-frame/logo-icon";
+export { default as PlayButton } from "./PlayButton.svelte";
+export { default as Scrubber } from "./Scrubber.svelte";
+export { default as MapPin } from "./MapPin.svelte";
+export { default as ChangelogRow } from "./ChangelogRow.svelte";
+export { default as ChangelogRail } from "./ChangelogRail.svelte";
+export { default as DetailInfo } from "./DetailInfo.svelte";
+export { default as MediaCard } from "./MediaCard.svelte";
