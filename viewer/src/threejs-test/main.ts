@@ -1206,7 +1206,20 @@ function updateCanopyPivot(): void {
   const state: number = controls.state ?? 0
   const pressStarted = state !== 0 && pivotPressState === 0
   pivotPressState = state
+  // Rotation only. Rotation turns *around* the pivot, so moving it costs nothing: the
+  // angle per pixel is fixed at 2*pi / clientHeight whatever the distance. Panning
+  // instead lays a horizontal plane through the pivot and rides it, so pan distance per
+  // pixel scales with the camera's height above that plane — lifting it onto the canopy
+  // would slow panning to a third near the treetops, and make the gain depend on whether
+  // the cursor happened to grab a tall tree or a clearing.
+  const ROTATE = 2, FREE_ROTATE = 5
   if (!pressStarted || !controls.pivotPoint) return
+  if (state !== ROTATE && state !== FREE_ROTATE) {
+    // Say so, rather than leaving the previous press's verdict standing — the whole point
+    // of this field is telling "declined" apart from "never ran".
+    pivotDebug = { reason: 'not a rotation', passes: [] }
+    return
+  }
   pivotMarkerPlaced = true
   if (!canopyPivot(controls.pivotPoint, pivotCorrected)) return
   controls.pivotPoint.copy(pivotCorrected)
@@ -1236,12 +1249,19 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
 
   // Widening radii, because the answer has to come from whatever LOD is resident: at d0
   // the point spacing is tens of metres, so a footprint tuned for close range finds
-  // nothing at all. And if no radius has support — pointing past the loaded tiles, which
-  // is exactly the far, shallow view this fix is for — fall back to the manifest's own
-  // canopy height rather than silently leaving the pivot on the terrain.
+  // nothing at all.
+  //
+  // No fallback when nothing has support. An earlier version substituted the manifest's
+  // nominal canopy height there, reasoning that silently doing nothing was useless in
+  // exactly the far, shallow views this is for. A recorded session disproved that: away
+  // from the survey the nominal plane describes nothing, and it lifted a pivot by 9.2 km.
+  // Silence is the correct answer where there are no points — there is no canopy to turn
+  // around.
   const baseRadius = EXPERIENCE_CONFIG.navigation.pivotSampleRadiusM
   const radii = [baseRadius, baseRadius * 3, baseRadius * 9]
-  const nominalCanopyZ = areaMinZ + zOffset + areaSpan
+  // Belt and braces on top of that: a "canopy" standing taller than twice the survey's
+  // own vertical span is not describing the ground under the cursor, whatever produced it.
+  const maxRise = Math.max(areaSpan, 1) * 2
   pivotStepEnu.copy(pivotEnu)
   for (let pass = 0; pass < 3; pass++) {
     pivotSampleXY.set(pivotStepEnu.x, pivotStepEnu.y)
@@ -1251,11 +1271,13 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
       const sample = stream.sampleGroundZ(pivotSampleXY, radius, enuInverseRender)
       if (sample) { canopyZ = sample.canopyZ - zOffset; used = radius; break }
     }
-    if (canopyZ === null) { canopyZ = nominalCanopyZ; used = -1 }
-    // Only ever move up the ray, toward the camera. Outside the surveyed area the
-    // nominal canopy plane can sit below the ground, and pushing the pivot down through
-    // the terrain would be worse than leaving it alone.
+    if (canopyZ === null) { debug.reason = 'no points to sample'; return false }
+    // Only ever move up the ray, toward the camera.
     if (canopyZ <= pivotEnu.z) { debug.reason = 'canopy at or below the terrain hit'; return false }
+    if (canopyZ - pivotEnu.z > maxRise) {
+      debug.reason = `rise ${(canopyZ - pivotEnu.z).toFixed(0)} m over the ${maxRise.toFixed(0)} m cap`
+      return false
+    }
     const distance = (canopyZ - pivotCamEnu.z) / pivotDirEnu.z
     debug.passes.push({ pass, canopyZ: +canopyZ.toFixed(2), radius: used, distance: +distance.toFixed(1) })
     if (!(distance > 0)) { debug.reason = `crossing behind the camera (${distance.toFixed(1)} m)`; return false }

@@ -230,7 +230,9 @@ export const EXPERIENCE_CONFIG = {
      */
     pointerResponseMs: 50,
     /**
-     * Move the rotation and pan pivot from the terrain up onto the canopy.
+     * Move the rotation pivot from the terrain up onto the canopy. Rotation only —
+     * panning rides a horizontal plane through the pivot, so lifting it there would make
+     * pan speed depend on the canopy height under the cursor.
      *
      * EnvironmentControls picks the pivot by raycasting the scene, and the only thing it
      * can hit is the draped basemap: the cloud is instanced quads whose base geometry
