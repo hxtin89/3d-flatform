@@ -73,18 +73,24 @@ function solveCorner(
   // full -- a flush junction, sharp/no gap. If it's empty, this is the reflex point
   // around a missing quadrant -- round it to smoothly flow around the gap.
   if (hNeighbor && vNeighbor) return hasDiag ? "none" : "concave";
-  // A single perpendicular neighbor whose OWN rectangle reaches past my far
-  // (perpendicular) edge -- e.g. a taller widget beside a shorter one, both
-  // flush at the near end -- leaves no real corner to round: rounding it would
-  // carve a notch out of an otherwise straight, flush seam against that
-  // neighbor's overhang. This is decidable, unlike the genuine Fill-vs-Convex
-  // T-junction ambiguity below (see file header), so it isn't left to
-  // cornerOverrides. Checked against the SAME widget the H/V probe found, not
-  // "is anything in the diagonal cell" -- a widget that merely touches the
-  // diagonal quadrant without bordering this corner (docking.test.ts's L-shape
-  // case) must stay Convex.
-  if (hNeighbor && !vNeighbor && contains(hNeighbor, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE)) return "none";
-  if (vNeighbor && !hNeighbor && contains(vNeighbor, hProbeX + hSign * PROBE, vProbeY + vSign * PROBE)) return "none";
+  // A single perpendicular neighbor whose OWN rectangle reaches my corner's line
+  // leaves no corner to round: the two edges are collinear there, so the union has
+  // no vertex at all and rounding would carve a notch out of a straight seam.
+  //
+  // This probes the corner's own line (vProbeY / hProbeX), NOT one pixel past it.
+  // Probing past it only caught the OVERHANG case -- a taller neighbor rising
+  // beyond my edge -- and missed the far more common FLUSH one, where the
+  // neighbor's edge is exactly level with mine. Two widgets side by side at the
+  // same height therefore both rounded the corner they share, and a 2x2 flush grid
+  // opened a white notch at all four outer seam midpoints while correctly staying
+  // sharp at the shared centre. That is the "dark keyhole at the foot of the row"
+  // recorded in recreation-content.ts, which had been worked around by hand-pinning
+  // cornerOverrides on every affected seam rather than fixed here.
+  //
+  // Still checked against the SAME widget the H/V probe found, so a widget that
+  // merely touches the diagonal quadrant without bordering this corner is unaffected.
+  if (hNeighbor && !vNeighbor && contains(hNeighbor, hProbeX + hSign * PROBE, vProbeY)) return "none";
+  if (vNeighbor && !hNeighbor && contains(vNeighbor, hProbeX, vProbeY + vSign * PROBE)) return "none";
   return "convex";
 }
 
