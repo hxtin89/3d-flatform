@@ -2,7 +2,7 @@
 // The One LOD Tree moves from Overview p02 to Explore p10 and Detail p100 while
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
 import * as THREE from 'three'
-import { WebGPURenderer } from 'three/webgpu'
+import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
   createUniforms, setCloudShadowTexture, setGroundPatchMask,
   setCloudEffectEnabled, type CloudEffect,
@@ -1086,6 +1086,92 @@ let pivotOnCanopy: boolean = EXPERIENCE_CONFIG.navigation.pivotOnCanopy
  * ground-snapped frame, so zOffset comes off exactly once. Same correction, and the same
  * reason, as the donation shape's probe.
  */
+/**
+ * A crosshair at the pivot, for seeing where a drag is actually turning.
+ *
+ * EnvironmentControls ships its own marker and globe.ts removes it from the scene every
+ * frame, because it is a GLSL ShaderMaterial and WebGPURenderer only takes node
+ * materials. So this is a node-material stand-in: three axis segments and a ring, drawn
+ * with depth testing off so the canopy cannot bury it, and rescaled each frame to hold a
+ * constant size on screen — otherwise it is a dot at range and fills the view up close.
+ *
+ * LineLoop is not an option, WebGPU rejects the topology; the ring is a Line whose first
+ * vertex is repeated at the end.
+ */
+// Screen size in CSS pixels. WebGPU ignores line width, so size and colour are the only
+// levers there are — small enough and it disappears into the canopy texture.
+const PIVOT_MARKER_PX = 30
+const pivotMarkerCorrected = new THREE.Color(0x4ade80)
+const pivotMarkerFallback = new THREE.Color(0xf59e0b)
+let pivotMarker: THREE.Group | null = null
+let pivotMarkerMaterial: LineBasicNodeMaterial | null = null
+let pivotMarkerVisible = false
+let pivotMarkerPlaced = false
+
+function buildPivotMarker(): THREE.Group {
+  const material = new LineBasicNodeMaterial()
+  material.depthTest = false
+  material.depthWrite = false
+  material.transparent = true
+  material.toneMapped = false
+  pivotMarkerMaterial = material
+
+  const group = new THREE.Group()
+  group.frustumCulled = false
+  // Unit geometry, so one scale per frame is the whole placement.
+  const axes: number[] = []
+  for (const axis of [0, 1, 2]) {
+    const a = [0, 0, 0]; const b = [0, 0, 0]
+    a[axis] = -1; b[axis] = 1
+    axes.push(...a, ...b)
+  }
+  const axisGeometry = new THREE.BufferGeometry()
+  axisGeometry.setAttribute('position', new THREE.Float32BufferAttribute(axes, 3))
+  const axisLines = new THREE.LineSegments(axisGeometry, material)
+  axisLines.frustumCulled = false
+  group.add(axisLines)
+
+  const ring: number[] = []
+  const segments = 48
+  for (let i = 0; i <= segments; i++) {
+    const t = (i % segments) / segments * Math.PI * 2
+    ring.push(Math.cos(t) * 0.7, Math.sin(t) * 0.7, 0)
+  }
+  const ringGeometry = new THREE.BufferGeometry()
+  ringGeometry.setAttribute('position', new THREE.Float32BufferAttribute(ring, 3))
+  const ringLine = new THREE.Line(ringGeometry, material)
+  ringLine.frustumCulled = false
+  group.add(ringLine)
+
+  group.renderOrder = 9999
+  group.visible = false
+  return group
+}
+
+/**
+ * Hold the marker at the pivot and at a constant pixel size, and colour it by whether the
+ * canopy lift actually found an answer — amber means it fell back, which is the failure
+ * mode that is otherwise invisible.
+ */
+function updatePivotMarker(): void {
+  if (!pivotMarker || !pivotMarkerVisible) return
+  const controls = globe?.controls as any
+  const pivot: THREE.Vector3 | undefined = controls?.pivotPoint
+  if (!pivot || !pivotMarkerPlaced) { pivotMarker.visible = false; return }
+  pivotMarker.visible = true
+  pivotMarker.position.copy(pivot)
+  pivotMarker.quaternion.copy(camera.quaternion)
+  const distance = camera.position.distanceTo(pivot)
+  const perPixel = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * distance
+    / Math.max(renderer.domElement.clientHeight, 1)
+  pivotMarker.scale.setScalar(perPixel * PIVOT_MARKER_PX * 0.5)
+  if (pivotMarkerMaterial) {
+    pivotMarkerMaterial.color.copy(
+      pivotDebug.reason === 'corrected' ? pivotMarkerCorrected : pivotMarkerFallback,
+    )
+  }
+}
+
 const pivotCorrected = new THREE.Vector3()
 let pivotPressState = 0
 
@@ -1121,6 +1207,7 @@ function updateCanopyPivot(): void {
   const pressStarted = state !== 0 && pivotPressState === 0
   pivotPressState = state
   if (!pressStarted || !controls.pivotPoint) return
+  pivotMarkerPlaced = true
   if (!canopyPivot(controls.pivotPoint, pivotCorrected)) return
   controls.pivotPoint.copy(pivotCorrected)
   // Keep the marker honest even though globe.update removes it before rendering.
@@ -2176,6 +2263,19 @@ pivotCanopyToggleEl.addEventListener('click', () => {
   syncPivotCanopyToggle()
 })
 syncPivotCanopyToggle()
+const pivotMarkerToggleEl = $<HTMLButtonElement>('#pivotMarkerToggle')
+pivotMarkerToggleEl.addEventListener('click', () => {
+  pivotMarkerVisible = !pivotMarkerVisible
+  pivotMarkerToggleEl.classList.toggle('on', pivotMarkerVisible)
+  pivotMarkerToggleEl.setAttribute('aria-pressed', String(pivotMarkerVisible))
+  pivotMarkerToggleEl.textContent = `⌖ Show pivot · ${pivotMarkerVisible ? 'On' : 'Off'}`
+  // Built on first use: it costs two draw calls and nothing at all while switched off.
+  if (pivotMarkerVisible && !pivotMarker) {
+    pivotMarker = buildPivotMarker()
+    scene.add(pivotMarker)
+  }
+  if (pivotMarker) pivotMarker.visible = pivotMarkerVisible && pivotMarkerPlaced
+})
 bindDesignSlider('pointerResponseMs', NAV.pointerResponseMs, (v) => `${Math.round(v)} ms`, (v) => {
   pointerResponseMs = v; applyPointerSmoothing()
 })
@@ -2741,6 +2841,7 @@ function loop(now: number): void {
   )
   updateCanopyPivot()
   globe?.update(enforceNavigationBounds)
+  updatePivotMarker()
   updateMaskFollow()
   updateAtmosphere(now)
   const stats = updateStreaming(now)
