@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { cornerOverflow, type Corners } from "./geometry/silhouette";
+  import DetailInfo from "./DetailInfo.svelte";
 
   interface Props {
     /** SVG path `d` for this widget's silhouette, computed externally (silhouette.ts) — this component never computes geometry itself. */
@@ -45,6 +46,10 @@
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
+
+  // Single source of truth for "does the facts block actually render", so the
+  // {#if} below cannot disagree with anything else that asks the same question.
+  const hasFacts = $derived(selected && !!(measurement || status || caption));
 
   // Drives the same "pressed" look for mouse and keyboard. Plain :active
   // covers a mouse click, but a div with role="button" doesn't get :active
@@ -123,52 +128,8 @@
       </header>
     {/if}
 
-    {#if selected && (measurement || status || caption)}
-      <div class="species-widget__facts">
-        {#if measurement || status}
-          <div class="species-widget__facts-row">
-            {#if measurement}
-              <div class="species-widget__fact species-widget__fact--stacked">
-                <!-- Tape measure, sized/proportioned to match the real Figma icon group
-                     (63.33x44.33, read directly off "Group 2" in Frame 1 Desktop). -->
-                <svg class="species-widget__fact-icon species-widget__fact-icon--tape" viewBox="0 0 64 44" fill="none" aria-hidden="true">
-                  <rect x="2" y="2" width="60" height="26" rx="13" stroke="currentColor" stroke-width="2" />
-                  <path d="M14 2v10M24 2v6M34 2v10M44 2v6M54 2v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                  <path d="M20 28c0 8 6 14 14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                  <rect x="30" y="34" width="14" height="8" rx="2" stroke="currentColor" stroke-width="2" />
-                </svg>
-                <!-- A measurement ("15-17mm") is a numeric reading, not a label sentence
-                     like status/caption below it -- distinct modifier class so only this
-                     one fact gets the mono "instrument reading" treatment (see its own
-                     comment), not every fact row indiscriminately. -->
-                <span class="species-widget__fact-text species-widget__fact-text--reading">{measurement}</span>
-              </div>
-            {/if}
-            {#if status}
-              <div class="species-widget__fact species-widget__fact--stacked species-widget__fact--status">
-                <!-- Range indicator: a plain hairline with rounded end-caps and one tick
-                     mark, matching the real "Line 11" + "Arrow 2" pair (179px wide, tick
-                     ~88% along) rather than a two-dot slider. -->
-                <svg class="species-widget__fact-icon species-widget__fact-icon--range" viewBox="0 0 180 20" preserveAspectRatio="none" aria-hidden="true">
-                  <line x1="2" y1="10" x2="178" y2="10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                  <line x1="157" y1="1" x2="157" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                </svg>
-                <span class="species-widget__fact-text">{status}</span>
-              </div>
-            {/if}
-          </div>
-        {/if}
-        {#if caption}
-          <div class="species-widget__fact species-widget__fact--inline">
-            <svg class="species-widget__fact-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
-              <line x1="12" y1="11" x2="12" y2="16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-              <circle cx="12" cy="8" r="1" fill="currentColor" />
-            </svg>
-            <span class="species-widget__fact-text">{caption}</span>
-          </div>
-        {/if}
-      </div>
+    {#if hasFacts}
+      <DetailInfo {measurement} {status} {caption} />
     {/if}
 
     <div class="species-widget__visual">
@@ -283,95 +244,33 @@
     margin: 0;
   }
 
+  /* Figma leaves description-level text unbound to any named style, which is
+     why this used to just reuse --text-body (typography-styles.css's own
+     header comment admits as much: "not a guessed Figma binding"). Measuring
+     the actual reference render says that guess was wrong: a pixel-width
+     comparison (tools/review/measure.mjs) against .gauntlet/ref/mobile-selected.png
+     put this line's rendered width at ~66% of the same string in the reference (147px
+     vs 223px for "ranitomeya sirensis") while the title directly above it
+     matched the reference within 1% -- so the gap is specific to this rule,
+     not a capture-scale mismatch. 16/24 is 66.7%, i.e. the reference is
+     rendering this at --size-heading-md's 24px, just at body weight instead
+     of the title's bold -- confirmed against the DetailInfo fact rows sitting
+     right next to it in the same reference card ("Schutzstatus:"), which are
+     visibly smaller still, so "the info-block body text" Figma matches this
+     to is that 24px scale, not --text-body's 16px. No composed token for
+     size-24-at-body-weight exists yet in @wi/tokens, so this builds one from
+     the same primitives typography-styles.css itself composes --text-heading-md
+     from, rather than hardcoding 24px past the token layer. */
   .species-widget__description {
     color: var(--text-secondary);
-    font: var(--text-body);
+    font: var(--weight-body) var(--size-heading-md) / var(--line-height-body) var(--family-sans);
     /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
     letter-spacing: var(--text-body-tracking);
     margin: 0;
   }
 
-  .species-widget__facts {
-    display: flex;
-    flex-direction: column;
-    gap: var(--stack-sm);
-  }
-
   .species-widget[data-selectable="true"] {
     cursor: pointer;
-  }
-
-  .species-widget__facts-row {
-    display: flex;
-    gap: var(--inset-lg);
-  }
-
-  .species-widget__fact--stacked {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--stack-xs);
-  }
-
-  /* The status column is authored at a fixed 211px in Figma -- the same width in
-     Frame 1 Mobile (25547:2462) and Frame 1 Desktop (25556:1317) -- and wraps
-     after the colon: "Schutzstatus:" / "am Wenigsten bedroht". Left to size
-     itself it comes out wider, fits "Schutzstatus: am Wenigsten" on the first
-     line, and breaks in the middle of the phrase instead. */
-  .species-widget__fact--status {
-    width: 211px;
-    flex-shrink: 0;
-  }
-
-  .species-widget__fact--inline {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--inline-sm);
-  }
-
-  .species-widget__fact-icon {
-    width: var(--size-icon-lg);
-    height: var(--size-icon-lg);
-    flex-shrink: 0;
-  }
-
-  .species-widget__fact-icon--tape {
-    /* Matches the real icon group's own 63.33x44.33 aspect ratio. */
-    width: 44px;
-    height: 30px;
-  }
-
-  .species-widget__fact-icon--range {
-    /* Matches the real Line 11's 179px width -- scales with everything else via
-       the shared --screen-frame-content-scale transform, same as font sizes. */
-    width: 179px;
-    height: 20px;
-  }
-
-  .species-widget__fact-text {
-    font: var(--text-body);
-    /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
-    letter-spacing: var(--text-body-tracking);
-    /* Honour the authored newlines in `status`/`caption` (see
-       recreation-content.ts) while still wrapping normally on top of them. */
-    white-space: pre-line;
-  }
-
-  /* Same non-Figma-bound craft addition as BentoWidget's weather value (see its own
-     comment): a measurement is a number, not prose, so it gets the tight mono face
-     that reads as a scientific readout instead of the same Sora body copy status/caption
-     use right next to it -- without this the whole species card was "one generic-looking
-     bold sans at every size" even on the one fact that's actually data, not a sentence. */
-  .species-widget__fact-text--reading {
-    font-family: var(--family-mono);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
-    /* One line, always. This sits in a flex column beside the much longer
-       status column, so it shrinks below its own content and breaks after the
-       hyphen -- "15-" / "17mm" -- which Figma never does. Its real text node is
-       87px wide in BOTH Frame 1 Mobile (25547:2460) and Frame 1 Desktop
-       (25556:1315), i.e. authored as a single unbroken reading. */
-    white-space: nowrap;
   }
 
   .species-widget__visual {
@@ -381,7 +280,61 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    /* A few px of bottom bleed independent of the overlay/stacked split below
+       -- Figma's own bird/butterfly art nodes ("band-tailed_manakin 3" et al,
+       Frame 1 Desktop) sit close enough to their card's bottom edge to get
+       clipped by a few px, not centered inside the full --inset-xl margin on
+       every side. Only the bottom edge shaves down to --inset-lg; left/right/
+       top keep the full inset-xl, which is the margin this component's own
+       padding comment says it needs to clear the blob silhouette's concave
+       corners -- bottom is the one edge safe to give back. */
+    margin-bottom: calc(var(--inset-lg) - var(--inset-xl));
   }
+
+  /* Figma sizes the collapsed bird/butterfly illustration to the full padded
+     card, independent of how many lines the title wraps to: get_variable_defs
+     on "band-tailed_manakin 3" (one-line "SCHNURRVOGEL") and "Blauer
+     Morphofalter" (two-line "BLAUER MORPHOFALTER") shows both art nodes
+     starting within a few px of their card's own top edge -- the art sits
+     BEHIND the title rather than being pushed down by it. A flex sibling that
+     only gets whatever the header leaves over reproduces that well enough for
+     a one-line title (measured ~79% of the reference render) but starves a
+     two-line one, which eats a whole extra title row nothing gives back
+     (measured ~44%). Positioning the visual layer to fill the content box
+     -- still inset by the very padding above, so it never reaches past the
+     safe zone that padding exists to protect -- and painting it behind the
+     header via a negative z-index (the stacking spec always paints ordinary
+     static content above a negative-z-index positioned sibling in the same
+     stacking context, e.g. .species-widget__content's own z-index:1) makes
+     its size independent of the header's line count instead.
+     Keyed on `image` specifically, and only when there's no facts block:
+     Giftfrosch's own selected card, per the same node data, keeps its info
+     panel and photo genuinely stacked (the photo's top offset there tracks
+     the panel's real height, not zero) -- overlaying that case risks a long
+     caption line visually colliding with the photo it would now sit in front
+     of, so facts-bearing cards keep the ordinary flex-sibling layout above.
+     The top edge still reserves roughly one title line's worth of space
+     (padding + --size-heading-md + the header's own internal gap) rather
+     than going all the way to inset:0 -- get_variable_defs backs this up
+     too: "band-tailed_manakin 3"'s own top offset is 69px into a 300px card
+     (title-sized, not zero), it's only the SECOND line a two-line title
+     wraps to that Figma lets the art run behind. Reserving a fixed one-line
+     budget keeps that same real gap above a single-line title (SCHNURRVOGEL)
+     while still not shrinking any further for a two-line one (BLAUER
+     MORPHOFALTER) -- which is the actual bug this rule exists to fix. */
+  /* NO overlay. An earlier pass positioned the illustration absolutely and painted
+     it BEHIND the header via a negative z-index, on the theory that Figma lets the
+     art run behind a title's second line. Cropping the real Morphofalter card out
+     of the reference export settles it: the butterfly sits entirely BELOW both the
+     two-line title and the subtitle, touching neither. Overlaying it put a wing
+     straight through "morpho deidamia".
+
+     So the art stays an ordinary flex sibling that cannot collide with the header.
+     Its size is still short of the reference for a two-line title -- the box it
+     inherits is height-limited, and a roughly square source asset then contains to
+     that height rather than to the card's width. That is a real remaining gap, and
+     a smaller one than illegible type. */
+
 
   .species-widget__icon-plate {
     display: inline-flex;

@@ -36,8 +36,6 @@
     shadow = true,
   }: Props = $props();
 
-  const PADDING_X = 24;
-
   // Same highlight/shadow sheen as BentoWidget/SpeciesWidget (see BentoWidget's
   // own comment for the full rationale) -- before this, the label stack was
   // the one surface in the whole composition that stayed a flat, un-lit fill
@@ -45,9 +43,21 @@
   // backwards for the piece that's supposed to read as the screen's hero
   // headline rather than just another flat card.
   const sheenId = `label-sheen-${Math.random().toString(36).slice(2, 9)}`;
+  // bind:clientWidth reads the SPAN's own box, and that span already carries
+  // `padding: 0 var(--space-24)` (see the CSS comment below) -- clientWidth is
+  // content + padding by definition, box-sizing notwithstanding, so textWidth
+  // arrives pre-padded on both sides. Adding PADDING_X * 2 again here used to
+  // double it: every pill rendered 48px (2 * space-24) wider than Figma's,
+  // a constant offset regardless of text length -- confirmed against the
+  // Figma mobile export by measuring the flat, corner-overflow-free plateau
+  // of "PERUANISCHER"'s and "AUWALD"'s right edges (both have a plain convex
+  // corner there, so no Fill-corner bulge could be inflating the read): ours
+  // 654/435 vs Figma's 606/389, a 48/46px gap on two words of very different
+  // length -- a per-character font-metrics mismatch would scale with length,
+  // a flat padding double-count would not, and it didn't.
   let textWidth = $state(0);
   const height = $derived(Math.ceil(fontSize * 1.2) + 12);
-  const width = $derived(textWidth + PADDING_X * 2);
+  const width = $derived(textWidth);
   const path = $derived(silhouette(width, height, corners, radius));
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
@@ -109,8 +119,9 @@
     display: inline-flex;
     align-items: center;
     height: 100%;
-    /* Must equal PADDING_X above (space-24) -- kept as a token here since it's a
-       static CSS value; PADDING_X stays a plain number since it feeds JS width math. */
+    /* The only place the horizontal inset is authored now -- `width` above reads it
+       straight back via bind:clientWidth instead of re-adding it in JS (see that
+       comment for why a second copy of this number used to double-pad every pill). */
     padding: 0 var(--space-24);
     white-space: nowrap;
     font-family: var(--family-sans);

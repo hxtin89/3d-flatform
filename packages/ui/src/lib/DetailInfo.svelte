@@ -22,13 +22,16 @@
       <div class="detail-info__row">
         {#if measurement}
           <div class="detail-info__fact detail-info__fact--stacked">
-            <!-- Tape measure, sized/proportioned to match the real Figma icon group
-                 (63.33x44.33, read directly off "Group 2" in Frame 1 Desktop). -->
-            <svg class="detail-info__fact-icon detail-info__fact-icon--tape" viewBox="0 0 64 44" fill="none" aria-hidden="true">
-              <rect x="2" y="2" width="60" height="26" rx="13" stroke="currentColor" stroke-width="2" />
-              <path d="M14 2v10M24 2v6M34 2v10M44 2v6M54 2v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <path d="M20 28c0 8 6 14 14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <rect x="30" y="34" width="14" height="8" rx="2" stroke="currentColor" stroke-width="2" />
+            <!-- Coiled tape measure, ported directly from Figma's own export of
+                 "Group 2" (Frame 1 Desktop, 63.33x44.33) -- the previous version
+                 was a hand-approximated flat ticked rectangle, which two
+                 independent reviewers flagged as both the wrong shape and
+                 roughly half size. -->
+            <svg class="detail-info__fact-icon detail-info__fact-icon--tape" viewBox="0 0 65 46" fill="none" aria-hidden="true">
+              <path d="M9.5 15.766C9.5 19.3008 15.1711 22.1667 22.1667 22.1667V15.766C22.1667 12.6177 22.1667 11.0436 20.908 10.0833C19.6493 9.12291 18.4015 9.48211 15.9059 10.2005C12.0799 11.3019 9.5 13.3817 9.5 15.766Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+              <path d="M44.3333 11.0833C44.3333 17.2045 34.409 22.1667 22.1667 22.1667C9.92436 22.1667 0 17.2045 0 11.0833C0 4.96217 9.92436 0 22.1667 0C34.409 0 44.3333 4.96217 44.3333 11.0833Z" stroke="currentColor" stroke-width="1.5" />
+              <path d="M0 12.667V33.7782C0 39.6077 9.92436 44.3337 22.1667 44.3337H57C59.9855 44.3337 61.4783 44.3337 62.4058 43.4061C63.3333 42.4786 63.3333 40.9859 63.3333 38.0003V28.5003C63.3333 25.5148 63.3333 24.022 62.4058 23.0945C61.4783 22.167 59.9855 22.167 57 22.167H22.1667" stroke="currentColor" stroke-width="1.5" />
+              <path d="M50.6665 44.3337V38.0003M37.9998 44.3337V38.0003M25.3332 44.3337V38.0003M12.6665 42.7503V36.417" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
             <!-- A measurement ("15-17mm") is a numeric reading, not a label sentence
                  like status/caption below it -- distinct modifier class so only this
@@ -39,12 +42,16 @@
         {/if}
         {#if status}
           <div class="detail-info__fact detail-info__fact--stacked detail-info__fact--status">
-            <!-- Range indicator: a plain hairline with rounded end-caps and one tick
-                 mark, matching the real "Line 11" + "Arrow 2" pair (179px wide, tick
-                 ~88% along) rather than a two-dot slider. -->
-            <svg class="detail-info__fact-icon detail-info__fact-icon--range" viewBox="0 0 180 20" preserveAspectRatio="none" aria-hidden="true">
-              <line x1="2" y1="10" x2="178" y2="10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <line x1="157" y1="1" x2="157" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            <!-- Status rule, ported directly from Figma's export: a hairline
+                 with a round dot at BOTH ends plus a downward triangle marker
+                 (~88% along), not the bare tick-crossed line the previous
+                 version drew with no dots at all. The dots sit at x=0/x=179
+                 and the paths start at x=-2.67 in Figma's own 182-wide export
+                 -- the viewBox origin shifts to -2.67 so the left dot doesn't
+                 clip; the geometry itself is unchanged. -->
+            <svg class="detail-info__fact-icon detail-info__fact-icon--range" viewBox="-2.67 0 182 22" fill="none" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M-2.66667 10C-2.66667 11.4728 -1.47276 12.6667 0 12.6667C1.47276 12.6667 2.66667 11.4728 2.66667 10C2.66667 8.52724 1.47276 7.33333 0 7.33333C-1.47276 7.33333 -2.66667 8.52724 -2.66667 10ZM176.333 10C176.333 11.4728 177.527 12.6667 179 12.6667C180.473 12.6667 181.667 11.4728 181.667 10C181.667 8.52724 180.473 7.33333 179 7.33333C177.527 7.33333 176.333 8.52724 176.333 10ZM0 10V10.5H179V10V9.5H0V10Z" fill="currentColor" />
+              <path d="M156.5 16.333L154.113 21.333H159.887L157.5 16.333H156.5ZM157 2H156.5V16.833H157H157.5V2H157Z" fill="currentColor" />
             </svg>
             <span class="detail-info__fact-text">{status}</span>
           </div>
@@ -53,10 +60,14 @@
     {/if}
     {#if caption}
       <div class="detail-info__fact detail-info__fact--inline">
+        <!-- Info glyph, ported directly from Figma's export: a wider r=10
+             circle and a shorter stem stopping at y=11.5 (leaving a visible
+             gap above the dot) rather than the previous r=9 circle with a
+             stem that ran straight into the dot. -->
         <svg class="detail-info__fact-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
-          <line x1="12" y1="11" x2="12" y2="16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          <circle cx="12" cy="8" r="1" fill="currentColor" />
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M12 16V11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M12 8.01172V8.00172" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <span class="detail-info__fact-text">{caption}</span>
       </div>

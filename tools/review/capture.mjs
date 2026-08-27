@@ -42,6 +42,13 @@ const SHOTS = [
 ]
 
 const outDir = process.argv[2] ?? '.'
+// A flag is not an output directory. Without this, `capture.mjs --help` cheerfully
+// mkdir's a folder literally named "--help" and fills it with screenshots, which is
+// exactly what happened once already.
+if (outDir.startsWith('-')) {
+  console.log('usage: capture.mjs <outDir> [shot-name ...]\n\nshots: ' + SHOTS.map((s) => s.name).join(', '))
+  process.exit(0)
+}
 await mkdir(outDir, { recursive: true })
 
 // WebGL2 must really work -- the widget silhouettes come from the liquid
