@@ -729,6 +729,18 @@
         </div>
       </details>
       <details class="design-section" open>
+        <summary>Tileset route (A/B)</summary>
+        <div class="row">
+          <label class="h" for="routeSeg">Streaming</label>
+          <div class="seg" id="routeSeg"></div>
+          <span class="weather-note" id="routeNote">—</span>
+        </div>
+        <div class="row">
+          <label class="h">Dataset · <span class="val" id="routeDataset">—</span></label>
+          <span class="weather-note">Switching reloads the page and carries the camera pose over, so both routes are judged from the same viewpoint with a cold cache. Compare <em>Visible points</em>, <em>Point tiles</em>, <em>Stacking</em> and <em>ms/frame</em> once each has settled</span>
+        </div>
+      </details>
+      <details class="design-section" open>
         <summary>Detail &amp; point size</summary>
         <div class="row">
           <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>

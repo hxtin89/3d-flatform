@@ -53,6 +53,13 @@ export interface PointSourceController {
   setAssignment(band: ZoomBand, packId: string): void
   /** Area whose ENU footprint contains the camera, else the nearest one. */
   areaFor(enuX: number, enuY: number): string | null
+  /**
+   * One pack straight to a source, bypassing the zoom-band assignments — what the
+   * route switch uses, where the whole point is that a single pack streams
+   * everywhere rather than being assigned per band. Null when this pack publishes
+   * nothing for that area.
+   */
+  sourceFor(packId: string, areaId: string | null): ResolvedSource | null
   /** Never null: an unavailable or unknown choice falls back to base(). */
   resolve(band: ZoomBand, areaId: string | null): ResolvedSource
   /** The session's default tree — what the app streamed before this panel existed. */
@@ -244,6 +251,11 @@ export function createPointSource(opts: {
         if (!nearest || distanceSq < nearest.distanceSq) nearest = { areaId: area.areaId, distanceSq }
       }
       return contained?.areaId ?? nearest?.areaId ?? null
+    },
+    sourceFor(packId, areaId) {
+      const pack = packs.find((entry) => entry.id === packId)
+      if (!pack || !pack.available) return null
+      return buildSource(pack, pack.scope === 'area' ? areaId : null)
     },
     resolve(band, areaId) {
       const packId = assignments[band]

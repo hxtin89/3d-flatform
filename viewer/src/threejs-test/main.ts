@@ -17,6 +17,10 @@ import {
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
+import { createPointSource, type PointSourceController } from './point-source'
+import {
+  DEFAULT_ROUTE, TILESET_ROUTES, routeById, routeFromParams, routeHref, takePose, writePose,
+} from './tileset-route'
 import { densityBandForUri } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
@@ -69,11 +73,22 @@ const dataset = params.get('dataset') ?? 'peru-b2-globe'
 const GAUSSIAN_SPLAT_URL = baseUrl
   ? `${baseUrl}/ply-result/point_cloud/iteration_100/point_cloud_5.ply`
   : ''
-/** Which published point tree to stream. `aph` is the Adaptive Point Hierarchy
- * the Cesium reference viewer uses and the only one carrying real close-range
- * density — the published One LOD chain stops at the p02 overview band.
- * `?tree=one-lod` restores the old chain for an A/B comparison. */
-const pointTree: 'aph' | 'one-lod' = params.get('tree') === 'one-lod' ? 'one-lod' : 'aph'
+/**
+ * Which published point tileset to stream — see tileset-route.ts for what the five
+ * routes actually are and why switching reloads instead of swapping in place.
+ * `?route=aph|one-lod|overview|explore|detail`, with `?tree=one-lod` still honoured.
+ *
+ * Not `const`: an unpublished route (explore/detail for an area the pipeline has not
+ * built) falls back to the default once the manifest says so.
+ */
+let activeRoute = routeFromParams(params)
+/** Which pack family the resolver treats as this session's base tree. */
+const pointTree: 'aph' | 'one-lod' = activeRoute.id === 'one-lod' ? 'one-lod' : 'aph'
+/** Camera pose handed over by the previous route, consumed once at boot. */
+const restoredPose = takePose()
+let pointSource: PointSourceController | null = null
+let routeAreaId: string | null = null
+let routeDatasetPath = ''
 const forceWebGL = params.has('webgl')
 const groundSnap = !params.has('nosnap')
 const modelEditorEnabled = params.get('modelEditor') === '1'
@@ -383,6 +398,13 @@ const onLoaderStart = () => {
   // are already resident — pausing the streamer keeps them, because unloading
   // also only happens inside tiles.update(). With the SSE brakes toggled off
   // the reveal gating is off too — the cloud joins from the first metre.
+  // A route switch already put the camera where the comparison is being made, so
+  // the entrance arc would only fly away from it and back. Reveal in place.
+  if (restoredPose) {
+    entranceFlightPending = false
+    setPointCloudRevealed(true)
+    return
+  }
   entranceFlightPending = renderOptions.effective().sseBrakes
     && EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
   if (entranceFlightPending) setPointCloudRevealed(false)
@@ -1989,6 +2011,55 @@ function updateFoveationTiles(): void {
   foveationTilesEl.replaceChildren(...nodes)
 }
 
+// ---- tileset route switch: reload into another tileset from the same viewpoint
+const routeSegEl = $<HTMLDivElement>('#routeSeg')
+const routeNoteEl = $('#routeNote')
+const routeDatasetEl = $('#routeDataset')
+const scratchPoseEnu = new THREE.Vector3()
+const scratchPoseTarget = new THREE.Vector3()
+
+/**
+ * Where the camera is looking, in ENU, for the hand-over to the next route.
+ *
+ * The target is a point 200 m down the view axis rather than the ground hit: a
+ * raycast misses entirely when the camera looks at the horizon, and any fixed
+ * distance reproduces the same orientation.
+ */
+function currentPose(): { position: [number, number, number]; target: [number, number, number] } {
+  worldToEnu(camera.position, scratchPoseEnu)
+  camera.getWorldDirection(scratchPoseTarget).multiplyScalar(200).add(camera.position)
+  worldToEnu(scratchPoseTarget, scratchPoseTarget)
+  return {
+    position: [scratchPoseEnu.x, scratchPoseEnu.y, scratchPoseEnu.z],
+    target: [scratchPoseTarget.x, scratchPoseTarget.y, scratchPoseTarget.z],
+  }
+}
+
+for (const route of TILESET_ROUTES) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.dataset.route = route.id
+  button.textContent = route.short
+  button.title = `${route.label} — ${route.note}`
+  button.classList.toggle('on', route.id === activeRoute.id)
+  button.setAttribute('aria-pressed', String(route.id === activeRoute.id))
+  button.addEventListener('click', () => {
+    if (route.id === activeRoute.id) return
+    // Only worth carrying a pose once the ENU frame exists; before that the reload
+    // should just boot normally.
+    if (enuFrameReady) writePose(currentPose())
+    location.href = routeHref(route.id, new URL(location.href))
+  })
+  routeSegEl.append(button)
+}
+
+function updateRouteReadout(): void {
+  routeNoteEl.textContent = activeRoute.note
+  const area = routeAreaId ? ` · ${routeAreaId}` : ''
+  routeDatasetEl.textContent = routeDatasetPath ? `${routeDatasetPath}${area}` : 'resolving…'
+}
+updateRouteReadout()
+
 const POINT_SIZE = EXPERIENCE_CONFIG.lod.pointSize
 const FOVEATION = EXPERIENCE_CONFIG.lod.foveation
 const asScreenHeights = (value: number) => `${value.toFixed(2)} h`
@@ -2912,20 +2983,43 @@ async function main(): Promise<void> {
     onActivateAim: activateAimTarget,
     onDismissAim: dismissAimMode,
   })
+  // Every published pack, discovered from the manifest, so a tier the pipeline adds
+  // later shows up in the route switch without a code change here.
+  pointSource = createPointSource({ baseUrl, manifest, basePack: pointTree })
+  // Per-area packs (explore, detail) publish one tileset per area, so the route has
+  // to name one. Resolved from where the camera is *going* rather than where it is:
+  // this runs before the boot staging below moves it there.
+  const routeAnchor = restoredPose
+    ? new THREE.Vector3(restoredPose.position[0], restoredPose.position[1], restoredPose.position[2])
+    : cloudCenterEnu
+  routeAreaId = pointSource.areaFor(routeAnchor.x, routeAnchor.y)
+  const routed = pointSource.sourceFor(activeRoute.packId, routeAreaId)
+  if (!routed) {
+    console.warn(`[route] ${activeRoute.id} publishes nothing for area ${routeAreaId ?? '—'} — falling back to ${DEFAULT_ROUTE}`)
+    activeRoute = routeById(DEFAULT_ROUTE)
+  }
+  const source = routed ?? pointSource.sourceFor(activeRoute.packId, routeAreaId)!
+  routeDatasetPath = source.datasetPath
+  // The panel was built before the manifest landed, so the resolved dataset (and a
+  // fallback, if the requested route publishes nothing here) only shows up now.
+  updateRouteReadout()
+  routeSegEl.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+    const on = button.dataset.route === activeRoute.id
+    button.classList.toggle('on', on)
+    button.setAttribute('aria-pressed', String(on))
+  })
   // Lifted out of the call because the ground-patch mask resolves the per-cell
   // subtree links relative to it.
-  const pointTilesetUrl = pointTree === 'aph'
-    ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
-    : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`
+  const pointTilesetUrl = source.url
   stream = createStreamingCloud({
     tilesetUrl: pointTilesetUrl,
-    requestVolumes: pointTree !== 'aph',
+    // Only the One LOD chain carries viewer request volumes; every other route is a
+    // single document where the error target governs on its own.
+    requestVolumes: source.requestVolumes,
     // The APH quadtree only pays off with residency to match: the Cesium
     // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
-    // evict close-range nodes as fast as they arrive.
-    limits: pointTree === 'aph'
-      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
-      : undefined,
+    // evict close-range nodes as fast as they arrive. Carried by the pack.
+    limits: source.limits,
     camera,
     renderer,
     scene: ecefRoot,
@@ -3111,15 +3205,25 @@ async function main(): Promise<void> {
   // Bootstrap close enough to request real point tiles. The fullscreen loader
   // conceals this staging position; once both data layers are visible we jump
   // to the overview and begin the user-facing flight.
-  const stagingTarget = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
-  const stagingOffset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
-  camera.position.copy(enuToWorld(new THREE.Vector3(
-    stagingTarget.x + stagingOffset[0],
-    stagingTarget.y + stagingOffset[1],
-    stagingTarget.z + stagingOffset[2],
-  )))
-  camera.up.copy(enuUp)
-  camera.lookAt(enuToWorld(stagingTarget.clone()))
+  // A route switch hands over the pose it was looking from, so the next route boots
+  // straight into the same view: an A/B is only worth reading at one viewpoint. Set
+  // the same way as the staging pose below — position plus look-at, up along ENU —
+  // because GlobeControls derive their state from the camera on the first update.
+  if (restoredPose) {
+    camera.position.copy(enuToWorld(new THREE.Vector3(...restoredPose.position)))
+    camera.up.copy(enuUp)
+    camera.lookAt(enuToWorld(new THREE.Vector3(...restoredPose.target)))
+  } else {
+    const stagingTarget = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
+    const stagingOffset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
+    camera.position.copy(enuToWorld(new THREE.Vector3(
+      stagingTarget.x + stagingOffset[0],
+      stagingTarget.y + stagingOffset[1],
+      stagingTarget.z + stagingOffset[2],
+    )))
+    camera.up.copy(enuUp)
+    camera.lookAt(enuToWorld(stagingTarget.clone()))
+  }
   // Staging jumps straight to the parcel; pull the origin along before the first
   // frame so the very first traversal already runs camera-relative.
   updateOrigin(true)
