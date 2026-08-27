@@ -86,8 +86,22 @@ let activeRoute = routeFromParams(params)
 const pointTree: 'aph' | 'one-lod' = activeRoute.id === 'one-lod' ? 'one-lod' : 'aph'
 /** Camera pose handed over by the previous route, consumed once at boot. */
 const restoredPose = takePose()
+/**
+ * Pin the per-area routes (explore, detail) to one area instead of resolving it from
+ * the camera — `?area=area-058`.
+ *
+ * The areas differ by four orders of magnitude in size (9k to 88M points), so which
+ * one you land on decides whether a p100 test is a 30 MB or a 1.5 GB download. Left
+ * to the camera it is always the survey centre, area-029, the expensive end.
+ *
+ * A pinned area also stages the camera over it and skips the entrance flight: the
+ * arc targets the donation parcel, which for any other area means booting into an
+ * empty screen while the pinned tiles load somewhere off-frame.
+ */
+const pinnedAreaId = params.get('area')?.trim() || null
 let pointSource: PointSourceController | null = null
 let routeAreaId: string | null = null
+let routeAreaPinned = false
 let routeDatasetPath = ''
 const forceWebGL = params.has('webgl')
 const groundSnap = !params.has('nosnap')
@@ -398,9 +412,10 @@ const onLoaderStart = () => {
   // are already resident — pausing the streamer keeps them, because unloading
   // also only happens inside tiles.update(). With the SSE brakes toggled off
   // the reveal gating is off too — the cloud joins from the first metre.
-  // A route switch already put the camera where the comparison is being made, so
-  // the entrance arc would only fly away from it and back. Reveal in place.
-  if (restoredPose) {
+  // A route switch already put the camera where the comparison is being made, and a
+  // pinned area staged it over that area — the entrance arc targets the donation
+  // parcel, so in both cases it would only fly away from the subject. Reveal in place.
+  if (restoredPose || routeAreaPinned) {
     entranceFlightPending = false
     setPointCloudRevealed(true)
     return
@@ -2055,7 +2070,7 @@ for (const route of TILESET_ROUTES) {
 
 function updateRouteReadout(): void {
   routeNoteEl.textContent = activeRoute.note
-  const area = routeAreaId ? ` · ${routeAreaId}` : ''
+  const area = routeAreaId ? ` · ${routeAreaId}${routeAreaPinned ? ' pinned' : ''}` : ''
   routeDatasetEl.textContent = routeDatasetPath ? `${routeDatasetPath}${area}` : 'resolving…'
 }
 updateRouteReadout()
@@ -2992,7 +3007,12 @@ async function main(): Promise<void> {
   const routeAnchor = restoredPose
     ? new THREE.Vector3(restoredPose.position[0], restoredPose.position[1], restoredPose.position[2])
     : cloudCenterEnu
-  routeAreaId = pointSource.areaFor(routeAnchor.x, routeAnchor.y)
+  const resolvedAreaId = pointSource.areaFor(routeAnchor.x, routeAnchor.y)
+  if (pinnedAreaId && !manifest.areas.some((area) => area.areaId === pinnedAreaId)) {
+    console.warn(`[route] ?area=${pinnedAreaId} is not in the manifest — resolving from the camera instead`)
+  }
+  routeAreaPinned = Boolean(pinnedAreaId) && manifest.areas.some((area) => area.areaId === pinnedAreaId)
+  routeAreaId = routeAreaPinned ? pinnedAreaId : resolvedAreaId
   const routed = pointSource.sourceFor(activeRoute.packId, routeAreaId)
   if (!routed) {
     console.warn(`[route] ${activeRoute.id} publishes nothing for area ${routeAreaId ?? '—'} — falling back to ${DEFAULT_ROUTE}`)
@@ -3209,10 +3229,27 @@ async function main(): Promise<void> {
   // straight into the same view: an A/B is only worth reading at one viewpoint. Set
   // the same way as the staging pose below — position plus look-at, up along ENU —
   // because GlobeControls derive their state from the camera on the first update.
+  const pinnedArea = routeAreaPinned
+    ? manifest.areas.find((area) => area.areaId === routeAreaId && area.bbox) ?? null
+    : null
   if (restoredPose) {
     camera.position.copy(enuToWorld(new THREE.Vector3(...restoredPose.position)))
     camera.up.copy(enuUp)
     camera.lookAt(enuToWorld(new THREE.Vector3(...restoredPose.target)))
+  } else if (pinnedArea?.bbox) {
+    // Frame the pinned area rather than the parcel: offsets scale with its own span,
+    // because the areas run from 220 m across to a full kilometre and one fixed
+    // offset would either sit inside the canopy or leave it a speck.
+    const [minX, minY, minZ, maxX, maxY] = pinnedArea.bbox
+    const span = Math.max(maxX - minX, maxY - minY)
+    camera.position.copy(enuToWorld(new THREE.Vector3(
+      (minX + maxX) / 2,
+      (minY + maxY) / 2 - Math.max(120, span * 0.6),
+      minZ + Math.max(150, span * 0.8),
+    )))
+    camera.up.copy(enuUp)
+    camera.lookAt(enuToWorld(new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, minZ)))
+    console.info(`[route] pinned to ${pinnedArea.areaId} (${pinnedArea.label}), ${Math.round(span)} m across`)
   } else {
     const stagingTarget = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
     const stagingOffset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
