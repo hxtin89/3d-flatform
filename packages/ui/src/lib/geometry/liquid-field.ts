@@ -171,6 +171,25 @@ uniform vec4 uWedgeY[${MAX_WIDGETS}];
 uniform vec4 uWedgeR[${MAX_WIDGETS}];
 uniform float uBlend;
 
+// How far every shape is inflated, in DEVICE px, purely to close seams.
+//
+// Flush widgets share an edge, and on it each shape's own distance is exactly 0,
+// so the union is ~0 too even though the point is deep inside with material on
+// both sides. The AA below then reads 0 as an edge and drops alpha, letting the
+// photo through as a hairline. Inflating makes shared edges genuinely interior.
+//
+// Inflation alone could never win this, though, which is why it is now 0 and the
+// real fix lives in the AA below. Growing the boxes only moves the min() ridge
+// deeper; it never removes it, and every pixel of depth it buys is a pixel the
+// outer silhouette grows by. At a Fill wedge abutting a neighbour's r=60 arc the
+// two surfaces are TANGENT, so no finite overlap makes the ridge deeper than the
+// overlap itself -- 1.0px of inflation still left the ridge at -0.5 at pixel
+// centres, inside a 1px symmetric feather, i.e. ~15% of the background straight
+// through the middle of a solid surface. Kept at 0 so the silhouette is exactly
+// Figma's geometry.
+const float SEAM_OVERLAP = 0.0;
+const float MAX_EDGE_AA = 1.0;
+
 float sdBoxSharp(vec2 p, vec2 b) {
   vec2 d = abs(p) - b;
   return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
@@ -196,7 +215,14 @@ float sdWedge(vec2 q, vec2 s, float r) {
   vec2 lo = min(vec2(0.0), c);
   vec2 hi = max(vec2(0.0), c);
   float box = sdBoxSharp(q - (hi + lo) * 0.5, (hi - lo) * 0.5);
-  return max(box, -(length(q - c) - r));
+  // Inflated by half a device pixel, for the same reason the boxes are (see hs in
+  // main). A Fill wedge abuts the NEIGHBOUR's rounded corner along that corner's
+  // own arc -- both shapes have distance 0 there, so the union does too, and the
+  // analytic AA halves the alpha and lets the photo through. Inflating the boxes
+  // alone did not reach this: the wedge is a separate SDF min()'d in, so it kept
+  // its exact edge. Measured before: 531 photo-coloured pixels inside the weather
+  // cluster along the bar's fill-left wedge.
+  return max(box, -(length(q - c) - r)) - SEAM_OVERLAP;
 }
 
 /** p -> corner-local coords for corner k (0=TL, 1=TR, 2=BR, 3=BL). */
@@ -260,7 +286,7 @@ void main() {
     // the field is properly negative there and the AA leaves it alone. The outer
     // silhouette grows by the same half pixel, which is below the threshold of
     // anything we measure against Figma and invisible on screen.
-    vec2 hs = r.zw * 0.5 + 0.5;
+    vec2 hs = r.zw * 0.5 + SEAM_OVERLAP;
     vec2 pl = p - (r.xy + hs);
     float di = sdRoundBox(pl, hs, uCorners[i]);
 
@@ -290,8 +316,18 @@ void main() {
   // along the ridge and draws a faint diagonal line across empty space. A
   // feather is only ever meant to be about a pixel wide; the floor keeps the
   // zero-gradient case well defined, for the same reason as the seam feather.
-  float edgeAA = clamp(fwidth(blended), 1e-4, 2.0);
-  float alpha = 1.0 - smoothstep(-edgeAA, edgeAA, blended);
+  float edgeAA = clamp(fwidth(blended), 1e-4, MAX_EDGE_AA);
+  // ONE-SIDED, not centred on the surface. A centred feather spans [-edgeAA,
+  // +edgeAA], so it dims any point less than edgeAA INSIDE the shape -- fine on a
+  // lone rounded rect, fatal for a union. min() leaves a ridge along every shared
+  // edge whose depth is only the overlap between the two shapes, so a centred
+  // feather reads that ridge as an edge and paints a hairline of background down
+  // the middle of a joined surface. Starting the feather AT the surface makes
+  // every interior point (blended <= 0) exactly opaque no matter how many widgets
+  // meet there or how shallow the ridge is, and confines the softening to the
+  // outside, where it belongs. Costs ~0.35px of apparent growth on the outer
+  // silhouette -- a third of what SEAM_OVERLAP = 1.0 was costing to not fix this.
+  float alpha = 1.0 - smoothstep(0.0, edgeAA, blended);
 
   // A one-pixel feather on the colour seam only -- enough to kill stair-steps
   // if a seam is ever off-axis, far too tight to read as a gradient.
