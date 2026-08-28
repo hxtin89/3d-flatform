@@ -126,4 +126,16 @@
     display: flex;
     flex-direction: column;
   }
+
+  /* Each line's SVG antialiases its own bottom edge against whatever is behind
+     the stack, so with the lines exactly abutting, that half-covered row is the
+     last thing painted there and the photo shows through it -- measured as a
+     rgb(166) row between pills sitting at rgb(214) and rgb(235). The lines are
+     meant to read as ONE continuous surface, so the next line down overlaps by a
+     pixel and paints over it. Later siblings paint on top, so the overlap covers
+     rather than being covered. */
+  .habitat-label-stack :global(.label-line:not(:last-child)) {
+    margin-bottom: -1px;
+  }
+
 </style>

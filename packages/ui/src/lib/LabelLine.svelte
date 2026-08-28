@@ -36,13 +36,13 @@
     shadow = true,
   }: Props = $props();
 
-  // Same highlight/shadow sheen as BentoWidget/SpeciesWidget (see BentoWidget's
-  // own comment for the full rationale) -- before this, the label stack was
-  // the one surface in the whole composition that stayed a flat, un-lit fill
-  // while every widget around it got this material pass, which is exactly
-  // backwards for the piece that's supposed to read as the screen's hero
-  // headline rather than just another flat card.
-  const sheenId = `label-sheen-${Math.random().toString(36).slice(2, 9)}`;
+  // NO sheen. BentoWidget and SpeciesWidget layer a light-from-top-left gradient
+  // over their fills, and these pills used to as well. On a STACK it is actively
+  // wrong: each line runs its own gradient, so every join steps from one line's
+  // dark bottom to the next line's light top, and the stack reads as three chips
+  // with banding between them rather than the single continuous surface it is
+  // supposed to be. Figma's own raster settles it -- the stack there is one flat
+  // uniform fill with no gradient at all and no tonal step at any join.
   // bind:clientWidth reads the SPAN's own box, and that span already carries
   // `padding: 0 var(--space-24)` (see the CSS comment below) -- clientWidth is
   // content + padding by definition, box-sizing notwithstanding, so textWidth
@@ -79,15 +79,7 @@
     style:top="{-overflow.top}px"
     aria-hidden="true"
   >
-    <defs>
-      <linearGradient id={sheenId} x1="0" y1="0" x2="0.4" y2="1">
-        <stop offset="0" stop-color="rgb(255 255 255 / 0.16)" />
-        <stop offset="40%" stop-color="rgb(255 255 255 / 0)" />
-        <stop offset="100%" stop-color="rgb(0 0 0 / 0.12)" />
-      </linearGradient>
-    </defs>
     <path d={path} class="label-line__fill" />
-    <path d={path} fill="url(#{sheenId})" class="label-line__sheen" />
   </svg>
   <span class="label-line__text" style:font-size="{fontSize}px" style:font-weight={fontWeight} bind:clientWidth={textWidth}>{text}</span>
 </div>
@@ -107,10 +99,6 @@
 
   .label-line__fill {
     fill: var(--label-fill);
-  }
-
-  .label-line__sheen {
-    pointer-events: none;
   }
 
   .label-line__text {

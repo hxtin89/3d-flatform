@@ -248,7 +248,19 @@ void main() {
   for (int i = 0; i < ${MAX_WIDGETS}; i++) {
     if (i >= uCount) break;
     vec4 r = uRects[i];
-    vec2 hs = r.zw * 0.5;
+    // Inflate every box by half a device pixel. Two FLUSH widgets share an edge,
+    // and on that edge each one's own distance is exactly 0 -- so the union's
+    // value there is ~0 too (min() and smin() both are), even though the point is
+    // deep INSIDE the union with material on both sides. The analytic AA below
+    // then reads 0 as "this is an edge" and halves the alpha, letting the
+    // background through as a hairline down every interior seam. Measured at the
+    // weather cluster's bar/tile join: rgb(210,210,210) where the fill is 171.
+    //
+    // Overlapping by a device pixel makes the shared edge genuinely interior, so
+    // the field is properly negative there and the AA leaves it alone. The outer
+    // silhouette grows by the same half pixel, which is below the threshold of
+    // anything we measure against Figma and invisible on screen.
+    vec2 hs = r.zw * 0.5 + 0.5;
     vec2 pl = p - (r.xy + hs);
     float di = sdRoundBox(pl, hs, uCorners[i]);
 
