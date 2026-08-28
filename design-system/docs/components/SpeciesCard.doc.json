@@ -1,0 +1,70 @@
+{
+  "name": "Species Card",
+  "summary": "A card that identifies one species and expands to show its details.",
+  "description": "A species identity card that sits in a row of others, showing a title and image at rest and expanding in place to reveal measurements, conservation status, and a caption. Where it sits in the row changes its own corners, so a run of cards reads as one connected shape rather than separate tiles with gaps between them.",
+  "whenToUse": [
+    "Introducing a species in a row where several cards sit edge to edge",
+    "Letting someone select a card to see its measurements and status without leaving the row"
+  ],
+  "whenNotToUse": [
+    "Showing video or audio content — use a Media Card instead",
+    "Displaying a single species with no row of neighbors — a plain image and title may not need this card's corner-fusing behavior"
+  ],
+  "variants": {
+    "position": {
+      "standalone": "Not part of a row. Square corners on every side.",
+      "row-left": "The leftmost card in a connected row. Only its outer edge rounds.",
+      "row-middle": "A middle card in a row. Flat on both sides where neighbors touch.",
+      "row-middle-raised": "A middle card set slightly forward from its row.",
+      "row-right": "The rightmost card in a connected row. Only its outer edge rounds."
+    },
+    "state": {
+      "collapsed": "Shows the title, description, and image only.",
+      "expanded": "Adds measurements, status, and a caption above the image, for the one card that's selected."
+    }
+  },
+  "states": {
+    "hover": "Fill lightens slightly to invite a click.",
+    "focus": "Same lightened fill as hover, for keyboard focus.",
+    "press": "Fill lightens further than hover, for the instant of activation."
+  },
+  "dos": [
+    "Keep a card's corners consistent with its position in the row.",
+    "Reserve the expanded state for the one card that's selected.",
+    "Pass a real image whenever one exists, even for the collapsed card."
+  ],
+  "donts": [
+    "Don't expect a new row arrangement without adding its own position value.",
+    "Don't treat the illustration as swappable through a component slot. Replace its fill directly."
+  ],
+  "accessibility": {
+    "role": "button, when the card is selectable",
+    "keyboard": ["Enter / Space toggles the expanded state"],
+    "notes": [
+      "Give it a visible title so its accessible name comes from real text rather than nothing at all."
+    ]
+  },
+  "tokensUsed": [
+    "accent-fill",
+    "text-primary",
+    "text-secondary",
+    "text-on-emphasis",
+    "stack-xs",
+    "inset-xl",
+    "inset-lg",
+    "pill",
+    "text-heading-md"
+  ],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "variants": "ai-inferred",
+    "states": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg"
+  }
+}

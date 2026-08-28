@@ -10,6 +10,6 @@
   },
   "scripts": {
     "build": "node scripts/generate.mjs",
-    "tokens:validate": "node scripts/generate.mjs"
+    "tokens:validate": "node scripts/check-drift.mjs"
   }
 }

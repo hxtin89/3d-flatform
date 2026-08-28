@@ -1,0 +1,50 @@
+{
+  "name": "Map Pin",
+  "summary": "A map marker with a round disc and a stem below it.",
+  "description": "A location marker made of a circular disc sitting above a straight stem, the disc holding either a line-art icon or a real photo. A photo shows through at a lower tint than an icon does, since a photo needs to stay visible on its own rather than compete with a solid wash of color.",
+  "whenToUse": [
+    "Marking a location on a map with an icon or a photo",
+    "Making a marker clickable to open more detail about that location"
+  ],
+  "whenNotToUse": [
+    "Labeling a point with visible text next to it — the pin has no text slot of its own",
+    "Showing a location that isn't clickable — a plain static marker may not need the button behavior"
+  ],
+  "variants": {
+    "content": {
+      "icon": "Holds a simple line-art glyph, tinted at half strength.",
+      "photo": "Holds a real photograph, tinted lighter so the image reads clearly."
+    }
+  },
+  "states": {
+    "focus": "A thick outline appears around the whole pin for keyboard focus."
+  },
+  "dos": [
+    "Give it a label describing the place it marks, for screen readers.",
+    "Use the photo variant's lighter tint when the image itself needs to read clearly."
+  ],
+  "donts": [
+    "Don't nest the stem inside the disc. Keep them as siblings.",
+    "Don't rely on a browser's default focus ring. It won't show against the photo."
+  ],
+  "accessibility": {
+    "role": "button, when it's clickable",
+    "keyboard": ["Enter / Space activates, same as any button"],
+    "notes": [
+      "Give it a label naming the place it marks — the disc has no visible text a screen reader could fall back on."
+    ]
+  },
+  "tokensUsed": ["pill", "accent-fill", "border-focus"],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "variants": "ai-inferred",
+    "states": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg"
+  }
+}

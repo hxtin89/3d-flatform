@@ -2,7 +2,6 @@
 // $props()-declared (Svelte 5 runes) component props, so left untyped here.
 import type { Meta, StoryObj } from "@storybook/svelte";
 import SpeciesWidget from "./SpeciesWidget.svelte";
-import { silhouette } from "./geometry/silhouette";
 
 const meta: Meta = {
   title: "SpeciesWidget",
@@ -23,7 +22,6 @@ const corners = ["convex", "convex", "convex", "convex"] as const;
 // slot only (left empty here, no icon system wired into @wi/ui content yet).
 export const Unselected: Story = {
   args: {
-    path: silhouette(width, height, [...corners], 60),
     width,
     height,
     corners: [...corners],
@@ -38,7 +36,6 @@ export const Unselected: Story = {
 // (left empty, no photo asset pipeline wired in yet) instead of the icon slot.
 export const Selected: Story = {
   args: {
-    path: silhouette(width, height + 270, [...corners], 60),
     width,
     height: height + 270,
     corners: [...corners],

@@ -195,7 +195,7 @@
         ],
         "accent": "Color/Widget Accent mode (Grey Light | Grey Dark | Gold | Forest Green | ...)",
         "note": "Fluid: set an instance to Fill/Fill in an auto-layout cell. Header hugs, Detail hugs, Visual fills. Corner atoms are ABSOLUTE 120x120 overlays with corner constraints so the fillet radius never scales with the card.",
-        "docPath": null,
+        "docPath": "design-system/docs/components/SpeciesCard.doc.json",
         "bindings": "fill accent/fill; radius card/outer; text text/onEmphasis + Typography size vars; padding/gap Spacing/Semantic",
         "cornerModel": "Position owns all four corners. Each corner is TWO things that must agree: the card's own per-corner radius (card/outer for convex, 0 for everything else) AND the Corner atom overlay (empty for convex/none; paints accent/fill outward for fill-left/fill-top; carves bg/subtle for concave). Binding all four radii to card/outer -- as the first build did -- leaves every None corner rounded, so flush neighbours never fuse.",
         "openGaps": [
@@ -211,7 +211,7 @@
           "Caption"
         ],
         "note": "Both line breaks are authored, not wrapped — Figma's text nodes carry a hard newline. Status column fixed at 211px. Glyphs are clones of Figma's own tape/rule/info vectors, not redraws.",
-        "docPath": null,
+        "docPath": "design-system/docs/components/DetailInfo.doc.json",
         "bindings": "text text/onEmphasis + size/body; gap Spacing/Semantic"
       },
       "Habitat Label Stack": {
@@ -223,7 +223,7 @@
           ]
         },
         "note": "Three Label Line instances stacked flush (gap 0) so shared edges fuse. Align follows the docked edge: Left portrait, Right landscape.",
-        "docPath": null
+        "docPath": "design-system/docs/components/HabitatLabelStack.doc.json"
       },
       "Media Card": {
         "status": "draft",
@@ -232,19 +232,19 @@
         ],
         "bindings": "fill accent/fill; radius card/outer; padding+gap Spacing/Semantic; text text/primary + size/body",
         "note": "Thumbnail fills, Meta hugs its text, so the card absorbs its cell and the thumbnail takes the slack. Scrubber is absolutely pinned to the thumbnail’s lower edge, NOT stacked below it — below the image it is accent-on-accent and invisible. Padding is asymmetric (8 left/top/bottom, 24 right) because the image sits nearly flush left while the meta text needs air.",
-        "docPath": null
+        "docPath": "design-system/docs/components/MediaCard.doc.json"
       },
       "Play Button": {
         "status": "draft",
         "bindings": "fill accent/fill @50% fill opacity; radius pill",
         "note": "Glyph sits 4px right of true centre — optical centring for a triangle, copied from Figma. Do not “fix” to 15/15.",
-        "docPath": null
+        "docPath": "design-system/docs/components/PlayButton.doc.json"
       },
       "Scrubber": {
         "status": "draft",
         "bindings": "both segments accent/fill (Remaining at 50%)",
         "note": "Progress = resize Elapsed; Remaining fills the rest. One component covers every width and percentage, no variant per state. Square ends, matching Figma.",
-        "docPath": null
+        "docPath": "design-system/docs/components/Scrubber.doc.json"
       },
       "Map Pin": {
         "status": "draft",
@@ -256,19 +256,19 @@
         },
         "bindings": "disc accent/fill (50% icon / 20% photo) + border/focus stroke 3; radius pill; stem border/focus",
         "note": "Stem is a SIBLING of the disc, not a child, so the disc stays a clean circle and the pin hugs to 103x220. Plate opacity differs by content on purpose: a photo tinted at 50% reads flat.",
-        "docPath": null
+        "docPath": "design-system/docs/components/MapPin.doc.json"
       },
       "Changelog Row": {
         "status": "draft",
         "bindings": "fill bg/muted (placeholder, swap for the entry image); stroke bg/muted 5; radius card/outer",
         "note": "Set instances to Fill container horizontally so the row takes its column width.",
-        "docPath": null
+        "docPath": "design-system/docs/components/ChangelogRow.doc.json"
       },
       "Changelog Rail": {
         "status": "draft",
         "bindings": "fill accent/fill; radius card/outer on the two edge-facing corners only; label text/primary",
         "note": "Only the two edge-facing corners round -- the strip is flush to the viewport on the other side, so rounding all four would float it off the edge.",
-        "docPath": null
+        "docPath": "design-system/docs/components/ChangelogRail.doc.json"
       }
     },
     "instanceSwapUpgradePending": []

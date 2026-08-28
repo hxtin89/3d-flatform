@@ -6,7 +6,6 @@
   import BentoWidget from "./BentoWidget.svelte";
   import SpeciesWidget from "./SpeciesWidget.svelte";
   import { solveDocking, type GridWidget } from "./geometry/docking";
-  import { silhouette } from "./geometry/silhouette";
   import { createLiquidField, createAccentResolver, wedgeTargets, roundTargets } from "./geometry/liquid-field";
 
   /** A grid rect plus the content BentoWidget (or SpeciesWidget, when kind: "species") needs to render it. */
@@ -142,9 +141,10 @@
   // corner-snapping entirely (short version: the discrete corner classifier
   // IS the discontinuity, and a filleted union field has no classifier).
   //
-  // The SVG path is still computed above and still handed to each widget --
-  // it stays the fallback whenever WebGL2 is unavailable, so this is additive
-  // rather than a hard cutover.
+  // Each widget still derives its own SVG path from (width, height, corners,
+  // radius) internally and renders it whenever `silhouette` is true below --
+  // that stays the fallback whenever WebGL2 is unavailable, so this is
+  // additive rather than a hard cutover.
   let fieldCanvas: HTMLCanvasElement | undefined = $state();
   let gridEl: HTMLDivElement | undefined = $state();
   let fieldActive = $state(false);
@@ -264,7 +264,6 @@
     <div class="bento-grid__cell" style:left="{item.x}px" style:top="{item.y}px" style:--cell-enter-delay="{i * 70}ms">
       {#if item.kind === "species"}
         <SpeciesWidget
-          path={silhouette(item.width, item.height, result.corners, radius)}
           width={item.width}
           height={item.height}
           corners={result.corners}
@@ -284,7 +283,6 @@
         />
       {:else}
         <BentoWidget
-          path={silhouette(item.width, item.height, result.corners, radius)}
           width={item.width}
           height={item.height}
           corners={result.corners}

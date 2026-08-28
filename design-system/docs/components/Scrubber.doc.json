@@ -1,0 +1,38 @@
+{
+  "name": "Scrubber",
+  "summary": "A thin progress bar showing how much of a video has played.",
+  "description": "A flush, square-ended bar split into an elapsed portion and a remaining portion, both filled with the same color at different opacities. It has no fixed width of its own, it stretches to whatever space it's given, and the elapsed portion grows or shrinks as a percentage of that space.",
+  "whenToUse": [
+    "Showing how far into a video the current playback position is",
+    "Pairing with a Media Card or player to display elapsed progress"
+  ],
+  "whenNotToUse": [
+    "Letting someone drag to seek — this only displays progress, it doesn't accept input",
+    "Showing a percentage unrelated to time, like a loading percentage — use a dedicated progress indicator instead"
+  ],
+  "dos": [
+    "Clamp progress between 0 and 1 before passing it in.",
+    "Give it a container with real width. It fills 100% of its parent."
+  ],
+  "donts": [
+    "Don't expect a click or drag to change progress. It's read-only.",
+    "Don't add corner rounding. Its ends are square by design."
+  ],
+  "accessibility": {
+    "role": "progressbar",
+    "notes": [
+      "Its value is announced automatically through the progress bar role — no separate hidden label is needed unless the surrounding context doesn't already say what's playing."
+    ]
+  },
+  "tokensUsed": ["accent-fill"],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "Media Card",
+  "summary": "A horizontal card that pairs a thumbnail with author, duration, and progress.",
+  "description": "A horizontal card for one piece of video: a thumbnail on one side, and who made it and how long it runs on the other. Its height isn't set directly, it follows the thumbnail's own aspect ratio, so a wider or narrower container changes the card's height along with it.",
+  "whenToUse": [
+    "Listing a video someone can play, with who made it and how long it runs",
+    "Showing playback progress on a video that's already partly watched"
+  ],
+  "whenNotToUse": [
+    "Showing a still photo with no video behind it — use a Changelog Row or a plain image instead",
+    "Playing the video inline on the card itself — this only starts playback elsewhere"
+  ],
+  "dos": [
+    "Give it a real image or thumbnail. An unset thumbnail leaves it blank.",
+    "Keep the author and duration text short enough to sit on one line."
+  ],
+  "donts": [
+    "Don't rely on this card's own height. Its height follows its width instead.",
+    "Don't expect a card click to start playback. Wire the play control."
+  ],
+  "accessibility": {
+    "notes": [
+      "The thumbnail image carries no description of its own — the author and duration text next to it carries the meaning.",
+      "The play control has its own accessible name — don't add a second one on the card around it."
+    ]
+  },
+  "tokensUsed": [
+    "accent-fill",
+    "card-outer",
+    "inset-sm",
+    "inset-xl",
+    "text-primary",
+    "text-secondary",
+    "text-on-emphasis",
+    "text-body",
+    "text-body-tracking",
+    "family-mono",
+    "size-caption"
+  ],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred"
+  }
+}

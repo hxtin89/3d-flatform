@@ -1,0 +1,43 @@
+{
+  "name": "Changelog Row",
+  "summary": "A clickable image tile used as one entry in a changelog list.",
+  "description": "A rounded rectangle that shows one changelog entry's image, filling its own box completely and clipping anything larger. It has no visible text of its own, so its meaning for someone using a screen reader comes entirely from a label passed in rather than from anything shown on screen.",
+  "whenToUse": [
+    "Listing one visual entry in a changelog or timeline of updates",
+    "Making an entry clickable to open its full detail"
+  ],
+  "whenNotToUse": [
+    "Showing an entry with a visible caption or date — this card has no text slot for one",
+    "Listing entries with no images at all — a plain text list is a better fit"
+  ],
+  "dos": [
+    "Pass a label describing the entry, since nothing else names it visibly.",
+    "Let it fill its container's width. It's built to stretch, not to hug."
+  ],
+  "donts": [
+    "Don't expect it to size itself from its own image. Set a height.",
+    "Don't add a caption inside it. Place entry text next to it."
+  ],
+  "accessibility": {
+    "role": "button, when it's clickable",
+    "keyboard": ["Enter / Space activates, same as any button"],
+    "notes": [
+      "Always pass a label — the card shows only an image, with no visible text a screen reader could read instead."
+    ]
+  },
+  "states": {
+    "focus": "A thick outline appears around the card for keyboard focus."
+  },
+  "tokensUsed": ["card-outer", "bg-muted", "border-focus"],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg",
+    "states": "ai-inferred"
+  }
+}

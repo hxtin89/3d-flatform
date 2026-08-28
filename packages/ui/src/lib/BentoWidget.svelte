@@ -1,14 +1,12 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { cornerOverflow, type Corners } from "./geometry/silhouette";
+  import { silhouette, cornerOverflow, type Corners } from "./geometry/silhouette";
 
   interface Props {
-    /** SVG path `d` for this widget's silhouette, computed externally (silhouette.ts) — this component never computes geometry itself. */
-    path: string;
     width: number;
     height: number;
     corners: Corners;
-    /** Radius used when `path` was built — must match the value passed to silhouette() so Concave/Fill-* overflow is sized correctly. Defaults to the card/outer token (60). */
+    /** Corner radius -- feeds both the silhouette path and its overflow (Concave/Fill-* corners reach past the w x h box) from the single value below, so the two can no longer disagree. Defaults to the card/outer token (60). */
     radius?: number;
     /** Omit (with no icon either) to hide the header row entirely -- the real Bento Widget master supports this too (used for small cells where a bare Value/Description reads fine on its own, e.g. a temperature cell). */
     title?: string;
@@ -28,7 +26,6 @@
   }
 
   let {
-    path,
     width,
     height,
     corners,
@@ -43,7 +40,7 @@
     imageSrc,
     state = "default",
     accent = "default",
-    silhouette = true,
+    silhouette: showSilhouette = true,
   }: Props = $props();
 
   const clipId = `bento-clip-${Math.random().toString(36).slice(2, 9)}`;
@@ -56,6 +53,13 @@
   // black shadow, both translucent) so it sits correctly on top of ANY accent
   // without needing a per-accent gradient recipe.
   const sheenId = `bento-sheen-${Math.random().toString(36).slice(2, 9)}`;
+  // Derived from the same (width, height, corners, radius) the caller passes
+  // in, rather than taking a `path` prop computed externally -- a separate
+  // `path` prop and a separate `radius` prop that "must match" it (see the
+  // old radius doc comment) is an invariant nothing enforced; computing path
+  // here from the props that actually determine it makes disagreement
+  // impossible instead of documented-against.
+  const path = $derived(silhouette(width, height, corners, radius));
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
@@ -69,7 +73,7 @@
   style:width="{width}px"
   style:height="{height}px"
 >
-  {#if silhouette}
+  {#if showSilhouette}
   <svg
     class="bento-widget__silhouette"
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"

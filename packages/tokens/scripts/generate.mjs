@@ -2,11 +2,13 @@
 // Re-run after `token-sync-layer` refreshes tokens-raw.json from Figma.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const raw = JSON.parse(readFileSync(join(__dirname, "tokens-raw.json"), "utf8"));
-const outDir = join(__dirname, "..", "src");
+// Default output is src/ (the real build). check-drift.mjs passes a temp dir here
+// instead, so it can regenerate without touching the committed files it's diffing against.
+const outDir = process.argv[2] ? resolve(process.argv[2]) : join(__dirname, "..", "src");
 mkdirSync(outDir, { recursive: true });
 
 const cssName = (name) =>
@@ -145,4 +147,4 @@ function block(selector, lines) {
   writeFileSync(join(outDir, "index.css"), out);
 }
 
-console.log("Wrote packages/tokens/src/*.css");
+console.log(`Wrote ${outDir}${outDir.endsWith("/") || outDir.endsWith("\\") ? "" : "/"}*.css`);

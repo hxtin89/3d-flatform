@@ -1,0 +1,43 @@
+{
+  "name": "Habitat Label Stack",
+  "summary": "Stacks a headline's separate lines into one continuous, connected shape.",
+  "description": "A vertical stack of headline lines, each its own pill sized to hug only its own words, joined edge to edge so the group reads as one continuous shape rather than separate chips. Which side the stack aligns to follows whichever edge of the screen it's docked against.",
+  "whenToUse": [
+    "Building a multi-line headline where each line is a different width",
+    "Docking a headline label against the left or right edge of a screen"
+  ],
+  "whenNotToUse": [
+    "Labeling a single line of text — use one label pill on its own instead",
+    "Setting a paragraph of body copy — this is for short headline lines only"
+  ],
+  "variants": {
+    "align": {
+      "left": "Lines line up on their left edge, for a label docked to the screen's left side.",
+      "right": "Lines line up on their right edge, for a label docked to the screen's right side."
+    }
+  },
+  "dos": [
+    "Keep the stack's line count and font sizes matching its reference layout.",
+    "Align the stack to whichever edge the layout has docked it against."
+  ],
+  "donts": [
+    "Don't line-break one line's text by hand. Add a separate line instead.",
+    "Don't assume the same corners work on both edges. Check the aligned side."
+  ],
+  "accessibility": {
+    "notes": [
+      "Give the whole stack one accessible name if it functions as a single heading, rather than leaving it as three separate unlabeled lines."
+    ]
+  },
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "variants": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred"
+  }
+}

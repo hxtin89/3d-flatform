@@ -1,0 +1,46 @@
+{
+  "name": "Detail Info",
+  "summary": "Shows a species' measurement, status, and caption as three labeled facts.",
+  "description": "A small panel of up to three facts about a species: a size reading, a conservation status line, and a short caption, each paired with its own icon. It only renders the facts it's given, so a species missing a caption simply shows a shorter panel instead of an empty gap.",
+  "whenToUse": [
+    "Following up a species card's title with its measurement, status, and a short note",
+    "Showing only one or two of the three facts when the others aren't known"
+  ],
+  "whenNotToUse": [
+    "Introducing a species for the first time — use the card's own title and image instead",
+    "Writing a long paragraph about a species — that belongs in the card's description text, not a fact row"
+  ],
+  "dos": [
+    "Give the status line room to wrap. It's written as a full sentence.",
+    "Keep a measurement to one short reading, like a range in millimeters.",
+    "Let the caption run onto a second line when it needs to."
+  ],
+  "donts": [
+    "Don't force the status line onto one line. Let it wrap naturally.",
+    "Don't combine multiple readings into one line. Give each fact its own row."
+  ],
+  "accessibility": {
+    "notes": [
+      "The icons carry no meaning on their own — the words next to them say what each fact is, so nothing is lost if an icon fails to load."
+    ]
+  },
+  "tokensUsed": [
+    "stack-sm",
+    "inset-lg",
+    "stack-xs",
+    "size-icon-lg",
+    "text-body",
+    "text-body-tracking",
+    "family-mono"
+  ],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred"
+  }
+}

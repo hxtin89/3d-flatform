@@ -1,0 +1,44 @@
+{
+  "name": "Play Button",
+  "summary": "A round, semi-transparent button that plays or pauses video over an image.",
+  "description": "A circular control that sits on top of a thumbnail or video frame, its fill translucent enough that the artwork underneath still shows through. Its triangle glyph sits a few pixels off true center, a deliberate correction since a perfectly centered triangle looks like it's leaning left.",
+  "whenToUse": [
+    "Starting or resuming playback on a video thumbnail",
+    "Marking a piece of content as playable at a glance"
+  ],
+  "whenNotToUse": [
+    "Confirming a form or a general action — use a plain button instead",
+    "Labeling a control with visible text — this is icon-only, pair it with a caption elsewhere"
+  ],
+  "dos": [
+    "Pass a label describing what starts playing, for screen reader users.",
+    "Place it over image or video content. Its fill is translucent by design."
+  ],
+  "donts": [
+    "Don't recenter the glyph to the button's exact middle. Keep the offset.",
+    "Don't use it without a label — it has no visible text of its own."
+  ],
+  "accessibility": {
+    "role": "button",
+    "keyboard": ["Enter / Space activates, same as any button"],
+    "notes": [
+      "It has no visible text, so its accessible name comes entirely from the label — always set one that says what it plays."
+    ]
+  },
+  "states": {
+    "hover": "Fill brightens slightly to invite a click.",
+    "focus": "An outline appears around the disc for keyboard focus."
+  },
+  "tokensUsed": ["accent-fill", "pill", "text-primary", "border-focus"],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg",
+    "states": "ai-inferred"
+  }
+}

@@ -1,15 +1,13 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { cornerOverflow, type Corners } from "./geometry/silhouette";
+  import { silhouette, cornerOverflow, type Corners } from "./geometry/silhouette";
   import DetailInfo from "./DetailInfo.svelte";
 
   interface Props {
-    /** SVG path `d` for this widget's silhouette, computed externally (silhouette.ts) — this component never computes geometry itself. */
-    path: string;
     width: number;
     height: number;
     corners: Corners;
-    /** Radius used when `path` was built — must match the value passed to silhouette() so Concave/Fill-* overflow is sized correctly. Defaults to the card/outer token (60). */
+    /** Corner radius -- feeds both the silhouette path and its overflow (Concave/Fill-* corners reach past the w x h box) from the single value below, so the two can no longer disagree. Defaults to the card/outer token (60). */
     radius?: number;
     /** Common name, e.g. "SCHNURRVOGEL". */
     title?: string;
@@ -36,13 +34,20 @@
     silhouette?: boolean;
   }
 
-  let { path, width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect, silhouette = true }: Props = $props();
+  let { width, height, corners, radius = 60, title, description, selected = false, measurement, status, caption, icon, image, accent = "default", selectable = false, onSelect, silhouette: showSilhouette = true }: Props = $props();
 
   // Same highlight/shadow sheen as BentoWidget (see its own comment) -- the
   // two non-selected species cards (Vogel/Morphofalter) share the identical
   // grey-light Figma accent, so without it they render as twin flat blocks
   // with no material depth at all.
   const sheenId = `species-sheen-${Math.random().toString(36).slice(2, 9)}`;
+  // Derived from the same (width, height, corners, radius) the caller passes
+  // in, rather than taking a `path` prop computed externally -- a separate
+  // `path` prop and a separate `radius` prop that "must match" it (see the
+  // old radius doc comment) is an invariant nothing enforced; computing path
+  // here from the props that actually determine it makes disagreement
+  // impossible instead of documented-against.
+  const path = $derived(silhouette(width, height, corners, radius));
   const overflow = $derived(cornerOverflow(corners, radius));
   const svgWidth = $derived(width + overflow.left + overflow.right);
   const svgHeight = $derived(height + overflow.top + overflow.bottom);
@@ -98,7 +103,7 @@
   onpointerleave={selectable ? release : undefined}
   onpointercancel={selectable ? release : undefined}
 >
-  {#if silhouette}
+  {#if showSilhouette}
   <svg
     class="species-widget__silhouette"
     viewBox="{-overflow.left} {-overflow.top} {svgWidth} {svgHeight}"

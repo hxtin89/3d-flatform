@@ -1,0 +1,59 @@
+{
+  "name": "Changelog Rail",
+  "summary": "A vertical tab docked to a screen edge that opens the changelog.",
+  "description": "A narrow strip that sits flush against one side of the screen, with its label rotated to read bottom-to-top like a spine. Only the two corners facing into the page round off — the two flush against the screen edge stay square, since there's nothing on the other side for a curve to read against.",
+  "whenToUse": [
+    "Giving a screen a persistent way to open its changelog",
+    "Docking a labeled tab to the left or right edge of a layout"
+  ],
+  "whenNotToUse": [
+    "Placing a tab anywhere but a screen edge — this only makes sense flush against one",
+    "Needing more than a single short label — this isn't built to hold a menu"
+  ],
+  "variants": {
+    "side": {
+      "left": "Docks to the screen's left edge. Corners round on the right, facing into the page.",
+      "right": "Docks to the screen's right edge. Corners round on the left, facing into the page."
+    }
+  },
+  "dos": [
+    "Match the side prop to whichever physical edge it's docked against.",
+    "Give it an explicit height in any container that doesn't already have one."
+  ],
+  "donts": [
+    "Don't dock it away from a real screen edge. Its square corners assume one.",
+    "Don't leave height unset in an unsized wrapper. It collapses to an unreadable stub."
+  ],
+  "accessibility": {
+    "role": "button, when it's clickable",
+    "keyboard": ["Enter / Space activates, same as any button"],
+    "notes": [
+      "The label text doubles as its accessible name — keep it short enough to stay legible rotated on its side."
+    ]
+  },
+  "states": {
+    "focus": "A thick outline appears around the rail for keyboard focus."
+  },
+  "tokensUsed": [
+    "accent-fill",
+    "card-outer",
+    "text-primary",
+    "text-on-emphasis",
+    "text-body",
+    "text-body-tracking",
+    "family-sans",
+    "border-focus"
+  ],
+  "status": "draft",
+  "updatedAt": "2026-08-27",
+  "provenance": {
+    "description": "ai-inferred",
+    "whenToUse": "ai-inferred",
+    "whenNotToUse": "ai-inferred",
+    "variants": "ai-inferred",
+    "dos": "ai-inferred",
+    "donts": "ai-inferred",
+    "accessibility": "ai-inferred+w3c-apg",
+    "states": "ai-inferred"
+  }
+}
