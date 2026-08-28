@@ -1,13 +1,16 @@
 // Proof-of-concept mount for the @wi/ui design-system package inside this
 // Vite+Three.js app. Real content pulled from the "Bento Grid — Recreation"
 // Figma page: Frame 1 (1080x1920, mobile) and Frame 1 Desktop (1920x1080)
-// both have a real, finished species row and habitat label -- but at
-// DIFFERENT dock positions per orientation (label left-center on mobile,
-// bottom-right on desktop; species row spanning the window's full width on
-// mobile, at its own fixed size in the window's bottom-left corner on
-// desktop), not the same layout just scaled up. Verified by reading both
-// frames' real instance x/y directly from Figma -- see ScreenFrame.svelte's
-// dock wiring for the exact edges this reproduces.
+// both have a real, finished species row and habitat label. The species row
+// differs per orientation (spanning the window's full width on mobile, at
+// its own fixed size in the window's bottom-left corner on desktop), read
+// off both frames' real instance x/y directly from Figma. The habitat label
+// does NOT: it uses Figma's MOBILE placement at every size -- the window's
+// left edge, 69px (scaled) below the window's vertical centre -- clamped
+// vertically when another widget would be in the way rather than jumping to
+// the desktop frame's bottom-right corner. See ScreenFrame.svelte's layout()
+// and dock.ts's DockConfig.verticalDrop/avoid for the full reasoning; this
+// file mirrors that wiring.
 //
 // The frame/notch/docking engine (createFrame/dockElement) lives in @wi/ui
 // now (packages/ui/src/lib/screen-frame/) -- it used to be viewer-local, but
@@ -26,6 +29,7 @@
 // Screen.stories.ts so the real Figma data has one source, not three copies.
 import { mount, unmount, type Component } from 'svelte'
 import { HabitatLabelStack, BentoGrid, createFrame, dockElement, fitsPortraitArrangement, WEATHER_CLUSTER, SPECIES_ROW, EAGLE_LOGO_SVG } from '@wi/ui'
+import type { Rect } from '@wi/ui'
 import '@wi/tokens/css'
 
 export interface DesignSystemDemo {
@@ -61,6 +65,24 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   Object.assign(logoHost.style, { position: 'absolute', zIndex: '45', transformOrigin: 'top left', pointerEvents: 'none' })
   container.append(logoHost)
 
+  // The two clusters the label stack must never overlap, in
+  // container-relative coordinates, captured live from each dock's own
+  // onRect. Same reasoning as ScreenFrame.svelte's copies: the species row
+  // grows TALL when a card expands, so only a measured rect is right for the
+  // states where the collision actually happens.
+  let weatherRect: Rect = { x: 0, y: 0, width: 0, height: 0 }
+  let speciesRect: Rect = { x: 0, y: 0, width: 0, height: 0 }
+
+  // Figma px against the 1080-wide mobile frame: the window spans y 71..1860
+  // (centre 965.5) and the label stack's three pills span y 924..1145
+  // (centre 1034.5), so the stack's centre sits 69px BELOW the window's --
+  // it is not centred. Scaled by content scale like every other fixed Figma
+  // px here. Duplicated from ScreenFrame.svelte's LABEL_FIGMA_DROP_PX rather
+  // than exported, the same way every other dock/edge choice in this file is
+  // duplicated rather than factored out (see the logo note above).
+  const LABEL_FIGMA_DROP_PX = 69
+  const labelDrop = () => LABEL_FIGMA_DROP_PX * frame.getContentScale()
+
   const weatherHost = document.createElement('div')
   container.append(weatherHost)
   // Weather's rect feeds the frame's precise top-right corner notch (with
@@ -69,18 +91,18 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   const weatherDock = dockElement(weatherHost, container, {
     edge: 'top-right',
     mode: 'frame',
-    onRect: (rect) => frame.setTopRightReach(rect.width, rect.height),
+    onRect: (rect) => {
+      frame.setTopRightReach(rect.width, rect.height)
+      weatherRect = rect
+    },
   }, frame)
 
   const speciesHost = document.createElement('div')
   container.append(speciesHost)
-  // Whether the label drops to the wide-frame corner, and whether the
-  // species row is stretched to span the window's full width -- both
+  // Whether the species row is stretched to span the window's full width --
   // decided from real measured rects in handleResize() below, mirroring
   // ScreenFrame.svelte's layout()/speciesScale() (which carry the full
-  // reasoning for the three arrangements and where the fill/no-fill
-  // crossover comes from).
-  let useWideArrangement = false
+  // reasoning and where the fill/no-fill crossover comes from).
   let speciesFillsWidth = true
   function speciesScale(): number {
     const natural = speciesHost.offsetWidth
@@ -97,26 +119,37 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     edge: 'bottom-left',
     mode: 'frame',
     scale: speciesScale,
-    onRect: (rect) => frame.setNotch('species', rect),
+    onRect: (rect) => {
+      frame.setNotch('species', rect)
+      speciesRect = rect
+    },
   }, frame)
 
-  // The habitat label: tall-frame arrangement docks left-center, wide-frame
-  // docks bottom-right (sitting low next to the species cluster, not
-  // vertically centered) -- same source as the species note above. It's a
-  // stack of 3 pills (HabitatLabelStack), not a single line -- see that
-  // component for the real "Test: Label Stack" content this reproduces.
+  // The habitat label: ONE placement at every size -- the window's left edge
+  // at Figma's mobile vertical drop, clamped clear of the weather cluster
+  // and species row rather than relocated to another corner. It's a stack of
+  // 3 pills (HabitatLabelStack), not a single line -- see that component for
+  // the real "Test: Label Stack" content this reproduces. Docked LAST of the
+  // three: `avoid` reads the rects the other two just reported, so they have
+  // to have updated first (see updateDocks()).
   const labelHost = document.createElement('div')
   container.append(labelHost)
   const labelDock = dockElement(labelHost, container, {
-    edge: () => (useWideArrangement ? 'bottom-right' : 'left-center'),
+    edge: 'left-center',
     mode: 'frame',
+    verticalDrop: labelDrop,
+    avoid: () => [weatherRect, speciesRect],
     onRect: () => {},
   }, frame)
 
-  let labelAlign: 'left' | 'right' = 'left'
-  let label = mount(HabitatLabelStack as Component, {
+  // align is always 'left' now -- the stack only ever docks left, and
+  // HabitatLabelStack's left variant is the one whose corner fillets match
+  // that edge. No remount-on-flip any more, which also drops the one place
+  // this file could lose the component's internal measured-width state
+  // mid-resize.
+  const label = mount(HabitatLabelStack as Component, {
     target: labelHost,
-    props: { align: labelAlign },
+    props: { align: 'left' },
   })
 
   // topLeftIsScreenCorner: false on both -- neither cluster sits at the real
@@ -147,30 +180,34 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     logoHost.style.transform = `scale(${scale})`
     frame.handleResize()
     if (revealed) frame.setMargin(frame.getTargetMargin())
-    // Same fixed-order three-arrangement pick as ScreenFrame.svelte's
-    // layout() -- start optimistic (row filling the window's width, label
-    // left-center), then step down only as far as the measured rects
-    // actually force. Fixed order, so the result is a pure function of the
-    // container's size rather than of the previous pass.
+    // Same fixed-order species pick as ScreenFrame.svelte's layout() --
+    // start optimistic (row filling the window's width) and un-stretch it
+    // only if the label can't clear it at its real, dropped position. Fixed
+    // order, so the result is a pure function of the container's size rather
+    // than of the previous pass. The label's own overlap guarantee does not
+    // depend on this choice; dockElement's `avoid` clamps it either way.
     speciesFillsWidth = true
-    useWideArrangement = false
     updateDocks()
-    if (!fitsPortraitArrangement(speciesHost, labelHost, container)) {
+    if (!fitsPortraitArrangement(speciesHost, labelHost, container, container.clientHeight / 2 + labelDrop())) {
       speciesFillsWidth = false
       updateDocks()
-      useWideArrangement = !fitsPortraitArrangement(speciesHost, labelHost, container)
     }
-    const nextAlign = useWideArrangement ? 'right' : 'left'
-    if (nextAlign !== labelAlign) {
-      labelAlign = nextAlign
-      unmount(label)
-      label = mount(HabitatLabelStack as Component, { target: labelHost, props: { align: labelAlign } })
-    }
+    // Final pass so the label clamps against the rects the species row
+    // actually settled at, not the ones it had before the crossover ran.
     updateDocks()
   }
 
   handleResize()
   window.addEventListener('resize', handleResize)
+  // ScreenFrame.svelte observes its own container, so it gets a second layout
+  // pass for free and self-corrects once async widths land. This file had only
+  // the one synchronous call plus window resize, and the label stack's width is
+  // text-driven -- it resolves after mount, so every layout decision here was
+  // taken against a 0-width label box and never revisited. That is what let the
+  // stack sit on top of the species row at 1920x1080 and 1440x900 in the app
+  // while Storybook, which does get the second pass, looked correct.
+  const relayout = new ResizeObserver(() => handleResize())
+  relayout.observe(container)
 
   // Starts fully retracted (margin 0, full-bleed) -- the caller decides when
   // to reveal (main.ts calls it from onLoaderStart, the same moment the
@@ -228,6 +265,7 @@ export function createDesignSystemDemo(): DesignSystemDemo {
     retract,
     dispose() {
       window.removeEventListener('resize', handleResize)
+      relayout.disconnect()
       unmount(label)
       unmount(weatherCluster)
       unmount(speciesRow)

@@ -3,7 +3,20 @@
   import type { Corners, CornerType } from "../geometry/silhouette";
 
   interface Props {
-    /** Which side to align the stack's pills to -- matches whichever edge ScreenFrame docked this label to (left in portrait, right in landscape). Figma's own desktop label stack is right-aligned (every line shares the same right edge), not left-aligned like mobile -- verified directly against both frames' real instance x-offsets. */
+    /**
+     * Which side to align the stack's pills to. This is NOT symmetric decoration: the anchor side
+     * is the flush edge every line shares, and it also decides the two end caps' corner treatment
+     * (see stackCorners below -- mobile's left-anchored stack fillets INTO the frame margin at top
+     * and bottom, desktop's right-anchored one does not). Verified directly against both frames'
+     * real instance x-offsets.
+     *
+     * ScreenFrame now always passes "left": the stack uses Figma's mobile placement in every
+     * arrangement, docked at the window's left edge, so the right-anchored variant no longer has a
+     * caller inside the frame. It stays because Figma's Frame 1 Desktop genuinely authors it that
+     * way and MediaScreenExample still renders both variants side by side to document the
+     * difference -- deleting it would delete the only record of what the desktop reference looks
+     * like, and it is 4 lines of a function that has to exist for "left" anyway.
+     */
     align?: "left" | "right";
   }
 

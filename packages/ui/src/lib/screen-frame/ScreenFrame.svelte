@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { createFrame, type Frame } from "./frame";
-  import { dockElement, fitsPortraitArrangement, type Docked } from "./dock";
+  import { dockElement, fitsPortraitArrangement, type Docked, type Rect } from "./dock";
 
   interface Props {
     /** Frame at its resting margin (true, default) or fully retracted/full-bleed (false). No animation -- for an animated reveal, tween this from the caller and re-set it. */
@@ -10,7 +10,7 @@
     weather?: Snippet;
     /** Docked into the window's bottom-LEFT corner at every size, either stretched to span the window's full width (tall frames) or at Figma's own content scale (wide frames) -- see layout() for the crossover rule. Sits fully inside the window either way -- no notch. */
     species?: Snippet;
-    /** Docked left-center (tall-frame arrangement) or bottom-right (wide-frame arrangement) -- matches Figma exactly (verified against Frame 1/Frame 1 Desktop). See species' doc above for how the two are chosen. Receives which side it's pinned to, so a multi-line label stack can align itself to match (left-align vs right-align). */
+    /** Docked at the window's LEFT edge at every size, at Figma's mobile vertical placement (see LABEL_FIGMA_DROP_PX) -- clamped vertically when the species row or weather cluster would otherwise be in the way, never relocated to another corner. Still receives the side it's pinned to, which is now always "left": the parameter stays because callers write `{#snippet label(align)}<HabitatLabelStack {align} />{/snippet}` and HabitatLabelStack genuinely renders differently per side (its corner fillets are not symmetric -- see stackCorners there), so the plumbing is worth keeping even while only one value flows through it. */
     label?: Snippet<["left" | "right"]>;
     /** Renders behind the frame mask, filling the window area (e.g. the real scene/photo this frame is cut around). */
     background?: Snippet;
@@ -29,14 +29,40 @@
   let weatherDock: Docked | undefined;
   let speciesDock: Docked | undefined;
   let labelDock: Docked | undefined;
-  let labelAlign: "left" | "right" = $state("left");
-  // Whether the label drops to the wide-frame corner (bottom-right) instead
-  // of left-center, and whether the species row is stretched to span the
-  // window's full width. Both are read by the closures passed to
-  // dockElement below, and both are (re)decided by layout() from real
-  // measured rects -- never from an aspect-ratio guess.
-  let useWideArrangement = false;
+  // Whether the species row is stretched to span the window's full width.
+  // Read by the closures passed to dockElement below, and (re)decided by
+  // layout() from real measured rects -- never from an aspect-ratio guess.
   let speciesFillsWidth = true;
+
+  /**
+   * How far BELOW the window's vertical centre the label stack's own centre
+   * sits, in Figma px against the 1080-wide mobile frame -- scaled by the
+   * frame's content scale like every other fixed Figma px here.
+   *
+   * Measured off Frame 1 Mobile: the window spans y 71..1860 inside the 1920
+   * frame (centre 965.5) and the three pills span y 924..1145 (centre
+   * 1034.5). 1034.5 - 965.5 = 69. The stack is NOT centred, and centring it
+   * -- which is what "dock left-center" alone does -- floats it a full
+   * pill-height above where the reference puts it.
+   */
+  const LABEL_FIGMA_DROP_PX = 69;
+
+  // The two clusters the label must never overlap, in container-relative
+  // coordinates, captured from the docks' own onRect as they update. Live
+  // measured rects rather than derived sizes: the species row grows TALL
+  // when a card expands and the weather cluster's height follows its
+  // content, so anything computed from a nominal size would be wrong for
+  // exactly the states where the collision actually happens.
+  // Plain `let`, not $state: these are read only from the imperative
+  // closures handed to dockElement below (never from the template or a
+  // $derived), so making them reactive would buy re-renders nothing reads.
+  let weatherRect: Rect = { x: 0, y: 0, width: 0, height: 0 };
+  let speciesRect: Rect = { x: 0, y: 0, width: 0, height: 0 };
+
+  /** Where the stack's centre wants to be before any collision clamping -- window centre plus the Figma drop. Shared by the dock's verticalDrop and by layout()'s stretch crossover so the two can't disagree about what "the label's position" means. */
+  function labelDrop(): number {
+    return LABEL_FIGMA_DROP_PX * (frame?.getContentScale() ?? 1);
+  }
 
   /**
    * The species row's own scale factor, deliberately NOT the shared
@@ -71,33 +97,47 @@
   }
 
   /**
-   * Picks between the three arrangements, in a fixed order so the result is
-   * a pure function of the container's size (no dependence on the previous
-   * pass, which could otherwise oscillate now that the row's own height
-   * depends on which arrangement won):
+   * Picks between the two species-row treatments, in a fixed order so the
+   * result is a pure function of the container's size (no dependence on the
+   * previous pass, which could otherwise oscillate now that the row's own
+   * height depends on which treatment won):
    *
-   *   FILL  species spans the window's full width, label left-centre.
+   *   FILL  species spans the window's full width (Figma's Frame 1 Mobile,
+   *         where the row is authored exactly as wide as the window).
    *   TALL  species at Figma's content scale in the window's bottom-left
-   *         corner, label still left-centre.
-   *   WIDE  species at content scale bottom-left, label bottom-right --
-   *         Figma's own Frame 1 Desktop arrangement.
+   *         corner (Figma's Frame 1 Desktop).
    *
-   * Where the FILL -> TALL crossover lands is measured, not guessed: the
-   * row's height grows with its width (fixed 960x570 Figma aspect), so a
-   * full-width row on a wide-ish frame reaches so far up the window that
-   * the left-centre label no longer clears it. Asking
-   * fitsPortraitArrangement that exact question -- with the row already
-   * rendered at its stretched size -- is the crossover. It works out at
-   * ~1.32:1 (h:w) for the current content, i.e. the row stretches to at
-   * most ~1.39x the shared content scale before giving up and snapping back
-   * to Figma's own scale; anything wider than that would read as an
-   * oversized species row shouting over a normal-sized weather cluster.
-   * Deriving it this way (rather than a hardcoded aspect threshold) keeps
-   * it honest if the row's content, or the label's, ever changes size.
+   * There used to be a third, WIDE, which additionally moved the label stack
+   * to the window's bottom-right and flipped it to right-alignment. That is
+   * gone: the label stack now uses the MOBILE placement in every
+   * arrangement -- left edge of the window, Figma's mobile vertical drop --
+   * and dockElement's `avoid` clamps it vertically rather than relocating
+   * it. Two placements meant the stack jumped corners mid-resize and that
+   * every downstream consumer had to handle both; one placement plus a
+   * clamp is the same guarantee (never overlapping) with one position to
+   * reason about. Product-owner decision, and the reason `labelAlign` and
+   * `useWideArrangement` no longer exist here.
    *
-   * The row is docked bottom-LEFT in all three: when it fills, bottom-left
-   * and bottom-center are the same position, so there's no need for the row
-   * to ever be centred -- which is exactly the requirement here (fill the
+   * Where the FILL -> TALL crossover lands is still measured, not guessed:
+   * the row's height grows with its width (fixed 960x570 Figma aspect), so a
+   * full-width row on a wide-ish frame reaches so far up the window that the
+   * label no longer clears it. Asking fitsPortraitArrangement that exact
+   * question -- with the row already rendered at its stretched size, and
+   * with the label's real (dropped, not centred) position -- is the
+   * crossover. Deriving it this way rather than from a hardcoded aspect
+   * threshold keeps it honest if the row's content, or the label's, ever
+   * changes size.
+   *
+   * Note this crossover is now an OPTIMISATION, not the overlap guarantee:
+   * un-stretching the row buys the label back the room it needs on most
+   * sizes, so the clamp stays a last resort for the genuinely cramped ones
+   * and the stack sits exactly where Figma puts it everywhere else. The
+   * guarantee itself lives in dockElement's `avoid`, which holds even if
+   * this crossover picks wrong.
+   *
+   * The row is docked bottom-LEFT in both: when it fills, bottom-left and
+   * bottom-center are the same position, so there's no need for the row to
+   * ever be centred -- which is exactly the requirement here (fill the
    * width, or hug the window's bottom-left corner, never float in between).
    */
   function layout() {
@@ -106,14 +146,13 @@
     frame.setMargin(revealed ? frame.getTargetMargin() : 0);
 
     speciesFillsWidth = true;
-    useWideArrangement = false;
     updateDocks();
-    if (!fitsPortraitArrangement(speciesHost, labelHost, container)) {
+    if (!fitsPortraitArrangement(speciesHost, labelHost, container, container.clientHeight / 2 + labelDrop())) {
       speciesFillsWidth = false;
       updateDocks();
-      useWideArrangement = !fitsPortraitArrangement(speciesHost, labelHost, container);
     }
-    labelAlign = useWideArrangement ? "right" : "left";
+    // A final pass so the label clamps against the rects the species row
+    // ACTUALLY settled at, not the ones it had before the crossover ran.
     updateDocks();
   }
 
@@ -125,7 +164,14 @@
     weatherDock = dockElement(
       weatherHost,
       container,
-      { edge: "top-right", mode: "frame", onRect: (rect) => frame!.setTopRightReach(rect.width, rect.height) },
+      {
+        edge: "top-right",
+        mode: "frame",
+        onRect: (rect) => {
+          frame!.setTopRightReach(rect.width, rect.height);
+          weatherRect = rect;
+        },
+      },
       frame,
     );
     // Always the window's bottom-left corner -- Figma's Frame 1 Desktop
@@ -135,16 +181,32 @@
     speciesDock = dockElement(
       speciesHost,
       container,
-      { edge: "bottom-left", mode: "frame", scale: speciesScale, onRect: (rect) => frame!.setNotch("species", rect) },
+      {
+        edge: "bottom-left",
+        mode: "frame",
+        scale: speciesScale,
+        onRect: (rect) => {
+          frame!.setNotch("species", rect);
+          speciesRect = rect;
+        },
+      },
       frame,
     );
-    // Tall-frame arrangement: left-center. Wide-frame: bottom-right, sitting
-    // low next to the species cluster -- NOT right-center. Verified against
-    // Frame 1 / Frame 1 Desktop's real instance x/y.
+    // One placement at every size: the window's left edge, at Figma's mobile
+    // vertical drop, clamped clear of the other two clusters. Docked LAST of
+    // the three on purpose -- `avoid` reads the rects weather and species
+    // just reported through their own onRect, so it needs them to have
+    // updated first (see updateDocks()).
     labelDock = dockElement(
       labelHost,
       container,
-      { edge: () => (useWideArrangement ? "bottom-right" : "left-center"), mode: "frame", onRect: () => {} },
+      {
+        edge: "left-center",
+        mode: "frame",
+        verticalDrop: labelDrop,
+        avoid: () => [weatherRect, speciesRect],
+        onRect: () => {},
+      },
       frame,
     );
 
@@ -178,7 +240,10 @@
     {#if species}{@render species()}{/if}
   </div>
   <div class="screen-frame__label" bind:this={labelHost}>
-    {#if label}{@render label(labelAlign)}{/if}
+    <!-- Always "left": the stack uses the mobile placement in every
+         arrangement now, so there is no right-docked case left to align to.
+         See the `label` prop doc for why the parameter itself stays. -->
+    {#if label}{@render label("left")}{/if}
   </div>
 </div>
 
@@ -187,6 +252,25 @@
     position: relative;
     width: 100%;
     height: 100%;
+    /* Isolates a stacking context for everything this component paints.
+       Without it, `position: relative` with no z-index of its own leaves the
+       root at z-index:auto, so the internal layers' explicit z-indexes (40
+       for frame.ts's mask svg, 45 for the logo below, 50 for the docked
+       hosts) do NOT stay scoped to this subtree -- they compete directly
+       against the caller's own siblings in the shared outer context, and a
+       positive explicit z-index beats a plain auto sibling regardless of DOM
+       order. That is a real, observed bug, not a theoretical one:
+       MediaScreenExample's media card sits partly in the frame's margin
+       band, and the pixel at (30,900) inside it rendered as the margin's
+       (220,220,220) grey -- our own mask svg painting over the caller's
+       content -- until that file defensively gave every one of its overlays
+       z-index:50 to climb back above 45. `isolation: isolate` is the fix at
+       the source: it costs nothing, needs no z-index on the root (which
+       would drag the frame into the caller's own paint order in a different
+       way), and leaves the internal 40/45/50 ordering untouched relative to
+       each other, since they now simply resolve inside this context instead
+       of the page's root one. */
+    isolation: isolate;
     /* No min-height fallback: every real caller already gives this a real
        height to fill -- ScreenExample's fixed-px wrapper (Storybook) and the
        viewer's position:fixed/inset:0 container (see design-system-demo.ts)
