@@ -133,15 +133,36 @@ function currentScale(containerWidth: number, containerHeight: number): number {
 }
 
 /**
- * The window's boundary as a single path: a rounded rect with two notches
- * bitten into its top corners. Each notch's inner elbow is a genuine 270deg
- * reflex vertex: the two adjoining edges reach the vertex exactly, overshoot
- * past it by r (continuing their own direction of travel), and an r-radius
- * arc centered ON the vertex connects the two overshoot points -- this is
- * NOT the same shape as a plain convex corner with the sweep flag flipped
- * (that reads as smooth but is a much tighter, wrong flare than Figma's
- * real one). `tl`/`tr` are how far each notch reaches into the window from
- * that corner (width = horizontal reach, height = vertical reach).
+ * The window's boundary as a single path.
+ *
+ * Figma does not model this as "a rounded rect with two notches" -- it is ONE
+ * polygon whose every vertex carries the same cornerRadius (60), and the notch
+ * elbows are simply the vertices where the polygon turns the other way. The
+ * real "S1: Photo" vertex list, photo-local:
+ *
+ *   (0,1789) (0,57.5) (122.78,57.5) (122.78,0) (600,0) (600,359.1)
+ *   (960,359.1) (960,1789)
+ *
+ * so this builds exactly that and lets filletPath do the rest. Two consequences
+ * fall out of the uniform treatment that hand-rolling the elbow got wrong:
+ *
+ *  - The elbow fillet is CONCAVE, and that is load-bearing, not cosmetic. At
+ *    the weather notch's elbow the photo bulges into the corner on an r=60 arc
+ *    centred at exactly the same point as the r=60 convex corner of the widget
+ *    that sits there -- so the two are perfect complements and the surfaces
+ *    meet with nothing between them. Get the elbow wrong and a band of frame
+ *    grey shows through the join (measured: 3px under the weather cluster).
+ *
+ *  - Each vertex's radius is clamped to HALF its shortest adjoining edge, so
+ *    two fillets can never overrun each other. On the 57.5-tall logo notch that
+ *    clamps both its vertices to 28.75 and the fillets meet exactly, which is
+ *    why Figma's logo elbow reads as one continuous S-curve with no straight
+ *    segment between the two arcs.
+ *
+ * `tl`/`tr` are how far each notch reaches into the window from that corner
+ * (width = horizontal reach, height = vertical reach), and must be the docked
+ * cluster's real rect -- the notch is the hole the cluster sits in, so any
+ * slack between the two is frame grey the design does not have.
  *
  * `radius` is the already-SCALED corner radius. It has to be passed in rather
  * than read from WINDOW_CORNER_RADIUS directly: that constant is Figma px
@@ -151,43 +172,83 @@ function currentScale(containerWidth: number, containerHeight: number): number {
  * the viewer's ~0.49 scale they were about twice as round as the photo they
  * are meant to match in Figma.
  */
-function windowPath(win: Rect, tl: { width: number; height: number }, tr: { width: number; height: number }, radius: number): string {
-  const r = Math.max(0, Math.min(radius, tl.width, tl.height, tr.width, tr.height, win.width / 2, win.height / 2))
-  const R = Math.max(0, Math.min(radius, win.width / 2, win.height / 2))
+export function windowPath(win: Rect, tl: { width: number; height: number }, tr: { width: number; height: number }, radius: number): string {
   const { x, y, width: w, height: h } = win
-  const tlW = tl.width
-  const tlH = tl.height
-  const trW = tr.width
-  const trH = tr.height
-  return [
-    `M${x + tlW + r},${y}`,
-    `H${x + w - trW - r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + w - trW},${y + r}` : '',
-    `V${y + trH}`,
-    // Elbow: a genuine 270deg reflex vertex, not a plain radius -- the
-    // adjoining edges reach the vertex exactly and overshoot PAST it (by r,
-    // continuing each edge's own direction of travel) before the arc (radius
-    // r, centered on the vertex itself) connects the two overshoot points.
-    // A direct short arc between pulled-back endpoints still reads as
-    // "smooth" but is a much tighter, wrong-shaped flare than Figma's real
-    // one -- see this file's header.
-    r > 0 ? `L${x + w - trW},${y + trH + r} A${r},${r} 0 0 1 ${x + w - trW - r},${y + trH} L${x + w - trW},${y + trH}` : '',
-    `H${x + w - r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + w},${y + trH + r}` : '',
-    `V${y + h - R}`,
-    R > 0 ? `A${R},${R} 0 0 1 ${x + w - R},${y + h}` : '',
-    `H${x + R}`,
-    R > 0 ? `A${R},${R} 0 0 1 ${x},${y + h - R}` : '',
-    `V${y + tlH + r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + r},${y + tlH}` : '',
-    `H${x + tlW}`,
-    r > 0 ? `L${x + tlW + r},${y + tlH} A${r},${r} 0 0 1 ${x + tlW},${y + tlH + r} L${x + tlW},${y + tlH}` : '',
-    `V${y + r}`,
-    r > 0 ? `A${r},${r} 0 0 1 ${x + tlW + r},${y}` : '',
-    'Z',
-  ]
-    .filter(Boolean)
-    .join(' ')
+  return filletPath(
+    [
+      [x, y + h],
+      [x, y + tl.height],
+      [x + tl.width, y + tl.height],
+      [x + tl.width, y],
+      [x + w - tr.width, y],
+      [x + w - tr.width, y + tr.height],
+      [x + w, y + tr.height],
+      [x + w, y + h],
+    ],
+    radius,
+  )
+}
+
+type Point = readonly [number, number]
+
+/**
+ * Rounds every vertex of a closed polygon, the way Figma rounds every vertex of
+ * a vector network: pull back along each adjoining edge and join the two
+ * tangent points with an arc.
+ *
+ * Convex and reflex vertices need no special casing -- the construction is the
+ * same and only the sweep direction differs, which the turn's cross product
+ * already tells us. (Hand-rolling the reflex case separately is what put a
+ * grey wedge in the notch elbows.) Both are 90deg turns here, so the tangent
+ * pull-back is just r.
+ *
+ * A vertex is clamped to half of its shortest adjoining edge so neighbouring
+ * fillets meet at worst exactly, never overrun. Collinear and repeated vertices
+ * pass straight through, so a notch whose reach collapses to zero degenerates
+ * into a plain rounded rect with no caller-side branching.
+ */
+function filletPath(vertices: readonly Point[], radius: number): string {
+  const pts: Point[] = []
+  for (const v of vertices) {
+    const last = pts[pts.length - 1]
+    if (!last || Math.abs(last[0] - v[0]) > 1e-6 || Math.abs(last[1] - v[1]) > 1e-6) pts.push(v)
+  }
+  while (pts.length > 1 && Math.abs(pts[0][0] - pts[pts.length - 1][0]) < 1e-6 && Math.abs(pts[0][1] - pts[pts.length - 1][1]) < 1e-6) pts.pop()
+  const n = pts.length
+  if (n < 3) return ''
+
+  const round = (v: number) => Number(v.toFixed(3))
+  const heads: string[] = []
+  const arcs: string[] = []
+
+  for (let i = 0; i < n; i++) {
+    const [px, py] = pts[(i - 1 + n) % n]
+    const [cx, cy] = pts[i]
+    const [nx, ny] = pts[(i + 1) % n]
+    const inLen = Math.hypot(cx - px, cy - py)
+    const outLen = Math.hypot(nx - cx, ny - cy)
+    const ux = (cx - px) / inLen
+    const uy = (cy - py) / inLen
+    const vx = (nx - cx) / outLen
+    const vy = (ny - cy) / outLen
+    const cross = ux * vy - uy * vx
+    const r = Math.abs(cross) < 1e-9 ? 0 : Math.max(0, Math.min(radius, inLen / 2, outLen / 2))
+    if (r === 0) {
+      heads.push(`${round(cx)},${round(cy)}`)
+      arcs.push('')
+      continue
+    }
+    heads.push(`${round(cx - ux * r)},${round(cy - uy * r)}`)
+    arcs.push(`A${round(r)},${round(r)} 0 0 ${cross > 0 ? 1 : 0} ${round(cx + vx * r)},${round(cy + vy * r)}`)
+  }
+
+  const d = [`M${heads[0]}`]
+  for (let i = 0; i < n; i++) {
+    if (arcs[i]) d.push(arcs[i])
+    d.push(`L${heads[(i + 1) % n]}`)
+  }
+  d.push('Z')
+  return d.join(' ')
 }
 
 function easeOutCubic(t: number): number {
