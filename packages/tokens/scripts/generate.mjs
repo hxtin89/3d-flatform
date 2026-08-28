@@ -105,14 +105,15 @@ function block(selector, lines) {
   const c = findCollection("Typography/Semantic");
   const desktop = c.modes.find((m) => m.name === "Desktop").id;
   const mobile = c.modes.find((m) => m.name === "Mobile").id;
-  const mobileLines = c.variables.map((v) => emitVar(v.name, v.valuesByMode[mobile], v.type));
+  // ONE canonical scale, emitted from the Desktop mode, with no breakpoint.
+  // Figma carries a Mobile mode with smaller values, but responsive scaling here is
+  // done by ScreenFrame's --screen-frame-content-scale transform, which reacts to the
+  // CONTAINER's size. A min-width media query keys off the DOCUMENT, so the two fought
+  // and double-shrank text on a narrow phone. The comment emitted below is the record
+  // of that -- do not reinstate the breakpoint without reading it.
+  void mobile;
   const desktopLines = c.variables.map((v) => emitVar(v.name, v.valuesByMode[desktop], v.type));
-  // 1080x1920 design frame = 360 logical px -> desktop breakpoint at the frame's own logical width
-  const out =
-    block(":root", mobileLines) +
-    "\n@media (min-width: 480px) {\n" +
-    block(":root", desktopLines).split("\n").map((l) => (l ? "  " + l : l)).join("\n") +
-    "}\n";
+  const out = "/* One canonical scale, not a viewport-media-query breakpoint -- get_variable_defs\n   sampled on the SAME text node across both Frame 1 Mobile and Frame 1 Desktop\n   (e.g. \"Leicht bew\u00f6lkt\" and every Body/Default-bound description) resolves to\n   the identical absolute size (Heading/MD 24, Body/Default 16, Display/2XL 60)\n   in both frames. Figma has no separate smaller mobile ramp at all -- responsive\n   scaling is handled entirely by ScreenFrame's own --screen-frame-content-scale\n   transform (frame.ts's currentScale(), applied per-container via dock.ts), which\n   reacts to the CONTAINER's size, not the document viewport. A `@media\n   (min-width: 480px)` block used to sit here with smaller fabricated values below\n   that breakpoint -- since it keys off document width while the transform keys\n   off container width, the two systems fought each other and would double-shrink\n   text on a real narrow phone viewport instead of the transform alone handling it. */\n" + block(":root", desktopLines);
   writeFileSync(join(outDir, "typography-semantic.css"), out);
 }
 
@@ -120,12 +121,40 @@ function block(selector, lines) {
 {
   const c = findCollection("Color/Widget Accent");
   const defaultMode = c.modes.find((m) => m.name === "Default").id;
-  const defaultLines = c.variables.map((v) => emitVar(v.name, v.valuesByMode[defaultMode], v.type));
-  let out = "/* Default mode as the fallback, so a widget with no data-accent still resolves. */\n";
+  // Emit var(--primitive) wherever an accent colour is EXACTLY an existing primitive,
+  // rather than restating its literal -- so retuning gray/500 moves grey-light with it
+  // instead of leaving a stale copy behind. Matched BY VALUE, not by a hardcoded list:
+  // the accents Figma actually binds (default, grey-light, grey-dark, gold,
+  // forest-green) land on primitives and resolve to a var(); blue/green/coral/purple
+  // have no Figma binding, match nothing, and stay literals on their own. That is the
+  // committed file's rule, expressed as a rule.
+  // Same colour, different float precision per collection -- both render through
+  // an 8-bit channel, so quantise before comparing or nothing ever matches.
+  const rgbaKey = (v) => [v.r, v.g, v.b].map((n) => Math.round(n * 255)).concat(Math.round((v.a ?? 1) * 100)).join(",");
+  const primitiveByValue = new Map();
+  for (const pc of raw.collections.filter((x) => x.name.startsWith("_Color/"))) {
+    const pmode = pc.modes[0].id;
+    for (const pv of pc.variables) {
+      const val = pv.valuesByMode[pmode];
+      if (val && typeof val === "object" && "r" in val) {
+        const key = rgbaKey(val);
+        if (!primitiveByValue.has(key)) primitiveByValue.set(key, cssName(pv.name));
+      }
+    }
+  }
+  const emitAccent = (name, val, type) => {
+    if (val && typeof val === "object" && "r" in val) {
+      const hit = primitiveByValue.get(rgbaKey(val));
+      if (hit) return `  ${cssName(name)}: var(${hit});`;
+    }
+    return emitVar(name, val, type);
+  };
+  const defaultLines = c.variables.map((v) => emitAccent(v.name, v.valuesByMode[defaultMode], v.type));
+  let out = "/* Default mode as the fallback, so a widget with no data-accent still resolves.\n   default/grey-light/grey-dark/gold/forest-green are verified 1:1 against the\n   live Figma file's real accent/fill bindings (get_variable_defs on the actual\n   Weather/Giftfrosch widget instances -- #f7f7f7, #ababab, #737373, #e6ce00,\n   #004432) -- each already equals an existing primitive (gray-100/500/700,\n   accent-500, success-900), so they reference that primitive var() instead of\n   re-stating its literal. blue/green/coral/purple have no Figma binding at\n   all (not used anywhere on the real Bento Grid Recreation content -- only in\n   BentoWidget/BentoGrid's own Storybook variety stories), so they stay\n   scoped literals rather than a fabricated primitive reference. */\n";
   out += block(":root", defaultLines);
   for (const mode of c.modes) {
     const slug = mode.name.toLowerCase().replace(/\s+/g, "-");
-    const lines = c.variables.map((v) => emitVar(v.name, v.valuesByMode[mode.id], v.type));
+    const lines = c.variables.map((v) => emitAccent(v.name, v.valuesByMode[mode.id], v.type));
     out += "\n" + block(`[data-accent="${slug}"]`, lines);
   }
   writeFileSync(join(outDir, "widget-accent.css"), out);

@@ -7,6 +7,7 @@
 // It does NOT check whether tokens-raw.json itself still matches live Figma --
 // see the provenance line below and README.md for what that would take and why
 // it isn't automated here.
+const normaliseEol = (t) => t.split("\r\n").join("\n");
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,12 +42,12 @@ try {
   for (const name of generated) {
     let committed;
     try {
-      committed = readFileSync(join(srcDir, name), "utf8");
+      committed = normaliseEol(readFileSync(join(srcDir, name), "utf8"));
     } catch {
       mismatched.push(`${name} (missing from src/)`);
       continue;
     }
-    const fresh = readFileSync(join(tmp, name), "utf8");
+    const fresh = normaliseEol(readFileSync(join(tmp, name), "utf8"));
     if (committed !== fresh) mismatched.push(name);
   }
 
