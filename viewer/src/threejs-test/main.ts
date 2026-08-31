@@ -1184,8 +1184,6 @@ interface PivotDebug {
   reason: string | null
   passes: { pass: number; canopyZ: number; radius: number; distance: number }[]
   movedM?: number
-  clampedFromM?: number
-  clampedToM?: number
   pivotEnuZ?: number
   camEnuZ?: number
   zOffset?: number
@@ -1226,52 +1224,11 @@ function updateCanopyPivot(): void {
   if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
     controls.pivotPoint.copy(pivotCorrected)
   }
-  clampPivotDistance(controls.pivotPoint)
   // Keep the marker honest even though globe.update removes it before rendering.
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
   }
-}
-
-const pivotClampUp = new THREE.Vector3()
-const pivotClampDir = new THREE.Vector3()
-
-/**
- * Pull the pivot back along the click ray until it descends steeply enough.
- *
- * Its distance is the camera's height above it divided by how steeply the ray descends,
- * so a grazing click places it arbitrarily far — measured live at 1531 m from 138 m
- * altitude. Both gestures then scale with that distance: rotation travels radius × angle,
- * and panning lays a plane through the pivot whose intersection sits at the same range.
- * That is where the recorded single frames of 2057 m at 150 m altitude come from.
- *
- * Clamping the *distance* rather than the gesture keeps the pivot on the ray, so it still
- * sits under the cursor — just nearer, floating above the surface instead of on it. That
- * is the right trade: a pivot on a surface 1.5 km away is geometrically correct and
- * useless to steer with.
- *
- * Applies to panning as well as rotation, unlike the canopy lift, because the runaway
- * was recorded on both.
- */
-function clampPivotDistance(pivot: THREE.Vector3): void {
-  const minDescent = EXPERIENCE_CONFIG.navigation.pivotMinRayDescent
-  if (!(minDescent > 0)) return
-  pivotClampUp.copy(pivot).add(getOrigin()).normalize()
-  pivotClampDir.copy(pivot).sub(camera.position)
-  const distance = pivotClampDir.length()
-  if (distance < 1e-3) return
-  pivotClampDir.divideScalar(distance)
-  const descent = -pivotClampDir.dot(pivotClampUp)
-  // Above the camera or level: the ellipsoid limb, or a click at the horizon. There is no
-  // sensible pivot out there, so pull it to the nearest thing the clamp does allow.
-  const limitDescent = descent > minDescent ? descent : minDescent
-  const lever = camera.position.clone().sub(pivot).dot(pivotClampUp)
-  if (!(lever > 0)) return
-  const limit = lever / limitDescent
-  if (distance <= limit) return
-  pivot.copy(camera.position).addScaledVector(pivotClampDir, limit)
-  pivotDebug = { ...pivotDebug, clampedFromM: Math.round(distance), clampedToM: Math.round(limit) }
 }
 
 function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
@@ -1287,6 +1244,17 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   pivotDirEnu.normalize()
   // Looking level or upward there is no crossing to find.
   if (pivotDirEnu.z > -1e-3) { debug.reason = `ray not descending (z ${pivotDirEnu.z.toFixed(4)})`; return false }
+  // And a shallow ray has to travel absurdly far to gain any height at all: measured at
+  // 4.7 degrees, reaching a canopy 65 m up took 793 m along the ray, which put the pivot
+  // hundreds of metres nearer than the treeline the cursor was on. Worse, the result then
+  // swings with every change in the sampled canopy height. The honest answer down there is
+  // the terrain hit — it is stable, it is under the cursor, and the lift buys nothing.
+  const descent = -pivotDirEnu.z
+  const minDescent = EXPERIENCE_CONFIG.navigation.pivotMinRayDescent
+  if (descent < minDescent) {
+    debug.reason = `ray too shallow (descent ${descent.toFixed(3)} under ${minDescent})`
+    return false
+  }
   debug.pivotEnuZ = +pivotEnu.z.toFixed(2)
   debug.camEnuZ = +pivotCamEnu.z.toFixed(2)
   debug.zOffset = +zOffset.toFixed(2)

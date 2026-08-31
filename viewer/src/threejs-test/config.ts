@@ -251,20 +251,18 @@ export const EXPERIENCE_CONFIG = {
      */
     pivotSampleRadiusM: 20,
     /**
-     * Pull the pivot back along the click ray until it descends at least this steeply,
-     * as a dot product against local up. 0 disables the clamp.
+     * Least steeply the click ray may descend, as a dot product against local up, for the
+     * canopy lift to run at all. Below this the pivot stays on the terrain hit.
      *
-     * The pivot's distance is its height below the camera divided by how steeply the ray
-     * descends — recorded in a live session: lever arm 118 m with ray·up −0.077 put the
-     * pivot 1531 m away at 138 m altitude, and 118 / 0.077 = 1532 confirms the model.
-     * Grazing rays therefore place it arbitrarily far, and both gestures scale with that
-     * distance: rotation travels radius × angle, and panning rides a plane whose
-     * intersection sits at exactly that range. The same session recorded single frames
-     * moving the camera 2057 m at 150 m altitude — 13.7 times its own height.
+     * A shallow ray gains height only by travelling: recorded at 4.7 degrees, reaching a
+     * canopy 65 m up took 793 m along the ray. The pivot then sat hundreds of metres
+     * nearer than the treeline under the cursor, and moved unpredictably because the
+     * result scales as 1/descent — a tall tree and a gap in the sample swing it by
+     * hundreds of metres. An earlier attempt to contain that by clamping the pivot
+     * distance made it worse: the final position became the difference of two large
+     * opposing corrections. Declining to lift is the stable answer.
      *
-     * The library clamps only the *pan* ray, and only at 0.05, which still permits 20x
-     * the lever arm. 0.25 is about 14.5 degrees, so the pivot can never sit further than
-     * four times the camera's height above it.
+     * 0.25 is about 14.5 degrees. Above it the measured lifts stay between 95 and 262 m.
      */
     pivotMinRayDescent: 0.25,
   },
