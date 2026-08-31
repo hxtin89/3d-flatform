@@ -250,6 +250,23 @@ export const EXPERIENCE_CONFIG = {
      * sampleGroundZ reports how many cells backed the answer.
      */
     pivotSampleRadiusM: 20,
+    /**
+     * Pull the pivot back along the click ray until it descends at least this steeply,
+     * as a dot product against local up. 0 disables the clamp.
+     *
+     * The pivot's distance is its height below the camera divided by how steeply the ray
+     * descends — recorded in a live session: lever arm 118 m with ray·up −0.077 put the
+     * pivot 1531 m away at 138 m altitude, and 118 / 0.077 = 1532 confirms the model.
+     * Grazing rays therefore place it arbitrarily far, and both gestures scale with that
+     * distance: rotation travels radius × angle, and panning rides a plane whose
+     * intersection sits at exactly that range. The same session recorded single frames
+     * moving the camera 2057 m at 150 m altitude — 13.7 times its own height.
+     *
+     * The library clamps only the *pan* ray, and only at 0.05, which still permits 20x
+     * the lever arm. 0.25 is about 14.5 degrees, so the pivot can never sit further than
+     * four times the camera's height above it.
+     */
+    pivotMinRayDescent: 0.25,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.

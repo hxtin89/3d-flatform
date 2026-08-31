@@ -1184,6 +1184,8 @@ interface PivotDebug {
   reason: string | null
   passes: { pass: number; canopyZ: number; radius: number; distance: number }[]
   movedM?: number
+  clampedFromM?: number
+  clampedToM?: number
   pivotEnuZ?: number
   camEnuZ?: number
   zOffset?: number
@@ -1221,13 +1223,55 @@ function updateCanopyPivot(): void {
     return
   }
   pivotMarkerPlaced = true
-  if (!canopyPivot(controls.pivotPoint, pivotCorrected)) return
-  controls.pivotPoint.copy(pivotCorrected)
+  if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
+    controls.pivotPoint.copy(pivotCorrected)
+  }
+  clampPivotDistance(controls.pivotPoint)
   // Keep the marker honest even though globe.update removes it before rendering.
   if (controls.pivotMesh) {
-    controls.pivotMesh.position.copy(pivotCorrected)
+    controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
   }
+}
+
+const pivotClampUp = new THREE.Vector3()
+const pivotClampDir = new THREE.Vector3()
+
+/**
+ * Pull the pivot back along the click ray until it descends steeply enough.
+ *
+ * Its distance is the camera's height above it divided by how steeply the ray descends,
+ * so a grazing click places it arbitrarily far — measured live at 1531 m from 138 m
+ * altitude. Both gestures then scale with that distance: rotation travels radius × angle,
+ * and panning lays a plane through the pivot whose intersection sits at the same range.
+ * That is where the recorded single frames of 2057 m at 150 m altitude come from.
+ *
+ * Clamping the *distance* rather than the gesture keeps the pivot on the ray, so it still
+ * sits under the cursor — just nearer, floating above the surface instead of on it. That
+ * is the right trade: a pivot on a surface 1.5 km away is geometrically correct and
+ * useless to steer with.
+ *
+ * Applies to panning as well as rotation, unlike the canopy lift, because the runaway
+ * was recorded on both.
+ */
+function clampPivotDistance(pivot: THREE.Vector3): void {
+  const minDescent = EXPERIENCE_CONFIG.navigation.pivotMinRayDescent
+  if (!(minDescent > 0)) return
+  pivotClampUp.copy(pivot).add(getOrigin()).normalize()
+  pivotClampDir.copy(pivot).sub(camera.position)
+  const distance = pivotClampDir.length()
+  if (distance < 1e-3) return
+  pivotClampDir.divideScalar(distance)
+  const descent = -pivotClampDir.dot(pivotClampUp)
+  // Above the camera or level: the ellipsoid limb, or a click at the horizon. There is no
+  // sensible pivot out there, so pull it to the nearest thing the clamp does allow.
+  const limitDescent = descent > minDescent ? descent : minDescent
+  const lever = camera.position.clone().sub(pivot).dot(pivotClampUp)
+  if (!(lever > 0)) return
+  const limit = lever / limitDescent
+  if (distance <= limit) return
+  pivot.copy(camera.position).addScaledVector(pivotClampDir, limit)
+  pivotDebug = { ...pivotDebug, clampedFromM: Math.round(distance), clampedToM: Math.round(limit) }
 }
 
 function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
