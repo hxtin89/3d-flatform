@@ -45,8 +45,17 @@ export function createDesignSystemDemo(): DesignSystemDemo {
   // takes over the role the SVG root used to play directly (position:fixed,
   // full viewport), so the frame's window and every docked host below
   // resolve position:absolute against IT, not the true viewport.
+  //
+  // It is also full-viewport and ON TOP of the point-cloud canvas, so it must
+  // not be a hit target: without this the div swallowed every pointer event
+  // across the whole window and the camera could not be panned or orbited
+  // anywhere, even over open point cloud with no widget in sight. Everything
+  // this file mounts is non-interactive decoration (frame mask, logo, label)
+  // EXCEPT the bento cells, which re-enable hit-testing for themselves
+  // (`.bento-grid__cell`) -- so hit-testing follows the widgets' real
+  // footprint rather than their container's.
   const container = document.createElement('div')
-  Object.assign(container.style, { position: 'fixed', inset: '0' })
+  Object.assign(container.style, { position: 'fixed', inset: '0', pointerEvents: 'none' })
   document.body.append(container)
 
   const frame = createFrame(container)

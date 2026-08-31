@@ -320,6 +320,14 @@
     position: absolute;
     /* Above the field canvas, so widget text/icons stay on top of the shape. */
     z-index: 1;
+    /* Explicit, not inherited: when this grid is overlaid on something
+       interactive (the viewer floats it over the point-cloud canvas), the host
+       turns hit-testing OFF for the whole overlay and the cells are what turn
+       it back on. That keeps the clickable area the widgets' own footprint
+       instead of their container's bounding box -- the gaps a cluster leaves
+       around itself (e.g. the empty corner of the weather notch) stay
+       pass-through, so the camera is still draggable there. */
+    pointer-events: auto;
     /* Staggered rise-and-fade on first mount (index-driven delay set inline
        above) -- the static grid otherwise just appears fully-formed, which
        reads flat next to reference sites that reveal their cards on scroll.
