@@ -101,6 +101,10 @@ export function onRebase(listener: (delta: THREE.Vector3) => void): () => void {
  */
 export function rebaseTo(nextEcef: THREE.Vector3): void {
   if (!enabled) return
+  // A non-finite target would bake itself into the origin permanently — every listener
+  // applies the delta to what it owns, and nothing ever writes the origin back to a
+  // finite value. Refusing here keeps a transient bad camera frame transient.
+  if (!Number.isFinite(nextEcef.x + nextEcef.y + nextEcef.z)) return
   scratchDelta.copy(origin).sub(nextEcef)
   if (scratchDelta.lengthSq() === 0) return
   origin.copy(nextEcef)

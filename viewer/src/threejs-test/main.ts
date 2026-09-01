@@ -1838,8 +1838,12 @@ function enforceNavigationBounds(): void {
   worldToEnu(camera.position, navigationCameraEnu)
   const dx = navigationCameraEnu.x - cloudCenterEnu.x
   const dy = navigationCameraEnu.y - cloudCenterEnu.y
-  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) return
-  if (navigationCameraEnu.z >= navigationFloorZ) return
+  // Both written so NaN takes the early return. The originals inverted on NaN — a
+  // poisoned ENU conversion sailed past the radius check, "failed" the floor check,
+  // and the clamp then wrote the NaN into the camera, every frame, which is what
+  // actually bricked the stalled-boot session.
+  if (!(dx * dx + dy * dy <= navigationBoundsRadius * navigationBoundsRadius)) return
+  if (!(navigationCameraEnu.z < navigationFloorZ)) return
 
   navigationCameraEnu.z = navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
@@ -3202,6 +3206,45 @@ function updateFoveationReadout(): void {
     + ` · SSE ${coreSse.toFixed(1)} → ${edgeSse.toFixed(1)} · ${core} core / ${periphery} outside`
 }
 
+/**
+ * Which frame stage first broke the camera. A non-finite camera bricks the app
+ * silently — every later stage just propagates it, so only the first offender is a
+ * useful datum, recorded once per stage. Seen in the wild on a stalled boot, where the
+ * camera was NaN on all three axes before any input.
+ */
+const nanWatchSeen = new Set<string>()
+function nanWatch(stage: string): void {
+  const p = camera.position
+  if (Number.isFinite(p.x + p.y + p.z)) return
+  if (nanWatchSeen.has(stage)) return
+  nanWatchSeen.add(stage)
+  console.error(`[nan-watch] camera.position non-finite after ${stage}`)
+}
+
+/**
+ * Put a broken camera back at the boot staging pose instead of leaving the app
+ * bricked. Every guard upstream fails toward "do nothing", so by the time this runs
+ * the damage is contained to the camera itself — and the staging pose is the one
+ * position that is always derivable from the manifest alone.
+ */
+const recoverPoseEnu = new THREE.Vector3()
+function recoverCameraPose(): void {
+  if (!enuFrameReady) return
+  const target = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
+  const offset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
+  recoverPoseEnu.set(target.x + offset[0], target.y + offset[1], target.z + offset[2])
+  enuToWorld(recoverPoseEnu, navigationCameraWorld)
+  // If the pose itself is broken the frames are poisoned too and rewriting the camera
+  // would just relabel the problem — leave the evidence for nan-watch instead.
+  if (!Number.isFinite(navigationCameraWorld.x + navigationCameraWorld.y + navigationCameraWorld.z)) return
+  camera.position.copy(navigationCameraWorld)
+  camera.up.copy(enuUp)
+  camera.lookAt(enuToWorld(target.clone()))
+  globe?.controls.resetState()
+  updateOrigin(true)
+  console.warn('[nan-watch] camera restored to the staging pose')
+}
+
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
@@ -3212,7 +3255,9 @@ function loop(now: number): void {
   // traversals, the mask probe, the layers — sees one origin for the whole frame and
   // never a shift in the middle of it.
   updateOrigin()
+  nanWatch('updateOrigin')
   cameraFlight.update(now)
+  nanWatch('cameraFlight')
   updateCloudReveal()
   updateMatrixPrecision(now)
   keyboardNavigation?.update(
@@ -3222,9 +3267,14 @@ function loop(now: number): void {
     isZoomInBlocked(),
     navigationClearance,
   )
+  nanWatch('keyboardNavigation')
   updateCanopyPivot()
   beginFrameMoveGovernor()
   globe?.update(constrainControlsCamera)
+  nanWatch('controls')
+  if (!Number.isFinite(camera.position.x + camera.position.y + camera.position.z)) {
+    recoverCameraPose()
+  }
   updatePivotMarker()
   // Twice a second while shown, never when hidden — the readout has to follow the lift
   // slider and newly resident tiles, but nothing here changes per frame.
@@ -3615,9 +3665,11 @@ async function main(): Promise<void> {
   )))
   camera.up.copy(enuUp)
   camera.lookAt(enuToWorld(stagingTarget.clone()))
+  nanWatch('boot staging')
   // Staging jumps straight to the parcel; pull the origin along before the first
   // frame so the very first traversal already runs camera-relative.
   updateOrigin(true)
+  nanWatch('boot origin rebase')
 
   setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
   setStatus('Adaptive streaming · loading tiles…')
