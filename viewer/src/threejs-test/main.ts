@@ -1087,6 +1087,169 @@ let pivotOnCanopy: boolean = EXPERIENCE_CONFIG.navigation.pivotOnCanopy
  * reason, as the donation shape's probe.
  */
 /**
+ * A vertical ruler through the survey centre, showing every height that matters at once.
+ *
+ * The heights in this scene live in two frames and the difference is 200 m, which is
+ * invisible until something is drawn at both. worldToEnu/enuToWorld speak the survey's
+ * own, as-delivered heights; the rendered cloud is that plus zOffset. sampleGroundZ
+ * reports the *rendered* height — it multiplies by object.matrixWorld, which carries the
+ * group translation — so subtracting zOffset is what recovers the survey truth.
+ *
+ * Everything below is drawn in the as-delivered frame, so the survey ticks sit at the
+ * numbers the data actually contains and the rendered ticks show where the offset puts
+ * them. Built on first use and skipped entirely while hidden, so it costs nothing off.
+ */
+interface HeightMarks {
+  basemapZ: number | null
+  surveyGroundZ: number | null
+  surveyCanopyZ: number | null
+  renderedGroundZ: number | null
+  renderedCanopyZ: number | null
+  snapM: number
+  liftM: number
+  zOffset: number
+  sampled: boolean
+  /** The drape is a flat approximation of a curved surface, so its height depends on
+   * imagery LOD — measured swinging from -437 m to +115 m as tiles refined. */
+  mapTiles: number
+}
+let heightRuler: THREE.Group | null = null
+let heightRulerVisible = false
+let heightRulerMarks: HeightMarks | null = null
+let lastHeightRulerMs = 0
+const heightRulerSampleXY = new THREE.Vector2()
+const heightRulerBarXY = new THREE.Vector2()
+const heightRulerPoint = new THREE.Vector3()
+const heightRulerA = new THREE.Vector3()
+const heightRulerB = new THREE.Vector3()
+
+/** Read every height once, in the survey's own frame. Null where no points are resident. */
+/**
+ * Where to take the readings.
+ *
+ * The survey centre sounds right and is not: fly to one end and the centre has no
+ * resident tiles, so every row reads "no data". followEnu is the ground the camera is
+ * actually pointed at — the same anchor the vignette rides — so the sample lands where
+ * tiles are loaded, which is the only place an answer exists.
+ */
+function heightRulerCentre(target: THREE.Vector2): THREE.Vector2 {
+  if (followInit) return target.copy(followEnu)
+  return target.set(cloudCenterEnu.x, cloudCenterEnu.y)
+}
+
+function readHeightMarks(): HeightMarks {
+  const snapM = groundSnap ? -(areaMinZ + areaOriginHeight) : 0
+  const liftM = groundSnap ? pointCloudLiftM : 0
+  const marks: HeightMarks = {
+    basemapZ: null, surveyGroundZ: null, surveyCanopyZ: null,
+    renderedGroundZ: null, renderedCanopyZ: null,
+    snapM, liftM, zOffset, sampled: false,
+    mapTiles: (globe as any)?.stats?.().visible ?? 0,
+  }
+  // The basemap is a drape on the ellipsoid with no terrain, so its height is simply
+  // where that surface falls — one probe at the survey centre is the whole story.
+  const globeTiles = (globe as any)?.tiles
+  heightRulerCentre(heightRulerSampleXY)
+  if (globeTiles && enuFrameReady) {
+    // Straight down from high above the reading point onto whatever imagery is loaded.
+    const from = enuToWorld(heightRulerA.set(heightRulerSampleXY.x, heightRulerSampleXY.y, 8000))
+    const down = heightRulerB.copy(from).add(getOrigin()).normalize().multiplyScalar(-1)
+    ray.set(from, down)
+    const hit = ray.intersectObject(globeTiles.group, true)[0]
+    if (hit) marks.basemapZ = +worldToEnu(hit.point).z.toFixed(2)
+  }
+  if (stream && enuFrameReady) {
+    const sample = stream.sampleGroundZ(heightRulerSampleXY, 120, enuInverseRender)
+    if (sample) {
+      marks.sampled = true
+      marks.renderedGroundZ = +sample.groundZ.toFixed(2)
+      marks.renderedCanopyZ = +sample.canopyZ.toFixed(2)
+      marks.surveyGroundZ = +(sample.groundZ - zOffset).toFixed(2)
+      marks.surveyCanopyZ = +(sample.canopyZ - zOffset).toFixed(2)
+    }
+  }
+  return marks
+}
+
+function buildHeightRuler(): THREE.Group {
+  const group = new THREE.Group()
+  group.frustumCulled = false
+  group.renderOrder = 9998
+  group.visible = false
+  return group
+}
+
+/** One coloured horizontal bar at a height, plus its stem down the mast. */
+function heightRulerBar(z: number, halfWidth: number, colour: number): THREE.Line {
+  const centre = heightRulerCentre(heightRulerBarXY)
+  const material = new LineBasicNodeMaterial()
+  material.color.setHex(colour)
+  material.depthTest = false
+  material.depthWrite = false
+  material.transparent = true
+  material.toneMapped = false
+  const a = enuToWorld(heightRulerA.set(centre.x - halfWidth, centre.y, z)).clone()
+  const b = enuToWorld(heightRulerB.set(centre.x + halfWidth, centre.y, z)).clone()
+  const geometry = new THREE.BufferGeometry().setFromPoints([a, b])
+  const line = new THREE.Line(geometry, material)
+  line.frustumCulled = false
+  return line
+}
+
+function updateHeightRuler(): void {
+  if (!heightRulerVisible || !heightRuler || !enuFrameReady) return
+  const marks = readHeightMarks()
+  heightRulerMarks = marks
+  // Rebuilt rather than reshaped: it changes only when a slider moves or new tiles land,
+  // and a handful of two-point lines is cheaper to recreate than to keep in sync.
+  for (const child of [...heightRuler.children]) {
+    heightRuler.remove(child)
+    ;(child as any).geometry?.dispose?.()
+    ;(child as any).material?.dispose?.()
+  }
+  const half = 260
+  const levels: [number | null, number][] = [
+    [marks.basemapZ, 0xf59e0b],          // amber: the map drape
+    [marks.surveyGroundZ, 0x38bdf8],     // blue: survey floor, as delivered
+    [marks.surveyCanopyZ, 0x0ea5e9],     // deeper blue: survey canopy
+    [marks.renderedGroundZ, 0x4ade80],   // green: where the floor is drawn
+    [marks.renderedCanopyZ, 0x22c55e],   // deeper green: where the canopy is drawn
+    [0, 0xffffff],                       // white: zero in this frame
+  ]
+  const present = levels.filter(([z]) => z !== null) as [number, number][]
+  for (const [z, colour] of present) heightRuler.add(heightRulerBar(z, half, colour))
+  // The mast, spanning everything drawn.
+  if (present.length > 1) {
+    const zs = present.map(([z]) => z)
+    const mast = heightRulerBar(0, 0, 0x94a3b8)
+    const centre = heightRulerCentre(heightRulerBarXY)
+    const lo = enuToWorld(heightRulerA.set(centre.x, centre.y, Math.min(...zs))).clone()
+    const hi = enuToWorld(heightRulerB.set(centre.x, centre.y, Math.max(...zs))).clone()
+    mast.geometry.dispose()
+    mast.geometry = new THREE.BufferGeometry().setFromPoints([lo, hi])
+    heightRuler.add(mast)
+  }
+  heightRuler.visible = true
+  updateHeightRulerReadout(marks)
+}
+
+function updateHeightRulerReadout(marks: HeightMarks): void {
+  const el = document.querySelector('#heightRulerReadout')
+  if (!el) return
+  const m = (v: number | null) => (v === null ? '—' : `${v.toFixed(1)} m`)
+  el.innerHTML = [
+    `<b style="color:#f59e0b">basemap drape</b> ${m(marks.basemapZ)}`,
+    `<b style="color:#38bdf8">survey floor</b> ${m(marks.surveyGroundZ)}`,
+    `<b style="color:#0ea5e9">survey canopy</b> ${m(marks.surveyCanopyZ)}`,
+    `<b style="color:#4ade80">drawn floor</b> ${m(marks.renderedGroundZ)}`,
+    `<b style="color:#22c55e">drawn canopy</b> ${m(marks.renderedCanopyZ)}`,
+    `<b>offset</b> ${marks.zOffset.toFixed(1)} m = snap ${marks.snapM.toFixed(1)} + lift ${marks.liftM.toFixed(1)}`,
+    `<i>map tiles ${marks.mapTiles} — the drape sags on coarse tiles, so read it refined</i>`,
+    marks.sampled ? '' : '<i>no resident points at the centre — survey and drawn rows unavailable</i>',
+  ].filter(Boolean).join('<br>')
+}
+
+/**
  * A crosshair at the pivot, for seeing where a drag is actually turning.
  *
  * EnvironmentControls ships its own marker and globe.ts removes it from the scene every
@@ -2297,6 +2460,21 @@ pivotCanopyToggleEl.addEventListener('click', () => {
   syncPivotCanopyToggle()
 })
 syncPivotCanopyToggle()
+const heightRulerToggleEl = $<HTMLButtonElement>('#heightRulerToggle')
+heightRulerToggleEl.addEventListener('click', () => {
+  heightRulerVisible = !heightRulerVisible
+  heightRulerToggleEl.classList.toggle('on', heightRulerVisible)
+  heightRulerToggleEl.setAttribute('aria-pressed', String(heightRulerVisible))
+  heightRulerToggleEl.textContent = `⇕ Heights · ${heightRulerVisible ? 'On' : 'Off'}`
+  // Built on first use, like the pivot marker: off, it is not in the scene at all.
+  if (heightRulerVisible && !heightRuler) {
+    heightRuler = buildHeightRuler()
+    scene.add(heightRuler)
+  }
+  if (heightRuler) heightRuler.visible = heightRulerVisible
+  if (heightRulerVisible) updateHeightRuler()
+  else document.querySelector('#heightRulerReadout')!.textContent = '—'
+})
 const pivotMarkerToggleEl = $<HTMLButtonElement>('#pivotMarkerToggle')
 pivotMarkerToggleEl.addEventListener('click', () => {
   pivotMarkerVisible = !pivotMarkerVisible
@@ -2876,6 +3054,12 @@ function loop(now: number): void {
   updateCanopyPivot()
   globe?.update(enforceNavigationBounds)
   updatePivotMarker()
+  // Twice a second while shown, never when hidden — the readout has to follow the lift
+  // slider and newly resident tiles, but nothing here changes per frame.
+  if (heightRulerVisible && now - lastHeightRulerMs > 500) {
+    lastHeightRulerMs = now
+    updateHeightRuler()
+  }
   updateMaskFollow()
   updateAtmosphere(now)
   const stats = updateStreaming(now)
@@ -3119,6 +3303,8 @@ async function main(): Promise<void> {
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },
+    /** Every height in one place, as the ruler last read them. */
+    get heights() { return heightRulerMarks },
     mask: groundPatchMask,
     /** Diagnostic: what the mask holds under a screen pixel. */
     probeMask: probeMaskAt,
