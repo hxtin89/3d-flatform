@@ -307,6 +307,22 @@ export const EXPERIENCE_CONFIG = {
      */
     panMinRayDescent: 0.3,
     /**
+     * How far one drag may pan the world, as a multiple of the camera's height above the
+     * ellipsoid, and a floor for that in metres.
+     *
+     * Net displacement from where the drag started, so dragging out and back costs
+     * nothing and only the distance actually covered is bounded. Even a pan re-aimed to
+     * the middle of the screen can be pushed a long way by dragging the cursor on toward
+     * the horizon — the shift is fixed for the drag, so the re-aimed pointer climbs into
+     * the shallow region too. Rather than let the gesture run, it stops at the budget;
+     * lifting the button and dragging again continues from there.
+     *
+     * 20x altitude is 1.6 km at the 80 m working height and 20 km from 1 km up, so the
+     * bound scales with what the view can actually show.
+     */
+    maxPanPerDragHeightFactor: 20,
+    maxPanPerDragMinM: 500,
+    /**
      * How far the controls may move the camera in a single frame, as a multiple of the
      * camera's height above the survey floor. The last line of defence against the
      * fly-away: mouse pan and rotation gains scale with the distance of the grabbed

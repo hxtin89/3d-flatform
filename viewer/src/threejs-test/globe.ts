@@ -46,6 +46,12 @@ export interface Globe {
    * automatically when the drag ends.
    */
   setPanPointerShift(x: number, y: number): void
+  /**
+   * Metres this drag may pan before it stops. Set from main.ts, which measures height
+   * above the survey floor — the ellipsoid altitude available here is meaningless while
+   * the cloud is ground-snapped, and read 0 at the working height.
+   */
+  setPanBudget(metres: number): void
   /** Where the cursor sits in CSS pixels relative to the canvas, unshifted. */
   getRawPointer(target: THREE.Vector2): THREE.Vector2 | null
   /**
@@ -306,6 +312,48 @@ export function createGlobe(opts: {
     return result
   }
 
+  // How far this drag has taken the world, and the budget it may spend.
+  //
+  // Net displacement from the press, so dragging out and back costs nothing and only the
+  // ground actually covered is bounded. Needed even with the re-aim: the shift is fixed
+  // for the length of a drag, so carrying the cursor on toward the horizon takes the
+  // re-aimed pointer into the shallow region with it and the world can be pushed
+  // enormously far. At the budget the pan simply stops — lift the button and drag again
+  // to continue.
+  const panDragStart = new THREE.Vector3()
+  let panBudget = 0
+  let panBudgetArmed = false
+  let panBudgetRequested = 0
+
+  const originalUpdatePosition = (controls as any)._updatePosition.bind(controls)
+  ;(controls as any)._updatePosition = (deltaTime: number): void => {
+    if ((controls as any).state !== DRAG_STATE) {
+      panBudgetArmed = false
+      originalUpdatePosition(deltaTime)
+      return
+    }
+    if (!panBudgetArmed) {
+      panBudgetArmed = true
+      panDragStart.copy(camera.position)
+      // main.ts measures the height this scales with; the ellipsoid altitude reachable
+      // from here reads 0 at the working height, which pinned every drag to the floor.
+      panBudget = panBudgetRequested > 0
+        ? panBudgetRequested
+        : EXPERIENCE_CONFIG.navigation.maxPanPerDragMinM
+    }
+    originalUpdatePosition(deltaTime)
+    const moved = camera.position.distanceTo(panDragStart)
+    // "Not within budget" rather than "over", so a non-finite camera is left to the
+    // recovery in main.ts instead of being lerped here.
+    if (!(moved > panBudget)) return
+    camera.position.lerpVectors(panDragStart, camera.position, panBudget / moved)
+    camera.updateMatrixWorld()
+    // Inertia would carry the pan past the budget the moment the button came up.
+    ;(controls as any).dragInertia.set(0, 0, 0)
+    ;(controls as any).globeInertia.identity()
+    ;(controls as any).globeInertiaFactor = 0
+  }
+
   // Ease the rotation pointer toward where the mouse actually is, once per frame.
   //
   // The controls derive rotation from (pointer - previousPointer), and previousPointer
@@ -397,6 +445,9 @@ export function createGlobe(opts: {
       panShift.set(x, y)
       panShiftActive = true
     },
+    setPanBudget(metres) {
+      panBudgetRequested = metres > 0 ? metres : 0
+    },
     getRawPointer(target) {
       return originalGetCenterPoint(target) ? target : null
     },
@@ -423,7 +474,10 @@ export function createGlobe(opts: {
     },
     update(constrainCamera) {
       // The pointer shift belongs to one drag only.
-      if ((controls as any).state !== DRAG_STATE) panShiftActive = false
+      if ((controls as any).state !== DRAG_STATE) {
+        panShiftActive = false
+        panBudgetArmed = false
+      }
       // Freeze the terrain-clearance push while anything is held.
       //
       // adjustHeight re-reads the ground directly under the camera every frame and, when

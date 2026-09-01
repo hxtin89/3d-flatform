@@ -1465,6 +1465,9 @@ function updateCanopyPivot(): void {
     // of this field is telling "declined" apart from "never ran".
     pivotDebug = { reason: 'not a rotation', passes: [] }
     if (state === DRAG) {
+      // Every left drag, re-aimed or not, gets a budget — set before globe.update arms
+      // it this same frame.
+      globe?.setPanBudget(panDragBudget())
       reaimShallowPan(controls)
       holdPivot(controls, DRAG)
     }
@@ -1510,6 +1513,17 @@ onRebase((delta) => { heldPivot.add(delta) })
 function holdPivot(controls: any, state: number): void {
   heldPivot.copy(controls.pivotPoint)
   heldPivotState = state
+}
+
+/** Metres one drag may pan, from the camera's height above the survey floor. */
+function panDragBudget(): number {
+  const heightAboveFloor = Math.max(
+    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
+  )
+  return Math.max(
+    heightAboveFloor * EXPERIENCE_CONFIG.navigation.maxPanPerDragHeightFactor,
+    EXPERIENCE_CONFIG.navigation.maxPanPerDragMinM,
+  )
 }
 
 /** How far from the camera a rotation pivot may sit — see the config knobs. */
@@ -1562,21 +1576,15 @@ function reaimShallowPan(controls: any): void {
   // "Not steep enough" rather than "shallow", so a NaN descent re-aims nothing.
   if (!(descent < threshold)) return
   if (!globe.getRawPointer(panRawPointer)) return
-  // Real ground at the centre, or no re-aim. viewCentrePivot falls back to a point
+  // Real ground under the re-aimed point, or no re-aim. screenPivot falls back to a point
   // straight ahead at the clamp limit, which sits near the camera's own altitude — the
   // globe pan then solves against a sphere the camera is barely outside of, where the
   // near/far intersection can swap and the world pans the wrong way. Better to leave the
   // press to the library than to invert the drag.
-  if (!viewCentrePivot(pivotCorrected)) {
-    pivotDebug = { reason: 'pan ray shallow, but no ground at the view centre', passes: [] }
+  if (!reaimTarget(controls)) {
+    pivotDebug = { reason: 'pan ray shallow, but no ground to re-aim onto', passes: [] }
     return
   }
-  const element = renderer.domElement
-  globe.setPanPointerShift(
-    panRawPointer.x - Math.max(element.clientWidth, 1) * 0.5,
-    panRawPointer.y - Math.max(element.clientHeight, 1) * 0.5,
-  )
-  controls.pivotPoint.copy(pivotCorrected)
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
@@ -1612,6 +1620,29 @@ function pressAimedAtSky(controls: any): boolean {
 }
 
 /**
+ * Re-aim a pan vertically, keeping the column it was grabbed in.
+ *
+ * Only the screen Y is moved to the centre — the shallow ray is the whole problem and it
+ * is entirely a vertical matter, while the X the press landed on is information worth
+ * keeping: grab the horizon at the far left and the drag still pivots on the left, just
+ * at a workable depth. So the pivot is the point the scene shows at (press x, centre y)
+ * and the pointer shift carries Y only.
+ *
+ * Sets the pivot and the shift together, and returns false when there is no ground under
+ * that point, in which case neither is touched.
+ */
+function reaimTarget(controls: any): boolean {
+  if (!globe || !globe.getRawPointer(panRawPointer)) return false
+  const element = renderer.domElement
+  const width = Math.max(element.clientWidth, 1)
+  const height = Math.max(element.clientHeight, 1)
+  if (!screenPivot((panRawPointer.x / width) * 2 - 1, 0, pivotCorrected)) return false
+  globe.setPanPointerShift(0, panRawPointer.y - height * 0.5)
+  controls.pivotPoint.copy(pivotCorrected)
+  return true
+}
+
+/**
  * Pan against the view centre — the fallback for a left press the controls refused.
  *
  * Solved the same way as a re-aimed shallow pan, pointer shift included: setting the
@@ -1620,16 +1651,10 @@ function pressAimedAtSky(controls: any): boolean {
  * ground at the centre for the same reason reaimShallowPan does.
  */
 function panViewCentre(controls: any, reason: string): void {
-  if (!globe || !globe.getRawPointer(panRawPointer) || !viewCentrePivot(pivotCorrected)) {
+  if (!reaimTarget(controls)) {
     pivotDebug = { reason: `${reason} — nothing to pan against`, passes: [] }
     return
   }
-  const element = renderer.domElement
-  globe.setPanPointerShift(
-    panRawPointer.x - Math.max(element.clientWidth, 1) * 0.5,
-    panRawPointer.y - Math.max(element.clientHeight, 1) * 0.5,
-  )
-  controls.pivotPoint.copy(pivotCorrected)
   controls.setState(1) // DRAG
   pivotPressState = 1
   pivotMarkerPlaced = true
@@ -1658,7 +1683,15 @@ const viewCentreHit = new THREE.Vector3()
  * never a catapult, and the result is finite by construction.
  */
 function viewCentrePivot(target: THREE.Vector3): boolean {
-  ndc.set(0, 0)
+  return screenPivot(0, 0, target)
+}
+
+/**
+ * The point the scene shows at one place on screen, in NDC. Same three sources and the
+ * same distance clamp as the view centre — which is just this at (0, 0).
+ */
+function screenPivot(ndcX: number, ndcY: number, target: THREE.Vector3): boolean {
+  ndc.set(ndcX, ndcY)
   ray.setFromCamera(ndc, camera)
   const limit = pivotDistanceLimit()
   let distance = -1
