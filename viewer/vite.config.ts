@@ -45,15 +45,19 @@ function serveThreeJsAtRoot() {
 export default defineConfig({
   plugins: [cesium(), serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
   server: {
-    port: 5177,
-    // Fail instead of silently moving to 5178 when the port is taken (usually a
-    // dev server left running from an earlier session). The MapTiler key is
-    // restricted to whitelisted origins, and 5177 is the only one this project
-    // uses — on any other port the basemap just 403s, which reads as a broken
-    // key rather than a wrong port. A hard "port is already in use" is far
-    // easier to act on. To run a second instance deliberately, pass a port that
-    // is also whitelisted: npm run dev -- --port 4177
-    strictPort: true,
+    // PORT set in the environment means something upstream already picked a free port
+    // for this process — an agent session running a second instance alongside the one
+    // you are using. Honour it, and let it move on if that port is taken too.
+    //
+    // Without PORT the hard default stands: fail instead of silently moving to 5178
+    // when the port is taken (usually a dev server left running from an earlier
+    // session). The MapTiler key is restricted to whitelisted origins, and 5177 is the
+    // only one this project uses — on a *deployed* origin that is not whitelisted the
+    // basemap just 403s, which reads as a broken key rather than a wrong port. In dev
+    // any port works: the /maptiler proxy below strips the Referer the key rejects.
+    // To run a second instance by hand: npm run dev -- --port 4177
+    port: Number(process.env.PORT) || 5177,
+    strictPort: !process.env.PORT,
     host: true, // listen on all interfaces + print LAN IPs for phone testing
     allowedHosts: ["wi-dev.mediascenography.com"], // hinter dem NGINX-Reverse-Proxy erlaubte Hosts
     open: '/threejs-test.html', // auto-open the Three.js/WebGPU map app

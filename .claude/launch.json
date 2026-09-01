@@ -6,6 +6,13 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5177
+    },
+    {
+      "name": "viewer-dev-agent",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 4177,
+      "autoPort": true
     }
   ]
 }

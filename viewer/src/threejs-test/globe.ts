@@ -24,6 +24,15 @@ export interface Globe {
   tiles: TilesRenderer
   controls: GlobeControls
   /**
+   * Reset the controls even while a mouse button is held. `controls.resetState` is
+   * deliberately ignored during a held drag — see where it is wrapped — so anything
+   * that means to cancel a drag from our own side has to say so explicitly.
+   */
+  forceResetState(): void
+  /** True while the pointer tracker holds a pointer but the controls have no state:
+   * a press the library refused, or one whose data was lost. */
+  hasStrandedPointer(): boolean
+  /**
    * Time constant in ms for easing the rotation pointer, 0 to disable. See the
    * comment where it is installed — this exists because a mouse reports whole
    * device pixels far more coarsely than the frame rate consumes them.
@@ -173,15 +182,48 @@ export function createGlobe(opts: {
       // Synthetic events and already-released pointers have no capturable pointer.
     }
   })
-  // A release can still vanish entirely — the up landed before the capture engaged, or
-  // the capture was lost — and the state machine then drags forever on a button nobody
-  // holds. A mouse move reporting no pressed buttons while a drag state is active is
-  // exactly that situation, so it stands in for the missing release.
-  const phantomReleaseCallback = (event: PointerEvent) => {
-    if (event.pointerType !== 'mouse' || event.buttons !== 0) return
-    if ((controls as any).state !== 0) controls.resetState()
+  //
+  // The capture alone is not enough, because that pointerleave can still fire (a
+  // synthetic release, a lost capture) and its reset empties the pointer tracker while
+  // the library keeps the drag state — and the very next frame the library reads
+  // getCenterPoint() on an empty tracker, which copies `undefined` and throws inside
+  // the render loop. So the true button state is tracked here and resetState is ignored
+  // while a mouse button is genuinely still down.
+  //
+  // Everything below is mouse-only: touch keeps the library's own pointer capture and
+  // its multi-touch resets untouched, which is what mobile depends on. Deliberate
+  // resets from our own code go through forceResetState so they still land.
+  let mouseButtonDown = false
+  const originalResetState = controls.resetState.bind(controls)
+  const forceResetState = (): void => originalResetState()
+  ;(controls as any).resetState = (): void => {
+    if (mouseButtonDown) return
+    originalResetState()
   }
-  document.addEventListener('pointermove', phantomReleaseCallback)
+  // Capture phase on window, so these run before the library's own document handlers
+  // and the button state is already current when its listeners look at it.
+  const trackPointerDown = (event: PointerEvent) => {
+    if (event.pointerType === 'mouse') mouseButtonDown = true
+  }
+  const trackPointerUp = (event: PointerEvent) => {
+    if (event.pointerType === 'mouse') mouseButtonDown = false
+  }
+  const trackPointerMove = (event: PointerEvent) => {
+    // A mouse move reporting no pressed button while a drag is live means the release
+    // went missing — it landed outside an uncaptured pointer, or the capture was lost.
+    if (event.pointerType !== 'mouse' || event.buttons !== 0) return
+    mouseButtonDown = false
+    if ((controls as any).state !== 0) forceResetState()
+  }
+  const trackBlur = () => {
+    mouseButtonDown = false
+    forceResetState()
+  }
+  window.addEventListener('pointerdown', trackPointerDown, true)
+  window.addEventListener('pointerup', trackPointerUp, true)
+  window.addEventListener('pointercancel', trackPointerUp, true)
+  window.addEventListener('pointermove', trackPointerMove, true)
+  window.addEventListener('blur', trackBlur)
   // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
   // hard clearance from the globe, while minDistance prevents a zoom pivot
   // from pulling the camera through the surface. A 72° orbit ceiling keeps the
@@ -273,6 +315,11 @@ export function createGlobe(opts: {
   return {
     tiles,
     controls,
+    forceResetState,
+    hasStrandedPointer() {
+      const tracker = (controls as any).pointerTracker
+      return (controls as any).state === 0 && (tracker?.getPointerCount?.() ?? 0) > 0
+    },
     setPointerResponse,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget,
@@ -326,7 +373,11 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
-      document.removeEventListener('pointermove', phantomReleaseCallback)
+      window.removeEventListener('pointerdown', trackPointerDown, true)
+      window.removeEventListener('pointerup', trackPointerUp, true)
+      window.removeEventListener('pointercancel', trackPointerUp, true)
+      window.removeEventListener('pointermove', trackPointerMove, true)
+      window.removeEventListener('blur', trackBlur)
       controls.dispose()
       tiles.dispose()
       scene.remove(tiles.group)
