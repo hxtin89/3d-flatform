@@ -56,7 +56,11 @@
   // length -- a per-character font-metrics mismatch would scale with length,
   // a flat padding double-count would not, and it didn't.
   let textWidth = $state(0);
-  const height = $derived(Math.ceil(fontSize * 1.2) + 12);
+  let textHeight = $state(0);
+  // Height follows the BOOSTED text, not the authored size -- the pill would clip
+  // its own text otherwise. Read back from the rendered span rather than
+  // recomputed from the boost, so there is one source for it (see textWidth).
+  const height = $derived(Math.max(Math.ceil(fontSize * 1.2) + 12, textHeight));
   const width = $derived(textWidth);
   const path = $derived(silhouette(width, height, corners, radius));
   const overflow = $derived(cornerOverflow(corners, radius));
@@ -81,7 +85,7 @@
   >
     <path d={path} class="label-line__fill" />
   </svg>
-  <span class="label-line__text" style:font-size="{fontSize}px" style:font-weight={fontWeight} bind:clientWidth={textWidth}>{text}</span>
+  <span class="label-line__text" style:font-size="calc({fontSize}px * var(--screen-frame-type-boost, 1))" style:font-weight={fontWeight} bind:clientWidth={textWidth} bind:clientHeight={textHeight}>{text}</span>
 </div>
 
 <style>

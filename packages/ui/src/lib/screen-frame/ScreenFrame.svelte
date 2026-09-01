@@ -143,6 +143,13 @@
   function layout() {
     if (!frame) return;
     container.style.setProperty("--screen-frame-content-scale", String(frame.getContentScale()));
+    // Ratio, not a scale: text sits inside hosts that are already scale()d by the
+    // content scale, so multiplying its font-size by this lands it at the floored
+    // size. 1 whenever the layout scale is already above the floor.
+    container.style.setProperty(
+      "--screen-frame-type-boost",
+      String(frame.getTypeScale() / frame.getContentScale()),
+    );
     frame.setMargin(revealed ? frame.getTargetMargin() : 0);
 
     speciesFillsWidth = true;

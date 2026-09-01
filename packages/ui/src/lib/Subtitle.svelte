@@ -46,7 +46,9 @@
     let cancelled = false;
     const remeasure = () => {
       if (cancelled) return;
-      el.style.fontSize = `${size}px`;
+      // The ruler has to be boosted exactly like the real pills, or lines break at
+      // the authored size and then render wider than the cap.
+      el.style.fontSize = `calc(${size}px * var(--screen-frame-type-boost, 1))`;
       el.style.fontWeight = String(weight);
       lines = wrapToWidth(source, (line) => {
         el.textContent = line;

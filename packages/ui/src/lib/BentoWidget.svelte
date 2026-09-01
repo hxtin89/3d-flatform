@@ -258,23 +258,23 @@
 
   .bento-widget__description {
     color: var(--text-secondary);
-    font: var(--text-body);
+    /* Body/LG (18), not Body (16): Figma's live nodes read 18 for both weather
+       descriptions -- "Nordwest Wind" bound to size/bodyLg, "Celsius" and
+       "Luftfeuchtigkeit" as unbound 18s. This was a step small. */
+    font: var(--text-body-lg);
     /* `font` can't carry letter-spacing -- see --text-body-tracking's own comment. */
     letter-spacing: var(--text-body-tracking);
     margin: 0;
   }
 
-  /* Weather cluster's description doubles as the whole cell's only other line
-     of text (no separate label role in Figma) -- restyled as a small tracked
-     caption sitting under the value, closer to how alethia.earth's macro-photo
-     overlays caption a reading, instead of reading as a second full-size body
-     line competing with the number above it. Scoped to cells that actually
-     pair a bare `value` with a `description` (the weather cluster's own
-     pattern) so title+description widgets elsewhere keep the plain body line. */
-  .bento-widget__value + .bento-widget__description {
-    font: var(--weight-emphasis) var(--size-caption) / var(--line-height-caption) var(--family-sans);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    opacity: 0.85;
-  }
+  /* NO caption restyle for the weather cluster's description. It used to render
+     here as uppercase --size-caption (12) with added tracking -- a styling choice
+     borrowed from a reference site, not from the source frames. Figma's own nodes
+     are plain sentence-case 18s, and Figma is the pass condition for how this
+     looks. It also made the smallest text on the screen smaller still: measured at
+     a 390x844 viewport, that caption landed at 4.3 CSS px once the content scale
+     was applied. Removing it is both the fidelity fix and half the legibility fix.
+     Figma refs: "Celsius"/"Luftfeuchtigkeit" 18 Regular, "Nordwest Wind" 18 bound
+     to size/bodyLg, all in Frame 1 Mobile - selected. */
+
 </style>

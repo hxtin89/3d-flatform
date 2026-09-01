@@ -48,6 +48,8 @@ export interface Frame {
   getTargetMargin(): number
   /** containerWidth / referenceFrameWidth (portrait vs. landscape picking Figma's mobile/desktop frame) -- the one scale factor content docked to this frame should size itself against, so it's not re-derived per caller. */
   getContentScale(): number
+  /** getContentScale(), floored at MIN_TYPE_SCALE. Text that can grow without breaking its container should size against THIS instead, so it stays legible when the layout scale drops below reading size. */
+  getTypeScale(): number
   /** How far the weather-cluster notch reaches into the window from its top-right corner. Call every layout pass with the cluster's live rendered size. */
   setTopRightReach(width: number, height: number): void
   /**
@@ -81,10 +83,39 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
 // 1920-wide desktop frame -- close enough to treat as the same constant);
 // the logo notch's real reach is ~123x58.
 const MOBILE_REFERENCE_WIDTH = 1080
-const MOBILE_REFERENCE_HEIGHT = 1920
+// 19.5:9, not the 16:9 the Figma frames are drawn at. Every iPhone since the X is
+// 19.5:9; 16:9 stopped being a phone shape in 2017 and now only matches the SE.
+// Because currentScale() takes the MINIMUM of both axis ratios, a reference whose
+// aspect differs from the device's leaves the slack axis unused: at 390x844 the
+// old 1920 reference bound on width and left ~150px of height that the design had
+// no plan for. Matching the aspect makes both axes bind at once (0.3611 vs 0.3607
+// there) so there is no leftover.
+//
+// This does NOT make type bigger -- measured at 390x844 the scale moves from
+// 0.3611 to 0.3607. Legibility is a separate problem, see MIN_TYPE_SCALE.
+const MOBILE_REFERENCE_HEIGHT = 2340
 const DESKTOP_REFERENCE_WIDTH = 1920
 const DESKTOP_REFERENCE_HEIGHT = 1080
 const FIGMA_MARGIN_PX = 60
+/**
+ * Floor for the scale TYPE is drawn at, independent of the scale the layout is
+ * drawn at.
+ *
+ * The composition is authored 1080 wide and shown on a ~390px phone, so
+ * everything is reduced by ~2.8x. Measured at 390x844, that puts the widget
+ * captions at 4.3 CSS px and the species names at 8.7 -- not small, unreadable.
+ * A 34px Figma label needs a scale of ~0.47 to land at 16px, hence this floor.
+ *
+ * It is deliberately NOT applied to the layout scale. Flooring that would inflate
+ * the boxes too, and the species row (960 Figma px) already fills the window at
+ * 0.36 -- at 0.47 it would run off the screen. So only text is floored, and only
+ * where the container can absorb it: the label and subtitle pills hug their text
+ * and simply grow. Fixed-size widgets keep scaling with the layout, because
+ * bigger text inside a fixed box overflows it. Making THOSE legible is a design
+ * change (larger type in the source frames, or a mobile-specific arrangement),
+ * not something a scale factor can fix.
+ */
+const MIN_TYPE_SCALE = 0.47
 const FIGMA_TOP_LEFT_NOTCH_PX = { width: 123, height: 58 }
 const WINDOW_CORNER_RADIUS = 60
 
@@ -343,6 +374,9 @@ export function createFrame(container: HTMLElement): Frame {
     },
     getTargetMargin() {
       return FIGMA_MARGIN_PX * currentScale(container.clientWidth, container.clientHeight)
+    },
+    getTypeScale() {
+      return Math.max(currentScale(container.clientWidth, container.clientHeight), MIN_TYPE_SCALE)
     },
     getContentScale() {
       return currentScale(container.clientWidth, container.clientHeight)
