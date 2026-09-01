@@ -15,6 +15,7 @@ import {
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
+import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
@@ -221,6 +222,20 @@ export function createGlobe(opts: {
   let lastPointerMotionMs = 0
   const originalResetState = controls.resetState.bind(controls)
   const forceResetState = (): void => originalResetState()
+  // Only the window-edge pointerleave is suppressed, and only while a mouse button is
+  // genuinely down. Blocking resetState wholesale — the first attempt — also blocked the
+  // library's own escapes, and one of them matters enormously: when the cursor ray misses
+  // the globe sphere, GlobeControls does `resetState(); _updateInertia()` to end the drag
+  // and coast. With the reset swallowed, the drag never ended and that escape re-fired
+  // every frame, each time applying globe inertia at ~1/dt. Measured: state stuck at DRAG,
+  // globeInertiaFactor 130-196 every frame, steps growing 242 -> 1278 m, 11 km travelled
+  // on one upward drag. Capture phase on window, so it lands before the library's own
+  // document listener.
+  const suppressEdgeLeave = (event: PointerEvent) => {
+    if (event.pointerType !== 'mouse' || !mouseButtonDown) return
+    event.stopImmediatePropagation()
+  }
+  window.addEventListener('pointerleave', suppressEdgeLeave, true)
   /**
    * End a drag and let the spin coast to rest instead of stopping dead.
    *
@@ -238,10 +253,6 @@ export function createGlobe(opts: {
     const coasting = performance.now() - lastPointerMotionMs < POINTER_COAST_WINDOW_MS
     originalResetState()
     if (coasting) (controls as any).inertiaStableFrames = 0
-  }
-  ;(controls as any).resetState = (): void => {
-    if (mouseButtonDown) return
-    originalResetState()
   }
   // Capture phase on window, so these run before the library's own document handlers
   // and the button state is already current when its listeners look at it.
@@ -324,6 +335,13 @@ export function createGlobe(opts: {
   let panBudget = 0
   let panBudgetArmed = false
   let panBudgetRequested = 0
+  // Rebase-aware, like the held pivot in main.ts. Both this and camera.position are
+  // render-space, and a rebase moves every render-space point: without this the start
+  // stays in the old frame while the camera is measured in the new one, so the distance
+  // is nonsense and the budget never bites. Measured before the fix: a drag budgeted at
+  // 1.68 km travelled 8.5 km, while render-space arithmetic reported it as being inside
+  // the budget the whole way.
+  const detachPanRebase = onRebase((delta) => { panDragStart.add(delta) })
 
   const originalUpdatePosition = (controls as any)._updatePosition.bind(controls)
   ;(controls as any)._updatePosition = (deltaTime: number): void => {
@@ -526,11 +544,13 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)
       window.removeEventListener('pointerup', trackPointerUp, true)
       window.removeEventListener('pointercancel', trackPointerUp, true)
       window.removeEventListener('pointermove', trackPointerMove, true)
       window.removeEventListener('blur', trackBlur)
+      window.removeEventListener('pointerleave', suppressEdgeLeave, true)
       controls.dispose()
       tiles.dispose()
       scene.remove(tiles.group)
