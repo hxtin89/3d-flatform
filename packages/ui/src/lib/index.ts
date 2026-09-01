@@ -1,9 +1,11 @@
 export { default as BentoWidget } from "./BentoWidget.svelte";
 export { default as SpeciesWidget } from "./SpeciesWidget.svelte";
 export { default as LabelLine } from "./LabelLine.svelte";
+export { default as Subtitle } from "./Subtitle.svelte";
 export { default as BentoGrid, type BentoGridItem } from "./BentoGrid.svelte";
 export { silhouette, cornerOverflow } from "./geometry/silhouette";
 export type { CornerType, Corners } from "./geometry/silhouette";
+export { stackCorners, wrapToWidth } from "./geometry/label-stack";
 export { solveDocking } from "./geometry/docking";
 export type { GridWidget, DockingResult } from "./geometry/docking";
 export { default as ScreenFrame } from "./screen-frame/ScreenFrame.svelte";
