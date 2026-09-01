@@ -14,14 +14,43 @@
     label?: Snippet<["left" | "right"]>;
     /** Renders behind the frame mask, filling the window area (e.g. the real scene/photo this frame is cut around). */
     background?: Snippet;
+    /**
+     * A whole Figma frame's worth of fixed-position composition, laid out at
+     * literal Figma px and scaled to fit the window.
+     *
+     * This is the alternative to the three docks above, not an addition to them.
+     * Docks exist for content whose position is a RELATIONSHIP -- the label
+     * clamping clear of the species row, the weather cluster owning the notch.
+     * Most of the storyboard frames have no such relationships: they are
+     * compositions where everything sits at an authored coordinate. Giving those
+     * a dock edge would be solving a problem they do not have, and would need a
+     * new edge and a new avoid rule per screen.
+     */
+    stage?: Snippet;
+    /** The Figma frame the `stage` snippet is authored against. Defaults to the 19.5:9 mobile frame. */
+    stageSize?: { width: number; height: number };
     /** Fixed at the frame's own top-left corner, above the mask (Figma's real eagle mark sits at a fixed (51,30) px offset from that corner in BOTH Frame 1 and Frame 1 Desktop -- not proportional to frame width -- so it scales like every other fixed-px value, against getContentScale(). Figma's node metadata puts this at x=165, but its RENDERED raster puts the mark at x=51 -- exactly one logo-width (114px) to the left, consistently in both Frame 1 Mobile and Frame 1 Desktop. Measured off both exports: the visible bird spans x51-163, y30-98, i.e. the same 114x68 the metadata gives, just at a different origin. Following the metadata put our mark where the reference's mark ENDS. The raster is what the design looks like, so the raster wins.). */
     logo?: Snippet;
   }
 
-  let { revealed = true, weather, species, label, background, logo }: Props = $props();
+  let {
+    revealed = true,
+    weather,
+    species,
+    label,
+    background,
+    logo,
+    stage,
+    stageSize = { width: 1080, height: 2340 },
+  }: Props = $props();
 
   let container: HTMLDivElement;
   let weatherHost: HTMLDivElement;
+  // $state, unlike the dock hosts above: those are unconditional and bound once,
+  // these appear and disappear with the `stage` snippet as steps swap. Without
+  // reactivity a swap would leave layoutStage() holding the previous node.
+  let stageHost = $state<HTMLDivElement | undefined>(undefined);
+  let stageInner = $state<HTMLDivElement | undefined>(undefined);
   let speciesHost: HTMLDivElement;
   let labelHost: HTMLDivElement;
 
@@ -151,6 +180,7 @@
       String(frame.getTypeScale() / frame.getContentScale()),
     );
     frame.setMargin(revealed ? frame.getTargetMargin() : 0);
+    layoutStage();
 
     speciesFillsWidth = true;
     updateDocks();
@@ -161,6 +191,41 @@
     // A final pass so the label clamps against the rects the species row
     // ACTUALLY settled at, not the ones it had before the crossover ran.
     updateDocks();
+  }
+
+  /**
+   * Fits the authored frame into the live window and centres it -- the
+   * `object-fit: contain` rule, done by hand because the content is a scaled DOM
+   * subtree rather than a replaced element.
+   *
+   * Two variables are re-declared ON the stage rather than inherited. The content
+   * scale becomes 1: the stage's own transform already applies it, and anything
+   * inside multiplying by it again would scale twice. The type boost is
+   * recomputed against the STAGE's scale rather than the frame's, because the
+   * window is inset by the margin and the two therefore differ -- using the
+   * frame's would floor the text against the wrong number.
+   */
+  function layoutStage() {
+    if (!frame || !stageHost || !stageInner) return;
+    const margin = frame.getMargin();
+    const windowWidth = Math.max(0, container.clientWidth - margin * 2);
+    const windowHeight = Math.max(0, container.clientHeight - margin * 2);
+    stageHost.style.left = `${margin}px`;
+    stageHost.style.top = `${margin}px`;
+    stageHost.style.width = `${windowWidth}px`;
+    stageHost.style.height = `${windowHeight}px`;
+
+    const scale = Math.min(windowWidth / stageSize.width, windowHeight / stageSize.height) || 0;
+    const offsetX = (windowWidth - stageSize.width * scale) / 2;
+    const offsetY = (windowHeight - stageSize.height * scale) / 2;
+    stageInner.style.width = `${stageSize.width}px`;
+    stageInner.style.height = `${stageSize.height}px`;
+    stageInner.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    stageInner.style.setProperty("--screen-frame-content-scale", "1");
+    stageInner.style.setProperty(
+      "--screen-frame-type-boost",
+      String(scale > 0 ? Math.max(1, frame.getTypeScale() / scale) : 1),
+    );
   }
 
   // One-time setup -- deliberately does NOT read `revealed` synchronously, so
@@ -246,6 +311,11 @@
   <div class="screen-frame__species" bind:this={speciesHost}>
     {#if species}{@render species()}{/if}
   </div>
+  {#if stage}
+    <div class="screen-frame__stage" bind:this={stageHost}>
+      <div class="screen-frame__stage-inner" bind:this={stageInner}>{@render stage()}</div>
+    </div>
+  {/if}
   <div class="screen-frame__label" bind:this={labelHost}>
     <!-- Always "left": the stack uses the mobile placement in every
          arrangement now, so there is no right-docked case left to align to.
@@ -295,6 +365,23 @@
     position: absolute;
     inset: 0;
     z-index: 0;
+  }
+
+  /* Clipped to the window: an authored frame is drawn edge to edge, and without
+     this a composition that bleeds past its own bounds would paint over the grey
+     margin the mask just cut. */
+  .screen-frame__stage {
+    position: absolute;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 44;
+  }
+
+  .screen-frame__stage-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: top left;
   }
 
   .screen-frame__logo {

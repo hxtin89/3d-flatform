@@ -13,7 +13,7 @@
 // no UI is on screen at all.
 
 /** Which composition the shell puts inside the frame for this beat. */
-export type StepContent = 'habitat' | 'text' | 'none';
+export type StepContent = 'habitat' | 'text' | 'video' | 'none';
 
 /** Named entries in EXPERIENCE_CONFIG.storyboard.poses. */
 export type PoseName = 'overview' | 'parcel' | 'orbit' | 'canopy';
@@ -51,6 +51,16 @@ export const STEPS: Step[] = [
     content: 'text',
     caption: 'Das sind die 52m², welche mit deiner Spende geschützt wurden.',
     pose: 'canopy',
+  },
+  {
+    // The first stage-based beat: Figma authors this frame as a fixed
+    // composition, so it is placed at literal Figma px inside the stage rather
+    // than docked to a window edge.
+    id: 'field-video',
+    storyboardStep: 17,
+    figmaFrame: 'Frame 3 Mobile - Video · 19.5:9',
+    content: 'video',
+    pose: 'overview',
   },
   {
     // A camera-only beat. It renders the frame and nothing else, which is the

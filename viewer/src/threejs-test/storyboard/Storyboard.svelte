@@ -4,6 +4,7 @@
     HabitatLabelStack,
     BentoGrid,
     Subtitle,
+    MediaCard,
     WEATHER_CLUSTER,
     SPECIES_ROW,
     EAGLE_LOGO_SVG,
@@ -114,6 +115,7 @@
   species={step.content === "habitat" ? species : undefined}
   label={step.content === "habitat" ? label : undefined}
   logo={eagle}
+  stage={step.content === "video" ? videoStage : undefined}
 />
 
 {#if step.content === "text" && step.caption}
@@ -140,6 +142,17 @@
   <HabitatLabelStack {align} />
 {/snippet}
 
+<!--
+  Authored at Figma px against the 1080x2340 frame -- the stage does the scaling,
+  so these are the numbers straight off the frame rather than anything multiplied
+  by a content scale.
+-->
+{#snippet videoStage()}
+  <div class="storyboard__video">
+    <MediaCard author="Nadine Holmes" duration="1:20 Minuten" progress={0.42} />
+  </div>
+{/snippet}
+
 {#snippet eagle()}
   <!-- eslint-disable-next-line svelte/no-at-html-tags -- our own constant, not user input -->
   {@html EAGLE_LOGO_SVG}
@@ -155,6 +168,14 @@
     left: calc(60px * var(--screen-frame-content-scale, 1));
     bottom: calc(320px * var(--screen-frame-content-scale, 1));
     pointer-events: none;
+  }
+
+  /* Figma places this card at (152, 231) in Frame 3. Literal px: inside the
+     stage, one unit is one Figma unit. */
+  .storyboard__video {
+    position: absolute;
+    left: 152px;
+    top: 231px;
   }
 
   /* Placeholder chrome. A visible control rather than tap-anywhere, because
