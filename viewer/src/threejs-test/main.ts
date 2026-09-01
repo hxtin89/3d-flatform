@@ -1385,12 +1385,13 @@ function updateCanopyPivot(): void {
   // pixel scales with the camera's height above that plane — lifting it onto the canopy
   // would slow panning to a third near the treetops, and make the gain depend on whether
   // the cursor happened to grab a tall tree or a clearing.
-  const ROTATE = 2, FREE_ROTATE = 5
+  const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
   if (!pressStarted || !controls.pivotPoint) return
   if (state !== ROTATE && state !== FREE_ROTATE) {
     // Say so, rather than leaving the previous press's verdict standing — the whole point
     // of this field is telling "declined" apart from "never ran".
     pivotDebug = { reason: 'not a rotation', passes: [] }
+    if (state === DRAG) convertShallowPanToLookAround(controls)
     return
   }
   pivotMarkerPlaced = true
@@ -1405,6 +1406,35 @@ function updateCanopyPivot(): void {
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
+  }
+}
+
+/**
+ * Turn a pan that grabbed near the horizon into a look-around.
+ *
+ * Panning keeps the grabbed ground point under the cursor, and near the horizon that
+ * mapping degenerates: one pixel of cursor motion corresponds to an enormous ground arc,
+ * the pan half of the fly-away. A look-around — rotation about the camera itself — is
+ * what games do with a grab at the sky, and it is bounded by construction. Runs in the
+ * same press hook as the pivot corrections, before the frame's controls.update() takes
+ * its first pan step, so no runaway frame ever happens.
+ */
+function convertShallowPanToLookAround(controls: any): void {
+  if (!enuFrameReady) return
+  worldToEnu(camera.position, pivotCamEnu)
+  worldToEnu(controls.pivotPoint, pivotEnu)
+  pivotDirEnu.copy(pivotEnu).sub(pivotCamEnu)
+  if (pivotDirEnu.lengthSq() < 1e-6) return
+  pivotDirEnu.normalize()
+  const descent = -pivotDirEnu.z
+  // Written as "not shallow" so a NaN — seen mid-boot before the camera is placed —
+  // fails toward doing nothing instead of converting on garbage input.
+  if (!(descent < EXPERIENCE_CONFIG.navigation.panMinRayDescent)) return
+  controls.pivotPoint.copy(camera.position)
+  controls.setState(5) // FREE_ROTATE — always allowed, even away from the globe
+  pivotDebug = {
+    reason: `pan too shallow (descent ${descent.toFixed(3)}) — converted to look-around`,
+    passes: [],
   }
 }
 
@@ -1432,7 +1462,7 @@ function clampPivotDistance(pivotWorld: THREE.Vector3): void {
     heightAboveFloor * EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
     EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
   )
-  if (distance <= limit) return
+  if (!(distance > limit)) return
   pivotWorld.copy(camera.position).addScaledVector(clampPivotDelta, limit / distance)
   pivotDebug.clamped = { fromM: +distance.toFixed(1), toM: +limit.toFixed(1) }
 }
@@ -1849,7 +1879,9 @@ function applyFrameMoveGovernor(): void {
     heightAboveFloor * EXPERIENCE_CONFIG.navigation.maxFrameMoveHeightFactor,
     EXPERIENCE_CONFIG.navigation.maxFrameMoveMinM,
   )
-  if (moved <= cap) return
+  // "Not over the cap" rather than "under it", so a NaN camera — seen mid-boot on a
+  // stalled network — is left alone instead of being lerped into more NaN.
+  if (!(moved > cap)) return
   camera.position.lerpVectors(governorPrevPosition, camera.position, cap / moved)
   camera.updateMatrixWorld()
   // A single runaway frame otherwise becomes a velocity that damping coasts kilometres

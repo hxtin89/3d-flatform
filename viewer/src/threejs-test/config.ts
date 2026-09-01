@@ -286,6 +286,21 @@ export const EXPERIENCE_CONFIG = {
      */
     pivotMaxDistanceMinM: 250,
     /**
+     * Least steeply a pan press ray may descend, as a dot product against local up, for
+     * the pan to start at all. Below it the grab becomes a free look-around instead.
+     *
+     * Panning keeps the grabbed ground point under the cursor, and near the horizon
+     * that mapping degenerates: the ray meets the ground at a grazing angle, so one
+     * pixel of cursor motion corresponds to an enormous ground arc — the gain diverges
+     * at tangency, which is the pan half of the fly-away. The library's own guard sits
+     * at 0.05 (about 3 degrees), far too permissive. Turning the grab into a look-around
+     * matches what games do with a grab at the sky: the camera rotates in place, which
+     * is bounded by construction.
+     *
+     * 0.15 is about 8.6 degrees — the plane hit sits within ~6.7x the camera height.
+     */
+    panMinRayDescent: 0.15,
+    /**
      * How far the controls may move the camera in a single frame, as a multiple of the
      * camera's height above the survey floor. The last line of defence against the
      * fly-away: mouse pan and rotation gains scale with the distance of the grabbed
