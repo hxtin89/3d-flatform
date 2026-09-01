@@ -1496,20 +1496,11 @@ function updateCanopyPivot(): void {
   if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
     controls.pivotPoint.copy(pivotCorrected)
   }
-  // Checked after the lift on both paths: orbiting moves the camera by pivot distance
-  // times the turn angle, so a far pivot is a catapult whichever code produced it.
-  // Recorded live — grabs near the treeline at 300-500 m altitude, pivots 2-3 km out,
-  // single frames trying to travel 5.5 km. Beyond the limit the view centre takes over;
-  // an earlier pull-in along the click ray only shortened the catapult.
-  //
-  // DISABLED FOR TESTING — a rotation press now keeps whatever pivot the raycast and the
-  // canopy lift produced, however far away it is. The view-centre clamp inside
-  // viewCentrePivot and the per-frame displacement governor are both still active.
-  // Re-enable by uncommenting the block below.
-  // if (controls.pivotPoint.distanceTo(camera.position) > pivotDistanceLimit()) {
-  //   orbitViewCentre(controls, `press hit past the ${pivotDistanceLimit().toFixed(0)} m limit`)
-  //   return
-  // }
+  // A rotation press keeps whatever pivot the raycast and the canopy lift produced,
+  // however far it lands. A distance rule used to sit here — beyond a limit the grab was
+  // handed to the view centre — and it was removed after testing: the per-frame
+  // displacement governor already bounds what a far pivot can do to the camera, and
+  // moving the pivot away from what the cursor grabbed cost more than it bought.
   holdPivot(controls, ROTATE)
   // Keep the marker honest even though globe.update removes it before rendering.
   if (controls.pivotMesh) {
