@@ -1,0 +1,108 @@
+<style>
+  :root {
+    --ink: #1f1f1f;
+    --muted: #6b6b6b;
+    --rule: #e0e0e0;
+    --accent: #e6ce00;
+    --bad: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font: 12px/1.45 Inter, -apple-system, system-ui, sans-serif;
+    color: var(--ink);
+    background: #fff;
+  }
+  h1 { margin: 0 0 2px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  p.lede { margin: 0 0 14px; color: var(--muted); }
+  label { display: block; margin-bottom: 5px; font-weight: 500; }
+  textarea, input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    font: inherit;
+    color: inherit;
+    background: #fff;
+  }
+  textarea { height: 132px; resize: vertical; }
+  textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .row { display: flex; gap: 10px; align-items: flex-end; margin-top: 12px; }
+  .row > div { flex: 0 0 116px; }
+  button {
+    flex: 1;
+    height: 34px;
+    border: 0;
+    border-radius: 4px;
+    background: var(--ink);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #status { margin-top: 12px; min-height: 16px; color: var(--muted); }
+  #status[data-tone="error"] { color: var(--bad); }
+  ol { margin: 8px 0 0; padding-left: 22px; color: var(--muted); }
+  ol li { margin-bottom: 2px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+
+<h1>Subtitle Autowrap</h1>
+<p class="lede">Breaks the copy into lines and rebuilds the pill stack — widths, corner types and radii all follow.</p>
+
+<label for="copy">Copy</label>
+<textarea id="copy" spellcheck="false">Im Secret Forest ist es gerade 4:50. Nur noch eine Stunde, dann beginnt der Dawn Chorus. Halte Ausschau nach dem Sira Giftfrosch am Ufer, dort wo der Nebel am längsten über dem Wasser steht.</textarea>
+
+<div class="row">
+  <div>
+    <label for="cap">Max width</label>
+    <input id="cap" type="number" value="1010" min="120" step="10" />
+  </div>
+  <button id="run">Generate</button>
+</div>
+
+<div id="status"></div>
+<ol id="report"></ol>
+
+<script>
+  var runButton = document.getElementById('run');
+  var status = document.getElementById('status');
+  var report = document.getElementById('report');
+
+  function say(message, tone) {
+    status.textContent = message;
+    if (tone) status.setAttribute('data-tone', tone);
+    else status.removeAttribute('data-tone');
+  }
+
+  runButton.onclick = function () {
+    report.innerHTML = '';
+    runButton.disabled = true;
+    say('Working...');
+    parent.postMessage({ pluginMessage: {
+      type: 'run',
+      text: document.getElementById('copy').value,
+      maxWidth: document.getElementById('cap').value
+    } }, '*');
+  };
+
+  // Newline is a hard break in the copy, so Enter must stay a newline; submit on
+  // the modifier chord instead.
+  document.getElementById('copy').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) runButton.click();
+  });
+
+  onmessage = function (event) {
+    var msg = event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'status') { say(msg.message); return; }
+    runButton.disabled = false;
+    if (msg.type === 'error') { say(msg.message, 'error'); return; }
+    say(msg.report.length + ' lines generated.');
+    report.innerHTML = msg.report
+      .map(function (line) { return '<li><code>' + line.width + '</code> &nbsp;' + line.text + '</li>'; })
+      .join('');
+  };
+</script>
