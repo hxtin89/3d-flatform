@@ -1420,11 +1420,15 @@ function updateCanopyPivot(): void {
     if (state === 0) { heldPivotState = 0; return }
     // The pivot sampled at press stays the pivot until a true release — nothing
     // mid-hold may move it. Restoring it every frame makes that a guarantee instead
-    // of an audit of every writer. Left alone: FREE_ROTATE (the pivot rides the
-    // camera by design) and frames where the library's terrain-clearance push is
-    // active — it shifts camera and pivot together and restores them itself.
+    // of an audit of every writer. Unconditional now: the exception used to be frames
+    // where the library's terrain-clearance push was active, on the reasoning that it
+    // shifts camera and pivot together and undoes itself — but the height it pushes by
+    // is re-read from the resident tiles every frame, so a tile landing mid-drag moved
+    // the pivot. globe.ts freezes that push for the length of a gesture; this is the
+    // guarantee behind it. FREE_ROTATE is still left alone, where the pivot rides the
+    // camera by design.
     if (state === heldPivotState && (state === ROTATE || state === DRAG)
-      && (controls.actionHeightOffset ?? 0) === 0 && controls.pivotPoint) {
+      && controls.pivotPoint) {
       controls.pivotPoint.copy(heldPivot)
     }
     return
@@ -1923,6 +1927,13 @@ function isZoomInBlocked(): boolean {
   return zoomProbeDirection.dot(enuUp) < 0.2
 }
 
+/**
+ * Consecutive frames the floor clamp has fired. A graze is one or two frames and must
+ * not disturb a coasting spin; a real fight is every frame — see the cancel below.
+ */
+let boundsClampedFrames = 0
+const BOUNDS_FIGHT_FRAMES = 10
+
 /** Final local guard against touch inertia crossing the point-cloud floor. */
 function enforceNavigationBounds(): void {
   if (!globe || freeOrbit) return
@@ -1934,23 +1945,32 @@ function enforceNavigationBounds(): void {
   // poisoned ENU conversion sailed past the radius check, "failed" the floor check,
   // and the clamp then wrote the NaN into the camera, every frame, which is what
   // actually bricked the stalled-boot session.
-  if (!(dx * dx + dy * dy <= navigationBoundsRadius * navigationBoundsRadius)) return
-  if (!(navigationCameraEnu.z < navigationFloorZ)) return
+  if (!(dx * dx + dy * dy <= navigationBoundsRadius * navigationBoundsRadius)) { boundsClampedFrames = 0; return }
+  if (!(navigationCameraEnu.z < navigationFloorZ)) { boundsClampedFrames = 0; return }
 
   navigationCameraEnu.z = navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
   camera.updateMatrixWorld()
   // Cancel residual pinch/orbit inertia at the boundary so it cannot fight the clamp on
-  // subsequent frames and produce visible vibration. The inertia only — this used to
-  // reset the controls outright, which also dropped the pointers and the drag state, so
-  // touching the floor mid-gesture left the held button dead and, on touch, emptied the
-  // tracker under a live two-finger rotate. Resetting is safe only when nothing is held.
+  // subsequent frames and produce visible vibration — but only once it is actually
+  // fighting. Killing it on the first clamped frame stops a coasting spin dead the
+  // moment it grazes the floor, which is the damping that "suddenly stops": a fast spin
+  // at working altitude dips below the floor for a frame or two all the time. Vibration
+  // needs a sustained fight, so it takes a run of clamped frames to earn the cancel.
+  //
+  // The inertia only — this used to reset the controls outright, which also dropped the
+  // pointers and the drag state, so touching the floor mid-gesture left the held button
+  // dead and, on touch, emptied the tracker under a live two-finger rotate. Resetting is
+  // safe only when nothing is held.
   const boundsControls = globe.controls as any
-  boundsControls.dragInertia?.set(0, 0, 0)
-  boundsControls.rotationInertia?.set(0, 0)
-  boundsControls.globeInertia?.identity()
-  boundsControls.globeInertiaFactor = 0
-  if ((boundsControls.pointerTracker?.getPointerCount?.() ?? 0) === 0) globe.forceResetState()
+  boundsClampedFrames += 1
+  if (boundsClampedFrames >= BOUNDS_FIGHT_FRAMES) {
+    boundsControls.dragInertia?.set(0, 0, 0)
+    boundsControls.rotationInertia?.set(0, 0)
+    boundsControls.globeInertia?.identity()
+    boundsControls.globeInertiaFactor = 0
+    if ((boundsControls.pointerTracker?.getPointerCount?.() ?? 0) === 0) globe.forceResetState()
+  }
 }
 
 /**

@@ -20,6 +20,13 @@ import type { MemoryBudgetSnapshot } from './streaming'
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
 
+/**
+ * How recently the pointer must have moved for an interrupted drag to keep coasting.
+ * Long enough to cover a frame or two of missing events at the window edge, short
+ * enough that a deliberate stop is never mistaken for a spin. See endDragSmoothly.
+ */
+const POINTER_COAST_WINDOW_MS = 150
+
 export interface Globe {
   tiles: TilesRenderer
   controls: GlobeControls
@@ -194,8 +201,29 @@ export function createGlobe(opts: {
   // its multi-touch resets untouched, which is what mobile depends on. Deliberate
   // resets from our own code go through forceResetState so they still land.
   let mouseButtonDown = false
+  /** When the pointer last actually moved. Assigned by the pointer smoothing wrapper
+   * further down, which sees every raw position — read by endDragSmoothly. */
+  let lastPointerMotionMs = 0
   const originalResetState = controls.resetState.bind(controls)
   const forceResetState = (): void => originalResetState()
+  /**
+   * End a drag and let the spin coast to rest instead of stopping dead.
+   *
+   * The library zeroes all inertia once inertiaStableFrames climbs past 1, and that
+   * counter climbs on any frame that sees no pointer movement — which is exactly what an
+   * interrupted event stream looks like. Leave the window mid-spin and moves stop
+   * arriving, so a fast spin loses its inertia a frame or two later: the damping visibly
+   * starts and then cuts out. Clearing the counter hands the coast back to the damping.
+   *
+   * Only when the pointer really was moving just before the interruption. Nothing zeroes
+   * rotationInertia during a drag, so a stale value sits there after a deliberate stop —
+   * rescuing that would fling the view off from a standstill.
+   */
+  const endDragSmoothly = (): void => {
+    const coasting = performance.now() - lastPointerMotionMs < POINTER_COAST_WINDOW_MS
+    originalResetState()
+    if (coasting) (controls as any).inertiaStableFrames = 0
+  }
   ;(controls as any).resetState = (): void => {
     if (mouseButtonDown) return
     originalResetState()
@@ -213,11 +241,11 @@ export function createGlobe(opts: {
     // went missing — it landed outside an uncaptured pointer, or the capture was lost.
     if (event.pointerType !== 'mouse' || event.buttons !== 0) return
     mouseButtonDown = false
-    if ((controls as any).state !== 0) forceResetState()
+    if ((controls as any).state !== 0) endDragSmoothly()
   }
   const trackBlur = () => {
     mouseButtonDown = false
-    forceResetState()
+    endDragSmoothly()
   }
   window.addEventListener('pointerdown', trackPointerDown, true)
   window.addEventListener('pointerup', trackPointerUp, true)
@@ -265,16 +293,21 @@ export function createGlobe(opts: {
     delete pointerTargets[event.pointerId]
   }
   const originalUpdatePointer = tracker.updatePointer.bind(tracker)
+  const motionBefore = new THREE.Vector2()
   tracker.updatePointer = (event: PointerEvent) => {
-    if (responseMs <= 0) return originalUpdatePointer(event)
     const id = event.pointerId
     const live = tracker.pointerPositions[id]
     if (!live) return originalUpdatePointer(event)
     // Let the original compute the raw position, then keep it as the target and put the
     // eased value back, so nothing downstream ever sees the raw jump.
+    motionBefore.copy(live)
     const eased = live.clone()
     const ok = originalUpdatePointer(event)
-    if (ok) {
+    // Stamped from the raw position the original just wrote, so it reports the pointer
+    // rather than the easing — endDragSmoothly reads it to tell an interrupted spin
+    // from a standstill.
+    if (ok && live.distanceToSquared(motionBefore) > 0.01) lastPointerMotionMs = performance.now()
+    if (ok && responseMs > 0) {
       ;(pointerTargets[id] ??= new THREE.Vector2()).copy(live)
       live.copy(eased)
     }
@@ -338,6 +371,19 @@ export function createGlobe(opts: {
       ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
     },
     update(constrainCamera) {
+      // Freeze the terrain-clearance push while anything is held.
+      //
+      // adjustHeight re-reads the ground directly under the camera every frame and, when
+      // it is closer than cameraRadius, lifts camera AND pivotPoint by the difference.
+      // That ground height comes from whichever tiles happen to be resident, so a tile
+      // landing mid-drag changes it and the pivot moves out from under the cursor — the
+      // reported "pivot drifts while new tiles load". Nothing is lost by freezing it for
+      // the length of a gesture: a drag orbits at constant radius or rides a horizontal
+      // plane, and enforceNavigationBounds still holds the camera above the survey floor
+      // every frame. It resumes the moment the pointer is released.
+      const interacting = (controls as any).state !== 0
+        || ((controls as any).pointerTracker?.getPointerCount?.() ?? 0) > 0
+      controls.adjustHeight = !interacting
       controls.update()
       constrainCamera?.()
       // EnvironmentControls adds a decorative GLSL ShaderMaterial pivot marker
