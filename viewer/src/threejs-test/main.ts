@@ -1044,7 +1044,6 @@ onRebase((delta) => {
     rebaseControls.pivotPoint?.add(delta)
     rebaseControls.zoomPoint?.add(delta)
     rebaseControls.rotationInertiaPivot?.add(delta)
-    rebaseControls.pivotMesh?.position?.add(delta)
   }
   refreshOriginDerived()
 })
@@ -1354,7 +1353,28 @@ function updatePivotMarker(): void {
 }
 
 const pivotCorrected = new THREE.Vector3()
-let pivotPressState = 0
+
+/**
+ * The gesture in progress, as one record.
+ *
+ * Six separate flags used to track this between two modules, cleared in three different
+ * places, which is how a pivot came to be re-sampled mid-hold. One record, created by
+ * beginGesture on the press and cleared when every pointer is up.
+ *
+ * `pivot` is rebase-aware: it is a render-space point, and a rebase moves every
+ * render-space point, so without the shift the hold itself becomes the jump.
+ */
+const gesture = {
+  /** DRAG or ROTATE once a press has been served; 0 while nothing is held. */
+  kind: 0,
+  /** The pivot that press sampled. Restored every frame for as long as it is held. */
+  pivot: new THREE.Vector3(),
+  /** Control state seen last frame — a change into an active state is a fresh press. */
+  lastState: 0,
+  /** A press the controls refused is served once per gesture, not once per frame. */
+  refusedServed: false,
+}
+onRebase((delta) => { gesture.pivot.add(delta) })
 
 /**
  * Why the last press did or did not move the pivot. Kept because this correction fails
@@ -1392,165 +1412,119 @@ function updateCanopyPivot(): void {
   const controls = globe?.controls as any
   if (!controls) return
   const state: number = controls.state ?? 0
-  const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
-  // A held button always shows as a grab — even a press the controls refused now does
-  // something (below), so the cursor must never suggest the input is being ignored.
+  const DRAG = 1, ROTATE = 2
+
+  // A held button always shows as a grab — every press that is not on the sky now does
+  // something, so the cursor must never suggest the input is being ignored.
   const cursor = state === 0 ? '' : 'grabbing'
   if (renderer.domElement.style.cursor !== cursor) renderer.domElement.style.cursor = cursor
-  // A pressed pointer with no state is a press the controls refused: within ~3 degrees
-  // of the horizon the pointerdown returns before setting any state, and a press at the
-  // sky finds no raycast hit at all. Both used to be silently dead — no pan, no
-  // rotation, no feedback, just a user pressing harder.
-  //
-  // Everything below keys off whether a pointer is down, not off the control state. The
-  // state is not ours and drops out mid-hold — the library ends a drag whose ray left the
-  // globe, a stray event resets it — and every such drop used to release the hold and let
-  // the next state re-sample the pivot. That is the reported jump: right button held, mouse
-  // moved quickly, pivot suddenly somewhere else. While a pointer is down the pivot from
-  // that press is the pivot, full stop.
-  const pointerCount: number = controls.pointerTracker?.getPointerCount?.() ?? 0
-  if (pointerCount === 0) {
-    strandedPressHandled = false
-    heldPivotLocked = false
-    heldPivotState = 0
+
+  // Keyed on whether a pointer is down, never on the control state. The state is not ours
+  // and drops out mid-hold — the library ends a drag whose ray left the globe, a stray
+  // event resets it — and every such drop used to release the hold and let the next state
+  // re-sample the pivot. That was the jump: right button held, mouse thrown around, pivot
+  // suddenly elsewhere. While a pointer is down, the pivot that press sampled is the pivot.
+  if ((controls.pointerTracker?.getPointerCount?.() ?? 0) === 0) {
+    gesture.kind = 0
+    gesture.refusedServed = false
   }
+
+  // A pressed pointer with no state is a press the controls refused: within ~3 degrees of
+  // the horizon their pointerdown returns before setting any state, and a press on the sky
+  // finds no hit at all. Both were silently dead — no pan, no rotation, no feedback.
   if (globe?.hasStrandedPointer() && controls.enabled && controls.pivotPoint) {
-    if (heldPivotLocked) {
-      // A press already sampled its pivot. Rotation resumes on it — nothing legitimately
-      // ends a rotation mid-hold. A pan that ended because its ray left the globe stays
-      // ended: that escape is the library's own, and resuming would re-trigger it every
-      // frame, which is what the runaway was.
-      if (heldPivotState === ROTATE) {
-        controls.pivotPoint.copy(heldPivot)
-        controls.setState(ROTATE)
-        controls._rotationMode = 1
-        pivotPressState = ROTATE
-      }
-      return
-    }
-    if (strandedPressHandled) return
-    strandedPressHandled = true
-    // Nothing under the cursor at all — the press is on the sky. Ignored outright: there
-    // is no point to turn around and none to hold under the cursor, and inventing one
-    // ahead of the camera made the pan misbehave. The press simply does nothing.
-    if (pressAimedAtSky(controls)) {
+    if (gesture.kind !== 0 || gesture.refusedServed) return
+    gesture.refusedServed = true
+    // Nothing under the cursor: inventing a point ahead of the camera made the pan
+    // misbehave, and there is nothing to turn around either, so the press does nothing.
+    if (!cursorNdc(pressNdc)) return
+    if (!screenPivot(pressNdc.x, pressNdc.y, pivotCorrected)) {
       pivotDebug = { reason: 'press on the sky — ignored', passes: [] }
       return
     }
-    // Otherwise the gesture the button asked for decides what it gets: a left button or
-    // a single finger pans, a right button or two fingers rotates. Left must never turn
-    // into a rotation, whatever the raycast did.
+    // The button decides the gesture: left or one finger pans, right or two fingers
+    // rotates. Left must never become a rotation, whatever the raycast did.
     const tracker = controls.pointerTracker
     const wantsRotation = tracker?.isRightClicked?.() || (tracker?.getPointerCount?.() ?? 0) >= 2
     if (wantsRotation) orbitViewCentre(controls, 'press refused by the controls')
     else panViewCentre(controls, 'press refused by the controls')
     return
   }
-  // The held pivot is restored every frame rather than trusted to stay put — that makes
-  // it a guarantee instead of an audit of every writer, and it covers the state changing
-  // under the hold: a second button pressed mid-drag, or touch going WAITING to ROTATE,
-  // both keep the pivot the first press sampled. FREE_ROTATE never locks, since there the
-  // pivot rides the camera by design.
-  if (heldPivotLocked && (state === ROTATE || state === DRAG) && controls.pivotPoint) {
-    controls.pivotPoint.copy(heldPivot)
-    heldPivotState = state
-    pivotPressState = state
-    if (controls.pivotMesh) {
-      controls.pivotMesh.position.copy(controls.pivotPoint)
-      controls.pivotMesh.updateMatrixWorld()
+
+  // Restored every frame rather than trusted to stay put — a guarantee instead of an
+  // audit of every writer, and it covers the state changing under the hold: a second
+  // button pressed mid-drag, or touch going WAITING to ROTATE, both keep the first pivot.
+  if (gesture.kind !== 0) {
+    if (state === ROTATE || state === DRAG) {
+      controls.pivotPoint.copy(gesture.pivot)
+      gesture.lastState = state
     }
     return
   }
-  // A fresh press — the only place a pivot may be sampled.
-  const pressStarted = state !== 0 && state !== pivotPressState
-  pivotPressState = state
+
+  // A fresh press — the only place a pivot is sampled.
+  const pressStarted = state !== 0 && state !== gesture.lastState
+  gesture.lastState = state
   if (!pressStarted || !controls.pivotPoint) return
-  // Rotation only. Rotation turns *around* the pivot, so moving it costs nothing: the
-  // angle per pixel is fixed at 2*pi / clientHeight whatever the distance. Panning
-  // instead lays a horizontal plane through the pivot and rides it, so pan distance per
-  // pixel scales with the camera's height above that plane — lifting it onto the canopy
-  // would slow panning to a third near the treetops, and make the gain depend on whether
-  // the cursor happened to grab a tall tree or a clearing.
-  if (state === FREE_ROTATE) {
-    // Only the library's own flight free-look reaches this now — nothing here converts
-    // to it any more, because spinning about the camera is never the right answer to a
-    // failed pivot. Left alone: the pivot rides the camera by design.
-    heldPivotState = 0
-    pivotDebug = { reason: 'free look — pivot rides the camera', passes: [] }
-    return
-  }
-  if (state !== ROTATE) {
-    // Say so, rather than leaving the previous press's verdict standing — the whole point
-    // of this field is telling "declined" apart from "never ran".
+  if (state === DRAG) {
     pivotDebug = { reason: 'not a rotation', passes: [] }
-    if (state === DRAG) {
-      // Every left drag, re-aimed or not, gets a budget — set before globe.update arms
-      // it this same frame.
-      globe?.setPanBudget(panDragBudget())
-      reaimShallowPan(controls)
-      holdPivot(controls, DRAG)
-    }
+    reaimShallowPan(controls)
+    beginGesture(controls, DRAG)
     return
   }
-  pivotMarkerPlaced = true
+  if (state !== ROTATE) return
+  // Rotation only. Rotation turns *around* the pivot, so lifting it onto the canopy costs
+  // nothing: the angle per pixel is fixed at 2*pi / clientHeight whatever the distance.
+  // Panning instead rides a surface through the pivot, so its speed would come to depend
+  // on whether the cursor grabbed a tall tree or a clearing.
+  //
+  // Whatever the raycast and the lift produce is kept, however far it lands: a distance
+  // rule used to sit here and was removed after testing — the per-frame governor already
+  // bounds what a far pivot can do, and moving the pivot off what the cursor grabbed cost
+  // more than it bought.
   if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
     controls.pivotPoint.copy(pivotCorrected)
   }
-  // A rotation press keeps whatever pivot the raycast and the canopy lift produced,
-  // however far it lands. A distance rule used to sit here — beyond a limit the grab was
-  // handed to the view centre — and it was removed after testing: the per-frame
-  // displacement governor already bounds what a far pivot can do to the camera, and
-  // moving the pivot away from what the cursor grabbed cost more than it bought.
-  holdPivot(controls, ROTATE)
-  // Keep the marker honest even though globe.update removes it before rendering.
-  if (controls.pivotMesh) {
-    controls.pivotMesh.position.copy(controls.pivotPoint)
-    controls.pivotMesh.updateMatrixWorld()
-  }
+  beginGesture(controls, ROTATE)
 }
 
 /**
- * The pivot sampled at press, held for the whole drag — see the restore in
- * updateCanopyPivot. Rebase-aware: a rebase shifts every render-space point, so the
- * held value shifts with it or the hold itself would become the mid-drag jump.
+ * Take ownership of a press: this pivot, this kind, for as long as the button is down.
+ *
+ * The single place a pivot may be sampled. Everything else either restores it or leaves
+ * it alone, which is what makes "the pivot never moves while held" a property of the
+ * code rather than a claim about every writer.
  */
-const heldPivot = new THREE.Vector3()
-let heldPivotState = 0
-/** Set once per press when a refused press was given the view centre — see the caller. */
-let strandedPressHandled = false
-/** True from the moment a press samples its pivot until every pointer is up. */
-let heldPivotLocked = false
-onRebase((delta) => { heldPivot.add(delta) })
-
-function holdPivot(controls: any, state: number): void {
-  heldPivot.copy(controls.pivotPoint)
-  heldPivotState = state
-  heldPivotLocked = true
+function beginGesture(controls: any, kind: number): void {
+  gesture.kind = kind
+  gesture.lastState = kind
+  gesture.pivot.copy(controls.pivotPoint)
+  pivotMarkerPlaced = true
 }
 
-/** Metres one drag may pan, from the camera's height above the survey floor. */
+/**
+ * The camera's height above the survey floor, times a factor, never below a floor.
+ *
+ * Three navigation bounds scale this way — the per-frame step, the per-drag pan, and how
+ * far a fallback pivot may sit — because at 80 m and at 5 km the same metre count means
+ * very different things. `from` is the position to measure, which the per-frame governor
+ * needs: it measures the height the frame *started* at, so a jump cannot widen the
+ * allowance that is meant to contain it.
+ */
+function heightScaled(factor: number, floorM: number, from: THREE.Vector3 = camera.position): number {
+  const heightAboveFloor = Math.max(0, worldToEnu(from, heightScaledEnu).z - areaMinZ)
+  return Math.max(heightAboveFloor * factor, floorM)
+}
+const heightScaledEnu = new THREE.Vector3()
+
+/** Metres one drag may pan. Pulled by globe.ts when it arms a drag, so there is no
+ * ordering contract between the two modules and no chance of a stale value. */
 function panDragBudget(): number {
-  const heightAboveFloor = Math.max(
-    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
-  )
-  return Math.max(
-    heightAboveFloor * EXPERIENCE_CONFIG.navigation.maxPanPerDragHeightFactor,
+  return heightScaled(
+    EXPERIENCE_CONFIG.navigation.maxPanPerDragHeightFactor,
     EXPERIENCE_CONFIG.navigation.maxPanPerDragMinM,
   )
 }
-
-/** How far from the camera a rotation pivot may sit — see the config knobs. */
-function pivotDistanceLimit(): number {
-  const heightAboveFloor = Math.max(
-    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
-  )
-  return Math.max(
-    heightAboveFloor * EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
-    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
-  )
-}
-
-const panRawPointer = new THREE.Vector2()
 
 /**
  * Re-aim a pan that grabbed near the horizon at the centre of the view.
@@ -1578,29 +1552,19 @@ function reaimShallowPan(controls: any): void {
   const descent = -pivotDirEnu.z
   // The centre of the view sets the bar, so this is self-tuning rather than a constant:
   // any grab shallower than the middle of the screen is solved at the middle of the
-  // screen, and a grab below centre — which is steeper, so slower — keeps its exact
-  // one-to-one behaviour. panMinRayDescent is only the floor for a view so flat that the
-  // centre itself is ill-conditioned. Measured at 30 degrees of pitch: a fixed 0.3 left
-  // the band just above it panning 2.1x the mid-screen rate.
+  // screen, and a grab below centre — steeper, so slower — keeps its exact one-to-one
+  // behaviour. panMinRayDescent is only the floor for a view so flat that the centre
+  // itself is ill-conditioned. Measured at 30 degrees of pitch: a fixed 0.3 left the band
+  // just above it panning 2.1x the mid-screen rate.
   ndc.set(0, 0)
   ray.setFromCamera(ndc, camera)
   const centreDescent = -ray.ray.direction.dot(enuUp)
   const threshold = Math.max(centreDescent, EXPERIENCE_CONFIG.navigation.panMinRayDescent)
   // "Not steep enough" rather than "shallow", so a NaN descent re-aims nothing.
   if (!(descent < threshold)) return
-  if (!globe.getRawPointer(panRawPointer)) return
-  // Real ground under the re-aimed point, or no re-aim. screenPivot falls back to a point
-  // straight ahead at the clamp limit, which sits near the camera's own altitude — the
-  // globe pan then solves against a sphere the camera is barely outside of, where the
-  // near/far intersection can swap and the world pans the wrong way. Better to leave the
-  // press to the library than to invert the drag.
   if (!reaimTarget(controls)) {
     pivotDebug = { reason: 'pan ray shallow, but no ground to re-aim onto', passes: [] }
     return
-  }
-  if (controls.pivotMesh) {
-    controls.pivotMesh.position.copy(controls.pivotPoint)
-    controls.pivotMesh.updateMatrixWorld()
   }
   pivotDebug = {
     reason: `pan ray shallow (descent ${descent.toFixed(3)}) — re-aimed at the view centre`,
@@ -1608,29 +1572,25 @@ function reaimShallowPan(controls: any): void {
   }
 }
 
-const skyPointer = new THREE.Vector2()
+const pressNdc = new THREE.Vector2()
 
 /**
- * Is the press aimed at nothing at all?
+ * Where the cursor is: NDC in `target`, canvas pixels left in `cursorPointer` for the
+ * caller that needs them. False when no pointer is tracked.
  *
- * Asked of the cursor's own ray, not the view centre: the basemap under the cursor
- * first, then the survey ground plane. Neither means the press landed on the sky, where
- * both gestures are meaningless — a rotation has no point to turn around and a pan has
- * no ground to keep under the cursor.
+ * Deliberately the *raw* pointer: while a re-aimed pan is running the controls read a
+ * shifted one, and every decision here is about where the user actually pressed.
  */
-function pressAimedAtSky(controls: any): boolean {
+function cursorNdc(target: THREE.Vector2): boolean {
+  if (!globe?.getRawPointer(cursorPointer)) return false
   const element = renderer.domElement
-  if (!controls.pointerTracker?.getCenterPoint?.(skyPointer)) return false
-  ndc.set(
-    (skyPointer.x / Math.max(element.clientWidth, 1)) * 2 - 1,
-    -(skyPointer.y / Math.max(element.clientHeight, 1)) * 2 + 1,
+  target.set(
+    (cursorPointer.x / Math.max(element.clientWidth, 1)) * 2 - 1,
+    -(cursorPointer.y / Math.max(element.clientHeight, 1)) * 2 + 1,
   )
-  ray.setFromCamera(ndc, camera)
-  const tilesGroup = (globe as any)?.tiles?.group
-  if (tilesGroup && ray.intersectObject(tilesGroup, true)[0]) return false
-  if (enuFrameReady && ray.ray.intersectPlane(groundPlane, viewCentreHit)) return false
   return true
 }
+const cursorPointer = new THREE.Vector2()
 
 /**
  * Re-aim a pan vertically, keeping the column it was grabbed in.
@@ -1645,12 +1605,10 @@ function pressAimedAtSky(controls: any): boolean {
  * that point, in which case neither is touched.
  */
 function reaimTarget(controls: any): boolean {
-  if (!globe || !globe.getRawPointer(panRawPointer)) return false
-  const element = renderer.domElement
-  const width = Math.max(element.clientWidth, 1)
-  const height = Math.max(element.clientHeight, 1)
-  if (!screenPivot((panRawPointer.x / width) * 2 - 1, 0, pivotCorrected)) return false
-  globe.setPanPointerShift(0, panRawPointer.y - height * 0.5)
+  if (!globe || !cursorNdc(pressNdc)) return false
+  if (!screenPivot(pressNdc.x, 0, pivotCorrected)) return false
+  // The shift is in canvas pixels — that is what the controls read.
+  globe.setPanPointerShift(0, cursorPointer.y - Math.max(renderer.domElement.clientHeight, 1) * 0.5)
   controls.pivotPoint.copy(pivotCorrected)
   return true
 }
@@ -1669,81 +1627,60 @@ function panViewCentre(controls: any, reason: string): void {
     return
   }
   controls.setState(1) // DRAG
-  pivotPressState = 1
-  pivotMarkerPlaced = true
-  holdPivot(controls, 1)
+  beginGesture(controls, 1)
   pivotDebug = { reason: `${reason} — panning the view centre`, passes: [] }
-  if (controls.pivotMesh) {
-    controls.pivotMesh.position.copy(controls.pivotPoint)
-    controls.pivotMesh.updateMatrixWorld()
-  }
-}
-
-const clampPivotCamEnu = new THREE.Vector3()
-const viewCentreHit = new THREE.Vector3()
-
-/**
- * The 3D point at the centre of the view — the one pivot that always exists.
- *
- * Whatever the cursor failed to hit, what the viewer is looking *at* is well defined, so
- * every fallback lands here rather than on the camera itself. Spinning about the camera
- * was tried and is wrong: it reads as an ego camera in a scene the viewer is inspecting
- * from outside, and it leaves the pivot marker with nothing to draw.
- *
- * Three sources, in order: the basemap under the screen centre, the survey ground plane,
- * and — looking at sky, where neither exists — a point straight ahead at the pivot limit.
- * The distance is clamped into the same limit the press path uses, so an orbit radius is
- * never a catapult, and the result is finite by construction.
- */
-function viewCentrePivot(target: THREE.Vector3): boolean {
-  return screenPivot(0, 0, target)
 }
 
 /**
- * The point the scene shows at one place on screen, in NDC. Same three sources and the
- * same distance clamp as the view centre — which is just this at (0, 0).
+ * The point the scene shows at one place on screen, in NDC — and whether real geometry
+ * was found there.
+ *
+ * Two sources: the basemap under that point, then the survey ground plane. With neither —
+ * the sky — the point falls back to the distance limit straight ahead and false comes
+ * back, which is how callers tell "here is the ground" from "there is nothing there".
+ * Rotation is happy to turn about a fabricated point; a pan needs real ground to keep
+ * under the cursor, and the sky test is simply this returning false.
+ *
+ * The distance is clamped so a fallback pivot is never a catapult, and the result is
+ * finite by construction.
  */
 function screenPivot(ndcX: number, ndcY: number, target: THREE.Vector3): boolean {
   ndc.set(ndcX, ndcY)
   ray.setFromCamera(ndc, camera)
-  const limit = pivotDistanceLimit()
+  const limit = heightScaled(
+    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
+    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
+  )
   let distance = -1
   const tilesGroup = (globe as any)?.tiles?.group
   if (tilesGroup) {
     const hit = ray.intersectObject(tilesGroup, true)[0]
     if (hit) distance = hit.distance
   }
-  if (!(distance > 0) && enuFrameReady && ray.ray.intersectPlane(groundPlane, viewCentreHit)) {
-    distance = viewCentreHit.distanceTo(camera.position)
+  if (!(distance > 0) && enuFrameReady && ray.ray.intersectPlane(groundPlane, screenPivotHit)) {
+    distance = screenPivotHit.distanceTo(camera.position)
   }
-  // Reported so the pan path can decline: rotation is happy to turn about a fabricated
-  // point ahead of the camera, a pan needs real ground to keep under the cursor.
   const hitRealGround = distance > 0
   // "Not in range" rather than "out of range", so a NaN distance takes the fallback.
   if (!(distance > 1 && distance <= limit)) distance = limit
   target.copy(camera.position).addScaledVector(ray.ray.direction, distance)
   return hitRealGround
 }
+const screenPivotHit = new THREE.Vector3()
 
 /** Rotate about the view centre — the fallback for every press the normal paths cannot
  * serve. Never FREE_ROTATE: the pivot is a point in the scene, so the marker has
  * something to draw and the gesture reads as orbiting what you are looking at. */
 function orbitViewCentre(controls: any, reason: string): void {
-  viewCentrePivot(pivotCorrected)
+  screenPivot(0, 0, pivotCorrected)
   if (!Number.isFinite(pivotCorrected.x + pivotCorrected.y + pivotCorrected.z)) return
   controls.pivotPoint.copy(pivotCorrected)
   controls.setState(2) // ROTATE
   // GlobeControls refuses rotation outside its near-globe zone, which would make this
   // dead again; the mode flag is what it checks, so claim it.
   controls._rotationMode = 1
-  pivotPressState = 2
-  pivotMarkerPlaced = true
-  holdPivot(controls, 2)
+  beginGesture(controls, 2)
   pivotDebug = { reason: `${reason} — orbiting the view centre`, passes: [] }
-  if (controls.pivotMesh) {
-    controls.pivotMesh.position.copy(controls.pivotPoint)
-    controls.pivotMesh.updateMatrixWorld()
-  }
 }
 
 function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
@@ -2155,7 +2092,6 @@ function enforceNavigationBounds(): void {
  * globe.update, so the measurement never includes them.
  */
 const governorPrevPosition = new THREE.Vector3()
-const governorPrevEnu = new THREE.Vector3()
 let governorArmed = false
 const navDebug = { clamps: 0, lastMoveM: 0, lastCapM: 0 }
 
@@ -2183,14 +2119,12 @@ function applyFrameMoveGovernor(): void {
   if (!governorArmed) return
   governorArmed = false
   const moved = camera.position.distanceTo(governorPrevPosition)
-  // Height from where the frame started — the post-move position is exactly the value
+  // Measured from where the frame started: the post-move position is exactly the value
   // under suspicion, and a 2 km jump upward must not widen its own allowance.
-  const heightAboveFloor = Math.max(
-    0, worldToEnu(governorPrevPosition, governorPrevEnu).z - areaMinZ,
-  )
-  const cap = Math.max(
-    heightAboveFloor * EXPERIENCE_CONFIG.navigation.maxFrameMoveHeightFactor,
+  const cap = heightScaled(
+    EXPERIENCE_CONFIG.navigation.maxFrameMoveHeightFactor,
     EXPERIENCE_CONFIG.navigation.maxFrameMoveMinM,
+    governorPrevPosition,
   )
   // "Not over the cap" rather than "under it", so a NaN camera — seen mid-boot on a
   // stalled network — is left alone instead of being lerped into more NaN.
@@ -2797,7 +2731,6 @@ bindDesignSlider('foveationCentre', FOVEATION.centreFactor, asFactor, (v) => {
 bindDesignSlider('foveationEdge', FOVEATION.edgeFactor, asFactor, (v) => {
   foveationSettings.edgeFactor = v
 })
-
 
 /** Bind a colour input, seeded from config like the sliders are. */
 function bindDesignColor(id: string, initial: number, apply: (hex: string) => void): void {
@@ -3723,6 +3656,7 @@ async function main(): Promise<void> {
     maptilerKey: MAPTILER_KEY,
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
+    panBudgetM: panDragBudget,
   })
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)

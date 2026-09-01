@@ -21,13 +21,6 @@ import type { MemoryBudgetSnapshot } from './streaming'
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
 
-/**
- * How recently the pointer must have moved for an interrupted drag to keep coasting.
- * Long enough to cover a frame or two of missing events at the window edge, short
- * enough that a deliberate stop is never mistaken for a spin. See endDragSmoothly.
- */
-const POINTER_COAST_WINDOW_MS = 150
-
 export interface Globe {
   tiles: TilesRenderer
   controls: GlobeControls
@@ -47,12 +40,6 @@ export interface Globe {
    * automatically when the drag ends.
    */
   setPanPointerShift(x: number, y: number): void
-  /**
-   * Metres this drag may pan before it stops. Set from main.ts, which measures height
-   * above the survey floor — the ellipsoid altitude available here is meaningless while
-   * the cloud is ground-snapped, and read 0 at the working height.
-   */
-  setPanBudget(metres: number): void
   /** Where the cursor sits in CSS pixels relative to the canvas, unshifted. */
   getRawPointer(target: THREE.Vector2): THREE.Vector2 | null
   /**
@@ -99,6 +86,13 @@ export function createGlobe(opts: {
   cameraClearance: number
   /** shared mask uniforms — the vignette fades the imagery to black with the cloud */
   uniforms: CloudUniforms
+  /**
+   * Metres one drag may pan before it stops. Asked for when a drag is armed rather than
+   * pushed in beforehand: the height it scales with is only known in main.ts (the
+   * ellipsoid altitude reachable from here reads 0 while the cloud is ground-snapped),
+   * and pulling it removes any ordering contract between the two modules.
+   */
+  panBudgetM?: () => number
 }): Globe {
   const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms } = opts
 
@@ -217,9 +211,6 @@ export function createGlobe(opts: {
   // its multi-touch resets untouched, which is what mobile depends on. Deliberate
   // resets from our own code go through forceResetState so they still land.
   let mouseButtonDown = false
-  /** When the pointer last actually moved. Assigned by the pointer smoothing wrapper
-   * further down, which sees every raw position — read by endDragSmoothly. */
-  let lastPointerMotionMs = 0
   const originalResetState = controls.resetState.bind(controls)
   const forceResetState = (): void => originalResetState()
   // Only the window-edge pointerleave is suppressed, and only while a mouse button is
@@ -236,24 +227,12 @@ export function createGlobe(opts: {
     event.stopImmediatePropagation()
   }
   window.addEventListener('pointerleave', suppressEdgeLeave, true)
-  /**
-   * End a drag and let the spin coast to rest instead of stopping dead.
-   *
-   * The library zeroes all inertia once inertiaStableFrames climbs past 1, and that
-   * counter climbs on any frame that sees no pointer movement — which is exactly what an
-   * interrupted event stream looks like. Leave the window mid-spin and moves stop
-   * arriving, so a fast spin loses its inertia a frame or two later: the damping visibly
-   * starts and then cuts out. Clearing the counter hands the coast back to the damping.
-   *
-   * Only when the pointer really was moving just before the interruption. Nothing zeroes
-   * rotationInertia during a drag, so a stale value sits there after a deliberate stop —
-   * rescuing that would fling the view off from a standstill.
-   */
-  const endDragSmoothly = (): void => {
-    const coasting = performance.now() - lastPointerMotionMs < POINTER_COAST_WINDOW_MS
-    originalResetState()
-    if (coasting) (controls as any).inertiaStableFrames = 0
-  }
+  // An abnormal end — the release went missing, or the window lost focus — is a plain
+  // reset. A rescue used to sit here, clearing inertiaStableFrames so an interrupted spin
+  // kept coasting, on the theory that the library kills inertia once that counter climbs.
+  // Measured over the abnormal ends this can actually produce: the counter was never above
+  // 1, because a quiet event stream makes the library skip the update that increments it.
+  // The abrupt stop it was written for turned out to be the floor clamp, fixed separately.
   // Capture phase on window, so these run before the library's own document handlers
   // and the button state is already current when its listeners look at it.
   const trackPointerDown = (event: PointerEvent) => {
@@ -267,11 +246,11 @@ export function createGlobe(opts: {
     // went missing — it landed outside an uncaptured pointer, or the capture was lost.
     if (event.pointerType !== 'mouse' || event.buttons !== 0) return
     mouseButtonDown = false
-    if ((controls as any).state !== 0) endDragSmoothly()
+    if ((controls as any).state !== 0) forceResetState()
   }
   const trackBlur = () => {
     mouseButtonDown = false
-    endDragSmoothly()
+    forceResetState()
   }
   window.addEventListener('pointerdown', trackPointerDown, true)
   window.addEventListener('pointerup', trackPointerUp, true)
@@ -334,7 +313,6 @@ export function createGlobe(opts: {
   const panDragStart = new THREE.Vector3()
   let panBudget = 0
   let panBudgetArmed = false
-  let panBudgetRequested = 0
   // Rebase-aware, like the held pivot in main.ts. Both this and camera.position are
   // render-space, and a rebase moves every render-space point: without this the start
   // stays in the old frame while the camera is measured in the new one, so the distance
@@ -345,28 +323,41 @@ export function createGlobe(opts: {
 
   const originalUpdatePosition = (controls as any)._updatePosition.bind(controls)
   ;(controls as any)._updatePosition = (deltaTime: number): void => {
-    if ((controls as any).state !== DRAG_STATE) {
-      panBudgetArmed = false
-      originalUpdatePosition(deltaTime)
-      return
-    }
-    if (!panBudgetArmed) {
+    // Arming only. The budget is enforced in update(), which also sees the coast frames.
+    if ((controls as any).state === DRAG_STATE && !panBudgetArmed) {
       panBudgetArmed = true
       panDragStart.copy(camera.position)
-      // main.ts measures the height this scales with; the ellipsoid altitude reachable
-      // from here reads 0 at the working height, which pinned every drag to the floor.
-      panBudget = panBudgetRequested > 0
-        ? panBudgetRequested
-        : EXPERIENCE_CONFIG.navigation.maxPanPerDragMinM
+      const requested = opts.panBudgetM?.() ?? 0
+      panBudget = requested > 0 ? requested : EXPERIENCE_CONFIG.navigation.maxPanPerDragMinM
     }
     originalUpdatePosition(deltaTime)
+  }
+
+  /** True while a released pan is still coasting. */
+  const panCoasting = (): boolean =>
+    ((controls as any).dragInertia?.lengthSq() ?? 0) > 0
+    || ((controls as any).globeInertiaFactor ?? 0) !== 0
+
+  /**
+   * Hold the pan inside its budget, drag and coast alike.
+   *
+   * Enforced here rather than inside the pan step because the drag is not the only thing
+   * that spends the budget: a drag that ends under it hands its velocity to the damping,
+   * and measured, that coast carried a 626 m pan on to 1056 m — past a budget of 800.
+   * The budget therefore lives until the coast has died, not until the button comes up.
+   */
+  const holdPanBudget = (): void => {
+    if (!panBudgetArmed) return
+    if ((controls as any).state !== DRAG_STATE && !panCoasting()) {
+      panBudgetArmed = false
+      return
+    }
     const moved = camera.position.distanceTo(panDragStart)
     // "Not within budget" rather than "over", so a non-finite camera is left to the
     // recovery in main.ts instead of being lerped here.
     if (!(moved > panBudget)) return
     camera.position.lerpVectors(panDragStart, camera.position, panBudget / moved)
     camera.updateMatrixWorld()
-    // Inertia would carry the pan past the budget the moment the button came up.
     ;(controls as any).dragInertia.set(0, 0, 0)
     ;(controls as any).globeInertia.identity()
     ;(controls as any).globeInertiaFactor = 0
@@ -403,20 +394,14 @@ export function createGlobe(opts: {
     delete pointerTargets[event.pointerId]
   }
   const originalUpdatePointer = tracker.updatePointer.bind(tracker)
-  const motionBefore = new THREE.Vector2()
   tracker.updatePointer = (event: PointerEvent) => {
     const id = event.pointerId
     const live = tracker.pointerPositions[id]
     if (!live) return originalUpdatePointer(event)
     // Let the original compute the raw position, then keep it as the target and put the
     // eased value back, so nothing downstream ever sees the raw jump.
-    motionBefore.copy(live)
     const eased = live.clone()
     const ok = originalUpdatePointer(event)
-    // Stamped from the raw position the original just wrote, so it reports the pointer
-    // rather than the easing — endDragSmoothly reads it to tell an interrupted spin
-    // from a standstill.
-    if (ok && live.distanceToSquared(motionBefore) > 0.01) lastPointerMotionMs = performance.now()
     if (ok && responseMs > 0) {
       ;(pointerTargets[id] ??= new THREE.Vector2()).copy(live)
       live.copy(eased)
@@ -463,9 +448,6 @@ export function createGlobe(opts: {
       panShift.set(x, y)
       panShiftActive = true
     },
-    setPanBudget(metres) {
-      panBudgetRequested = metres > 0 ? metres : 0
-    },
     getRawPointer(target) {
       return originalGetCenterPoint(target) ? target : null
     },
@@ -491,11 +473,9 @@ export function createGlobe(opts: {
       ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
     },
     update(constrainCamera) {
-      // The pointer shift belongs to one drag only.
-      if ((controls as any).state !== DRAG_STATE) {
-        panShiftActive = false
-        panBudgetArmed = false
-      }
+      // The pointer shift belongs to one drag only. The budget clears itself once the
+      // coast it also governs has died — see holdPanBudget.
+      if ((controls as any).state !== DRAG_STATE) panShiftActive = false
       // Freeze the terrain-clearance push while anything is held.
       //
       // adjustHeight re-reads the ground directly under the camera every frame and, when
@@ -510,6 +490,7 @@ export function createGlobe(opts: {
         || ((controls as any).pointerTracker?.getPointerCount?.() ?? 0) > 0
       controls.adjustHeight = !interacting
       controls.update()
+      holdPanBudget()
       constrainCamera?.()
       // EnvironmentControls adds a decorative GLSL ShaderMaterial pivot marker
       // during mouse drags. WebGPURenderer only accepts node materials, including

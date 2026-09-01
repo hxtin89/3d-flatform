@@ -266,31 +266,30 @@ export const EXPERIENCE_CONFIG = {
      */
     pivotMinRayDescent: 0.25,
     /**
-     * How far from the camera a rotation pivot may sit, as a multiple of the camera's
-     * height above the survey floor, before the grab becomes a look-around instead.
+     * How far a *substitute* pivot may sit from the camera, as a multiple of the camera's
+     * height above the survey floor, with a floor in metres.
      *
-     * Orbiting moves the camera by pivot distance times the turn angle, so a far pivot
-     * is a catapult whatever produced it — recorded live: grabs near the treeline at
-     * 300-500 m altitude put the pivot 2-3 km out and single frames tried to travel
-     * 5.5 km. An earlier version pulled such pivots in along the click ray (8x height);
-     * that only shortened the catapult, and the pulled-in point was no longer anything
-     * the user had grabbed. Rotating in place is bounded by construction and matches
-     * what the same situation does for pans and refused presses.
+     * Only the fallback pivots are bounded by this — the point the scene shows at some
+     * place on screen, used when a press cannot be served where it landed (see
+     * screenPivot in main.ts). It is also the distance a sky-aimed fallback is placed at.
      *
-     * 5x clears the canopy lift's own acceptance bound (height ÷ 0.25 minimum descent
-     * = 4x height), so every pivot the lift blesses keeps orbiting; only terrain hits
-     * beyond that — grabs past the treeline — turn into a look.
+     * A press's *own* pivot is deliberately not bounded: a rule here once handed a far
+     * grab to the view centre, and testing settled against it — the per-frame
+     * displacement governor already bounds what a far pivot can do to the camera, and
+     * moving the pivot off what the cursor grabbed cost more than it bought.
+     *
+     * 5x clears the canopy lift's own acceptance bound (height ÷ 0.25 minimum descent =
+     * 4x height), so any pivot the lift blesses is inside the limit as well.
      */
     pivotMaxDistanceHeightFactor: 5,
-    /**
-     * Floor for that pivot limit, in metres, so grabbing a treeline from just above
-     * the canopy — where the height above the floor approaches zero — still orbits.
-     */
     pivotMaxDistanceMinM: 400,
     /**
-     * Floor for how shallowly a pan ray may descend, as a dot product against local up.
-     * Both the switch to the bounded pan and the angle it holds the ray to — see
-     * globe.ts, which owns that pan.
+     * Floor under the pan re-aim threshold, as a dot product against local up.
+     *
+     * The threshold itself is the *centre ray's* own descent, so it tracks pitch and fov
+     * without tuning: a grab shallower than the middle of the screen is solved at the
+     * middle of the screen. This value only takes over when the view is so flat that the
+     * centre is ill-conditioned too.
      *
      * GlobeControls pans by intersecting the cursor ray with a sphere through the
      * grabbed point and rotating about the Earth's centre. Near the horizon the ray
