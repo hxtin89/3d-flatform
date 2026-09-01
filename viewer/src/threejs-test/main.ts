@@ -1358,6 +1358,13 @@ interface PivotDebug {
   pivotEnuZ?: number
   camEnuZ?: number
   zOffset?: number
+  /** Camera height over the press's terrain hit — the number a person can sanity-check
+   * at a glance, unlike the absolute survey heights above. */
+  camAboveTerrainM?: number
+  /** How far the lift raised the pivot vertically off the terrain hit. */
+  pivotRoseM?: number
+  /** Camera height over the lifted pivot — small means turning almost in place. */
+  camAbovePivotM?: number
   /** Set when the far-pivot clamp pulled the pivot in along the click ray. */
   clamped?: { fromM: number; toM: number }
 }
@@ -1377,7 +1384,10 @@ function updateCanopyPivot(): void {
   const controls = globe?.controls as any
   if (!controls) return
   const state: number = controls.state ?? 0
-  const pressStarted = state !== 0 && pivotPressState === 0
+  // Any transition into an active state counts as a press, not just idle → pressed:
+  // a second button mid-drag or a touch going WAITING → ROTATE used to slip through,
+  // leaving pivotDebug describing the previous press and touch rotations unlifted.
+  const pressStarted = state !== 0 && state !== pivotPressState
   pivotPressState = state
   // Rotation only. Rotation turns *around* the pivot, so moving it costs nothing: the
   // angle per pixel is fixed at 2*pi / clientHeight whatever the distance. Panning
@@ -1387,7 +1397,14 @@ function updateCanopyPivot(): void {
   // the cursor happened to grab a tall tree or a clearing.
   const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
   if (!pressStarted || !controls.pivotPoint) return
-  if (state !== ROTATE && state !== FREE_ROTATE) {
+  if (state === FREE_ROTATE) {
+    // The pivot rides the camera here — there is nothing to lift, clamp, or mark.
+    // Genuine free looks land here; our own pan conversions pre-set pivotPressState
+    // so they keep their more specific verdict instead of this one.
+    pivotDebug = { reason: 'free look — pivot rides the camera', passes: [] }
+    return
+  }
+  if (state !== ROTATE) {
     // Say so, rather than leaving the previous press's verdict standing — the whole point
     // of this field is telling "declined" apart from "never ran".
     pivotDebug = { reason: 'not a rotation', passes: [] }
@@ -1432,6 +1449,9 @@ function convertShallowPanToLookAround(controls: any): void {
   if (!(descent < EXPERIENCE_CONFIG.navigation.panMinRayDescent)) return
   controls.pivotPoint.copy(camera.position)
   controls.setState(5) // FREE_ROTATE — always allowed, even away from the globe
+  // The transition just made would read as a fresh press next frame; claiming it here
+  // keeps this verdict from being overwritten by the generic free-look one.
+  pivotPressState = 5
   pivotDebug = {
     reason: `pan too shallow (descent ${descent.toFixed(3)}) — converted to look-around`,
     passes: [],
@@ -1494,6 +1514,7 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   debug.pivotEnuZ = +pivotEnu.z.toFixed(2)
   debug.camEnuZ = +pivotCamEnu.z.toFixed(2)
   debug.zOffset = +zOffset.toFixed(2)
+  debug.camAboveTerrainM = +(pivotCamEnu.z - pivotEnu.z).toFixed(2)
 
   // Widening radii, because the answer has to come from whatever LOD is resident: at d0
   // the point spacing is tens of metres, so a footprint tuned for close range finds
@@ -1536,6 +1557,8 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   enuToWorld(pivotStepEnu, target)
   debug.reason = 'corrected'
   debug.movedM = +pivotStepEnu.distanceTo(pivotEnu).toFixed(2)
+  debug.pivotRoseM = +(pivotStepEnu.z - pivotEnu.z).toFixed(2)
+  debug.camAbovePivotM = +(pivotCamEnu.z - pivotStepEnu.z).toFixed(2)
   return true
 }
 
