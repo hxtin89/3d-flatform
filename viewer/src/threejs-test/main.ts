@@ -95,6 +95,22 @@ const cleanMode = params.get('clean') === '1'
  * switchable live via the panel — this param covers the construction-time
  * pieces a running session cannot change. */
 const compareParam = params.get('compare') === '1'
+/** Demo fast path. Skips the loader and its benchmark, pins the lowest stream
+ * budget, and puts the point cloud on screen immediately instead of holding it
+ * back for the entrance flight.
+ *
+ * It still loads the real cloud -- a placeholder backdrop would demo something
+ * we are not shipping. What it drops is the waiting: the benchmark, the staged
+ * entrance, and the reveal gating that exists to hide a half-streamed cloud
+ * behind a cinematic. The constrained budget is not about weak hardware here,
+ * it is the smallest working set, so the first watchable frame arrives soonest. */
+const demoMode = params.get('demo') === '1'
+// Says out loud what it pinned. The difference between ?demo=1 and ?clean=1 is
+// invisible in the DOM -- both just hide the loader -- so without this the only
+// way to confirm the fast path engaged is to read the source.
+if (demoMode) {
+  console.info('[demo] fast path: preset pinned to constrained, entrance reveal gating off, loader skipped')
+}
 /** Shows the measured heights in the HUD. Implied by freeorbit, but available
  * on its own so the configured zoom stop can be checked while it still bites. */
 const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
@@ -127,7 +143,7 @@ const loaderSoundOptEl = $<HTMLButtonElement>('#loaderSoundOpt')
 const loaderSoundOptLabelEl = $('#loaderSoundOptLabel')
 const loaderEagleCanvasEl = $<HTMLCanvasElement>('#loaderEagleCanvas')
 const loaderEagleFillEl = $<HTMLDivElement>('#loaderEagleFill')
-if (cleanMode) {
+if (cleanMode || demoMode) {
   loaderEl.style.display = 'none'
   document.body.classList.add('chrome-hidden')
 }
@@ -278,8 +294,13 @@ loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 function applyBenchPreset(): void {
   const measured = eagleBench?.result() ?? null
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
-  const preset: BenchPreset = measured?.preset
-    ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
+  // Demo mode pins the smallest working set rather than trusting the benchmark:
+  // the point is a predictable time-to-first-frame, not the best this machine
+  // could manage.
+  const preset: BenchPreset = demoMode
+    ? 'constrained'
+    : measured?.preset
+      ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
   console.info(
@@ -354,7 +375,8 @@ const onLoaderStart = () => {
   // are already resident — pausing the streamer keeps them, because unloading
   // also only happens inside tiles.update(). With the SSE brakes toggled off
   // the reveal gating is off too — the cloud joins from the first metre.
-  entranceFlightPending = renderOptions.effective().sseBrakes
+  entranceFlightPending = !demoMode
+    && renderOptions.effective().sseBrakes
     && EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
   if (entranceFlightPending) setPointCloudRevealed(false)
   flyToCloud(
@@ -2120,7 +2142,7 @@ async function main(): Promise<void> {
   })
   // ?clean=1 skips the loader, so the reveal its start button normally triggers
   // never fires. Jump the frame straight to its resting margin instead.
-  if (cleanMode) void designSystemDemo.reveal(0)
+  if (cleanMode || demoMode) void designSystemDemo.reveal(0)
 
   if (manifest.areaBbox) {
     markerLayer = createMarkerLayer({
