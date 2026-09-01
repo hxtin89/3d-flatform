@@ -75,7 +75,6 @@ const GAUSSIAN_SPLAT_URL = baseUrl
  * `?tree=one-lod` restores the old chain for an A/B comparison. */
 const pointTree: 'aph' | 'one-lod' = params.get('tree') === 'one-lod' ? 'one-lod' : 'aph'
 const forceWebGL = params.has('webgl')
-const groundSnap = !params.has('nosnap')
 const modelEditorEnabled = params.get('modelEditor') === '1'
 /** Diagnostics: lifts the orbit ceiling, navigation floor and zoom stop so the
  * camera can reach a side-on view and the cloud/map seam can be inspected. */
@@ -678,9 +677,7 @@ const onTimeNow = () => {
 // Diagnostics for the tile jitter: high precision is the fix, the lift toggle
 // exists to rule the ground-snap offset out by hand.
 const precisionToggleEl = $<HTMLButtonElement>('#precisionToggle')
-const liftToggleEl = $<HTMLButtonElement>('#liftToggle')
 let highPrecisionMatrices = true
-let heightOffsetEnabled = true
 
 // 3DGS-Machbarkeitstest — eigenes WebGL-Overlay, lazy erzeugt beim ersten Klick.
 const gaussianToggleEl = $<HTMLButtonElement>('#gaussianToggle')
@@ -738,27 +735,8 @@ const onPrecisionToggle = () => {
   updateMatrixPrecision(performance.now())
   syncPrecisionToggle()
 }
-const liftValueEl = $<HTMLInputElement>('#liftValue')
-const liftValueValEl = $<HTMLSpanElement>('#liftValueVal')
-/** Show the lift, and what it actually buys over the map surface. */
-function syncLiftReadout(): void {
-  liftValueValEl.textContent = `${Math.round(pointCloudLiftM)} m`
-  liftValueEl.value = String(Math.round(pointCloudLiftM))
-}
-const onLiftValue = () => {
-  pointCloudLiftM = Number(liftValueEl.value)
-  applyPointCloudLift()
-  syncLiftReadout()
-}
-liftValueEl.addEventListener('input', onLiftValue)
-
-const onLiftToggle = () => {
-  heightOffsetEnabled = !heightOffsetEnabled
-  applyHeightOffset()
-  liftToggleEl.classList.toggle('on', heightOffsetEnabled)
-  liftToggleEl.setAttribute('aria-pressed', String(heightOffsetEnabled))
-  liftToggleEl.textContent = `⇅ Offset · ${heightOffsetEnabled ? 'On' : 'Off'}`
-}
+// The lift slider and the Offset toggle are gone: the canopy sits at its surveyed
+// elevation, and nothing may move it. See applyPointCloudLift.
 
 function syncPrecisionToggle(): void {
   precisionToggleEl.classList.toggle('on', highPrecisionMatrices)
@@ -932,7 +910,6 @@ function syncOptionButtons(): void {
 cloudToggleEl.disabled = true
 soundToggleEl.disabled = true
 precisionToggleEl.addEventListener('click', onPrecisionToggle)
-liftToggleEl.addEventListener('click', onLiftToggle)
 gaussianToggleEl.addEventListener('click', onGaussianToggle)
 cloudToggleEl.addEventListener('click', onCloudToggle)
 timeDockToggleEl.addEventListener('click', onTimeDockToggle)
@@ -1048,7 +1025,18 @@ let zOffset = 0
  */
 function applyPointCloudLift(): void {
   if (!areaHeightsKnown) return
-  zOffset = groundSnap ? -(areaMinZ + areaOriginHeight) + pointCloudLiftM : 0
+  // Fixed at the survey's own elevation, and never moved.
+  //
+  // This used to be `groundSnap ? -(areaMinZ + areaOriginHeight) + pointCloudLiftM : 0`,
+  // which took the cloud off its surveyed height and pressed it onto the draped basemap,
+  // then added a hand-set lift on top. Measured on this site that displaced the canopy by
+  // 207.95 m — 188 m of snapping plus a 20 m lift — so the trees no longer stood where
+  // the survey says they stand, and the amount moved with the terrain under the box.
+  //
+  // The canopy height is a real, measured quantity, so it is left alone. Everything
+  // derived below reads zOffset, so holding it at zero keeps the canopy grading, the
+  // cloud deck and the fog floor consistent by construction rather than by coincidence.
+  zOffset = 0
   uniforms.canopyBaseZ.value = areaMinZ + zOffset + 8
   uniforms.canopyTopZ.value = areaMinZ + zOffset + areaSpan
   uniforms.cloudDeckHeight.value = areaMinZ + zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
@@ -1058,7 +1046,9 @@ function applyPointCloudLift(): void {
 }
 
 function applyHeightOffset(): void {
-  stream?.group.position.copy(enuUp).multiplyScalar(heightOffsetEnabled ? zOffset : 0)
+  // zOffset is fixed at zero, so this only ever writes (0,0,0). Kept as the single place
+  // that positions the group, so a future change has one door to come through.
+  stream?.group.position.copy(enuUp).multiplyScalar(zOffset)
 }
 
 function enuToWorld(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
@@ -1539,7 +1529,6 @@ let areaMinZ = 0
  * the river bed, the gravel bars, the low inner bends — ends up behind the imagery and
  * invisible. Hence a knob rather than a constant.
  */
-let pointCloudLiftM: number = EXPERIENCE_CONFIG.navigation.pointCloudLiftM
 /** Manifest-derived inputs the lift recomputes from; unset until the manifest lands. */
 let areaOriginHeight = 0
 let areaSpan = 0
@@ -3005,7 +2994,6 @@ async function main(): Promise<void> {
     areaSpan = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
     areaHeightsKnown = true
     applyPointCloudLift()
-    syncLiftReadout()
   }
 
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
@@ -3383,7 +3371,6 @@ function dispose(): void {
   delete loaderEagleCanvasEl.dataset.benchState
   rainToggleEl.removeEventListener('click', onRainToggle)
   precisionToggleEl.removeEventListener('click', onPrecisionToggle)
-  liftToggleEl.removeEventListener('click', onLiftToggle)
   dofToggleEl.removeEventListener('click', onDofToggle)
   dofAutoFocusEl.removeEventListener('click', onDofAutoFocus)
   groundPatchToggleEl.removeEventListener('click', onGroundPatchToggle)

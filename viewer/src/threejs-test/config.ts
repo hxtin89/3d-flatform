@@ -191,11 +191,6 @@ export const EXPERIENCE_CONFIG = {
     // below where areaBbox puts the floor — so without a lift the river bed and the
     // gravel bars end up behind the imagery and invisible.
     //
-    // 20 m, chosen by eye on the Lift slider. Clearing the imagery completely takes
-    // about 46 m, but lifting that far floats the whole canopy with it, so this is a
-    // deliberate middle: the banks come out, the deepest channel stays tucked under.
-    // Adjustable live — see the Lift slider under Height offset.
-    pointCloudLiftM: 20,
     // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
     maximumOrbitDegrees: 72,
