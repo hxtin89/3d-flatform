@@ -1562,7 +1562,15 @@ function reaimShallowPan(controls: any): void {
   // "Not steep enough" rather than "shallow", so a NaN descent re-aims nothing.
   if (!(descent < threshold)) return
   if (!globe.getRawPointer(panRawPointer)) return
-  if (!viewCentrePivot(pivotCorrected)) return
+  // Real ground at the centre, or no re-aim. viewCentrePivot falls back to a point
+  // straight ahead at the clamp limit, which sits near the camera's own altitude — the
+  // globe pan then solves against a sphere the camera is barely outside of, where the
+  // near/far intersection can swap and the world pans the wrong way. Better to leave the
+  // press to the library than to invert the drag.
+  if (!viewCentrePivot(pivotCorrected)) {
+    pivotDebug = { reason: 'pan ray shallow, but no ground at the view centre', passes: [] }
+    return
+  }
   const element = renderer.domElement
   globe.setPanPointerShift(
     panRawPointer.x - Math.max(element.clientWidth, 1) * 0.5,
@@ -1603,21 +1611,30 @@ function pressAimedAtSky(controls: any): boolean {
   return true
 }
 
-/** Pan against the view centre — the fallback for a left press the controls refused.
- * Aimed at the sky there is no ground to sample, and the point then sits straight ahead
- * at the clamp limit: a left press stays a pan either way, never a rotation. */
+/**
+ * Pan against the view centre — the fallback for a left press the controls refused.
+ *
+ * Solved the same way as a re-aimed shallow pan, pointer shift included: setting the
+ * pivot to the centre while the controls still read the raw pointer leaves the two
+ * disagreeing, which showed up as a 461 m lurch in the wrong direction. Requires real
+ * ground at the centre for the same reason reaimShallowPan does.
+ */
 function panViewCentre(controls: any, reason: string): void {
-  const onGround = viewCentrePivot(pivotCorrected)
+  if (!globe || !globe.getRawPointer(panRawPointer) || !viewCentrePivot(pivotCorrected)) {
+    pivotDebug = { reason: `${reason} — nothing to pan against`, passes: [] }
+    return
+  }
+  const element = renderer.domElement
+  globe.setPanPointerShift(
+    panRawPointer.x - Math.max(element.clientWidth, 1) * 0.5,
+    panRawPointer.y - Math.max(element.clientHeight, 1) * 0.5,
+  )
   controls.pivotPoint.copy(pivotCorrected)
   controls.setState(1) // DRAG
   pivotPressState = 1
   pivotMarkerPlaced = true
   holdPivot(controls, 1)
-  pivotDebug = {
-    reason: `${reason} — panning the view centre`
-      + `${onGround ? '' : ' at the clamp limit (no ground ahead)'}`,
-    passes: [],
-  }
+  pivotDebug = { reason: `${reason} — panning the view centre`, passes: [] }
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
