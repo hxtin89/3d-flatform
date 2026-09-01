@@ -98,10 +98,26 @@ page.appendChild(host)
 host.layoutSizingHorizontal = 'HUG'
 host.layoutSizingVertical = 'HUG'
 
-// A fillet of radius R needs at least R of width difference to draw. Below that
-// the wedge is squeezed into a sliver and reads as a nick in the edge, so treat
-// near-equal lines as flush and let the right edge run straight through.
-const rel = (a, b) => (Math.abs(a - b) < RADIUS ? 'same' : a < b ? 'less' : 'more')
+// Same rule as packages/ui/src/lib/geometry/label-stack.ts -- deliberately, so the
+// Figma output and the runtime component cannot drift into different corner logic.
+//
+// Both RIGHT-hand corners answer the same question: is my vertical neighbour on
+// that side LONGER than me? If so this line's free edge has to sweep out past
+// itself and land tangent on the longer line, which is Fill-Left. Top-right looks
+// up, bottom-right looks down. (An earlier version used Fill-Top for the top-right
+// case, which bulges the wrong way.)
+//
+// A fillet cannot draw in less than its own radius of width difference; below that
+// it collapses into a sliver that reads as a nick in the edge. Wrapped copy hits
+// this constantly -- two lines filled to the same cap land a pixel or two apart --
+// so near-equal counts as flush and the edge runs straight through.
+const free = (neighbor, w) => {
+  if (neighbor === undefined) return ATOM.convex
+  if (Math.abs(neighbor - w) < RADIUS) return ATOM.none
+  return neighbor < w ? ATOM.convex : ATOM.fillLeft
+}
+// Only a real exterior corner is rounded. Every wedge and every flush join sits at 0.
+const radiusFor = (type) => (type === ATOM.convex ? pill : none)
 
 lines.forEach((text, i) => {
   const inst = line.createInstance()
@@ -109,35 +125,18 @@ lines.forEach((text, i) => {
   const isFirst = i === 0
   const isLast = i === lines.length - 1
 
-  // Top-right answers to the line ABOVE, bottom-right to the line BELOW: the
-  // seam is concave on whichever side the shorter line is, so which line carries
-  // the wedge depends on which of the two is wider.
-  let tr = ATOM.convex
-  let trRadius = pill
-  if (!isFirst) {
-    const r = rel(widths[i], widths[i - 1])
-    if (r === 'less') { tr = ATOM.fillTop; trRadius = none }
-    else if (r === 'same') { tr = ATOM.none; trRadius = none }
-  }
-  let br = ATOM.convex
-  let brRadius = pill
-  if (!isLast) {
-    const r = rel(widths[i + 1], widths[i])
-    if (r === 'more') { br = ATOM.fillLeft; brRadius = none }
-    else if (r === 'same') { br = ATOM.none; brRadius = none }
-  }
+  const tr = free(isFirst ? undefined : widths[i - 1], widths[i])
+  const br = free(isLast ? undefined : widths[i + 1], widths[i])
+  // Anchor-side caps close the stack top and bottom; the anchor side BETWEEN
+  // lines is never bitten into, so it stays flush.
+  const tl = isFirst ? ATOM.fillTop : ATOM.none
+  const bl = isLast ? ATOM.fillTop : ATOM.none
 
-  inst.setProperties({
-    [K.text]: text,
-    [K.tl]: ATOM.fillTop,
-    [K.tr]: tr,
-    [K.br]: br,
-    [K.bl]: isLast ? ATOM.fillTop : ATOM.convex,
-  })
-  inst.setBoundVariable('topLeftRadius', none)
-  inst.setBoundVariable('topRightRadius', trRadius)
-  inst.setBoundVariable('bottomRightRadius', brRadius)
-  inst.setBoundVariable('bottomLeftRadius', none)
+  inst.setProperties({ [K.text]: text, [K.tl]: tl, [K.tr]: tr, [K.br]: br, [K.bl]: bl })
+  inst.setBoundVariable('topLeftRadius', radiusFor(tl))
+  inst.setBoundVariable('topRightRadius', radiusFor(tr))
+  inst.setBoundVariable('bottomRightRadius', radiusFor(br))
+  inst.setBoundVariable('bottomLeftRadius', radiusFor(bl))
 })
 
 return {
