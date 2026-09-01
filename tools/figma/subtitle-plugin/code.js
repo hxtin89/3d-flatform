@@ -16,13 +16,23 @@ var RADIUS = 30;
 
 figma.showUI(__html__, { width: 440, height: 440 });
 
+// Tells the panel the sandbox is alive. Without it, a plugin that fails to load
+// and one that loads but never answers look identical from the UI side.
+figma.ui.postMessage({ type: 'status', message: 'Ready.' });
+
 figma.ui.onmessage = async function (msg) {
-  if (msg.type !== 'run') return;
+  if (!msg || msg.type !== 'run') return;
   try {
     var report = await generate(msg.text, Number(msg.maxWidth));
     figma.ui.postMessage({ type: 'done', report: report });
   } catch (error) {
-    figma.ui.postMessage({ type: 'error', message: String((error && error.message) || error) });
+    // Surface the stack too: the useful part of a Figma plugin failure is almost
+    // always the API call that threw, not the message.
+    figma.ui.postMessage({
+      type: 'error',
+      message: String((error && error.message) || error),
+      detail: error && error.stack ? String(error.stack).split('\n').slice(0, 3).join(' | ') : ''
+    });
   }
 };
 

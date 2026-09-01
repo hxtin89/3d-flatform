@@ -77,15 +77,25 @@
     else status.removeAttribute('data-tone');
   }
 
+  // Proves the UI script itself ran. If pressing Generate leaves this text
+  // untouched, the failure is in this file; if it changes to "Working..." and
+  // stops there, the plugin sandbox never answered.
+  say('Ready.');
+
   runButton.onclick = function () {
-    report.innerHTML = '';
-    runButton.disabled = true;
-    say('Working...');
-    parent.postMessage({ pluginMessage: {
-      type: 'run',
-      text: document.getElementById('copy').value,
-      maxWidth: document.getElementById('cap').value
-    } }, '*');
+    try {
+      report.innerHTML = '';
+      runButton.disabled = true;
+      say('Working...');
+      parent.postMessage({ pluginMessage: {
+        type: 'run',
+        text: document.getElementById('copy').value,
+        maxWidth: document.getElementById('cap').value
+      } }, '*');
+    } catch (error) {
+      runButton.disabled = false;
+      say('UI error: ' + ((error && error.message) || error), 'error');
+    }
   };
 
   // Newline is a hard break in the copy, so Enter must stay a newline; submit on
@@ -99,7 +109,11 @@
     if (!msg) return;
     if (msg.type === 'status') { say(msg.message); return; }
     runButton.disabled = false;
-    if (msg.type === 'error') { say(msg.message, 'error'); return; }
+    if (msg.type === 'error') {
+      say(msg.message, 'error');
+      if (msg.detail) report.innerHTML = '<li><code>' + msg.detail.replace(/</g, '&lt;') + '</code></li>';
+      return;
+    }
     say(msg.report.length + ' lines generated.');
     report.innerHTML = msg.report
       .map(function (line) { return '<li><code>' + line.width + '</code> &nbsp;' + line.text + '</li>'; })
