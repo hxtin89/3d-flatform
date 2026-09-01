@@ -1384,6 +1384,24 @@ function updateCanopyPivot(): void {
   const controls = globe?.controls as any
   if (!controls) return
   const state: number = controls.state ?? 0
+  // A held button always shows as a grab — even a press the controls refused now does
+  // something (below), so the cursor must never suggest the input is being ignored.
+  const cursor = state === 0 ? '' : 'grabbing'
+  if (renderer.domElement.style.cursor !== cursor) renderer.domElement.style.cursor = cursor
+  // A pressed pointer with no state is a press the controls refused: within ~3 degrees
+  // of the horizon the pointerdown returns before setting any state, and a press at the
+  // sky finds no raycast hit at all. Both used to be silently dead — no pan, no
+  // rotation, no feedback, just a user pressing harder. The tracker still registers the
+  // pointer before either bail-out, so the refusal is visible here, and the grab
+  // becomes the same look-around a too-shallow pan converts to.
+  if (state === 0 && (controls.pointerTracker?.getPointerCount?.() ?? 0) > 0
+    && controls.enabled && controls.pivotPoint) {
+    controls.pivotPoint.copy(camera.position)
+    controls.setState(5) // FREE_ROTATE
+    pivotPressState = 5
+    pivotDebug = { reason: 'press refused by the controls — converted to look-around', passes: [] }
+    return
+  }
   // Any transition into an active state counts as a press, not just idle → pressed:
   // a second button mid-drag or a touch going WAITING → ROTATE used to slip through,
   // leaving pivotDebug describing the previous press and touch rotations unlifted.

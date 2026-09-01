@@ -159,6 +159,20 @@ export function createGlobe(opts: {
   })
 
   const controls = new GlobeControls(scene, camera, renderer.domElement, tiles)
+  // Mouse drags are not pointer-captured by the library (touch is), so the document's
+  // pointerleave — fired the moment the cursor crosses the window edge mid-drag —
+  // resets the drag while the button is still held: moves stop arriving, the leftover
+  // rotation inertia coasts uncontrolled, and the held button stays dead until it is
+  // released and pressed again. Capturing the pointer keeps moves and the release
+  // flowing from outside the window and suppresses that pointerleave entirely.
+  renderer.domElement.addEventListener('pointerdown', (event: PointerEvent) => {
+    if (event.pointerType !== 'mouse') return
+    try {
+      renderer.domElement.setPointerCapture(event.pointerId)
+    } catch {
+      // Synthetic events and already-released pointers have no capturable pointer.
+    }
+  })
   // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
   // hard clearance from the globe, while minDistance prevents a zoom pivot
   // from pulling the camera through the surface. A 72° orbit ceiling keeps the
