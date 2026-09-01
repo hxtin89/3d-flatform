@@ -5,7 +5,7 @@
 // passed and rendered empty. This is the shared source recreation-content.ts
 // pulls from (icon/image are plain Snippet values on BentoGridItem), so
 // every consumer -- ScreenExample.svelte, BentoGrid.stories.ts's SpeciesRow,
-// and the viewer's design-system-demo.ts -- gets them for free.
+// and the viewer's storyboard -- gets them for free.
 //
 // Vogel/Morphofalter's collapsed cards used to fall back to a 64x64 generic
 // path icon in a small tinted badge -- next to Giftfrosch's real photo,

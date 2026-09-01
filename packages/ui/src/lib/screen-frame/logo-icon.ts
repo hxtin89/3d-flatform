@@ -21,7 +21,7 @@ import type { Snippet } from "svelte";
 
 // Plain markup (not just a Snippet) because this is needed in two totally
 // different rendering contexts: ScreenFrame.svelte's Svelte-snippet `logo`
-// slot below, AND the viewer's design-system-demo.ts, which hand-builds its
+// slot below, AND any caller that hand-builds its
 // frame via raw DOM (createFrame/dockElement) rather than ScreenFrame.svelte
 // -- a Svelte Snippet can only be rendered with {@render} inside a .svelte
 // template, not assigned to plain DOM's innerHTML.

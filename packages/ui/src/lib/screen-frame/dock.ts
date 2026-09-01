@@ -238,7 +238,7 @@ export function dockElement(host: HTMLElement, container: HTMLElement, config: D
       if ((config.verticalDrop || config.avoid) && (edge === 'left-center' || edge === 'right-center')) {
         // The numeric twin of the `scale` string above: with no per-dock
         // override the transform reads --screen-frame-content-scale, which
-        // ScreenFrame/design-system-demo both set from exactly this value.
+        // ScreenFrame sets it from exactly this value.
         // Reading it back out of getComputedStyle instead would be a
         // round-trip through the CSSOM for a number we already have.
         const s = config.scale ? config.scale() : frame.getContentScale()

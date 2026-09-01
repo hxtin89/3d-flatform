@@ -10,7 +10,7 @@ import { createStreamingCloud, type StreamingCloud, type StreamingStats } from '
 import { fetchGlobeManifest } from './manifest'
 import { AdaptiveQualityController, APH_BAND_SSE } from './adaptive-quality'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
-import { createDesignSystemDemo, type DesignSystemDemo } from './design-system-demo'
+import { createStoryboard, type StoryboardHandle } from './storyboard'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { EXPERIENCE_CONFIG } from './config'
@@ -478,7 +478,7 @@ function applyPointSize(): void {
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
-let designSystemDemo: DesignSystemDemo | null = null
+let designSystemDemo: StoryboardHandle | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
@@ -2101,7 +2101,7 @@ async function main(): Promise<void> {
   audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
-  designSystemDemo = createDesignSystemDemo()
+  designSystemDemo = createStoryboard()
   // ?clean=1 skips the loader, so the reveal its start button normally triggers
   // never fires. Jump the frame straight to its resting margin instead.
   if (cleanMode) void designSystemDemo.reveal(0)

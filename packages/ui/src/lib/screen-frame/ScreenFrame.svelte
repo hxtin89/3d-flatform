@@ -280,7 +280,7 @@
     isolation: isolate;
     /* No min-height fallback: every real caller already gives this a real
        height to fill -- ScreenExample's fixed-px wrapper (Storybook) and the
-       viewer's position:fixed/inset:0 container (see design-system-demo.ts)
+       viewer's position:fixed/inset:0 container (see storyboard/index.ts)
        both do. A `min-height: 100dvh` here used to stomp on both of those
        whenever the actual browser viewport was taller than the intended
        size (e.g. every fixed-size Storybook story shorter than the
