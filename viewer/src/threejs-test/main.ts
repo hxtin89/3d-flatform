@@ -1031,11 +1031,21 @@ function updateOrigin(force = false): void {
 onRebase((delta) => {
   camera.position.add(delta)
   camera.updateMatrixWorld()
-  // These three points of GlobeControls are deliberately NOT shifted. The comment they
-  // came with said the orbit centre would teleport without it, but measured they sit at
-  // full ECEF magnitude (6.39e6) while the camera is 80 m from the render origin — they
-  // live in the globe's own frame, which the ECEF root already carries. Adding the
-  // render delta moved them by 8913 m per rebase, which is the error, not the cure.
+  // The controls' interaction points are render-space values — pivotPoint is the press
+  // raycast hit (or the camera itself in free look), zoomPoint a scene hit — so a
+  // rebase must carry them exactly like the camera, or a drag in flight keeps orbiting
+  // a point displaced by the whole rebase delta. Recorded live: over one rotation the
+  // camera-to-pivot distance grew 1.5 km to 5.2 km in rebase-sized steps, and each
+  // step handed the orbit a fresh catapult — the intermittent fly-away. (An older
+  // comment here claimed these points sit at ECEF magnitude and must not be shifted;
+  // whatever was measured then, every writer of these fields today is render-space.)
+  const rebaseControls = globe?.controls as any
+  if (rebaseControls) {
+    rebaseControls.pivotPoint?.add(delta)
+    rebaseControls.zoomPoint?.add(delta)
+    rebaseControls.rotationInertiaPivot?.add(delta)
+    rebaseControls.pivotMesh?.position?.add(delta)
+  }
   refreshOriginDerived()
 })
 const cloudCenterEnu = new THREE.Vector3()
@@ -1365,8 +1375,6 @@ interface PivotDebug {
   pivotRoseM?: number
   /** Camera height over the lifted pivot — small means turning almost in place. */
   camAbovePivotM?: number
-  /** Set when the far-pivot clamp pulled the pivot in along the click ray. */
-  clamped?: { fromM: number; toM: number }
 }
 let pivotDebug: PivotDebug = { reason: null, passes: [] }
 
@@ -1384,6 +1392,7 @@ function updateCanopyPivot(): void {
   const controls = globe?.controls as any
   if (!controls) return
   const state: number = controls.state ?? 0
+  const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
   // A held button always shows as a grab — even a press the controls refused now does
   // something (below), so the cursor must never suggest the input is being ignored.
   const cursor = state === 0 ? '' : 'grabbing'
@@ -1392,14 +1401,29 @@ function updateCanopyPivot(): void {
   // of the horizon the pointerdown returns before setting any state, and a press at the
   // sky finds no raycast hit at all. Both used to be silently dead — no pan, no
   // rotation, no feedback, just a user pressing harder. The tracker still registers the
-  // pointer before either bail-out, so the refusal is visible here, and the grab
-  // becomes the same look-around a too-shallow pan converts to.
+  // pointer before either bail-out, so the refusal is visible here. Turning around what
+  // you are looking at is the expected answer to a grab the raycast could not resolve,
+  // so the view centre becomes the pivot where it has ground under it, and only a
+  // centre that is missing or itself beyond the pivot limit falls back to a look-around.
   if (state === 0 && (controls.pointerTracker?.getPointerCount?.() ?? 0) > 0
     && controls.enabled && controls.pivotPoint) {
-    controls.pivotPoint.copy(camera.position)
-    controls.setState(5) // FREE_ROTATE
-    pivotPressState = 5
-    pivotDebug = { reason: 'press refused by the controls — converted to look-around', passes: [] }
+    ndc.set(0, 0)
+    ray.setFromCamera(ndc, camera)
+    if (ray.ray.intersectPlane(groundPlane, hitEcef)
+      && hitEcef.distanceTo(camera.position) <= pivotDistanceLimit()) {
+      controls.pivotPoint.copy(hitEcef)
+      controls.setState(ROTATE)
+      pivotPressState = ROTATE
+      holdPivot(controls, ROTATE)
+      pivotMarkerPlaced = true
+      pivotDebug = { reason: 'press refused — orbiting the view centre', passes: [] }
+    } else {
+      controls.pivotPoint.copy(camera.position)
+      controls.setState(FREE_ROTATE)
+      pivotPressState = FREE_ROTATE
+      heldPivotState = 0
+      pivotDebug = { reason: 'press refused by the controls — converted to look-around', passes: [] }
+    }
     return
   }
   // Any transition into an active state counts as a press, not just idle → pressed:
@@ -1407,18 +1431,30 @@ function updateCanopyPivot(): void {
   // leaving pivotDebug describing the previous press and touch rotations unlifted.
   const pressStarted = state !== 0 && state !== pivotPressState
   pivotPressState = state
+  if (!pressStarted || !controls.pivotPoint) {
+    if (state === 0) { heldPivotState = 0; return }
+    // The pivot sampled at press stays the pivot until a true release — nothing
+    // mid-hold may move it. Restoring it every frame makes that a guarantee instead
+    // of an audit of every writer. Left alone: FREE_ROTATE (the pivot rides the
+    // camera by design) and frames where the library's terrain-clearance push is
+    // active — it shifts camera and pivot together and restores them itself.
+    if (state === heldPivotState && (state === ROTATE || state === DRAG)
+      && (controls.actionHeightOffset ?? 0) === 0 && controls.pivotPoint) {
+      controls.pivotPoint.copy(heldPivot)
+    }
+    return
+  }
   // Rotation only. Rotation turns *around* the pivot, so moving it costs nothing: the
   // angle per pixel is fixed at 2*pi / clientHeight whatever the distance. Panning
   // instead lays a horizontal plane through the pivot and rides it, so pan distance per
   // pixel scales with the camera's height above that plane — lifting it onto the canopy
   // would slow panning to a third near the treetops, and make the gain depend on whether
   // the cursor happened to grab a tall tree or a clearing.
-  const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
-  if (!pressStarted || !controls.pivotPoint) return
   if (state === FREE_ROTATE) {
-    // The pivot rides the camera here — there is nothing to lift, clamp, or mark.
-    // Genuine free looks land here; our own pan conversions pre-set pivotPressState
+    // The pivot rides the camera here — there is nothing to lift, clamp, hold or mark.
+    // Genuine free looks land here; our own conversions pre-set pivotPressState
     // so they keep their more specific verdict instead of this one.
+    heldPivotState = 0
     pivotDebug = { reason: 'free look — pivot rides the camera', passes: [] }
     return
   }
@@ -1426,22 +1462,54 @@ function updateCanopyPivot(): void {
     // Say so, rather than leaving the previous press's verdict standing — the whole point
     // of this field is telling "declined" apart from "never ran".
     pivotDebug = { reason: 'not a rotation', passes: [] }
-    if (state === DRAG) convertShallowPanToLookAround(controls)
+    if (state === DRAG) {
+      convertShallowPanToLookAround(controls)
+      if (controls.state === DRAG) holdPivot(controls, DRAG)
+    }
     return
   }
   pivotMarkerPlaced = true
   if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
     controls.pivotPoint.copy(pivotCorrected)
-  } else {
-    // Only when the lift declined: the lift already lands the pivot near the camera,
-    // and 47f3b6f showed that two large corrections on one press fight each other.
-    clampPivotDistance(controls.pivotPoint)
   }
+  // Checked after the lift on both paths: orbiting moves the camera by pivot distance
+  // times the turn angle, so a far pivot is a catapult whichever code produced it.
+  // Recorded live — grabs near the treeline at 300-500 m altitude, pivots 2-3 km out,
+  // single frames trying to travel 5.5 km. Beyond the limit the grab turns into the
+  // same look-around a too-shallow pan gets; an earlier pull-in along the ray only
+  // shortened the catapult.
+  if (convertFarPivotToLookAround(controls)) return
+  holdPivot(controls, ROTATE)
   // Keep the marker honest even though globe.update removes it before rendering.
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
   }
+}
+
+/**
+ * The pivot sampled at press, held for the whole drag — see the restore in
+ * updateCanopyPivot. Rebase-aware: a rebase shifts every render-space point, so the
+ * held value shifts with it or the hold itself would become the mid-drag jump.
+ */
+const heldPivot = new THREE.Vector3()
+let heldPivotState = 0
+onRebase((delta) => { heldPivot.add(delta) })
+
+function holdPivot(controls: any, state: number): void {
+  heldPivot.copy(controls.pivotPoint)
+  heldPivotState = state
+}
+
+/** How far from the camera a rotation pivot may sit — see the config knobs. */
+function pivotDistanceLimit(): number {
+  const heightAboveFloor = Math.max(
+    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
+  )
+  return Math.max(
+    heightAboveFloor * EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
+    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
+  )
 }
 
 /**
@@ -1470,39 +1538,35 @@ function convertShallowPanToLookAround(controls: any): void {
   // The transition just made would read as a fresh press next frame; claiming it here
   // keeps this verdict from being overwritten by the generic free-look one.
   pivotPressState = 5
+  heldPivotState = 0
   pivotDebug = {
     reason: `pan too shallow (descent ${descent.toFixed(3)}) — converted to look-around`,
     passes: [],
   }
 }
 
-const clampPivotDelta = new THREE.Vector3()
 const clampPivotCamEnu = new THREE.Vector3()
 
 /**
- * Pull a rotation pivot that sits too far away in along the click ray.
- *
- * Rotation travel per pixel is pivot distance times a fixed angle, and the press
- * raycast puts no bound on that distance — near the horizon it lands on the drape or
- * the ellipsoid fallback kilometres out, and the first flick catapults the camera.
- * The governor already caps the damage per frame; this removes the cause for the
- * rotation path. Staying on the click ray keeps the pivot in the direction the user
- * grabbed, just closer, so the gesture still turns toward the cursor.
+ * Turn a rotation whose pivot sits too far away into a look-around. Returns true when
+ * it converted. The comparison is written so NaN input converts nothing.
  */
-function clampPivotDistance(pivotWorld: THREE.Vector3): void {
-  if (!enuFrameReady) return
-  clampPivotDelta.subVectors(pivotWorld, camera.position)
-  const distance = clampPivotDelta.length()
-  const heightAboveFloor = Math.max(
-    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
-  )
-  const limit = Math.max(
-    heightAboveFloor * EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
-    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
-  )
-  if (!(distance > limit)) return
-  pivotWorld.copy(camera.position).addScaledVector(clampPivotDelta, limit / distance)
-  pivotDebug.clamped = { fromM: +distance.toFixed(1), toM: +limit.toFixed(1) }
+function convertFarPivotToLookAround(controls: any): boolean {
+  if (!enuFrameReady) return false
+  const distance = controls.pivotPoint.distanceTo(camera.position)
+  const limit = pivotDistanceLimit()
+  if (!(distance > limit)) return false
+  const priorReason = pivotDebug.reason
+  controls.pivotPoint.copy(camera.position)
+  controls.setState(5) // FREE_ROTATE
+  pivotPressState = 5
+  heldPivotState = 0
+  pivotDebug = {
+    reason: `pivot ${distance.toFixed(0)} m out, over the ${limit.toFixed(0)} m limit`
+      + ` (lift: ${priorReason ?? 'not run'}) — converted to look-around`,
+    passes: [],
+  }
+  return true
 }
 
 function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
@@ -1898,14 +1962,17 @@ function beginFrameMoveGovernor(): void {
   governorArmed = false
   const controls = globe?.controls as any
   if (!controls || !enuFrameReady) return
-  // Wheel zoom arrives with state NONE, so the pending zoomDelta is what marks it.
-  if ((controls.zoomDelta ?? 0) !== 0) return
   const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
   const state: number = controls.state ?? 0
+  const dragging = state === DRAG || state === ROTATE || state === FREE_ROTATE
+  // Wheel zoom arrives with state NONE, so the pending zoomDelta is what marks it —
+  // but the exemption holds only while nothing else is moving the camera. Wheel input
+  // DURING a drag used to disarm the whole governor: recorded live, a rotation with
+  // zoom pending fell 594 m to 80 m and stepped 3,061 m in a single ungoverned frame.
+  if (!dragging && (controls.zoomDelta ?? 0) !== 0) return
   const inertiaActive = (controls.dragInertia?.lengthSq() ?? 0) > 0
     || (controls.rotationInertia?.lengthSq() ?? 0) > 0
     || (controls.globeInertiaFactor ?? 0) !== 0
-  const dragging = state === DRAG || state === ROTATE || state === FREE_ROTATE
   if (!dragging && !(state === 0 && inertiaActive)) return
   governorArmed = true
   governorPrevPosition.copy(camera.position)
@@ -3545,6 +3612,8 @@ async function main(): Promise<void> {
     get pivotDebug() { return pivotDebug },
     /** How often the per-frame camera step was clamped, and the last clamp's numbers. */
     get navDebug() { return navDebug },
+    /** Force an origin rebase onto the camera — for testing rebase-during-drag. */
+    rebase: () => updateOrigin(true),
     /** Every height in one place, as the ruler last read them. */
     get heights() { return heightRulerMarks },
     mask: groundPatchMask,

@@ -173,6 +173,15 @@ export function createGlobe(opts: {
       // Synthetic events and already-released pointers have no capturable pointer.
     }
   })
+  // A release can still vanish entirely — the up landed before the capture engaged, or
+  // the capture was lost — and the state machine then drags forever on a button nobody
+  // holds. A mouse move reporting no pressed buttons while a drag state is active is
+  // exactly that situation, so it stands in for the missing release.
+  const phantomReleaseCallback = (event: PointerEvent) => {
+    if (event.pointerType !== 'mouse' || event.buttons !== 0) return
+    if ((controls as any).state !== 0) controls.resetState()
+  }
+  document.addEventListener('pointermove', phantomReleaseCallback)
   // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
   // hard clearance from the globe, while minDistance prevents a zoom pivot
   // from pulling the camera through the surface. A 72° orbit ceiling keeps the
@@ -317,6 +326,7 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      document.removeEventListener('pointermove', phantomReleaseCallback)
       controls.dispose()
       tiles.dispose()
       scene.remove(tiles.group)

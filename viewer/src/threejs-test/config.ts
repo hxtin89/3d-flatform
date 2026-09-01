@@ -267,24 +267,26 @@ export const EXPERIENCE_CONFIG = {
     pivotMinRayDescent: 0.25,
     /**
      * How far from the camera a rotation pivot may sit, as a multiple of the camera's
-     * height above the survey floor. Rotation travel per pixel is pivot distance times
-     * a fixed angle, so a press near the horizon — where the raycast lands kilometres
-     * out on the drape or the ellipsoid fallback — turns one flick into a catapult.
-     * Pivots past the limit are pulled in along the click ray, which keeps the cursor
-     * direction while giving the gesture a sane radius.
+     * height above the survey floor, before the grab becomes a look-around instead.
      *
-     * Applied only when the canopy lift declined — the lift already lands the pivot
-     * near the camera, and the reverted 47f3b6f showed what happens when two large
-     * corrections fight over one press. 8× clears the lift's own shallow-ray limit
-     * (height ÷ 0.25 descent = 4× height) with room to spare, so every pivot the lift
-     * would accept is also acceptable here.
+     * Orbiting moves the camera by pivot distance times the turn angle, so a far pivot
+     * is a catapult whatever produced it — recorded live: grabs near the treeline at
+     * 300-500 m altitude put the pivot 2-3 km out and single frames tried to travel
+     * 5.5 km. An earlier version pulled such pivots in along the click ray (8x height);
+     * that only shortened the catapult, and the pulled-in point was no longer anything
+     * the user had grabbed. Rotating in place is bounded by construction and matches
+     * what the same situation does for pans and refused presses.
+     *
+     * 5x clears the canopy lift's own acceptance bound (height ÷ 0.25 minimum descent
+     * = 4x height), so every pivot the lift blesses keeps orbiting; only terrain hits
+     * beyond that — grabs past the treeline — turn into a look.
      */
-    pivotMaxDistanceHeightFactor: 8,
+    pivotMaxDistanceHeightFactor: 5,
     /**
      * Floor for that pivot limit, in metres, so grabbing a treeline from just above
-     * the canopy — where the height above the floor approaches zero — still works.
+     * the canopy — where the height above the floor approaches zero — still orbits.
      */
-    pivotMaxDistanceMinM: 250,
+    pivotMaxDistanceMinM: 400,
     /**
      * Least steeply a pan press ray may descend, as a dot product against local up, for
      * the pan to start at all. Below it the grab becomes a free look-around instead.
