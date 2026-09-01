@@ -3,13 +3,13 @@
     ScreenFrame,
     HabitatLabelStack,
     BentoGrid,
-    Subtitle,
-    MediaCard,
     WEATHER_CLUSTER,
     SPECIES_ROW,
     EAGLE_LOGO_SVG,
   } from "@wi/ui";
   import { STEPS, type Step } from "./steps";
+  import { SCREENS } from "./screens";
+  import Screen from "./Screen.svelte";
 
   interface Props {
     /** Frame at its resting margin, or retracted to full bleed. */
@@ -24,10 +24,29 @@
   let index = $state(0);
   const step = $derived(STEPS[index]);
 
+  // When the current beat opened. The advance guard needs it -- see blocked().
+  let enteredAt = $state(performance.now());
+
   // Fires on mount too, so the opening beat gets its pose without a special case.
   $effect(() => {
+    enteredAt = performance.now();
     onStep?.(STEPS[index]);
   });
+
+  /**
+   * Refuses an advance while the camera is still moving, but only for so long.
+   *
+   * The plain "is a flight active" test is right until a flight stops being
+   * updated -- a backgrounded tab, a stalled frame loop -- and then it never
+   * reports landing and the sequence is stuck with no way out. A click dummy
+   * that cannot be clicked is worse than one that cuts a move short, so after
+   * the slack window the guard yields.
+   */
+  const FLIGHT_SLACK_MS = 6_000;
+  function blocked() {
+    if (!canAdvance || canAdvance()) return false;
+    return performance.now() - enteredAt < FLIGHT_SLACK_MS;
+  }
 
   // Exported so the imperative caller in main.ts can drive this without a store.
   // Svelte 5 surfaces these on the object mount() returns.
@@ -35,11 +54,11 @@
     // A flight has no queue: starting a second one abandons the first, whose
     // progress then never reaches 1. Anything waiting on that landing would wait
     // forever, so a beat cannot be skipped while the camera is still moving.
-    if (canAdvance && !canAdvance()) return;
+    if (blocked()) return;
     index = (index + 1) % STEPS.length;
   }
   export function previous() {
-    if (canAdvance && !canAdvance()) return;
+    if (blocked()) return;
     index = (index - 1 + STEPS.length) % STEPS.length;
   }
   export function goTo(id: string) {
@@ -115,14 +134,8 @@
   species={step.content === "habitat" ? species : undefined}
   label={step.content === "habitat" ? label : undefined}
   logo={eagle}
-  stage={step.content === "video" ? videoStage : undefined}
+  stage={step.content === "stage" ? stageScreen : undefined}
 />
-
-{#if step.content === "text" && step.caption}
-  <div class="storyboard__caption">
-    <Subtitle text={step.caption} maxWidth={1010} />
-  </div>
-{/if}
 
 <div class="storyboard__controls">
   <button type="button" onclick={previous} aria-label="Vorheriger Schritt">‹</button>
@@ -142,15 +155,8 @@
   <HabitatLabelStack {align} />
 {/snippet}
 
-<!--
-  Authored at Figma px against the 1080x2340 frame -- the stage does the scaling,
-  so these are the numbers straight off the frame rather than anything multiplied
-  by a content scale.
--->
-{#snippet videoStage()}
-  <div class="storyboard__video">
-    <MediaCard author="Nadine Holmes" duration="1:20 Minuten" progress={0.42} />
-  </div>
+{#snippet stageScreen()}
+  <Screen items={SCREENS[step.screen ?? ""] ?? []} />
 {/snippet}
 
 {#snippet eagle()}
@@ -159,25 +165,6 @@
 {/snippet}
 
 <style>
-  /* The caption layer sits over the frame, docked to the window's lower half the
-     way Figma's Frame 11 places it. Not a ScreenFrame dock: that frame authors it
-     as a fixed composition with no collision relationships, and a dock edge would
-     be solving a problem this screen does not have. */
-  .storyboard__caption {
-    position: absolute;
-    left: calc(60px * var(--screen-frame-content-scale, 1));
-    bottom: calc(320px * var(--screen-frame-content-scale, 1));
-    pointer-events: none;
-  }
-
-  /* Figma places this card at (152, 231) in Frame 3. Literal px: inside the
-     stage, one unit is one Figma unit. */
-  .storyboard__video {
-    position: absolute;
-    left: 152px;
-    top: 231px;
-  }
-
   /* Placeholder chrome. A visible control rather than tap-anywhere, because
      tap-anywhere fights the camera: a drag ends in a click, so orbiting the scene
      would advance the story. */

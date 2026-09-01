@@ -198,12 +198,23 @@
    * `object-fit: contain` rule, done by hand because the content is a scaled DOM
    * subtree rather than a replaced element.
    *
-   * Two variables are re-declared ON the stage rather than inherited. The content
-   * scale becomes 1: the stage's own transform already applies it, and anything
-   * inside multiplying by it again would scale twice. The type boost is
-   * recomputed against the STAGE's scale rather than the frame's, because the
-   * window is inset by the margin and the two therefore differ -- using the
-   * frame's would floor the text against the wrong number.
+   * Two variables are re-declared ON the stage rather than inherited, and BOTH
+   * become 1.
+   *
+   * Content scale, because the stage's own transform already applies it and
+   * anything inside multiplying by it again would scale twice.
+   *
+   * Type boost, because a stage holds an AUTHORED composition. The boost exists
+   * to keep docked text readable when the layout shrinks, and it works there
+   * because those pills hug their text and simply grow. Inside a composition it
+   * does the opposite of its job: enlarging one text node re-wraps it and shifts
+   * everything measured around it, so the screen stops matching the frame it was
+   * drawn from. Observed directly -- a boost of 1.33 broke the parcel caption
+   * onto three lines where Figma has two.
+   *
+   * That leaves stage text small on a landscape viewport, where a portrait frame
+   * letterboxes hard. The fix for that is a desktop composition, not a bigger
+   * font inside the mobile one.
    */
   function layoutStage() {
     if (!frame || !stageHost || !stageInner) return;
@@ -222,10 +233,7 @@
     stageInner.style.height = `${stageSize.height}px`;
     stageInner.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
     stageInner.style.setProperty("--screen-frame-content-scale", "1");
-    stageInner.style.setProperty(
-      "--screen-frame-type-boost",
-      String(scale > 0 ? Math.max(1, frame.getTypeScale() / scale) : 1),
-    );
+    stageInner.style.setProperty("--screen-frame-type-boost", "1");
   }
 
   // One-time setup -- deliberately does NOT read `revealed` synchronously, so
