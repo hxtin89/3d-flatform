@@ -7,6 +7,9 @@
     text: string;
     /** Width cap for a single pill. Lines break to stay under it; a longer single word still overruns. */
     maxWidth?: number;
+    /** Figma's size/heading/xl. 48 rather than the 34 this started at: measured on a
+        390pt viewport the 34 landed at 12.3 CSS px, which is not reading size for
+        running copy -- 48 puts it at 17.3, level with the label stacks. */
     fontSize?: number;
     /** Sora weight. Body copy is Regular (400) -- LabelLine defaults to Bold, which is the headline face. */
     fontWeight?: number | string;
@@ -18,7 +21,7 @@
   let {
     text,
     maxWidth = 1010,
-    fontSize = 34,
+    fontSize = 48,
     fontWeight = 400,
     align = "left",
     radius = 30,
