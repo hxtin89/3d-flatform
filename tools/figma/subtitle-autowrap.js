@@ -1,149 +1,177 @@
-// Generates a Subtitle stack in Figma from ONE paragraph: wraps it, then builds
-// one hugging pill per resulting line with the right corner types and radii.
+// Subtitle Autowrap — paste this whole file into the Scripter plugin and press Run.
 //
-// Run it through the Figma Desktop Bridge (figma_execute) or paste it into a
-// plugin console. It is a generator, not a live component -- Figma components
-// cannot run code, and the Plugin API does not expose where a text node wraps.
+// It takes ONE paragraph, breaks it into lines, and builds one hugging pill per
+// line with the corner types and radii solved from the resulting widths. A Figma
+// component cannot do this itself: components run no code, and the Plugin API
+// never exposes where a text node wrapped. So the break is computed here and each
+// line is written as its own pill.
 //
-// The trick is to not ask Figma where it broke the text. We measure candidate
-// lines ourselves against a scratch text node in the same font, decide the
-// breaks, and then write each line's string into its own pill. Every pill
-// therefore contains exactly the string whose width we measured, so the
-// rendered width and the width the corner logic reasoned about cannot drift
-// apart. (Verified: all four rendered pills matched their measured width to
-// the pixel.)
+// The trick is to not ask Figma where it broke the text. Candidate lines are
+// measured against a scratch text node in the pill's own font, the break is
+// decided here, and each line's string is then written into its own pill — so
+// every pill holds exactly the string whose width was measured, and the rendered
+// width and the width the corner logic reasoned about cannot disagree.
 //
-// Re-run it whenever the copy changes; it replaces the previous output frame.
+// Also runs unchanged through the MCP bridge (figma_execute), where `print` does
+// not exist and the trailing expression is the output instead.
+//
+// Everything is looked up BY NAME, never by node id: ids are per-file and go
+// stale as soon as anything is duplicated, and a generator that silently targets
+// the wrong node is worse than one that refuses to run.
 
-const TEXT =
-  'Im Secret Forest ist es gerade 4:50. Nur noch eine Stunde, dann beginnt der ' +
-  'Dawn Chorus. Halte Ausschau nach dem Sira Giftfrosch am Ufer, dort wo der ' +
-  'Nebel am längsten über dem Wasser steht.'
-const MAX_WIDTH = 1010          // pill width cap; 1010 fits the 1080 mobile frame inside the thin border
-const OUT_NAME = 'Test: Subtitle (auto-wrapped)'
+// ---------------------------------------------------------------------------
+// EDIT THESE TWO, THEN RUN
+// ---------------------------------------------------------------------------
+const TEXT = "Das sind die 52m², welche mit deiner Spende geschützt wurden.";
+const MAX_WIDTH = 1010; // pill width cap; 1010 fits the 1080 mobile frame inside the thin border
+// ---------------------------------------------------------------------------
 
-const SUBTITLE_LINE = '25638:1681'
-const VAR_PILL = 'VariableID:25556:340'    // Radius/Semantic label/pill = 30
-const VAR_NONE = 'VariableID:25506:1021'   // _Radius/Primitive radius/none = 0
-const VAR_BG = 'VariableID:25506:1058'     // Color/Semantic bg/subtle
-const ATOM = { convex: '25556:607', none: '25556:608', fillLeft: '25556:610', fillTop: '25556:611' }
-const RADIUS = 30
+const LINE_COMPONENT = "Subtitle Line";
+const CORNER_SET = "Corner";
+const OUT_NAME = "Test: Subtitle (auto-wrapped)";
+const RADIUS = 30;
 
-const line = await figma.getNodeByIdAsync(SUBTITLE_LINE)
-const page = figma.currentPage
-const pill = await figma.variables.getVariableByIdAsync(VAR_PILL)
-const none = await figma.variables.getVariableByIdAsync(VAR_NONE)
-const bg = await figma.variables.getVariableByIdAsync(VAR_BG)
+const log = typeof print === "function" ? print : (m) => console.log(m);
 
-const defs = line.componentPropertyDefinitions
-const key = (p) => Object.keys(defs).find((k) => k.split('#')[0] === p)
+// Scripter's manifest may or may not use dynamic-page access; load only if the
+// API is there, so the same file runs under both.
+if (typeof figma.loadAllPagesAsync === "function") await figma.loadAllPagesAsync();
+
+const findByName = (type, name) => figma.root.findOne((n) => n.type === type && n.name === name);
+
+const line = findByName("COMPONENT", LINE_COMPONENT);
+if (!line) throw new Error(`Component "${LINE_COMPONENT}" not found — is this the WI-Map file?`);
+
+const cornerSet = findByName("COMPONENT_SET", CORNER_SET);
+if (!cornerSet) throw new Error(`Component set "${CORNER_SET}" not found.`);
+const atom = {};
+for (const variant of cornerSet.children) {
+  const match = /^Type=([^,]+), Size=Small$/.exec(variant.name);
+  if (match) atom[match[1]] = variant.id;
+}
+for (const needed of ["Convex", "None", "Fill-Left", "Fill-Top"]) {
+  if (!atom[needed]) throw new Error(`Corner variant "Type=${needed}, Size=Small" not found.`);
+}
+
+if (!figma.variables) throw new Error("This file exposes no variables API — wrong file, or an old plugin build.");
+const allVars = figma.variables.getLocalVariablesAsync
+  ? await figma.variables.getLocalVariablesAsync()
+  : figma.variables.getLocalVariables();
+const variableNamed = (name) => {
+  const found = allVars.find((v) => v.name === name);
+  if (!found) throw new Error(`Variable "${name}" not found in this file.`);
+  return found;
+};
+const pill = variableNamed("label/pill");
+const none = variableNamed("radius/none");
+const bg = variableNamed("bg/subtle");
+
+const defs = line.componentPropertyDefinitions;
+const key = (prefix) => {
+  const found = Object.keys(defs).find((k) => k.split("#")[0] === prefix);
+  if (!found) throw new Error(`"${LINE_COMPONENT}" has no property "${prefix}".`);
+  return found;
+};
 const K = {
-  text: key('Text'),
-  tl: key('Corner Top Left'),
-  tr: key('Corner Top Right'),
-  br: key('Corner Bottom Right'),
-  bl: key('Corner Bottom Left'),
-}
+  text: key("Text"),
+  tl: key("Corner Top Left"),
+  tr: key("Corner Top Right"),
+  br: key("Corner Bottom Right"),
+  bl: key("Corner Bottom Left"),
+};
 
-// --- measure -------------------------------------------------------------
-const sample = line.findOne((n) => n.type === 'TEXT')
-await figma.loadFontAsync(sample.fontName)
-const padding = line.paddingLeft + line.paddingRight
-const probe = figma.createText()
-page.appendChild(probe)
-probe.fontName = sample.fontName
-probe.fontSize = sample.fontSize
-probe.textAutoResize = 'WIDTH_AND_HEIGHT'
+// --- measure ---------------------------------------------------------------
+// Padding is read off the component rather than hardcoded, so retuning the pill
+// cannot silently shift where lines break.
+const sample = line.findOne((n) => n.type === "TEXT");
+await figma.loadFontAsync(sample.fontName);
+const padding = line.paddingLeft + line.paddingRight;
+const probe = figma.createText();
+figma.currentPage.appendChild(probe);
+probe.fontName = sample.fontName;
+probe.fontSize = sample.fontSize;
+probe.textAutoResize = "WIDTH_AND_HEIGHT";
 const widthOf = (s) => {
-  probe.characters = s
-  return probe.width + padding
-}
+  probe.characters = s;
+  return probe.width + padding;
+};
 
-// Greedy wrap, breaking only at whitespace. Authored newlines are kept as hard
-// breaks so a caller can still force a line where the copy needs one.
-function wrap(text, maxWidth) {
-  const out = []
-  for (const para of text.split('\n')) {
-    let cur = ''
-    for (const word of para.split(/\s+/).filter(Boolean)) {
-      const next = cur ? cur + ' ' + word : word
-      if (cur && widthOf(next) > maxWidth) {
-        out.push(cur)
-        cur = word
-      } else {
-        cur = next
-      }
+const lines = [];
+for (const paragraph of TEXT.split("\n")) {
+  let current = "";
+  for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+    const candidate = current ? `${current} ${word}` : word;
+    // A word wider than the cap gets its own over-long line rather than being
+    // split: pills hug, so it renders wide instead of clipped, and hyphenation is
+    // a typographic call this must not make silently.
+    if (current && widthOf(candidate) > MAX_WIDTH) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
     }
-    if (cur) out.push(cur)
   }
-  return out
+  if (current) lines.push(current);
 }
+const widths = lines.map(widthOf);
+probe.remove();
 
-const lines = wrap(TEXT, MAX_WIDTH)
-const widths = lines.map(widthOf)
-probe.remove()
+// --- build -----------------------------------------------------------------
+const page = figma.currentPage;
+const previous = page.children.find((c) => c.name === OUT_NAME);
+const at = previous ? { x: previous.x, y: previous.y } : { x: 0, y: 0 };
+if (previous) previous.remove();
 
-// --- build ---------------------------------------------------------------
-const previous = page.children.find((c) => c.name === OUT_NAME)
-if (previous) previous.remove()
+const host = figma.createFrame();
+host.name = OUT_NAME;
+host.layoutMode = "VERTICAL";
+host.itemSpacing = 0;
+host.counterAxisAlignItems = "MIN";
+host.paddingTop = host.paddingBottom = host.paddingLeft = host.paddingRight = 60;
+host.fills = [figma.variables.setBoundVariableForPaint({ type: "SOLID", color: { r: 0, g: 0, b: 0 } }, "color", bg)];
+page.appendChild(host);
+host.layoutSizingHorizontal = "HUG";
+host.layoutSizingVertical = "HUG";
+host.x = at.x;
+host.y = at.y;
 
-const host = figma.createFrame()
-host.name = OUT_NAME
-host.layoutMode = 'VERTICAL'
-host.itemSpacing = 0
-host.counterAxisAlignItems = 'MIN'
-host.paddingTop = host.paddingBottom = host.paddingLeft = host.paddingRight = 60
-host.fills = [figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }, 'color', bg)]
-page.appendChild(host)
-host.layoutSizingHorizontal = 'HUG'
-host.layoutSizingVertical = 'HUG'
+// Both right-hand corners ask the same thing: is my neighbour on that side LONGER
+// than me? Then my free edge sweeps out to land on it — Fill-Left. Top right looks
+// up, bottom right looks down. Below one radius of difference a fillet cannot draw
+// at all and collapses into a nick in the edge, so near-equal counts as flush.
+// Same rule as packages/ui/src/lib/geometry/label-stack.ts.
+const free = (neighbor, own) => {
+  if (neighbor === undefined) return atom.Convex;
+  if (Math.abs(neighbor - own) < RADIUS) return atom.None;
+  return neighbor < own ? atom.Convex : atom["Fill-Left"];
+};
+const radiusFor = (type) => (type === atom.Convex ? pill : none);
+const NAME = {};
+NAME[atom.Convex] = "Convex";
+NAME[atom.None] = "None";
+NAME[atom["Fill-Left"]] = "Fill-Left";
+NAME[atom["Fill-Top"]] = "Fill-Top";
 
-// Same rule as packages/ui/src/lib/geometry/label-stack.ts -- deliberately, so the
-// Figma output and the runtime component cannot drift into different corner logic.
-//
-// Both RIGHT-hand corners answer the same question: is my vertical neighbour on
-// that side LONGER than me? If so this line's free edge has to sweep out past
-// itself and land tangent on the longer line, which is Fill-Left. Top-right looks
-// up, bottom-right looks down. (An earlier version used Fill-Top for the top-right
-// case, which bulges the wrong way.)
-//
-// A fillet cannot draw in less than its own radius of width difference; below that
-// it collapses into a sliver that reads as a nick in the edge. Wrapped copy hits
-// this constantly -- two lines filled to the same cap land a pixel or two apart --
-// so near-equal counts as flush and the edge runs straight through.
-const free = (neighbor, w) => {
-  if (neighbor === undefined) return ATOM.convex
-  if (Math.abs(neighbor - w) < RADIUS) return ATOM.none
-  return neighbor < w ? ATOM.convex : ATOM.fillLeft
-}
-// Only a real exterior corner is rounded. Every wedge and every flush join sits at 0.
-const radiusFor = (type) => (type === ATOM.convex ? pill : none)
+const report = lines.map((content, i) => {
+  const instance = line.createInstance();
+  host.appendChild(instance);
+  const isFirst = i === 0;
+  const isLast = i === lines.length - 1;
+  const tr = free(isFirst ? undefined : widths[i - 1], widths[i]);
+  const br = free(isLast ? undefined : widths[i + 1], widths[i]);
+  const tl = isFirst ? atom["Fill-Top"] : atom.None;
+  const bl = isLast ? atom["Fill-Top"] : atom.None;
+  instance.setProperties({ [K.text]: content, [K.tl]: tl, [K.tr]: tr, [K.br]: br, [K.bl]: bl });
+  instance.setBoundVariable("topLeftRadius", radiusFor(tl));
+  instance.setBoundVariable("topRightRadius", radiusFor(tr));
+  instance.setBoundVariable("bottomRightRadius", radiusFor(br));
+  instance.setBoundVariable("bottomLeftRadius", radiusFor(bl));
+  return { width: Math.round(widths[i]), topRight: NAME[tr], bottomRight: NAME[br], text: content };
+});
 
-lines.forEach((text, i) => {
-  const inst = line.createInstance()
-  host.appendChild(inst)
-  const isFirst = i === 0
-  const isLast = i === lines.length - 1
+figma.currentPage.selection = [host];
+figma.viewport.scrollAndZoomIntoView([host]);
 
-  const tr = free(isFirst ? undefined : widths[i - 1], widths[i])
-  const br = free(isLast ? undefined : widths[i + 1], widths[i])
-  // Anchor-side caps close the stack top and bottom; the anchor side BETWEEN
-  // lines is never bitten into, so it stays flush.
-  const tl = isFirst ? ATOM.fillTop : ATOM.none
-  const bl = isLast ? ATOM.fillTop : ATOM.none
-
-  inst.setProperties({ [K.text]: text, [K.tl]: tl, [K.tr]: tr, [K.br]: br, [K.bl]: bl })
-  inst.setBoundVariable('topLeftRadius', radiusFor(tl))
-  inst.setBoundVariable('topRightRadius', radiusFor(tr))
-  inst.setBoundVariable('bottomRightRadius', radiusFor(br))
-  inst.setBoundVariable('bottomLeftRadius', radiusFor(bl))
-})
-
-return {
-  lines: lines.length,
-  pills: host.children.map((c, i) => ({
-    width: Math.round(c.width),
-    measured: Math.round(widths[i]),
-    matches: Math.round(c.width) === Math.round(widths[i]),
-  })),
-}
+log(`${report.length} lines at max ${MAX_WIDTH}px:`);
+for (const row of report) log(`  ${String(row.width).padStart(5)}px  ${row.topRight}/${row.bottomRight}  ${row.text}`);
+report;
