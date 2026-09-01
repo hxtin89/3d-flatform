@@ -265,6 +265,43 @@ export const EXPERIENCE_CONFIG = {
      * 0.25 is about 14.5 degrees. Above it the measured lifts stay between 95 and 262 m.
      */
     pivotMinRayDescent: 0.25,
+    /**
+     * How far from the camera a rotation pivot may sit, as a multiple of the camera's
+     * height above the survey floor. Rotation travel per pixel is pivot distance times
+     * a fixed angle, so a press near the horizon — where the raycast lands kilometres
+     * out on the drape or the ellipsoid fallback — turns one flick into a catapult.
+     * Pivots past the limit are pulled in along the click ray, which keeps the cursor
+     * direction while giving the gesture a sane radius.
+     *
+     * Applied only when the canopy lift declined — the lift already lands the pivot
+     * near the camera, and the reverted 47f3b6f showed what happens when two large
+     * corrections fight over one press. 8× clears the lift's own shallow-ray limit
+     * (height ÷ 0.25 descent = 4× height) with room to spare, so every pivot the lift
+     * would accept is also acceptable here.
+     */
+    pivotMaxDistanceHeightFactor: 8,
+    /**
+     * Floor for that pivot limit, in metres, so grabbing a treeline from just above
+     * the canopy — where the height above the floor approaches zero — still works.
+     */
+    pivotMaxDistanceMinM: 250,
+    /**
+     * How far the controls may move the camera in a single frame, as a multiple of the
+     * camera's height above the survey floor. The last line of defence against the
+     * fly-away: mouse pan and rotation gains scale with the distance of the grabbed
+     * point, and that distance is unbounded — a press near the horizon puts it
+     * kilometres out, and one frame of input becomes a huge camera step (recorded:
+     * 2,057 m in a single rotation frame at 150 m altitude). Whatever produced the bad
+     * pivot, the step itself is what this clamps. Zoom is exempt — its own scaling is
+     * already distance-proportional and clamped, and it is the one gesture that
+     * legitimately covers ground fast.
+     */
+    maxFrameMoveHeightFactor: 2,
+    /**
+     * Floor for that per-frame cap, in metres, so navigation near the treetops —
+     * where the height above the floor approaches zero — does not freeze.
+     */
+    maxFrameMoveMinM: 30,
   },
   keyboard: {
     // Speeds scale with camera range and remain frame-rate independent.

@@ -233,6 +233,14 @@ function showLoadError(message: string): void {
 }
 
 function updateLoaderVisual(now: number, stats: StreamingStats | null, visibleMapTiles: number): void {
+  // "No basemap" is a boot-time guess, not a fact: it latches when the grace period
+  // beats a slow tile pyramid, and the tiles keep loading regardless. The first visible
+  // map tile disproves the verdict, so recover instead of reporting a dead key forever.
+  if (basemapMissing && visibleMapTiles > 0) {
+    basemapMissing = false
+    if (loaderDataReady) setLoadProgress(1, 'Field system ready.')
+    if (!bootLoading) setStatus('Adaptive streaming · ready')
+  }
   if (!bootLoading) return
 
   // After the ready hand-off the status line must not flip back to "loading":
@@ -1350,6 +1358,8 @@ interface PivotDebug {
   pivotEnuZ?: number
   camEnuZ?: number
   zOffset?: number
+  /** Set when the far-pivot clamp pulled the pivot in along the click ray. */
+  clamped?: { fromM: number; toM: number }
 }
 let pivotDebug: PivotDebug = { reason: null, passes: [] }
 
@@ -1386,12 +1396,45 @@ function updateCanopyPivot(): void {
   pivotMarkerPlaced = true
   if (canopyPivot(controls.pivotPoint, pivotCorrected)) {
     controls.pivotPoint.copy(pivotCorrected)
+  } else {
+    // Only when the lift declined: the lift already lands the pivot near the camera,
+    // and 47f3b6f showed that two large corrections on one press fight each other.
+    clampPivotDistance(controls.pivotPoint)
   }
   // Keep the marker honest even though globe.update removes it before rendering.
   if (controls.pivotMesh) {
     controls.pivotMesh.position.copy(controls.pivotPoint)
     controls.pivotMesh.updateMatrixWorld()
   }
+}
+
+const clampPivotDelta = new THREE.Vector3()
+const clampPivotCamEnu = new THREE.Vector3()
+
+/**
+ * Pull a rotation pivot that sits too far away in along the click ray.
+ *
+ * Rotation travel per pixel is pivot distance times a fixed angle, and the press
+ * raycast puts no bound on that distance — near the horizon it lands on the drape or
+ * the ellipsoid fallback kilometres out, and the first flick catapults the camera.
+ * The governor already caps the damage per frame; this removes the cause for the
+ * rotation path. Staying on the click ray keeps the pivot in the direction the user
+ * grabbed, just closer, so the gesture still turns toward the cursor.
+ */
+function clampPivotDistance(pivotWorld: THREE.Vector3): void {
+  if (!enuFrameReady) return
+  clampPivotDelta.subVectors(pivotWorld, camera.position)
+  const distance = clampPivotDelta.length()
+  const heightAboveFloor = Math.max(
+    0, worldToEnu(camera.position, clampPivotCamEnu).z - areaMinZ,
+  )
+  const limit = Math.max(
+    heightAboveFloor * EXPERIENCE_CONFIG.navigation.pivotMaxDistanceHeightFactor,
+    EXPERIENCE_CONFIG.navigation.pivotMaxDistanceMinM,
+  )
+  if (distance <= limit) return
+  pivotWorld.copy(camera.position).addScaledVector(clampPivotDelta, limit / distance)
+  pivotDebug.clamped = { fromM: +distance.toFixed(1), toM: +limit.toFixed(1) }
 }
 
 function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean {
@@ -1751,6 +1794,79 @@ function enforceNavigationBounds(): void {
   // Cancel residual pinch/orbit inertia at the boundary so it cannot fight the
   // clamp on subsequent frames and produce visible vibration.
   globe.controls.resetState()
+}
+
+/**
+ * Bound how far the controls may move the camera in one frame — the fly-away fix.
+ *
+ * Mouse pan and rotation both derive the camera step from the distance of the grabbed
+ * point, and nothing bounds that distance: a press near the horizon lands it kilometres
+ * out, on the basemap drape or the library's ellipsoid fallback, and one frame of input
+ * becomes a kilometre-scale jump — recorded at 2,057 m in a single rotation frame at
+ * 150 m altitude. Correcting every path that can produce a far pivot is a losing game;
+ * clamping the step itself constrains all of them at once.
+ *
+ * Armed before globe.update and applied inside its constrainCamera callback — after
+ * controls.update() writes the camera, before tiles.update() reads it — so the tile
+ * traversal never sees the runaway position either. Only drags, rotations and their
+ * inertia are governed. Zoom is exempt: its step already scales with the distance to the
+ * zoom target and is clamped by the library, and it is the one gesture meant to cover
+ * ground fast. Camera flights and keyboard navigation move the camera outside
+ * globe.update, so the measurement never includes them.
+ */
+const governorPrevPosition = new THREE.Vector3()
+const governorPrevEnu = new THREE.Vector3()
+let governorArmed = false
+const navDebug = { clamps: 0, lastMoveM: 0, lastCapM: 0 }
+
+function beginFrameMoveGovernor(): void {
+  governorArmed = false
+  const controls = globe?.controls as any
+  if (!controls || !enuFrameReady) return
+  // Wheel zoom arrives with state NONE, so the pending zoomDelta is what marks it.
+  if ((controls.zoomDelta ?? 0) !== 0) return
+  const DRAG = 1, ROTATE = 2, FREE_ROTATE = 5
+  const state: number = controls.state ?? 0
+  const inertiaActive = (controls.dragInertia?.lengthSq() ?? 0) > 0
+    || (controls.rotationInertia?.lengthSq() ?? 0) > 0
+    || (controls.globeInertiaFactor ?? 0) !== 0
+  const dragging = state === DRAG || state === ROTATE || state === FREE_ROTATE
+  if (!dragging && !(state === 0 && inertiaActive)) return
+  governorArmed = true
+  governorPrevPosition.copy(camera.position)
+}
+
+function applyFrameMoveGovernor(): void {
+  if (!governorArmed) return
+  governorArmed = false
+  const moved = camera.position.distanceTo(governorPrevPosition)
+  // Height from where the frame started — the post-move position is exactly the value
+  // under suspicion, and a 2 km jump upward must not widen its own allowance.
+  const heightAboveFloor = Math.max(
+    0, worldToEnu(governorPrevPosition, governorPrevEnu).z - areaMinZ,
+  )
+  const cap = Math.max(
+    heightAboveFloor * EXPERIENCE_CONFIG.navigation.maxFrameMoveHeightFactor,
+    EXPERIENCE_CONFIG.navigation.maxFrameMoveMinM,
+  )
+  if (moved <= cap) return
+  camera.position.lerpVectors(governorPrevPosition, camera.position, cap / moved)
+  camera.updateMatrixWorld()
+  // A single runaway frame otherwise becomes a velocity that damping coasts kilometres
+  // further after release — the clamp has to take the inertia with it.
+  const controls = globe?.controls as any
+  controls?.dragInertia?.set(0, 0, 0)
+  controls?.rotationInertia?.set(0, 0)
+  controls?.globeInertia?.identity()
+  if (controls) controls.globeInertiaFactor = 0
+  navDebug.clamps += 1
+  navDebug.lastMoveM = +moved.toFixed(1)
+  navDebug.lastCapM = +cap.toFixed(1)
+}
+
+function constrainControlsCamera(): void {
+  applyFrameMoveGovernor()
+  enforceNavigationBounds()
 }
 
 function setMaskMode(mode: number): void {
@@ -3052,7 +3168,8 @@ function loop(now: number): void {
     navigationClearance,
   )
   updateCanopyPivot()
-  globe?.update(enforceNavigationBounds)
+  beginFrameMoveGovernor()
+  globe?.update(constrainControlsCamera)
   updatePivotMarker()
   // Twice a second while shown, never when hidden — the readout has to follow the lift
   // slider and newly resident tiles, but nothing here changes per frame.
@@ -3303,6 +3420,8 @@ async function main(): Promise<void> {
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },
+    /** How often the per-frame camera step was clamped, and the last clamp's numbers. */
+    get navDebug() { return navDebug },
     /** Every height in one place, as the ruler last read them. */
     get heights() { return heightRulerMarks },
     mask: groundPatchMask,
