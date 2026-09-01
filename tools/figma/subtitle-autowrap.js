@@ -28,8 +28,13 @@ const MAX_WIDTH = 1010; // pill width cap; 1010 fits the 1080 mobile frame insid
 
 const LINE_COMPONENT = "Subtitle Line";
 const CORNER_SET = "Corner";
-const OUT_NAME = "Test: Subtitle (auto-wrapped)";
+const OUT_NAME = "Subtitle Block";
 const RADIUS = 30;
+// The pills AND the corner wedges paint this. They have to be the same token or
+// the fused shape shows its seams as a colour change. Corner types are
+// instance-swap slots, and swapping one replaces the node, so the fill is
+// re-applied after every swap rather than set once on the component.
+const SURFACE_TOKEN = "bg/muted";
 
 const log = typeof print === "function" ? print : (m) => console.log(m);
 
@@ -64,7 +69,7 @@ const variableNamed = (name) => {
 };
 const pill = variableNamed("label/pill");
 const none = variableNamed("radius/none");
-const bg = variableNamed("bg/subtle");
+const surface = variableNamed(SURFACE_TOKEN);
 
 const defs = line.componentPropertyDefinitions;
 const key = (prefix) => {
@@ -117,23 +122,29 @@ const widths = lines.map(widthOf);
 probe.remove();
 
 // --- build -----------------------------------------------------------------
+// Reuse the existing component rather than replacing it: deleting a component
+// detaches every instance of it, so a re-run would silently orphan whatever the
+// block had already been placed into. Emptying and refilling keeps them live.
 const page = figma.currentPage;
-const previous = page.children.find((c) => c.name === OUT_NAME);
-const at = previous ? { x: previous.x, y: previous.y } : { x: 0, y: 0 };
-if (previous) previous.remove();
-
-const host = figma.createFrame();
-host.name = OUT_NAME;
+let host = findByName("COMPONENT", OUT_NAME);
+if (host) {
+  for (const child of [...host.children]) child.remove();
+} else {
+  host = figma.createComponent();
+  host.name = OUT_NAME;
+  page.appendChild(host);
+  host.x = 0;
+  host.y = 0;
+}
 host.layoutMode = "VERTICAL";
 host.itemSpacing = 0;
 host.counterAxisAlignItems = "MIN";
-host.paddingTop = host.paddingBottom = host.paddingLeft = host.paddingRight = 60;
-host.fills = [figma.variables.setBoundVariableForPaint({ type: "SOLID", color: { r: 0, g: 0, b: 0 } }, "color", bg)];
-page.appendChild(host);
+host.paddingTop = host.paddingBottom = host.paddingLeft = host.paddingRight = 0;
+// No backdrop: this sits over the photo, so anything behind the pills would show
+// as a grey box around them.
+host.fills = [];
 host.layoutSizingHorizontal = "HUG";
 host.layoutSizingVertical = "HUG";
-host.x = at.x;
-host.y = at.y;
 
 // Both right-hand corners ask the same thing: is my neighbour on that side LONGER
 // than me? Then my free edge sweeps out to land on it — Fill-Left. Top right looks
@@ -146,6 +157,22 @@ const free = (neighbor, own) => {
   return neighbor < own ? atom.Convex : atom["Fill-Left"];
 };
 const radiusFor = (type) => (type === atom.Convex ? pill : none);
+
+// Repaints the pill and everything the corner slots brought with them. Has to run
+// AFTER the swaps: an instance-swap replaces the corner node outright, taking any
+// fill override with it, and a wedge left on its own colour reads as a seam
+// through what is meant to be one continuous surface.
+const paint = (instance) => {
+  const targets = [instance].concat(
+    instance.findAll((n) => Array.isArray(n.fills) && n.fills.length > 0 && n.type !== "TEXT")
+  );
+  for (const node of targets) {
+    if (!Array.isArray(node.fills) || node.fills.length === 0) continue;
+    node.fills = node.fills.map((f) =>
+      f.type === "SOLID" ? figma.variables.setBoundVariableForPaint(f, "color", surface) : f
+    );
+  }
+};
 const NAME = {};
 NAME[atom.Convex] = "Convex";
 NAME[atom.None] = "None";
@@ -166,6 +193,7 @@ const report = lines.map((content, i) => {
   instance.setBoundVariable("topRightRadius", radiusFor(tr));
   instance.setBoundVariable("bottomRightRadius", radiusFor(br));
   instance.setBoundVariable("bottomLeftRadius", radiusFor(bl));
+  paint(instance);
   return { width: Math.round(widths[i]), topRight: NAME[tr], bottomRight: NAME[br], text: content };
 });
 
