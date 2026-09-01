@@ -10,6 +10,13 @@ import Storyboard from './Storyboard.svelte'
 import type { Step } from './steps'
 import '@wi/tokens/css'
 
+export interface StoryboardOptions {
+  /** Fired when the beat changes, including on mount. Fly the camera here. */
+  onStep?(step: Step): void
+  /** Return false to refuse an advance -- used to block while a flight is airborne. */
+  canAdvance?(): boolean
+}
+
 export interface StoryboardHandle {
   /** Animates the frame in to its resting margin. */
   reveal(durationMs?: number): Promise<void>
@@ -22,7 +29,7 @@ export interface StoryboardHandle {
   dispose(): void
 }
 
-export function createStoryboard(): StoryboardHandle {
+export function createStoryboard(options: StoryboardOptions = {}): StoryboardHandle {
   const container = document.createElement('div')
   // Full-viewport and ON TOP of the point-cloud canvas, so it must not be a hit
   // target: without this the div swallows every pointer event and the camera
@@ -32,7 +39,10 @@ export function createStoryboard(): StoryboardHandle {
   Object.assign(container.style, { position: 'fixed', inset: '0', pointerEvents: 'none' })
   document.body.append(container)
 
-  const app = mount(Storyboard, { target: container, props: { revealed: false } }) as unknown as {
+  const app = mount(Storyboard, {
+    target: container,
+    props: { revealed: false, onStep: options.onStep, canAdvance: options.canAdvance },
+  }) as unknown as {
     next(): void
     previous(): void
     goTo(id: string): void

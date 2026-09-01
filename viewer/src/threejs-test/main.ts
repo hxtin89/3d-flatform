@@ -2101,7 +2101,23 @@ async function main(): Promise<void> {
   audioLayer = createAudioLayer({ toggle: soundToggleEl, status: audioStatusEl })
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
-  designSystemDemo = createStoryboard()
+  designSystemDemo = createStoryboard({
+    // Each beat names a pose; the camera arcs there with the same curve the intro
+    // flight uses. A beat without a pose deliberately leaves the camera where it
+    // is, so swapping only an overlay does not lurch the scene.
+    onStep(step) {
+      if (!step.pose) return
+      const pose = EXPERIENCE_CONFIG.storyboard.poses[step.pose]
+      if (!pose) return
+      const duration = reducedMotion
+        ? EXPERIENCE_CONFIG.storyboard.reducedMotionDurationMs
+        : EXPERIENCE_CONFIG.storyboard.defaultDurationMs
+      cameraFlight.toPose(pose.offsetM, pose.lookOffsetM, duration)
+    },
+    // A flight has no queue, so a second one abandons the first mid-air and its
+    // progress never reaches 1. Refuse the advance instead of stranding it.
+    canAdvance: () => !cameraFlight.active,
+  })
   // ?clean=1 skips the loader, so the reveal its start button normally triggers
   // never fires. Jump the frame straight to its resting margin instead.
   if (cleanMode) void designSystemDemo.reveal(0)

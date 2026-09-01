@@ -53,6 +53,13 @@ export interface CameraFlightController {
    * is no camera jump. */
   retargetCloud(target: THREE.Vector3): void
   toPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void
+  /**
+   * Arc to an authored pose: an ENU offset from the survey centre, optionally
+   * gazing at a second offset rather than the centre. Same curve solve as
+   * toCloud's close-range branch, so a storyboard beat and the intro flight
+   * move with identical character.
+   */
+  toPose(endOffsetM: EnuOffset, lookOffsetM: EnuOffset | undefined, durationMs: number): void
   update(now: number): void
 }
 
@@ -99,6 +106,25 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
   const destinationOffset = (): EnuOffset =>
     deps.flightDestinationOffset?.() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
 
+  /**
+   * Bow the curve sideways and lift it, so a flight starting close to the canopy
+   * arrives from above instead of skimming through it.
+   *
+   * Extracted from toCloud so storyboard poses fly the same shape. toCloud's
+   * behaviour must stay byte-identical through this -- it is the intro flight
+   * every visitor sees.
+   */
+  const bowFrom = (start: THREE.Vector3, end: THREE.Vector3) => {
+    const range = start.distanceTo(end)
+    const control1 = start.clone().lerp(end, 0.28)
+    control1.x -= Math.min(10_000, range * 0.07)
+    control1.z = Math.max(control1.z, end.z + Math.min(16_000, range * 0.16))
+    const control2 = start.clone().lerp(end, 0.72)
+    control2.x += Math.min(8_000, range * 0.055)
+    control2.z = Math.max(control2.z, end.z + Math.min(8_000, range * 0.075))
+    return { start, control1, control2 }
+  }
+
   const begin = (next: Flight): void => {
     flight = next
     deps.onProgress(0)
@@ -122,16 +148,7 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
         control1 = offsetPoint(EXPERIENCE_CONFIG.flight.overviewControl1OffsetM)
         control2 = offsetPoint(EXPERIENCE_CONFIG.flight.overviewControl2OffsetM)
       } else {
-        // Bow the curve sideways and lift it, so a flight starting close to the
-        // canopy arrives from above instead of skimming through it.
-        start = worldToEnu(camera.position)
-        const range = start.distanceTo(end)
-        control1 = start.clone().lerp(end, 0.28)
-        control1.x -= Math.min(10_000, range * 0.07)
-        control1.z = Math.max(control1.z, end.z + Math.min(16_000, range * 0.16))
-        control2 = start.clone().lerp(end, 0.72)
-        control2.x += Math.min(8_000, range * 0.055)
-        control2.z = Math.max(control2.z, end.z + Math.min(8_000, range * 0.075))
+        ({ start, control1, control2 } = bowFrom(worldToEnu(camera.position), end))
       }
 
       const started = performance.now()
@@ -161,6 +178,20 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
         flight.control2.x + deltaX, flight.control2.y + deltaY, flight.control2.z + deltaZ,
       )
       flight.lookTarget.copy(target)
+    },
+
+    toPose(endOffsetM, lookOffsetM, durationMs) {
+      const base = flightTarget()
+      const end = offsetPoint(endOffsetM, base)
+      const lookTarget = lookOffsetM ? offsetPoint(lookOffsetM, base) : base.clone()
+      const { start, control1, control2 } = bowFrom(worldToEnu(camera.position), end)
+      const started = performance.now()
+      begin({
+        mode: 'arc',
+        start, control1, control2, end,
+        lookTarget,
+        t0: started, duration: durationMs, lastUpdate: started,
+      })
     },
 
     toPoint(targetEnu, endDistanceM, durationMs) {

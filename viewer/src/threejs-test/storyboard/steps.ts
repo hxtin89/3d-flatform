@@ -15,6 +15,9 @@
 /** Which composition the shell puts inside the frame for this beat. */
 export type StepContent = 'habitat' | 'text' | 'none';
 
+/** Named entries in EXPERIENCE_CONFIG.storyboard.poses. */
+export type PoseName = 'overview' | 'parcel' | 'orbit' | 'canopy';
+
 export interface Step {
   /** Stable handle, used for the debug readout and later for `?step=`. */
   id: string;
@@ -25,6 +28,12 @@ export interface Step {
   content: StepContent;
   /** Copy for the `text` composition. */
   caption?: string;
+  /**
+   * Where the camera flies when this beat opens. Omitted means "stay put" --
+   * used where two beats share a vantage and only the overlay changes, so the
+   * scene does not lurch for a caption swap.
+   */
+  pose?: PoseName;
 }
 
 export const STEPS: Step[] = [
@@ -33,6 +42,7 @@ export const STEPS: Step[] = [
     storyboardStep: 14,
     figmaFrame: 'Frame 1 Mobile - selected · 19.5:9',
     content: 'habitat',
+    pose: 'parcel',
   },
   {
     id: 'parcel-confirmed',
@@ -40,6 +50,7 @@ export const STEPS: Step[] = [
     figmaFrame: 'Frame 11  Mobile - Text · 19.5:9',
     content: 'text',
     caption: 'Das sind die 52m², welche mit deiner Spende geschützt wurden.',
+    pose: 'canopy',
   },
   {
     // A camera-only beat. It renders the frame and nothing else, which is the
@@ -49,5 +60,6 @@ export const STEPS: Step[] = [
     storyboardStep: 12,
     content: 'none',
     caption: '52m² voll Leben.',
+    pose: 'orbit',
   },
 ];

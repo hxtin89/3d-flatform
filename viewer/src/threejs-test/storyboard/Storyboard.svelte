@@ -8,23 +8,37 @@
     SPECIES_ROW,
     EAGLE_LOGO_SVG,
   } from "@wi/ui";
-  import { STEPS } from "./steps";
+  import { STEPS, type Step } from "./steps";
 
   interface Props {
     /** Frame at its resting margin, or retracted to full bleed. */
     revealed?: boolean;
+    /** Fired whenever the beat changes, including on mount. The caller flies the camera. */
+    onStep?: (step: Step) => void;
+    /** Consulted before advancing. False while a flight is in the air -- see next(). */
+    canAdvance?: () => boolean;
   }
-  let { revealed = false }: Props = $props();
+  let { revealed = false, onStep, canAdvance }: Props = $props();
 
   let index = $state(0);
   const step = $derived(STEPS[index]);
 
+  // Fires on mount too, so the opening beat gets its pose without a special case.
+  $effect(() => {
+    onStep?.(STEPS[index]);
+  });
+
   // Exported so the imperative caller in main.ts can drive this without a store.
   // Svelte 5 surfaces these on the object mount() returns.
   export function next() {
+    // A flight has no queue: starting a second one abandons the first, whose
+    // progress then never reaches 1. Anything waiting on that landing would wait
+    // forever, so a beat cannot be skipped while the camera is still moving.
+    if (canAdvance && !canAdvance()) return;
     index = (index + 1) % STEPS.length;
   }
   export function previous() {
+    if (canAdvance && !canAdvance()) return;
     index = (index - 1 + STEPS.length) % STEPS.length;
   }
   export function goTo(id: string) {
@@ -42,9 +56,46 @@
     if (event.key === "ArrowRight") next();
     else if (event.key === "ArrowLeft") previous();
   }
+
+  // Swipe, on the window rather than on our own container: the container is
+  // pointer-events:none so the camera stays draggable, which means touches never
+  // reach us. Listening passively lets the gesture through to the canvas as well.
+  //
+  // The thresholds exist to tell a story swipe from a camera orbit, which is the
+  // same gesture on the same surface. A deliberate flick is horizontal-dominant,
+  // travels a real distance and is over quickly; an orbit drag wanders and
+  // lingers. Anything that fails one of the three is left to the camera alone.
+  const SWIPE_MIN_PX = 60;
+  const SWIPE_MAX_MS = 600;
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartAt = 0;
+
+  function onTouchStart(event: TouchEvent) {
+    if (event.touches.length !== 1) return;
+    touchStartX = event.touches[0].clientX;
+    touchStartY = event.touches[0].clientY;
+    touchStartAt = event.timeStamp;
+  }
+
+  function onTouchEnd(event: TouchEvent) {
+    if (!touchStartAt || event.changedTouches.length !== 1) return;
+    const dx = event.changedTouches[0].clientX - touchStartX;
+    const dy = event.changedTouches[0].clientY - touchStartY;
+    const elapsed = event.timeStamp - touchStartAt;
+    touchStartAt = 0;
+    if (elapsed > SWIPE_MAX_MS) return;
+    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 2) return;
+    if (dx < 0) next();
+    else previous();
+  }
 </script>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window
+  on:keydown={onKey}
+  on:touchstart={onTouchStart}
+  on:touchend={onTouchEnd}
+/>
 
 <!--
   ONE ScreenFrame for the whole session, never remounted. Two reasons, both

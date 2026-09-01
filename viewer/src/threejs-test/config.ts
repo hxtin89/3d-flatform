@@ -1,5 +1,27 @@
 // Product-facing viewer tuning. Keep values in metres and milliseconds.
 export const EXPERIENCE_CONFIG = {
+  // Camera poses per storyboard beat. ENU offsets from flightTarget() -- the
+  // donation parcel once its GeoJSON lands, the survey centre until then --
+  // exactly like flight.destinationOffsetM above.
+  //
+  // PLACEHOLDER GEOMETRY. These are derived from the intro flight's own numbers
+  // so every beat lands somewhere sensible and the sequence is walkable; they
+  // are not directed shots. Setting the real ones is a job for someone watching
+  // the scene, not for arithmetic -- see tools note in storyboard/steps.ts.
+  storyboard: {
+    defaultDurationMs: 3_400,
+    reducedMotionDurationMs: 800,
+    poses: {
+      // Wide enough to read the survey as a landscape.
+      overview: { offsetM: [400, -18_000, 9_000] as const, lookOffsetM: undefined },
+      // The intro flight's own resting place.
+      parcel: { offsetM: [120, -1_400, 320] as const, lookOffsetM: undefined },
+      // Pulled round and lower, so the orbit beat reads as a different vantage.
+      orbit: { offsetM: [-1_500, -900, 280] as const, lookOffsetM: undefined },
+      // Close enough that canopy detail carries the beat.
+      canopy: { offsetM: [80, -520, 150] as const, lookOffsetM: undefined },
+    },
+  },
   flight: {
     // ENU offsets are relative to the full point-cloud centre.
     // The final approach passes just left and above the configured tower.
