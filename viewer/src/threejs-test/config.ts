@@ -317,11 +317,12 @@ export const EXPERIENCE_CONFIG = {
      * the shallow region too. Rather than let the gesture run, it stops at the budget;
      * lifting the button and dragging again continues from there.
      *
-     * 20x altitude is 1.6 km at the 80 m working height and 20 km from 1 km up, so the
-     * bound scales with what the view can actually show.
+     * 10x altitude is 800 m at the 80 m working height and 10 km from 1 km up, so the
+     * bound scales with what the view can actually show. Halved from 20x, which let a
+     * single drag cover the whole survey.
      */
-    maxPanPerDragHeightFactor: 20,
-    maxPanPerDragMinM: 500,
+    maxPanPerDragHeightFactor: 10,
+    maxPanPerDragMinM: 250,
     /**
      * How far the controls may move the camera in a single frame, as a multiple of the
      * camera's height above the survey floor. The last line of defence against the

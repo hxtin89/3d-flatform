@@ -1402,11 +1402,33 @@ function updateCanopyPivot(): void {
   // sky finds no raycast hit at all. Both used to be silently dead — no pan, no
   // rotation, no feedback, just a user pressing harder.
   //
-  // Once per press: the flag clears only when every pointer is up, so a state that is
-  // cleared mid-hold cannot re-sample the pivot and break sample-and-hold.
-  if ((controls.pointerTracker?.getPointerCount?.() ?? 0) === 0) strandedPressHandled = false
-  if (globe?.hasStrandedPointer() && !strandedPressHandled
-    && controls.enabled && controls.pivotPoint) {
+  // Everything below keys off whether a pointer is down, not off the control state. The
+  // state is not ours and drops out mid-hold — the library ends a drag whose ray left the
+  // globe, a stray event resets it — and every such drop used to release the hold and let
+  // the next state re-sample the pivot. That is the reported jump: right button held, mouse
+  // moved quickly, pivot suddenly somewhere else. While a pointer is down the pivot from
+  // that press is the pivot, full stop.
+  const pointerCount: number = controls.pointerTracker?.getPointerCount?.() ?? 0
+  if (pointerCount === 0) {
+    strandedPressHandled = false
+    heldPivotLocked = false
+    heldPivotState = 0
+  }
+  if (globe?.hasStrandedPointer() && controls.enabled && controls.pivotPoint) {
+    if (heldPivotLocked) {
+      // A press already sampled its pivot. Rotation resumes on it — nothing legitimately
+      // ends a rotation mid-hold. A pan that ended because its ray left the globe stays
+      // ended: that escape is the library's own, and resuming would re-trigger it every
+      // frame, which is what the runaway was.
+      if (heldPivotState === ROTATE) {
+        controls.pivotPoint.copy(heldPivot)
+        controls.setState(ROTATE)
+        controls._rotationMode = 1
+        pivotPressState = ROTATE
+      }
+      return
+    }
+    if (strandedPressHandled) return
     strandedPressHandled = true
     // Nothing under the cursor at all — the press is on the sky. Ignored outright: there
     // is no point to turn around and none to hold under the cursor, and inventing one
@@ -1424,28 +1446,25 @@ function updateCanopyPivot(): void {
     else panViewCentre(controls, 'press refused by the controls')
     return
   }
-  // Any transition into an active state counts as a press, not just idle → pressed:
-  // a second button mid-drag or a touch going WAITING → ROTATE used to slip through,
-  // leaving pivotDebug describing the previous press and touch rotations unlifted.
-  const pressStarted = state !== 0 && state !== pivotPressState
-  pivotPressState = state
-  if (!pressStarted || !controls.pivotPoint) {
-    if (state === 0) { heldPivotState = 0; return }
-    // The pivot sampled at press stays the pivot until a true release — nothing
-    // mid-hold may move it. Restoring it every frame makes that a guarantee instead
-    // of an audit of every writer. Unconditional now: the exception used to be frames
-    // where the library's terrain-clearance push was active, on the reasoning that it
-    // shifts camera and pivot together and undoes itself — but the height it pushes by
-    // is re-read from the resident tiles every frame, so a tile landing mid-drag moved
-    // the pivot. globe.ts freezes that push for the length of a gesture; this is the
-    // guarantee behind it. FREE_ROTATE is still left alone, where the pivot rides the
-    // camera by design.
-    if (state === heldPivotState && (state === ROTATE || state === DRAG)
-      && controls.pivotPoint) {
-      controls.pivotPoint.copy(heldPivot)
+  // The held pivot is restored every frame rather than trusted to stay put — that makes
+  // it a guarantee instead of an audit of every writer, and it covers the state changing
+  // under the hold: a second button pressed mid-drag, or touch going WAITING to ROTATE,
+  // both keep the pivot the first press sampled. FREE_ROTATE never locks, since there the
+  // pivot rides the camera by design.
+  if (heldPivotLocked && (state === ROTATE || state === DRAG) && controls.pivotPoint) {
+    controls.pivotPoint.copy(heldPivot)
+    heldPivotState = state
+    pivotPressState = state
+    if (controls.pivotMesh) {
+      controls.pivotMesh.position.copy(controls.pivotPoint)
+      controls.pivotMesh.updateMatrixWorld()
     }
     return
   }
+  // A fresh press — the only place a pivot may be sampled.
+  const pressStarted = state !== 0 && state !== pivotPressState
+  pivotPressState = state
+  if (!pressStarted || !controls.pivotPoint) return
   // Rotation only. Rotation turns *around* the pivot, so moving it costs nothing: the
   // angle per pixel is fixed at 2*pi / clientHeight whatever the distance. Panning
   // instead lays a horizontal plane through the pivot and rides it, so pan distance per
@@ -1508,11 +1527,14 @@ const heldPivot = new THREE.Vector3()
 let heldPivotState = 0
 /** Set once per press when a refused press was given the view centre — see the caller. */
 let strandedPressHandled = false
+/** True from the moment a press samples its pivot until every pointer is up. */
+let heldPivotLocked = false
 onRebase((delta) => { heldPivot.add(delta) })
 
 function holdPivot(controls: any, state: number): void {
   heldPivot.copy(controls.pivotPoint)
   heldPivotState = state
+  heldPivotLocked = true
 }
 
 /** Metres one drag may pan, from the camera's height above the survey floor. */
