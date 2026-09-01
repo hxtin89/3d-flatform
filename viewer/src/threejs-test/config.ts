@@ -288,20 +288,24 @@ export const EXPERIENCE_CONFIG = {
      */
     pivotMaxDistanceMinM: 400,
     /**
-     * Least steeply a pan press ray may descend, as a dot product against local up, for
-     * the pan to start at all. Below it the grab becomes a free look-around instead.
+     * Floor for how shallowly a pan ray may descend, as a dot product against local up.
+     * Both the switch to the bounded pan and the angle it holds the ray to — see
+     * globe.ts, which owns that pan.
      *
-     * Panning keeps the grabbed ground point under the cursor, and near the horizon
-     * that mapping degenerates: the ray meets the ground at a grazing angle, so one
-     * pixel of cursor motion corresponds to an enormous ground arc — the gain diverges
-     * at tangency, which is the pan half of the fly-away. The library's own guard sits
-     * at 0.05 (about 3 degrees), far too permissive. Turning the grab into a look-around
-     * matches what games do with a grab at the sky: the camera rotates in place, which
-     * is bounded by construction.
+     * GlobeControls pans by intersecting the cursor ray with a sphere through the
+     * grabbed point and rotating about the Earth's centre. Near the horizon the ray
+     * meets that sphere at a grazing angle and a pixel of cursor motion sweeps an
+     * enormous arc. Clamping how far the grabbed point sits from the camera cannot fix
+     * it: the sphere's radius is the Earth's, so a few hundred metres changes nothing —
+     * measured as "panning very very fast" with the clamp in place. The ray angle is the
+     * only thing that bounds the gain, which goes as 1/descent.
      *
-     * 0.15 is about 8.6 degrees — the plane hit sits within ~6.7x the camera height.
+     * 0.3 is about 17 degrees, roughly the incidence of a mid-screen grab at working
+     * pitch — so a grab near the horizon pans at about the speed the middle of the
+     * screen would. The library's own equivalent guard sits at 0.05 (~3 degrees), which
+     * still allows a 20x gain.
      */
-    panMinRayDescent: 0.15,
+    panMinRayDescent: 0.3,
     /**
      * How far the controls may move the camera in a single frame, as a multiple of the
      * camera's height above the survey floor. The last line of defence against the

@@ -40,6 +40,15 @@ export interface Globe {
    * a press the library refused, or one whose data was lost. */
   hasStrandedPointer(): boolean
   /**
+   * Solve this drag as though the press had happened at the centre of the screen, by
+   * shifting the pointer the controls read by (x, y) CSS pixels. Set on a press that was
+   * re-aimed at the view centre — see the bounded pan note in globe.ts — and cleared
+   * automatically when the drag ends.
+   */
+  setPanPointerShift(x: number, y: number): void
+  /** Where the cursor sits in CSS pixels relative to the canvas, unshifted. */
+  getRawPointer(target: THREE.Vector2): THREE.Vector2 | null
+  /**
    * Time constant in ms for easing the rotation pointer, 0 to disable. See the
    * comment where it is installed — this exists because a mouse reports whole
    * device pixels far more coarsely than the frame rate consumes them.
@@ -262,6 +271,41 @@ export function createGlobe(opts: {
   controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true
 
+  // ---------------------------------------------------------------- bounded pan
+  //
+  // A grab near the horizon pans absurdly fast. GlobeControls pans by intersecting the
+  // cursor ray with a sphere through the grabbed point and rotating about the Earth's
+  // centre; up there the ray meets that sphere at a grazing angle, so a pixel of cursor
+  // motion sweeps an enormous arc. Two things that do NOT fix it, both measured: pulling
+  // the grabbed point closer to the camera (the sphere's radius is the Earth's, so a few
+  // hundred metres changes nothing), and clamping the ray to a minimum descent (the clamp
+  // then absorbs all vertical cursor motion — the pan froze at 0.01 m/frame after a 52 m
+  // first-frame jump).
+  //
+  // What works is to make the gesture *be* a mid-screen drag, which is well conditioned
+  // by construction: main.ts re-aims such a press at the point in the centre of the view
+  // and hands the offset here, and this shifts the pointer the controls read by it. The
+  // cursor's own motion still drives the pan unchanged — only the geometry it is solved
+  // against moves to the middle of the screen. All of the library's globe maths, inertia
+  // and edge handling stay in play.
+  //
+  // The shift lives exactly as long as the drag: main.ts sets it on the press it re-aims,
+  // and update() clears it as soon as the drag state is gone.
+  const DRAG_STATE = 1
+  const panShift = new THREE.Vector2()
+  let panShiftActive = false
+
+  const originalGetCenterPoint = (controls as any).pointerTracker.getCenterPoint
+    .bind((controls as any).pointerTracker)
+  // Applied where the controls read the pointer, so the ray, the previous position and
+  // the move distance all see one consistent pointer. Differences are unaffected — the
+  // same shift cancels out of both terms.
+  ;(controls as any).pointerTracker.getCenterPoint = (target: THREE.Vector2, positions?: any) => {
+    const result = originalGetCenterPoint(target, positions)
+    if (result && panShiftActive) target.sub(panShift)
+    return result
+  }
+
   // Ease the rotation pointer toward where the mouse actually is, once per frame.
   //
   // The controls derive rotation from (pointer - previousPointer), and previousPointer
@@ -349,6 +393,13 @@ export function createGlobe(opts: {
     tiles,
     controls,
     forceResetState,
+    setPanPointerShift(x, y) {
+      panShift.set(x, y)
+      panShiftActive = true
+    },
+    getRawPointer(target) {
+      return originalGetCenterPoint(target) ? target : null
+    },
     hasStrandedPointer() {
       const tracker = (controls as any).pointerTracker
       return (controls as any).state === 0 && (tracker?.getPointerCount?.() ?? 0) > 0
@@ -371,6 +422,8 @@ export function createGlobe(opts: {
       ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
     },
     update(constrainCamera) {
+      // The pointer shift belongs to one drag only.
+      if ((controls as any).state !== DRAG_STATE) panShiftActive = false
       // Freeze the terrain-clearance push while anything is held.
       //
       // adjustHeight re-reads the ground directly under the camera every frame and, when
