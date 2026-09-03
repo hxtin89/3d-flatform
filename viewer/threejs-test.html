@@ -129,6 +129,28 @@
 
       /* DOM labels projected from real Three.js markers. */
       #markerOverlay { position: fixed; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
+      #captions { position: fixed; left: 0; right: 0; bottom: calc(96px + var(--safe-b, 0px)); z-index: 14;
+                  display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+      .story-caption { max-width: 560px; padding: 14px 24px 16px; border-radius: 14px; text-align: center;
+                       background: rgba(8, 20, 14, .74); color: #f2f5ef; backdrop-filter: blur(10px);
+                       -webkit-backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0,0,0,.25);
+                       opacity: 0; transform: translateY(12px);
+                       transition: opacity .5s ease, transform .6s cubic-bezier(.22,1,.36,1); }
+      .story-caption.is-visible { opacity: 1; transform: none; }
+      .story-caption[hidden] { display: none; }
+      .story-caption-kicker { display: block; margin-bottom: 8px; color: var(--lime);
+                              font: 800 8px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .18em; text-transform: uppercase; }
+      .story-caption-title { display: block; font: 500 22px/1.15 "Iowan Old Style", Baskerville, serif; }
+      .story-caption-body { margin: 8px 0 0; font-size: 13px; line-height: 1.45; opacity: .85; }
+      .story-caption-data { display: flex; gap: 22px; justify-content: center; margin: 12px 0 0; }
+      .story-caption-data div { display: grid; gap: 4px; }
+      .story-caption-data dt { font: 700 8px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .14em; text-transform: uppercase; opacity: .6; }
+      .story-caption-data dd { margin: 0; font: 500 13px/1 ui-monospace, SFMono-Regular, monospace; }
+      #introScrub { position: fixed; left: 50%; bottom: calc(14px + var(--safe-b, 0px)); transform: translateX(-50%); z-index: 40;
+                    display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 10px;
+                    background: rgba(0,0,0,.65); color: #fff; font: 12px ui-monospace, SFMono-Regular, monospace; }
+      #introScrub input { width: 360px; }
+      #introScrub button { min-width: 34px; padding: 4px 8px; border: 0; border-radius: 6px; background: #fff2; color: #fff; cursor: pointer; }
       .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
                           will-change: transform, opacity; transition: opacity .18s ease; }
       .map-marker-label[hidden] { display: none; }
@@ -524,6 +546,7 @@
     <canvas id="view"></canvas>
     <div id="vignette"></div>
     <div id="markerOverlay"></div>
+    <div id="captions"></div>
     <div id="splatHint" aria-hidden="true">
       <div class="splat-caps">
         <span class="keycap" data-key="KeyW">W</span>

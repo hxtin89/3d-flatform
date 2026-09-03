@@ -47,6 +47,8 @@ export interface EnvironmentLayer {
   /** Override the heuristic tier with a measured one (loader benchmark). */
   applyMeasuredTier(tier: PerformanceTier): void
   setPeruMinutes(minutes: number | null): void
+  /** Multiplier on the cloud layer's range fade (intro fog reveal); null = 1. */
+  setCloudOpacity(value: number | null): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -199,6 +201,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let highFpsSince = 0
   let promotionsLeft = EXPERIENCE_CONFIG.clouds.maxPromotions
   let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
+  let cloudOpacityScale = 1
   let lastDaylightUpdate = -Infinity
   let lastLiveRefresh = -Infinity
   let resources: {
@@ -639,6 +642,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       lastDaylightUpdate = -Infinity
       updateDaylight(performance.now())
     },
+    setCloudOpacity(value) {
+      cloudOpacityScale = value === null ? 1 : THREE.MathUtils.clamp(value, 0, 1)
+    },
     update(now, camera, cameraGroundRange, fps, qualityGuardEnabled) {
       updateDaylight(now)
       const rangeOpacity = smooth01(
@@ -646,7 +652,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
         EXPERIENCE_CONFIG.clouds.closeFadeStartM,
         cameraGroundRange,
       )
-      const motionOpacity = reducedMotion ? 0.72 : 1
+      const motionOpacity = (reducedMotion ? 0.72 : 1) * cloudOpacityScale
       const wind = EXPERIENCE_CONFIG.clouds.windMps
       const windU = (now * 0.001 * wind[0] / 20_000) % 1
       const windV = (now * 0.001 * wind[1] / 8_000) % 1

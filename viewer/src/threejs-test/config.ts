@@ -1,4 +1,6 @@
 // Product-facing viewer tuning. Keep values in metres and milliseconds.
+import type { Keyframe } from './sequence'
+
 export const EXPERIENCE_CONFIG = {
   flight: {
     // ENU offsets are relative to the full point-cloud centre.
@@ -22,6 +24,74 @@ export const EXPERIENCE_CONFIG = {
     // weak phone the whole frame budget. Keyed by the loader benchmark's
     // preset: 1 = only once the flight has landed.
     cloudRevealProgress: { strong: 0.55, medium: 0.85, constrained: 1 },
+  },
+  // Donor intro (intro-sequence.ts). One choreography for every parcel: the
+  // camera is keyframed as {azimuth, elevation, range} around the parcel
+  // centre (camera-rig.ts), range in multiples of the distance that frames
+  // the parcel, so the same numbers work for 14 m² and for 1 000 m². Times are
+  // ms from the start button; ?scrub=1 shows a slider over the whole timeline,
+  // ?intro=0 falls back to the plain entrance flight.
+  intro: {
+    enabled: true,
+    durationMs: 72_000,
+    phases: { flight: 0, settle: 7_000, draw: 8_200, caption: 9_800, orbit: 12_000 },
+    // Once past `to` the clock wraps back by (to − from): the azimuth track
+    // completes exactly one turn inside this window, so the orbit never ends.
+    orbitLoop: { from: 12_000, to: 72_000 },
+    rangeMaxM: 200_000,
+    rig: {
+      // 0 = from the south, as the survey flight always approached.
+      azimuthDeg: [
+        { t: 0, v: -30 }, { t: 7_000, v: 0, ease: 'smootherstep' },
+        { t: 12_000, v: 0 }, { t: 72_000, v: 360, ease: 'linear' },
+      ],
+      elevationDeg: [{ t: 0, v: 32 }, { t: 7_000, v: 38 }],
+      // 400 × ~250 m frame distance ≈ 100 km out; the floor solve steepens
+      // the last metres if 38° would end under the navigation floor.
+      range: [
+        { t: 0, v: 400 }, { t: 7_000, v: 1, ease: 'easeOutExpo' },
+        { t: 12_000, v: 1 }, { t: 42_000, v: 0.8, ease: 'easeInOutSine' },
+        { t: 72_000, v: 1, ease: 'easeInOutSine' },
+      ],
+    },
+    // Multiplier on the cloud layer's own range fade (environment-layer). Kept
+    // at 1 until the fog reveal milestone; an empty list means "leave alone".
+    cloudOpacity: [] as Keyframe[],
+    // Outline draw-on, 0..1 along the parcel perimeter.
+    outlineDraw: [{ t: 8_200, v: 0 }, { t: 9_600, v: 1, ease: 'easeInOutCubic' }],
+    captions: [
+      { id: 'parcel', at: 9_800, until: 20_000 },
+      { id: 'life', at: 20_000, until: 32_000 },
+    ],
+    // {areaM2} and {coordinates} are filled from the donor's parcel.
+    captionText: {
+      parcel: {
+        kicker: 'Personalized Proof of Protection',
+        title: 'Das sind die {areaM2} m², die deine Spende schützt.',
+        data: [
+          { label: 'Koordinaten', value: '{coordinates}' },
+          { label: 'Fläche', value: '{areaM2} m²' },
+        ],
+      },
+      life: {
+        kicker: 'Dein Stück Wald',
+        title: '{areaM2} m² voller Leben.',
+        body: 'Bäume, Boden, Pflanzen, Tiere und gespeichertes CO₂ – live, kein Video.',
+      },
+    },
+    // Night → sunrise during the orbit (storyboard 13). Off until the live
+    // weather milestone; the track is Peru minutes, evaluated once enabled.
+    dayNight: {
+      enabled: false,
+      peruMinutes: [{ t: 20_000, v: 240 }, { t: 40_000, v: 390, ease: 'easeInOutSine' }],
+    },
+    takeover: {
+      // Idle time after the last gesture before the orbit resumes, and how
+      // long the blend from the user's view back onto the track takes.
+      resumeIdleMs: 12_000,
+      resumeBlendMs: 1_800,
+    },
+    reducedMotionRate: 6,
   },
   lod: {
     // Height over the point-cloud floor at which each density band takes over.

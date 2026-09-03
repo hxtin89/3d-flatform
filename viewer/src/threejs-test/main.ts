@@ -33,6 +33,9 @@ import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-ben
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
+import { createCameraRig } from './camera-rig'
+import { createIntroSequence } from './intro-sequence'
+import { createCaptionLayer } from './caption-layer'
 import { flightSseFloor } from './flight-quality'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
 import {
@@ -92,6 +95,10 @@ const mouseInertia = params.has('inertia')
   ? params.get('inertia') !== '0'
   : EXPERIENCE_CONFIG.navigation.mouseInertia
 const mouseOrbitPivot = params.get('pivot') === 'cursor' ? 'cursor' : EXPERIENCE_CONFIG.navigation.mouseOrbitPivot
+/** Donor intro (intro-sequence.ts) instead of the plain entrance flight;
+ * ?intro=0 restores the flight, ?scrub=1 adds the timeline slider. */
+const introEnabled = EXPERIENCE_CONFIG.intro.enabled && params.get('intro') !== '0'
+const introScrubber = params.get('scrub') === '1'
 /** The settings panel is a development and comparison tool, not part of the
  * product surface: every row in it changes render behaviour, so leaving it
  * reachable means a performance report can silently describe a different
@@ -380,6 +387,11 @@ const onLoaderStart = () => {
   entranceFlightPending = renderOptions.effective().sseBrakes
     && EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
   if (entranceFlightPending) setPointCloudRevealed(false)
+  if (introEnabled) {
+    setAimMode(false, false)
+    introSequence.start(now)
+    return
+  }
   flyToCloud(
     reducedMotion
       ? EXPERIENCE_CONFIG.flight.reducedMotionDurationMs
@@ -484,6 +496,8 @@ let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 let markerLayer: MarkerLayer | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
+/** "12.3456° S, 69.1234° W" for the intro caption; null without a parcel. */
+let donationCoordinatesLabel: string | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
 let environmentLayer: EnvironmentLayer | null = null
@@ -1230,7 +1244,7 @@ function closeFieldVideo(resumeRenderer = true): void {
   videoModalEl.classList.remove('is-ready', 'is-playing')
   videoModalEl.hidden = true
   for (const element of modalBackgroundElements) element.inert = false
-  if (globe) globe.controls.enabled = !cameraFlight.active
+  if (globe) globe.controls.enabled = !cameraBusy()
   if (resumeRenderer && wasOpen && !graphicsFailed) renderer.setAnimationLoop(loop)
   if (wasOpen) videoReturnFocus?.focus()
   videoReturnFocus = null
@@ -1605,18 +1619,24 @@ const cameraFlight = createCameraFlight({
  * pins the camera to. That is why the column style is 200 m tall: the vertical
  * volume is what fills the frame from a legal viewing height.
  */
-function donationFlightOffset(): EnuOffset | null {
+function donationFrameDistance(): number | null {
   if (!donationShapeLayer) return null
   const config = EXPERIENCE_CONFIG.donationShape
   const extent = donationShapeLayer.frameExtent()
   const halfVertical = THREE.MathUtils.degToRad(camera.fov) * 0.5
   const halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect)
   const fill = Math.max(0.1, Math.min(1, config.frameFillFraction))
-  let distance = Math.max(
+  return Math.max(
     config.minApproachDistanceM,
     (extent.heightM * 0.5) / Math.tan(halfVertical * fill),
     extent.radiusM / Math.tan(halfHorizontal * fill),
   )
+}
+
+function donationFlightOffset(): EnuOffset | null {
+  if (!donationShapeLayer) return null
+  const config = EXPERIENCE_CONFIG.donationShape
+  let distance = donationFrameDistance()!
   // Approach from the south, the same heading the survey flight already uses,
   // at a shallow pitch so the column stands up in frame instead of foreshortening.
   // The pitch has to put the camera at or above the navigation floor. Ending
@@ -1633,6 +1653,55 @@ function donationFlightOffset(): EnuOffset | null {
   )
   return [0, -distance * Math.cos(pitch), distance * Math.sin(pitch)]
 }
+
+function describeCoordinates(polygons: { outer: Array<readonly [number, number]> }[]): string | null {
+  let lon = 0
+  let lat = 0
+  let count = 0
+  for (const polygon of polygons) for (const [x, y] of polygon.outer) { lon += x; lat += y; count += 1 }
+  if (!count) return null
+  lon /= count
+  lat /= count
+  const ns = lat >= 0 ? 'N' : 'S'
+  const ew = lon >= 0 ? 'O' : 'W'
+  return `${Math.abs(lat).toFixed(5)}° ${ns}, ${Math.abs(lon).toFixed(5)}° ${ew}`
+}
+
+const cameraRig = createCameraRig({
+  camera,
+  enuUp,
+  worldToEnu,
+  enuToWorld,
+  anchor: (target) => {
+    const parcel = donationShapeLayer?.flightTargetEnu(target)
+    return parcel ?? target.copy(cloudCenterEnu)
+  },
+  frameDistanceM: () => donationFrameDistance() ?? EXPERIENCE_CONFIG.donationShape.minApproachDistanceM,
+  floorZ: () => navigationFloorZ,
+  rangeMaxM: EXPERIENCE_CONFIG.intro.rangeMaxM,
+})
+
+const introSequence = createIntroSequence({
+  rig: cameraRig,
+  captions: createCaptionLayer($('#captions')),
+  canvas: renderer.domElement,
+  reducedMotion,
+  setControlsEnabled: (enabled) => { if (globe) globe.controls.enabled = enabled },
+  resetControls: () => globe?.controls.resetState(),
+  onFlightProgress: (progress) => { cinematicFlightProgress = progress },
+  setCloudOpacity: (value) => environmentLayer?.setCloudOpacity(value),
+  setOutlineDraw: (value) => donationShapeLayer?.setDrawProgress(value),
+  setPeruMinutes: (minutes) => environmentLayer?.setPeruMinutes(minutes),
+  parcelFacts: () => ({
+    areaM2: donationShapeLayer?.info().areaM2 ?? 0,
+    coordinates: donationCoordinatesLabel,
+  }),
+  onCameraJump: () => updateOrigin(true),
+  scrubber: introScrubber,
+})
+
+/** True while a flight or the intro rig owns the camera. */
+const cameraBusy = (): boolean => cameraFlight.active || introSequence.cameraActive
 
 function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
   return new THREE.Vector3(
@@ -1745,9 +1814,9 @@ function setPointCloudRevealed(revealed: boolean): void {
 function updateCloudReveal(): void {
   if (!entranceFlightPending) return
   const revealAt = EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset]
-  // `!cameraFlight.active` is the backstop: a skipped, interrupted or
+  // `!cameraBusy()` is the backstop: a skipped, interrupted or
   // reduced-motion flight must never leave the cloud parked forever.
-  if (cinematicFlightProgress >= revealAt || !cameraFlight.active) {
+  if (cinematicFlightProgress >= revealAt || !cameraBusy()) {
     entranceFlightPending = false
     setPointCloudRevealed(true)
   }
@@ -1766,7 +1835,7 @@ function isGestureActive(): boolean {
 }
 
 function updateMatrixPrecision(now: number): void {
-  if (wasFlying && !cameraFlight.active) flightEndedAt = now
+  if (wasFlying && !cameraBusy()) flightEndedAt = now
   wasFlying = cameraFlight.active
 
   const flightSuppressed = renderOptions.effective().flightPrecisionDrop && cameraFlight.active
@@ -1988,12 +2057,13 @@ function loop(now: number): void {
   // whole frame and never a shift in the middle of it.
   updateOrigin()
   cameraFlight.update(now)
+  introSequence.update(now)
   updateCloudReveal()
   updateMatrixPrecision(now)
   keyboardNavigation?.update(
     now,
     cameraGroundRange,
-    !bootLoading && !cameraFlight.active && videoModalEl.hidden,
+    !bootLoading && !cameraBusy() && videoModalEl.hidden,
     isZoomInBlocked(),
     navigationClearance,
   )
@@ -2007,7 +2077,7 @@ function loop(now: number): void {
     camera,
     cameraGroundRange,
     fps.fps,
-    !bootLoading && !cameraFlight.active && videoModalEl.hidden,
+    !bootLoading && !cameraBusy() && videoModalEl.hidden,
   )
   if (daylightState) {
     updateTimeControls(daylightState)
@@ -2236,6 +2306,7 @@ async function main(): Promise<void> {
   }
   const donationSource = await donationShapePromise
   if (donationSource && globe) {
+    donationCoordinatesLabel = describeCoordinates(donationSource.polygons)
     const ellipsoid = (globe as any).ellipsoid
     const shapeEcef = new THREE.Vector3()
     const shapeEnu = new THREE.Vector3()

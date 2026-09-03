@@ -77,6 +77,9 @@ export interface DonationShapeLayer {
   setForm(form: DonationShapeForm): void
   setSmoothness(value: number): void
   setVisible(visible: boolean): void
+  /** Intro draw-on: 0..1 along the perimeter; null = fully drawn. The fill
+   * and walls follow over the last third, the label waits for the end. */
+  setDrawProgress(value: number | null): void
   /** Parcel centroid at the current ground height, raw ENU. Null before ready. */
   flightTargetEnu(target?: THREE.Vector3): THREE.Vector3 | null
   groundCentreEnu(target?: THREE.Vector3): THREE.Vector3
@@ -163,6 +166,10 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   // Reveal ramp: the parcel fades up instead of popping in, and every material
   // multiplies by it so one uniform drives the whole layer.
   const revealNode = uniform(0)
+  // Draw-on along the perimeter (intro-sequence): rims and grid stop at this
+  // arc position, surfaces fade in over the last third of the draw.
+  const drawNode = uniform(1)
+  let drawProgress = 1
   const geometries: THREE.BufferGeometry[] = []
 
   const track = <T extends THREE.BufferGeometry>(value: T): T => { geometries.push(value); return value }
@@ -174,6 +181,8 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   const edgeD: any = attribute('edgeD', 'float')
   const wallT: any = attribute('wallT', 'float')
   const ribbonOffset: any = attribute('ribbonOffset', 'vec2')
+  const drawWindow = (): any => float(1).sub(smoothstep(drawNode, drawNode.add(0.02), arcU))
+  const drawSurface = (): any => smoothstep(float(0.7), float(1), drawNode)
   // Half-widths in metres, recomputed every frame from the camera distance so a
   // line never drops below a readable pixel width. A fixed world width is what
   // made the rim and the 1 m² grid invisible from the navigation floor.
@@ -197,7 +206,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   fillMaterial.depthWrite = false
   fillMaterial.side = THREE.DoubleSide
   fillMaterial.colorNode = vec3(...new THREE.Color(colors.fill).toArray())
-  fillMaterial.opacityNode = float(colors.fillOpacity).mul(flatBoost).mul(revealNode)
+  fillMaterial.opacityNode = float(colors.fillOpacity).mul(flatBoost).mul(revealNode).mul(drawSurface())
 
   // The x-ray ghost is a *second* pass, never a single depth-less one: drawing
   // the footprint with depthTest off and normal alpha paints flat over the
@@ -215,7 +224,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     const radius = length(positionLocal.xy)
     const band = fract(radius.mul(0.09).sub(shaderTime.mul(0.11)))
     const pulse = float(1).sub(smoothstep(float(0), float(0.14), band))
-    return float(colors.xrayGhostOpacity).mul(float(1).add(pulse.mul(1.6))).mul(revealNode)
+    return float(colors.xrayGhostOpacity).mul(float(1).add(pulse.mul(1.6))).mul(revealNode).mul(drawSurface())
   })()
 
   const rimMaterial = new MeshBasicNodeMaterial()
@@ -228,7 +237,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   rimMaterial.opacityNode = Fn(() => {
     const halo = pow(float(1).sub(abs(edgeD)), float(1.6))
     return halo.mul(float(0.34).add(sweep(0.09, 0.16).mul(0.62)))
-      .mul(colors.rimOpacity).mul(revealNode)
+      .mul(colors.rimOpacity).mul(revealNode).mul(drawWindow())
   })()
 
   const gridMaterial = new MeshBasicNodeMaterial()
@@ -240,7 +249,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   gridMaterial.colorNode = vec3(...new THREE.Color(colors.grid).toArray())
   gridMaterial.opacityNode = Fn(() => {
     const across = pow(float(1).sub(abs(edgeD)), float(1.2))
-    return across.mul(colors.gridOpacity).mul(revealNode)
+    return across.mul(colors.gridOpacity).mul(revealNode).mul(drawWindow())
   })()
 
   const wallMaterial = new MeshBasicNodeMaterial()
@@ -258,7 +267,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
     const foot = float(1).sub(smoothstep(float(0), float(0.045), wallT))
     const breathe = float(0.88).add(sin(shaderTime.mul(1.4).sub(wallT.mul(5))).mul(0.12))
     const rise = float(1).add(sweep(0.06, 0.2).mul(0.55))
-    return vertical.add(foot.mul(0.3)).mul(breathe).mul(rise).mul(revealNode)
+    return vertical.add(foot.mul(0.3)).mul(breathe).mul(rise).mul(revealNode).mul(drawSurface())
   })()
 
   const materials = [fillMaterial, ghostMaterial, rimMaterial, gridMaterial, wallMaterial]
@@ -659,7 +668,7 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   }
 
   function updateLabel(camera: THREE.PerspectiveCamera): void {
-    if (!visible) { if (!label.hidden) label.hidden = true; return }
+    if (!visible || drawProgress < 0.999) { if (!label.hidden) label.hidden = true; return }
     if (measuredViewportWidth !== window.innerWidth || labelWidth === 0) {
       label.hidden = false
       labelWidth = label.offsetWidth
@@ -739,6 +748,10 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
       if (Math.abs(clamped - smoothness) < 1e-4) return
       smoothness = clamped
       rebuildOrganic()
+    },
+    setDrawProgress(value) {
+      drawProgress = value === null ? 1 : Math.max(0, Math.min(1, value))
+      drawNode.value = drawProgress
     },
     setVisible(next) {
       if (next && !visible) revealStart = -Infinity
