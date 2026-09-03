@@ -115,12 +115,26 @@ export const EXPERIENCE_CONFIG = {
     // Only used for the canopy/cloud-deck shader heights
     fallbackCloudHeightM: 140,
     maximumOrbitDegrees: 72,
-    // Mouse orbit easing: a 125 Hz mouse against a 120/144 Hz display leaves
-    // frames with 0 or 2 pointer events, which the controls turn into 0/2× camera
-    // steps. This filter applies part of each delta at once and draws the rest
-    // in over this time constant (ms). 0 = raw, ?ease=<ms> overrides.
+    // Mouse easing (pointer-easing.ts): a mouse reports whole pixels at ~125 Hz,
+    // a 120–160 Hz display draws more frames than that, so drag rotation and pan
+    // arrive as 0-or-1-pixel steps. The pointer position the controls read is
+    // eased toward the real one with this time constant (ms). 0 = raw,
+    // ?ease=<ms> overrides. Keyboard uses 110 ms and never felt slow.
     mouseOrbitEaseMs: 50,
-    mouseOrbitImmediateShare: 0.35,
+    // Share of each raw mouse delta applied in the same frame; the rest eases.
+    mouseImmediateShare: 0.35,
+    // Orbit sensitivity: fraction of a full turn per drag across the viewport
+    // height. Library default 1 = 360°, which at ~7 px per mouse report was
+    // 290–820°/s in a recorded drag. ?rot=<n> overrides.
+    mouseRotationSpeed: 0.75,
+    // Whether a mouse drag keeps the library's momentum after release (stock
+    // AMMOS behaviour, 0.15 s half-life). Touch always keeps it. ?inertia=0.
+    mouseInertia: true,
+    // Mouse right-drag pivot: 'center' orbits the point at the screen centre —
+    // the same rule the arrow keys use — lifted to the navigation floor inside
+    // the survey. 'cursor' is the library default (hit under the pointer, which
+    // lands on the basemap under the canopy). ?pivot=cursor for A/B.
+    mouseOrbitPivot: 'center' as 'center' | 'cursor',
     minimumBoundsRadiusM: 2_500,
     surveyBoundsScale: 0.6,
     // Floating origin: how far the camera may drift from the render origin

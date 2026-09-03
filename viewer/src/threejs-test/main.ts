@@ -81,6 +81,17 @@ const easeParam = Number(params.get('ease'))
 const mouseOrbitEaseMs = params.has('ease') && Number.isFinite(easeParam)
   ? Math.max(0, easeParam)
   : EXPERIENCE_CONFIG.navigation.mouseOrbitEaseMs
+/** Mouse orbit A/B switches next to ?ease: ?rot=<turns per viewport height>,
+ * ?inertia=0 drops the post-release fling, ?pivot=cursor restores the library
+ * pivot under the pointer. */
+const rotParam = Number(params.get('rot'))
+const mouseRotationSpeed = params.has('rot') && Number.isFinite(rotParam) && rotParam > 0
+  ? rotParam
+  : EXPERIENCE_CONFIG.navigation.mouseRotationSpeed
+const mouseInertia = params.has('inertia')
+  ? params.get('inertia') !== '0'
+  : EXPERIENCE_CONFIG.navigation.mouseInertia
+const mouseOrbitPivot = params.get('pivot') === 'cursor' ? 'cursor' : EXPERIENCE_CONFIG.navigation.mouseOrbitPivot
 /** The settings panel is a development and comparison tool, not part of the
  * product surface: every row in it changes render behaviour, so leaving it
  * reachable means a performance report can silently describe a different
@@ -1382,6 +1393,23 @@ function enforceNavigationBounds(): void {
   }
 }
 
+const orbitPivotEnu = new THREE.Vector3()
+
+/** Screen-centre orbit pivot: the raycast lands on the draped imagery, which
+ * inside the survey sits under the canopy the camera is actually looking at.
+ * Lift it to the navigation floor there so a mouse orbit turns at the height
+ * the zoom stop keeps the camera on, and leave it alone outside the bounds. */
+function liftOrbitPivotToFloor(pivot: THREE.Vector3): void {
+  if (freeOrbit) return
+  worldToEnu(pivot, orbitPivotEnu)
+  const dx = orbitPivotEnu.x - cloudCenterEnu.x
+  const dy = orbitPivotEnu.y - cloudCenterEnu.y
+  if (dx * dx + dy * dy > navigationBoundsRadius * navigationBoundsRadius) return
+  if (orbitPivotEnu.z >= navigationFloorZ) return
+  orbitPivotEnu.z = navigationFloorZ
+  enuToWorld(orbitPivotEnu, pivot)
+}
+
 function setMaskMode(mode: number): void {
   uniforms.maskMode.value = mode
   if (mode !== 2) {
@@ -2119,6 +2147,10 @@ async function main(): Promise<void> {
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
     mouseOrbitEaseMs,
+    mouseRotationSpeed,
+    mouseInertia,
+    mouseOrbitPivot,
+    adjustOrbitPivot: liftOrbitPivotToFloor,
   })
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)

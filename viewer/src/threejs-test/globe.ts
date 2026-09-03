@@ -8,7 +8,8 @@ import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { texture } from 'three/tsl'
 import { TilesRenderer } from '3d-tiles-renderer'
-import { SmoothedGlobeControls } from './smoothed-globe-controls'
+import { SmoothedGlobeControls, type MouseOrbitPivot } from './smoothed-globe-controls'
+import { installPointerEasing, type PointerEasing } from './pointer-easing'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import { applyHighPrecisionAlways, maskDimNode, type CloudUniforms } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -20,6 +21,7 @@ import type { MemoryBudgetSnapshot } from './streaming'
 export interface Globe {
   tiles: TilesRenderer
   controls: SmoothedGlobeControls
+  pointerEasing: PointerEasing
   ellipsoid: any
   update(constrainCamera?: () => void): void
   setResolution(): void
@@ -43,8 +45,16 @@ export function createGlobe(opts: {
   uniforms: CloudUniforms
   /** Mouse-orbit easing time constant, ms; 0 = raw library behaviour. */
   mouseOrbitEaseMs: number
+  mouseRotationSpeed: number
+  mouseInertia: boolean
+  mouseOrbitPivot: MouseOrbitPivot
+  /** Post-processes a screen-centre orbit pivot (world coords, in place). */
+  adjustOrbitPivot?: (pivot: THREE.Vector3) => void
 }): Globe {
-  const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms, mouseOrbitEaseMs } = opts
+  const {
+    renderer, camera, scene, maptilerKey, cameraClearance, uniforms,
+    mouseOrbitEaseMs, mouseRotationSpeed, mouseInertia, mouseOrbitPivot, adjustOrbitPivot,
+  } = opts
 
   const tiles = new TilesRenderer()
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
@@ -110,8 +120,13 @@ export function createGlobe(opts: {
   })
 
   const controls = new SmoothedGlobeControls(scene, camera, renderer.domElement, tiles, {
-    easeMs: mouseOrbitEaseMs,
-    immediateShare: EXPERIENCE_CONFIG.navigation.mouseOrbitImmediateShare,
+    mouseOrbitPivot,
+    adjustOrbitPivot,
+  })
+  const pointerEasing = installPointerEasing(controls, {
+    responseMs: mouseOrbitEaseMs,
+    immediateShare: EXPERIENCE_CONFIG.navigation.mouseImmediateShare,
+    mouseInertia,
   })
   // Keep touch zoom and orbit above the surveyed canopy. cameraRadius is the
   // hard clearance from the globe, while minDistance prevents a zoom pivot
@@ -122,6 +137,7 @@ export function createGlobe(opts: {
   controls.minAltitude = 0
   controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true
+  controls.rotationSpeed = mouseRotationSpeed
 
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
   setResolution()
@@ -135,6 +151,7 @@ export function createGlobe(opts: {
   return {
     tiles,
     controls,
+    pointerEasing,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget,
     getMemoryBudget() {
@@ -171,6 +188,7 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      pointerEasing.dispose()
       controls.dispose()
       tiles.dispose()
       scene.remove(tiles.group)
