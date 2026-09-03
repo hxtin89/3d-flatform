@@ -42,6 +42,39 @@ function serveThreeJsAtRoot() {
   };
 }
 
+/**
+ * Settled: do NOT give the /maptiler proxy a keep-alive agent.
+ *
+ * Vite bundles http-proxy, which does `outgoing.agent = options.agent || false`,
+ * so every proxied tile opens its own socket: one DNS lookup, TCP handshake and
+ * TLS handshake each, ~40-50 ms of setup per tile. Pooling that with
+ * `new https.Agent({ keepAlive: true, maxSockets: 6 })` looks like free money and
+ * measures well — 6 connections instead of 24, and 4.6x faster on a slow resolver.
+ *
+ * It was tried on 2026-09-03 and reverted the same day, because it breaks the
+ * basemap in two ways that only appear later:
+ *
+ *  1. Stale pooled sockets. api.maptiler.com is behind Cloudflare, which closes
+ *     idle connections. A bare `https.Agent` has no free-socket timeout, so it
+ *     keeps handing out sockets the far end already closed; the request is written
+ *     into a dead socket and hangs until it resets. Measured: 20 s to ECONNRESET on
+ *     a single tile after the pool had gone idle, with the loader stuck at 95% and
+ *     the tile renderer issuing no further requests at all. Note that Node's own
+ *     global agent sets `timeout: 5000` for exactly this reason.
+ *  2. It crashes the dev server outright via the `proxyReq` hook below. Node flushes
+ *     the request headers synchronously when a *reused* keep-alive socket is handed
+ *     over, so `removeHeader('referer')` then runs after the headers are already on
+ *     the wire and throws ERR_HTTP_HEADERS_SENT — uncaught, taking the process down.
+ *     The tile renderer aborts requests constantly as the camera moves, which is what
+ *     returns sockets to the pool, so the next reuse kills the server. Pooling would
+ *     mean stripping the header in a middleware on the way in instead.
+ *
+ * Both are fixable, but the payoff does not justify it: on a healthy network the
+ * wall-clock difference is inside the noise, and the slow-resolver case it was meant
+ * to fix was a broken home router, not something the repo should carry a workaround
+ * for. One connection per tile is slower and completely reliable.
+ */
+
 export default defineConfig({
   plugins: [cesium(), serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
   server: {
