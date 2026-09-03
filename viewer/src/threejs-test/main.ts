@@ -461,9 +461,26 @@ const distanceFog = new THREE.Fog(
 // The toggle's own sync() would take this off the scene a moment later anyway, but
 // materials get built in between and would carry the fog node for nothing.
 scene.fog = EXPERIENCE_CONFIG.atmosphere.distanceFogEnabled ? distanceFog : null
+/**
+ * The viewport's aspect, never non-finite.
+ *
+ * A boot into a zero-sized viewport — a collapsed embedded pane, a hidden iframe, a
+ * container that is `display:none` when the module runs — makes the plain division
+ * `0 / 0` and pins `camera.aspect` to NaN for the rest of the boot: `applyViewportSize`
+ * refuses to run at all while the size is zero, so nothing overwrites it. That NaN does
+ * not stay in the projection matrix, which would merely look wrong. `donationFlightOffset`
+ * reads `camera.aspect` to work out how far back to stand, so the NaN becomes the staging
+ * *position*, and `camera.lookAt` from a NaN position takes the quaternion with it. The
+ * whole camera is then non-finite before the first frame, which is what `nanWatch` reports
+ * at "boot staging" and what wedges the loader at "the data connection is responding
+ * unusually slowly" — nothing is wrong with the connection; a NaN camera simply requests
+ * no tiles. Same idiom as the `Math.max(clientHeight, 1)` guards further down.
+ */
+const viewportAspect = (): number => (window.innerWidth || 1) / (window.innerHeight || 1)
+
 const camera = new THREE.PerspectiveCamera(
   60,
-  window.innerWidth / window.innerHeight,
+  viewportAspect(),
   10,
   EXPERIENCE_CONFIG.atmosphere.maximumFarM,
 )
@@ -1104,17 +1121,20 @@ let pivotOnCanopy: boolean = EXPERIENCE_CONFIG.navigation.pivotOnCanopy
  * reason, as the donation shape's probe.
  */
 /**
- * A vertical ruler through the survey centre, showing every height that matters at once.
+ * Every height that matters, read once and shown as a 2D column in the HUD.
  *
  * The heights in this scene live in two frames and the difference is 200 m, which is
- * invisible until something is drawn at both. worldToEnu/enuToWorld speak the survey's
- * own, as-delivered heights; the rendered cloud is that plus zOffset. sampleGroundZ
- * reports the *rendered* height — it multiplies by object.matrixWorld, which carries the
- * group translation — so subtracting zOffset is what recovers the survey truth.
+ * invisible until something shows both. worldToEnu/enuToWorld speak the survey's own,
+ * as-delivered heights; the rendered cloud is that plus zOffset. sampleGroundZ reports the
+ * *rendered* height — it multiplies by object.matrixWorld, which carries the group
+ * translation — so subtracting zOffset is what recovers the survey truth.
  *
- * Everything below is drawn in the as-delivered frame, so the survey ticks sit at the
- * numbers the data actually contains and the rendered ticks show where the offset puts
- * them. Built on first use and skipped entirely while hidden, so it costs nothing off.
+ * This was a 3D ruler first: coloured bars on a mast through the survey centre. It was
+ * removed on 2026-09-03 and should not come back. The set spans ~660 m of elevation while
+ * working altitude shows ~50 m of it, so most bars were off-screen; the ones in view were
+ * 1-px lines along a single ENU axis, edge-on and unreadable whenever you looked down it,
+ * and WebGPU ignores line width so there was no thickening them. Sampled while hidden costs
+ * nothing either way — the whole thing hangs off one boolean.
  */
 interface HeightMarks {
   basemapZ: number | null
@@ -1122,6 +1142,9 @@ interface HeightMarks {
   surveyCanopyZ: number | null
   renderedGroundZ: number | null
   renderedCanopyZ: number | null
+  /** The camera's own altitude on the same axis, so "where am I" reads off the column.
+   * NaN until the ENU frame exists. */
+  cameraZ: number
   snapM: number
   liftM: number
   zOffset: number
@@ -1130,12 +1153,10 @@ interface HeightMarks {
    * imagery LOD — measured swinging from -437 m to +115 m as tiles refined. */
   mapTiles: number
 }
-let heightRuler: THREE.Group | null = null
 let heightRulerVisible = false
 let heightRulerMarks: HeightMarks | null = null
 let lastHeightRulerMs = 0
 const heightRulerSampleXY = new THREE.Vector2()
-const heightRulerBarXY = new THREE.Vector2()
 const heightRulerPoint = new THREE.Vector3()
 const heightRulerA = new THREE.Vector3()
 const heightRulerB = new THREE.Vector3()
@@ -1159,7 +1180,7 @@ function readHeightMarks(): HeightMarks {
   const liftM = groundSnap ? pointCloudLiftM : 0
   const marks: HeightMarks = {
     basemapZ: null, surveyGroundZ: null, surveyCanopyZ: null,
-    renderedGroundZ: null, renderedCanopyZ: null,
+    renderedGroundZ: null, renderedCanopyZ: null, cameraZ: NaN,
     snapM, liftM, zOffset, sampled: false,
     mapTiles: (globe as any)?.stats?.().visible ?? 0,
   }
@@ -1167,6 +1188,9 @@ function readHeightMarks(): HeightMarks {
   // where that surface falls — one probe at the survey centre is the whole story.
   const globeTiles = (globe as any)?.tiles
   heightRulerCentre(heightRulerSampleXY)
+  // worldToEnu already subtracts zOffset, so this lands in the same as-delivered frame the
+  // survey rows are quoted in — the column can plot it against them without a conversion.
+  if (enuFrameReady) marks.cameraZ = +worldToEnu(camera.position, heightRulerPoint).z.toFixed(2)
   if (globeTiles && enuFrameReady) {
     // Straight down from high above the reading point onto whatever imagery is loaded.
     const from = enuToWorld(heightRulerA.set(heightRulerSampleXY.x, heightRulerSampleXY.y, 8000))
@@ -1188,66 +1212,90 @@ function readHeightMarks(): HeightMarks {
   return marks
 }
 
-function buildHeightRuler(): THREE.Group {
-  const group = new THREE.Group()
-  group.frustumCulled = false
-  group.renderOrder = 9998
-  group.visible = false
-  return group
-}
-
-/** One coloured horizontal bar at a height, plus its stem down the mast. */
-function heightRulerBar(z: number, halfWidth: number, colour: number): THREE.Line {
-  const centre = heightRulerCentre(heightRulerBarXY)
-  const material = new LineBasicNodeMaterial()
-  material.color.setHex(colour)
-  material.depthTest = false
-  material.depthWrite = false
-  material.transparent = true
-  material.toneMapped = false
-  const a = enuToWorld(heightRulerA.set(centre.x - halfWidth, centre.y, z)).clone()
-  const b = enuToWorld(heightRulerB.set(centre.x + halfWidth, centre.y, z)).clone()
-  const geometry = new THREE.BufferGeometry().setFromPoints([a, b])
-  const line = new THREE.Line(geometry, material)
-  line.frustumCulled = false
-  return line
-}
-
 function updateHeightRuler(): void {
-  if (!heightRulerVisible || !heightRuler || !enuFrameReady) return
+  if (!heightRulerVisible || !enuFrameReady) return
   const marks = readHeightMarks()
   heightRulerMarks = marks
-  // Rebuilt rather than reshaped: it changes only when a slider moves or new tiles land,
-  // and a handful of two-point lines is cheaper to recreate than to keep in sync.
-  for (const child of [...heightRuler.children]) {
-    heightRuler.remove(child)
-    ;(child as any).geometry?.dispose?.()
-    ;(child as any).material?.dispose?.()
-  }
-  const half = 260
-  const levels: [number | null, number][] = [
-    [marks.basemapZ, 0xf59e0b],          // amber: the map drape
-    [marks.surveyGroundZ, 0x38bdf8],     // blue: survey floor, as delivered
-    [marks.surveyCanopyZ, 0x0ea5e9],     // deeper blue: survey canopy
-    [marks.renderedGroundZ, 0x4ade80],   // green: where the floor is drawn
-    [marks.renderedCanopyZ, 0x22c55e],   // deeper green: where the canopy is drawn
-    [0, 0xffffff],                       // white: zero in this frame
-  ]
-  const present = levels.filter(([z]) => z !== null) as [number, number][]
-  for (const [z, colour] of present) heightRuler.add(heightRulerBar(z, half, colour))
-  // The mast, spanning everything drawn.
-  if (present.length > 1) {
-    const zs = present.map(([z]) => z)
-    const mast = heightRulerBar(0, 0, 0x94a3b8)
-    const centre = heightRulerCentre(heightRulerBarXY)
-    const lo = enuToWorld(heightRulerA.set(centre.x, centre.y, Math.min(...zs))).clone()
-    const hi = enuToWorld(heightRulerB.set(centre.x, centre.y, Math.max(...zs))).clone()
-    mast.geometry.dispose()
-    mast.geometry = new THREE.BufferGeometry().setFromPoints([lo, hi])
-    heightRuler.add(mast)
-  }
-  heightRuler.visible = true
+  updateHeightRulerHud(marks)
   updateHeightRulerReadout(marks)
+}
+
+/** Rows of the column, top to bottom once sorted: the key on HeightMarks, the label, and
+ * the colour. Survey rows are the real-world elevations the data carries; drawn rows are
+ * the same planes expressed in the shifted frame, and the gap between them is the offset. */
+const HEIGHT_ROWS: [keyof HeightMarks, string, string][] = [
+  ['basemapZ', 'map drape', '#f59e0b'],
+  ['surveyCanopyZ', 'survey canopy', '#0ea5e9'],
+  ['surveyGroundZ', 'survey floor', '#38bdf8'],
+  ['renderedCanopyZ', 'drawn canopy', '#22c55e'],
+  ['renderedGroundZ', 'drawn floor', '#4ade80'],
+]
+const HEIGHT_PLOT_PX = 190
+const HEIGHT_LABEL_GAP_PX = 12
+
+/**
+ * The height ruler as a 2D screen-space column — the primary instrument.
+ *
+ * The marks span ~660 m of elevation while working altitude shows ~50 m of it, so in 3D
+ * the far ones are off-screen however thick the lines get. Here the axis simply spans
+ * whatever is present, which makes the whole set readable at once and keeps it steady
+ * while the camera moves.
+ *
+ * Everything is plotted in the survey's own as-delivered frame, the frame `worldToEnu`
+ * returns, so the numbers on the axis are the numbers the data contains.
+ */
+function updateHeightRulerHud(marks: HeightMarks): void {
+  const el = document.querySelector<HTMLElement>('#heightRulerHud')
+  if (!el) return
+  const rows = HEIGHT_ROWS
+    .map(([key, name, colour]) => ({ z: marks[key] as number | null, name, colour, line: true }))
+    .filter((r): r is { z: number; name: string; colour: string; line: boolean } => r.z !== null)
+  if (!rows.length) {
+    el.innerHTML = '<span class="hr-empty">No heights yet — no resident tiles under the view.</span>'
+    return
+  }
+  const entries = [...rows]
+  const hasCamera = Number.isFinite(marks.cameraZ)
+  if (hasCamera) entries.push({ z: marks.cameraZ, name: 'camera', colour: '#e8eaed', line: false })
+
+  // Span every mark plus the camera, so the camera marker can never fall off the axis.
+  const zs = entries.map((e) => e.z)
+  const pad = Math.max((Math.max(...zs) - Math.min(...zs)) * 0.08, 5)
+  const lo = Math.min(...zs) - pad
+  const hi = Math.max(...zs) + pad
+  const py = (z: number) => ((hi - z) / (hi - lo)) * HEIGHT_PLOT_PX
+
+  // Labels get nudged apart; the lines stay on the true elevation. At 190 px for ~660 m a
+  // 30 m canopy is 8 px, and two 9 px labels on top of each other are unreadable.
+  const placed = entries.map((e) => ({ ...e, y: py(e.z), labelY: 0 })).sort((a, b) => a.y - b.y)
+  let last = -Infinity
+  for (const e of placed) {
+    e.labelY = Math.max(e.y, last + HEIGHT_LABEL_GAP_PX)
+    last = e.labelY
+  }
+  const overflow = last - (HEIGHT_PLOT_PX - 6)
+  if (overflow > 0) for (const e of placed) e.labelY -= overflow
+
+  // The gap between the survey pair and the drawn pair is the offset, drawn as a band.
+  // Watching it shrink to nothing is what section 3 of the handover is about.
+  let band = ''
+  if (marks.surveyGroundZ !== null && marks.renderedGroundZ !== null) {
+    const a = py(marks.surveyGroundZ)
+    const b = py(marks.renderedGroundZ)
+    const height = Math.abs(a - b)
+    if (height >= 1) {
+      band = `<div class="hr-band" style="top:${Math.min(a, b).toFixed(1)}px;height:${height.toFixed(1)}px"></div>`
+    }
+  }
+
+  const parts = placed.map((e) => {
+    const line = e.line ? `<div class="hr-line" style="top:${e.y.toFixed(1)}px;color:${e.colour}"></div>` : ''
+    const cam = e.line ? '' : `<div class="hr-cam" style="top:${e.y.toFixed(1)}px"></div>`
+    return line + cam
+      + `<div class="hr-mark" style="top:${e.labelY.toFixed(1)}px;color:${e.colour}">`
+      + `<span class="hr-name">${e.name}</span><span class="hr-val">${e.z.toFixed(1)} m</span></div>`
+  })
+  el.innerHTML = `<div class="hr-plot">${band}${parts.join('')}</div>`
 }
 
 function updateHeightRulerReadout(marks: HeightMarks): void {
@@ -2399,6 +2447,11 @@ function donationFlightOffset(): EnuOffset | null {
     (extent.heightM * 0.5) / Math.tan(halfVertical * fill),
     extent.radiusM / Math.tan(halfHorizontal * fill),
   )
+  // This offset is added straight to the staging position at boot, so a non-finite
+  // distance does not stay local — it becomes the camera. `viewportAspect` should keep
+  // that from happening, but the caller already has a `?? destinationOffsetM` fallback and
+  // it is only actually a fallback if a bad answer returns null instead of a NaN number.
+  if (!Number.isFinite(distance)) return null
   // Approach from the south, the same heading the survey flight already uses,
   // at a shallow pitch so the column stands up in frame instead of foreshortening.
   // The pitch has to put the camera at or above the navigation floor. Ending
@@ -2861,11 +2914,9 @@ heightRulerToggleEl.addEventListener('click', () => {
   heightRulerToggleEl.setAttribute('aria-pressed', String(heightRulerVisible))
   heightRulerToggleEl.textContent = `⇕ Heights · ${heightRulerVisible ? 'On' : 'Off'}`
   // Built on first use, like the pivot marker: off, it is not in the scene at all.
-  if (heightRulerVisible && !heightRuler) {
-    heightRuler = buildHeightRuler()
-    scene.add(heightRuler)
-  }
-  if (heightRuler) heightRuler.visible = heightRulerVisible
+  // One boolean is the whole switch: hidden means nothing is sampled and nothing is built.
+  const hudEl = document.querySelector<HTMLElement>('#heightRulerHud')
+  if (hudEl) hudEl.hidden = !heightRulerVisible
   if (heightRulerVisible) updateHeightRuler()
   else document.querySelector('#heightRulerReadout')!.textContent = '—'
 })

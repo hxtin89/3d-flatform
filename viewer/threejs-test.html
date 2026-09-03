@@ -420,6 +420,33 @@
 
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
+      /* ---------- height ruler: the 2D column ----------
+         The only form of this instrument. It replaced a 3D ruler of coloured bars on a mast,
+         which never worked: the marks span ~660 m of elevation while working altitude shows
+         ~50 m of it, so most bars sat off-screen, and the ones in view were 1-px lines along
+         a single ENU axis — edge-on and unreadable whenever you looked down it, with no
+         thickening possible because WebGPU ignores line width. Here one vertical axis carries
+         every height at its true elevation, screen-fixed and crisp while navigating. */
+      #heightRulerHud[hidden] { display: none; }
+      .hr-plot { position: relative; height: 190px; margin: 7px 0 5px 2px;
+                 border-left: 1px solid rgba(232,234,237,.22); }
+      /* True elevation, always: a faint full-width line the label can never lie about. */
+      .hr-line { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid currentColor;
+                 opacity: .5; }
+      /* The label may be nudged off its line to stop stacked rows colliding — at 190 px for
+         ~660 m, a 30 m canopy is 8 px and two 9 px labels would overlap illegibly. */
+      .hr-mark { position: absolute; left: 3px; transform: translateY(-50%); display: flex;
+                 align-items: center; gap: 5px; white-space: nowrap; pointer-events: none; }
+      .hr-name { font: 700 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .05em; }
+      .hr-val { font: 700 9px/1 ui-monospace, SFMono-Regular, monospace; color: rgba(232,234,237,.6); }
+      /* The gap between the survey pair and the drawn pair IS the offset. Watching this band
+         shrink to nothing is the whole point of the real-world-height work. */
+      .hr-band { position: absolute; left: 0; right: 0; background: rgba(232,234,237,.055);
+                 border-top: 1px dashed rgba(232,234,237,.3); border-bottom: 1px dashed rgba(232,234,237,.3); }
+      .hr-cam { position: absolute; left: -6px; transform: translateY(-50%); width: 0; height: 0;
+                border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+                border-left: 6px solid #e8eaed; }
+      .hr-empty { color: rgba(232,234,237,.4); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace; }
       /* Zoomstufen-Sektion — die einzigen <select> im Panel. */
       #panel select { width: 100%; padding: 7px 8px; color: #e8eaed; background: #21262d;
                       border: 1px solid #2d333b; border-radius: 8px; font: inherit; font-size: 12px; cursor: pointer; }
@@ -713,7 +740,8 @@
         <div class="row">
           <label class="h" for="heightRulerToggle">Height ruler</label>
           <button class="act" id="heightRulerToggle" type="button" aria-pressed="false" aria-describedby="heightRulerNote">⇕ Heights · Off</button>
-          <span class="weather-note" id="heightRulerNote">A mast at the ground you are looking at, with a bar per height. Survey rows are the data as delivered; drawn rows are where the offset puts it. Survey rows sit ~200 m overhead, so pull back to see them</span>
+          <span class="weather-note" id="heightRulerNote">Every height at once, on one screen-fixed axis in metres. Survey rows are the real-world elevations the data carries; drawn rows are the same planes expressed in the shifted frame, and the shaded band between them is the offset. Nothing is drawn into the 3D scene</span>
+          <div id="heightRulerHud" hidden></div>
           <span class="weather-note" id="heightRulerReadout">—</span>
         </div>
         <div class="row">

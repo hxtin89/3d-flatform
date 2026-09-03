@@ -1,6 +1,6 @@
 # Handover — navigation (pivot / pan) and real-world heights
 
-Branch `sbb/pivot-on-canopy`, HEAD `7dd4a43`, **pushed and in sync with origin**.
+Branch `sbb/pivot-on-canopy`, HEAD `da6129e`, **pushed and in sync with origin**.
 The wrong height fix the previous handover warned about (`cd95ddc`, cloud ~270 m in the air)
 is reverted by `200517d` and no longer the remote tip.
 
@@ -8,11 +8,15 @@ Repo: `C:\projects\WIDE_3d-flatform`, viewer at `viewer/`, entry `viewer/threejs
 bulk of the logic in `viewer/src/threejs-test/main.ts` and `globe.ts`. Three.js r0.185,
 WebGPU + TSL (node materials only — a GLSL `ShaderMaterial` is rejected). Dev server
 `npm run dev` in `viewer/`, port 5177. Server: `sbb-prod`, path `/srv/projekte/wide/wi-dev`
-— **still needs a re-pull to pick this branch up.**
+— pulled to `b82bb84` and rebuilt on 2026-09-03. `da6129e` is not on the server yet, but it
+is a comment-only commit, so `/livingdashboard/` and `wi-dev` behave identically either way.
+`viewer/dist-sbb-dev` (served at `/sbb-dev/`) was **not** rebuilt: its build command exists
+nowhere in the repo and still needs to be recovered from whoever set it up.
 
 ## Status in one line
 
-Navigation is done and verified. The height ruler and real-world elevations are not.
+Navigation and the height ruler are done and verified. Real-world elevations are not — that
+is the remaining goal, and the ruler now shows exactly how far off they are.
 
 ---
 
@@ -127,41 +131,56 @@ messages and the source comments.
   earlier trials pollute later ones.
 - **Nobody touches the page while measuring.** The Browser pane shows the agent's own tab, so
   human input and scripted events fight over one page.
+- **The Browser pane has no WebGPU — use Chrome for anything GPU-side.** Claude Desktop
+  (measured on `1.44121.4`, 2026-09-03) starts its GPU process with
+  `--disable-features=…,WebGPUService`, so in the pane `navigator.gpu` exists but
+  `requestAdapter()` returns `null` for every option, `forceFallbackAdapter` included. The
+  viewer falls back to WebGL2 and paints the HUD badge amber — that is the app's
+  configuration, not a bug and not a driver fault, and restarting the app does not recover it
+  (it makes it permanent: an instance started before the update still had WebGPU). Shaders,
+  TSL node materials, point-size rendering and GPU performance numbers therefore have to be
+  judged in Chrome at the same localhost URL, or handed to the user to look at. Network,
+  proxy, tile, DNS and console checks in the pane are unaffected.
+- **Do not drive the app with bulk synthetic input.** A loop of ~120 dispatched `wheel` events
+  zoomed the camera to an extreme and wedged the renderer twice, which cost two GPU-process
+  hangs and a round of misdiagnosis. Move the camera in small steps and wait.
 - Live diagnostics: `__wild.pivotDebug` (why the last press did what it did),
   `__wild.navDebug` (governor clamp count and last numbers), `__wild.rebase()` (force a
   rebase), `__wild.heights` (the ruler's last readings).
 
 ---
 
-# 2. Height ruler — open
+# 2. Height ruler — done
 
-Toggle `⇕ Heights` in the Pivot panel, **off by default**. Built lazily on first enable and
-skipped entirely while hidden, so it costs nothing off; refreshes twice a second. Functions
-in `main.ts`: `readHeightMarks()`, `buildHeightRuler()`, `heightRulerBar()`,
-`updateHeightRuler()`, `updateHeightRulerReadout()`.
+Toggle `⇕ Heights` in the Pivot panel, **off by default**, one boolean gating sampling and
+building so it costs nothing off. Refreshes twice a second. Functions in `main.ts`:
+`readHeightMarks()`, `updateHeightRulerHud()`, `updateHeightRulerReadout()`.
 
-**The problem, confirmed by the user and still unfixed: it is hard to see.**
+It is a **2D screen-space column in the HUD and nothing else** — one vertical axis in metres
+carrying every mark at its true elevation, colour-coded, with a camera marker and the offset
+drawn as a shaded band between the survey pair and the drawn pair. That band shrinking to
+nothing is the visible success condition for section 3. Labels are decluttered against each
+other while the lines stay on the true elevation: at 190 px for ~660 m a 30 m canopy is 8 px
+and two 9 px labels would collide. Verified 0 overlaps, no overflow, no horizontal scroll,
+desktop and mobile (375×812, where the panel becomes a bottom sheet and the plot is 324×190).
 
-- Each mark is one 1-px line, 520 m long, along the ENU x axis only — invisible at a glance
-  and edge-on when you look down x.
-- The survey rows sit ~200 m *above* the camera at working altitude. They are genuinely
-  off-screen, so no amount of fattening the lines helps.
+**The 3D ruler is gone — do not rebuild it.** It was coloured bars on a mast through the survey
+centre. The marks span ~660 m of elevation while working altitude shows ~50 m of it, so most
+bars were off-screen; the ones in view were 1-px lines along a single ENU axis, edge-on and
+unreadable whenever you looked down it, and WebGPU ignores line width so there was no
+thickening them. Removed on 2026-09-03 after the 2D column proved it carried the whole story.
 
-**Agreed direction (analysed, not built): make the primary form a 2D screen-space column.**
+**The frame trap, measured — read this before touching heights.** `enuToWorld` re-adds
+`zOffset`, so a *survey*-frame z lands exactly where the cloud is drawn, while a `rendered*`
+number fed through it lands another `zOffset` below. With the camera at 253.7 m: `surveyGround`
+195.0 sits 59 m under it (the ground) and `surveyCanopy` 222.9 sits 31 m under it (the canopy),
+whereas `renderedGround` −12.9 would sit 267 m under it. The old code comment calling
+`renderedGroundZ` "where the floor is drawn" was wrong, and the previous handover's claim that
+the survey rows sit ~200 m *above* the camera had the direction backwards — it is the
+`rendered*` rows that sit ~208 m *below*.
 
-- A vertical metres-above-sea-level axis pinned to the screen edge, auto-spanning the present
-  marks, reusing the current colours (amber drape, blues for survey floor/canopy, greens for
-  drawn floor/canopy), plus a live marker for the camera's own altitude.
-- Show the −208 m offset as a bracket between the survey pair and the drawn pair. That bracket
-  shrinking to zero is the whole story of section 3.
-- Reasons: the marks span ~660 m of elevation while working altitude shows ~50 m of it;
-  numbers and labels are free and crisp in HTML; and a screen-fixed instrument stays readable
-  *while* navigating, where a world-space one swings with the camera.
-- Keep in 3D only the mast plus the drawn floor/canopy bars — the two that are near the
-  camera — because "where do these planes cut the scene" is a spatial question a HUD cannot
-  answer. The far-off survey and drape bars should leave the 3D scene.
-- The zero-cost switch already works and should stay: one boolean gates sampling, building
-  and drawing.
+The column also makes the drape's LOD swing obvious: `basemapZ` read 153.5 m at 7 map tiles and
+17.1 m at 2 on the same view. Read it refined; the readout says so.
 
 ---
 
@@ -211,12 +230,19 @@ costs MapTiler quota.
 
 # 4. Next steps, in order
 
-1. **Re-pull on `sbb-prod`** at `/srv/projekte/wide/wi-dev` — the branch is pushed but the
-   server is still on the old tip.
-2. **Rebuild the height ruler as a 2D HUD column** (section 2).
-3. **Terrain spike** behind `?terrain=1`, then `zOffset = 0` (section 3).
-4. **Strip the diagnostics before this ships**: `__wild.mask.*`, `probeMask`, `pivotDebug`,
-   `navDebug`, `__wild.rebase`, the `[nan-watch]` logs and the splat log.
+1. **Terrain spike** behind `?terrain=1`, then `zOffset = 0` (section 3).
+2. **Gate the diagnostics before this ships** — `__wild.mask.*`, `probeMask`, `pivotDebug`,
+   `navDebug`, `__wild.rebase`, the `[nan-watch]` logs and the splat log. Gate, not delete:
+   they are written once per press or once per clamp, never per frame, so they cost nothing
+   measurable, and the `[graphics] backend=` line exists specifically to make tester reports
+   diagnosable. What has to go from a public build is the console noise and the `window.__wild`
+   handle on internals. **`recoverCameraPose()` and the NaN clamps stay unconditionally** —
+   they are protection, not diagnostics; only their log lines are diagnostic. **Decided:** one
+   flag, `const DIAG = import.meta.env.DEV || params.has('debug')`, so a deployed build stays
+   diagnosable — a report from a tester can be reproduced at `…/livingdashboard/?debug`. The
+   few KB that stay in the bundle are the price for that. Acceptance check: load the built page
+   *without* `?debug` and confirm the console is silent and `window.__wild === undefined`; with
+   `?debug`, confirm both come back.
 
 # House rules and environment
 
@@ -227,5 +253,13 @@ costs MapTiler quota.
   measurement; `python` needs `C:/` paths, not `/c/`; Git Bash `ssh` cannot reach the Windows
   agent pipe — use `/c/Windows/System32/OpenSSH/ssh.exe`.
 - `vite.config.ts` honours a `PORT` env var, so a second (agent) dev server can run alongside
-  yours without touching the 5177 default. `.claude/launch.json` keeps `viewer-dev` on 5177
-  as the first entry.
+  yours without touching the 5177 default. `.claude/launch.json` now holds **one** entry,
+  `viewer-dev` on 5177 with `autoPort: false` — the 4177 agent entry is gone, because a dev
+  server on another port reads as "the site can't be reached".
+- **When port 5177 is "in use" by an untracked `node.exe`**, it is usually an orphaned Vite
+  from an earlier preview start: the launch goes through three nested npm/cmd wrappers, so
+  killing the tracked handle does not always reach the `vite` leaf. Find the listener on 5177
+  and stop *that* PID. Check `preview_list` first — twice the reported PID was either already
+  gone or was the running preview server itself, and killing it would have been wrong.
+- **Do not give the `/maptiler` proxy a keep-alive agent.** Tried and reverted on 2026-09-03;
+  the reasoning and the measurements are in `viewer/vite.config.ts`.
