@@ -340,7 +340,11 @@ function applyBenchPreset(): void {
     // tiles the very next frame needs, producing continuous refetching.
     if (options.presetBudgets) {
       stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
-      globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
+      // Every tier's imagery ceiling has to clear the working set — a settled view
+      // at errorTarget 1 measured 94 tiles of ~1.02 MB. Under that, the cache fills
+      // with tiles it may not evict and stops requesting the ones still missing,
+      // which shows as sky through the map. See globe.ts for the measurement.
+      globe?.setMemoryBudget(256 * 1024 * 1024, 160 * 1024 * 1024)
     }
   } else if (preset === 'medium') {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
@@ -349,9 +353,9 @@ function applyBenchPreset(): void {
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
     if (options.presetBudgets) {
       stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
-      // Imagery working set at errorTarget 1 exceeds 64 MiB on deep zooms —
-      // thrash there shows up as a permanently blurry basemap.
-      globe?.setMemoryBudget(96 * 1024 * 1024, 64 * 1024 * 1024)
+      // The imagery working set at errorTarget 1 measures ~96 MB, so a ceiling at
+      // that value leaves the cache exactly full and unable to complete the map.
+      globe?.setMemoryBudget(192 * 1024 * 1024, 128 * 1024 * 1024)
     }
   } else {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)
@@ -362,7 +366,9 @@ function applyBenchPreset(): void {
     // same reason, with less headroom to recover.
     if (options.presetBudgets) {
       stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
-      globe?.setMemoryBudget(64 * 1024 * 1024, 48 * 1024 * 1024)
+      // Still the smallest imagery budget of the three, but above the measured
+      // working set: below it the map does not merely get blurry, it gets holes.
+      globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
     }
     // Larger points keep the canopy readable at a lower pixel ratio.
     pointSizeScale = 1.3
@@ -801,7 +807,7 @@ const MIB = 1024 * 1024
  * reference residency (APH values from the stream limits below), deliberately
  * bounded rather than unlimited. */
 const COMPARE_STREAM_BUDGET = { cacheBytes: 768 * MIB, gpuBytes: 384 * MIB }
-const COMPARE_GLOBE_BUDGET = { cacheBytes: 128 * MIB, gpuBytes: 96 * MIB }
+const COMPARE_GLOBE_BUDGET = { cacheBytes: 256 * MIB, gpuBytes: 160 * MIB }
 /** Cap the bench preset chose; applyPixelRatio re-applies it flag-aware. */
 let presetPixelRatioCap = 1.25
 let compareBudgetSnapshot: {

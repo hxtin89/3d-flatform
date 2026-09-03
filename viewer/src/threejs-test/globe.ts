@@ -102,11 +102,23 @@ export function createGlobe(opts: {
   const tiles = new TilesRenderer()
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
   // cache exists in addition to point-cloud geometry and was the largest
-  // unbounded allocation in the mobile path.
+  // unbounded allocation in the mobile path — hence a cap. But the cap has to
+  // clear the working set, or it costs far more than it saves.
+  //
+  // Measured 2026-09-04 at the old 96 MB ceiling: 94 tiles of ~1.02 MB, every one
+  // of them marked used. Eviction only removes *unused* tiles, so there was
+  // nothing to free, while `isFull()` refused every further request in
+  // queueTileForDownload. Tiles still missing were therefore never fetched — and
+  // since the draped imagery is the only surface the globe has, those gaps showed
+  // the sky through the map. A ceiling under the working set does not save memory,
+  // it just stops the basemap completing.
+  //
+  // The count ceiling has to clear it too, or it simply becomes the new binder:
+  // 256 MB is roughly 250 tiles at the measured size.
   tiles.lruCache.minSize = 24
-  tiles.lruCache.maxSize = 160
+  tiles.lruCache.maxSize = 320
   tiles.lruCache.minBytesSize = 32 * 1024 * 1024
-  tiles.lruCache.maxBytesSize = 96 * 1024 * 1024
+  tiles.lruCache.maxBytesSize = 256 * 1024 * 1024
   // The XYZ plugin targets errorTarget = 1 (sharp imagery), which needs many
   // tiles per view. Four parallel downloads made deep zooms sharpen visibly
   // slowly and small caches thrashed below the working set — the "extremely
