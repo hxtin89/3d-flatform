@@ -127,8 +127,11 @@ export function createPointSource(opts: {
       requestVolumes: false,
       // The APH quadtree only pays off with residency to match: the Cesium
       // reference runs a 1 GiB cache, the One-LOD defaults would evict
-      // close-range nodes as fast as they arrive.
-      limits: { cacheMinBytes: 256 * MIB, cacheMaxBytes: 768 * MIB, cacheMaxTiles: 1200, gpuBytesTarget: 384 * MIB },
+      // close-range nodes as fast as they arrive. `cacheMinTiles` has to be set
+      // alongside the bytes or it falls back to the (much tighter) default floor
+      // and the byte budget below never comes into play — 768 MiB is reached at
+      // roughly 700 tiles, so a floor of 900 can only ever be the looser one.
+      limits: { cacheMinBytes: 256 * MIB, cacheMaxBytes: 768 * MIB, cacheMinTiles: 900, cacheMaxTiles: 1200, gpuBytesTarget: 384 * MIB },
       datasets: new Map([[GLOBAL_AREA, manifest.adaptiveHierarchyDataset]]),
       tilesetFile: manifest.adaptiveHierarchyTilesetFile,
     },

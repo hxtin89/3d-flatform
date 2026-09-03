@@ -19,6 +19,13 @@ export interface StreamingStats {
   density: DensityBand
   cacheBytes: number
   gpuBytes: number
+  /** Tiles held in the CPU cache — not just the visible ones. */
+  cacheTiles: number
+  /** The two floors eviction drains to. Whichever the cache is sitting *on* is the
+   * limit currently paying for a re-download every time the camera turns; the other
+   * one is slack. Reported so that is readable off the HUD instead of the console. */
+  cacheTilesFloor: number
+  cacheBytesFloor: number
   /** Distinct tiles the server never returned — gaps in the published data. */
   missingTiles: number
 }
@@ -123,8 +130,15 @@ export function tileSpacingMetres(tile: any, points: number): number {
   return EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM
 }
 
+// The two cache floors — `cacheMinTiles` and `cacheMinBytes` — are the same rule
+// in different units: eviction drains to whichever is *lower*, so the tighter one
+// decides how much of the off-screen working set survives. They must therefore be
+// kept in step. They were introduced as a matched pair (48 tiles next to 48 MiB, at
+// the ~600 KB per tile of the time); the byte budgets have since grown eightfold
+// while the tile floor stayed, which pinned every tree at ~48 tiles and made a
+// camera turn a re-download. 140 sits just under `cacheMaxTiles` so the bytes bind.
 const DEFAULT_LIMITS: StreamingLimits = {
-  cacheMinTiles: 48,
+  cacheMinTiles: 140,
   cacheMaxTiles: 160,
   cacheMinBytes: 48 * MIB,
   cacheMaxBytes: 96 * MIB,
@@ -387,7 +401,13 @@ export function createStreamingCloud(opts: {
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
-      tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)
+      // The floor is where the cache comes to rest, so it has to stay clear of the
+      // ceiling: clamped to `cacheMaxBytes` itself, the medium and constrained tiers
+      // rest with no free space at all, and every tile a camera move asks for waits
+      // on an eviction pass before it can even be queued. A quarter of the budget is
+      // enough room to absorb a pan. Raising the tier ceilings instead would keep
+      // more resident, at the peak-memory cost those tiers exist to bound.
+      tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, Math.round(cacheMaxBytes * 0.75))
       tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (600 * 1024)))
       ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
     },
@@ -519,6 +539,9 @@ export function createStreamingCloud(opts: {
         density,
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
+        cacheTiles: (tiles.lruCache as any).itemSet?.size ?? 0,
+        cacheTilesFloor: tiles.lruCache.minSize,
+        cacheBytesFloor: tiles.lruCache.minBytesSize,
       }
     },
     dispose() {

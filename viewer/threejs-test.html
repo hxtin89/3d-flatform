@@ -337,6 +337,8 @@
          which readouts are new and which are Jan's originals. */
       .stats .k.sbb, .stats .v.sbb { color: #66e0ff; }
       .stats .k.sbb { opacity: .8; }
+      /* The cache floor the LRU is currently resting on — after .sbb so it wins. */
+      .stats .v.hold { color: #f0c674; }
       #fpsv.good { color: #6ee787; } #fpsv.warn { color: #f0c674; } #fpsv.bad { color: #ff7b72; }
 
       /* control panel */
@@ -699,6 +701,8 @@
         <span class="k sbb" title="Points per screen pixel, against what one clean layer at the live error target would give. 1 means the target is being met on screen; higher is tile stacking and canopy depth landing on the same pixel.">Stacking</span><span class="v sbb" id="stacking">—</span>
         <span class="k">Map tiles</span><span class="v" id="mapTiles">0</span>
         <span class="k">Cache CPU · GPU</span><span class="v" id="cache">0 MB · 0 MB</span>
+        <span class="k sbb" title="Point tiles held in the CPU cache, against the tile-count floor eviction drains to. Highlighted when the cache is sitting on this floor — then the tile count, not the byte budget, is what forces a re-download on every camera turn.">Cache tiles</span><span class="v sbb" id="cacheTiles">—</span>
+        <span class="k sbb" title="Point-tile bytes held in the CPU cache, against the byte floor eviction drains to. Highlighted when the cache is sitting on this floor — which is where it should be.">Cache bytes</span><span class="v sbb" id="cacheBytes">—</span>
         <span class="k">FPS</span><span class="v" id="fpsv">—</span>
         <span class="k">ms/frame</span><span class="v" id="msv">—</span>
       </div>

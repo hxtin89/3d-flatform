@@ -3349,6 +3349,8 @@ const mapTilesEl = $('#mapTiles')
 const densityEl = $('#loaded')
 const lodEl = $('#displayed')
 const cacheEl = $('#cache')
+const cacheTilesEl = $('#cacheTiles')
+const cacheBytesEl = $('#cacheBytes')
 const chipFpsEl = $('#chipFps')
 const diagStatsEl = $<HTMLDivElement>('#diagStats')
 const diagAltitudeEl = $('#diagAltitude')
@@ -3411,6 +3413,34 @@ function updateOverdrawReadout(points: number): void {
     : `${(perPixel / idealPerPixel).toFixed(0)}× · ${perPixel.toFixed(2)} pt/px`
 }
 
+/**
+ * Where the point-tile cache sits against the two floors eviction drains to.
+ *
+ * The floors are the same rule in different units — tiles and bytes — and the LRU
+ * stops at whichever is reached first, so only one of them is ever really in force.
+ * Both rows read `now / floor`; the highlighted one is the floor the cache is
+ * resting on, and therefore the limit deciding how much of the off-screen working
+ * set survives a camera turn. Bytes highlighted is the healthy state.
+ */
+function updateCacheFloorReadout(stats: StreamingStats | null): void {
+  if (!stats) {
+    cacheTilesEl.textContent = '—'
+    cacheBytesEl.textContent = '—'
+    cacheTilesEl.className = 'v sbb'
+    cacheBytesEl.className = 'v sbb'
+    return
+  }
+  const tilesFill = stats.cacheTilesFloor > 0 ? stats.cacheTiles / stats.cacheTilesFloor : 0
+  const bytesFill = stats.cacheBytesFloor > 0 ? stats.cacheBytes / stats.cacheBytesFloor : 0
+  cacheTilesEl.textContent = `${fmtInt(stats.cacheTiles)} / ${fmtInt(stats.cacheTilesFloor)}`
+  cacheBytesEl.textContent = `${fmtMiB(stats.cacheBytes)} / ${fmtMiB(stats.cacheBytesFloor)}`
+  // While the cache is still filling neither floor is in force, so highlight nothing
+  // rather than pick a winner between two part-full readouts.
+  const holding = Math.max(tilesFill, bytesFill) >= 0.95
+  cacheTilesEl.className = `v sbb${holding && tilesFill >= bytesFill ? ' hold' : ''}`
+  cacheBytesEl.className = `v sbb${holding && bytesFill > tilesFill ? ' hold' : ''}`
+}
+
 function updateHud(stats: StreamingStats | null): void {
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
   densityEl.textContent = stats?.density ?? '—'
@@ -3420,6 +3450,7 @@ function updateHud(stats: StreamingStats | null): void {
   updateOverdrawReadout(stats?.points ?? 0)
   mapTilesEl.textContent = String(globeStats.visible)
   cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
+  updateCacheFloorReadout(stats)
 
   const value = fps.fps
   fpsEl.textContent = value ? value.toFixed(0) : '—'
@@ -3734,9 +3765,10 @@ async function main(): Promise<void> {
     requestVolumes: pointTree !== 'aph',
     // The APH quadtree only pays off with residency to match: the Cesium
     // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
-    // evict close-range nodes as fast as they arrive.
+    // evict close-range nodes as fast as they arrive. Keep `cacheMinTiles` in step
+    // with the bytes — see the same object in point-source.ts for why.
     limits: pointTree === 'aph'
-      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
+      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMinTiles: 900, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
       : undefined,
     camera,
     renderer,
