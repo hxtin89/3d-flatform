@@ -192,6 +192,7 @@ if (has('horizon')) {
   await page.evaluate(() => { window.__ft = []; const s = window.__three.renderer; const orig = s.render.bind(s); let last = performance.now(); s.render = (...a) => { const t0 = performance.now(); window.__ft.push(t0 - last); last = t0; const r = orig(...a); window.__cpu = (window.__cpu ?? []); window.__cpu.push(performance.now() - t0); return r } })
   await new Promise((r) => setTimeout(r, Number(flag('hold', 8000))))
   console.log('cpu render ms:', JSON.stringify(await page.evaluate(() => { const a = (window.__cpu ?? []).slice(10).sort((x, y) => x - y); const q = (p) => a.length ? Number(a[Math.floor(a.length * p)].toFixed(2)) : 0; return { n: a.length, p50: q(0.5), p95: q(0.95), max: a.length ? Number(Math.max(...a).toFixed(1)) : 0 } })))
+  console.log('ground:', JSON.stringify(await page.evaluate(() => { let found = null; window.__three.scene.traverse((o) => { if (o.name === 'ground-fallback') found = { visible: o.visible, scale: o.scale.x, pos: o.position.toArray().map((v) => Math.round(v)), matType: o.material?.type, parent: o.parent?.name || o.parent?.type } }); return found })))
   console.log('horizon frames:', JSON.stringify(await frameStats(page)), 'perf:', JSON.stringify(await page.evaluate(() => window.__wild?.perf ?? null)))
   const stats = await page.evaluate(() => {
     const hud = (id) => document.getElementById(id)?.textContent

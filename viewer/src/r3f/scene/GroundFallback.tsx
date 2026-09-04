@@ -10,15 +10,15 @@ import { useEffect, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { color, uniform } from 'three/tsl'
+import { uniform } from 'three/tsl'
 import { getEcefRoot } from '../../threejs-test/origin'
 import { PHASE } from '../frame-phases'
 import { frame } from '../state/frame'
 import { useBootStore } from '../state/boot-store'
-import { enuToWorld, geo } from '../state/survey-frames'
+import { geo } from '../state/survey-frames'
 
 /** Damp forest tone: never brighter than the imagery it stands in for. */
-const GROUND_COLOR = 0x2f4a2b
+const GROUND_COLOR = 0x35502f
 /** Metres below the ellipsoid surface — deep enough to lose the depth fight
  * against a loaded tile, shallow enough to stay under the point cloud. */
 const SINK_M = 6
@@ -27,15 +27,21 @@ export function GroundFallback() {
   const framesReady = useBootStore((s) => s.framesReady)
 
   const { mesh, tint } = useMemo(() => {
+    // Uniform rather than a constant so the tone can follow the daylight.
     const tint = uniform(new THREE.Color(GROUND_COLOR))
     const material = new MeshBasicNodeMaterial()
-    material.colorNode = color(GROUND_COLOR).mul(frame.uniforms.daylightIntensity).mul(tint.mul(1 / 0.18))
+    // Daylight grading, same as the imagery gets, without going darker than
+    // the canopy it stands behind.
+    material.colorNode = tint.mul(frame.uniforms.daylightColor).mul(frame.uniforms.daylightIntensity)
     material.fog = true
     material.depthWrite = true
     const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 64), material)
     mesh.name = 'ground-fallback'
     mesh.frustumCulled = false
     mesh.renderOrder = -1
+    // The matrix is built from the ENU frame every frame — a lookAt along the
+    // disc's own up axis is degenerate and leaves it edge-on or NaN.
+    mesh.matrixAutoUpdate = false
     return { mesh, tint }
   }, [])
 
@@ -52,22 +58,20 @@ export function GroundFallback() {
 
   useFrame(() => {
     if (!geo.ready) return
-    // Follow the camera's ground point so a modest disc covers the view, and
-    // scale with the fog range so its rim is always inside the haze.
-    const radius = Math.max(2_000, frame.fogRange * 1.6)
-    mesh.scale.setScalar(radius)
-    _centre.set(frame.followEnu.x, frame.followEnu.y, geo.areaMinZ - SINK_M)
-    enuToWorld(_centre, _world)
-    mesh.position.copy(_world)
-    mesh.up.copy(geo.enuUp)
-    mesh.lookAt(_world.clone().addScaledVector(geo.enuUp, 1000))
-    mesh.updateMatrixWorld()
-    tint.value.copy(frame.daylight?.daylightColor ?? _white)
+    // Big enough that its rim always sits beyond the fog's far distance, so
+    // the edge is never visible — it fades into the sky like the terrain does.
+    const radius = Math.max(4_000, frame.fogRange * 4)
+    // Absolute ENU frame: the disc hangs under ecefRoot, whose own matrix
+    // already carries the floating origin — the render-space frame would
+    // apply that shift twice.
+    _local.makeTranslation(frame.followEnu.x, frame.followEnu.y, geo.areaMinZ - SINK_M + geo.zOffset)
+    _scale.makeScale(radius, radius, 1)
+    mesh.matrix.multiplyMatrices(geo.enuFrame, _local).multiply(_scale)
+    mesh.matrixWorldNeedsUpdate = true
   }, PHASE.LAYERS)
 
   return null
 }
 
-const _centre = new THREE.Vector3()
-const _world = new THREE.Vector3()
-const _white = new THREE.Color(0xffffff)
+const _local = new THREE.Matrix4()
+const _scale = new THREE.Matrix4()

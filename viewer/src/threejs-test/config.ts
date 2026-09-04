@@ -253,16 +253,18 @@ export const EXPERIENCE_CONFIG = {
     scaleMin: 0.3,
     scaleMax: 1,
     // Never below this, whatever the frame rate — the parcel must stay framed.
-    minCutoffM: 420,
+    // Below this the view turns into a fog wall — the governor spends the
+    // rest of its budget on density instead.
+    minCutoffM: 900,
     // Second stage: once view distance is spent, refinement gets coarser —
     // the error target is multiplied by up to this much.
-    sseFactorMax: 3,
+    sseFactorMax: 4,
     ssePerSecond: 1.2,
     // Both stages are quantised and rate-limited: every change re-selects
     // tiles, and a continuously moving target keeps the streamer churning,
     // which costs exactly the frames the governor is trying to save.
     scaleStep: 0.08,
-    sseSteps: [1, 1.5, 2, 3] as readonly number[],
+    sseSteps: [1, 1.5, 2, 3, 4] as readonly number[],
     minChangeIntervalMs: 3_000,
     sampleWindow: 90,
     // Ignore the first frames after a rebuild/flight: uploads distort the median.
