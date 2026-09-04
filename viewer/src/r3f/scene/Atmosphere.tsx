@@ -11,9 +11,11 @@ import { frame, smoothingAlpha } from '../state/frame'
 import { sceneState } from '../state/scene-store'
 import { useUiStore } from '../state/ui-store'
 import { geo } from '../state/survey-frames'
+import { updatePerfGovernor } from '../state/perf-governor'
 
 const SMOOTH_TAU_MS = 270
 let lastNow = 0
+const _forward = new THREE.Vector3()
 let appliedNear = -1
 let appliedFar = -1
 
@@ -53,20 +55,40 @@ export function updateAtmosphere(camera: THREE.PerspectiveCamera, dt: number, sn
   applyPlanes(camera, near, frame.atmosphereFar, snap)
 }
 
-export function updateDistanceCutoff(dt: number, snap = false): void {
+/** 0 = camera looks at the horizon, 1 = straight down. */
+function downFactor(camera: THREE.Camera): number {
+  camera.getWorldDirection(_forward)
+  return THREE.MathUtils.clamp(-_forward.dot(camera.up), 0, 1)
+}
+
+export function updateDistanceCutoff(camera: THREE.PerspectiveCamera, dt: number, snap = false): void {
   const lod = EXPERIENCE_CONFIG.lod
+  const fov = EXPERIENCE_CONFIG.foveation
   const alpha = snap ? 1 : smoothingAlpha(dt, SMOOTH_TAU_MS)
-  const target = THREE.MathUtils.clamp(
-    frame.cameraAltitude * lod.distanceCutoffHeightFactor,
-    lod.distanceCutoffMinM,
-    lod.distanceCutoffMaxM,
+  // A flat view sees a wedge several kilometres long where a nadir view sees a
+  // disc, so both the cutoff and the taper distance follow the camera pitch.
+  const down = downFactor(camera)
+  const cutoffPitch = THREE.MathUtils.lerp(fov.cutoffFlat, fov.cutoffDown, down)
+  const detailPitch = THREE.MathUtils.lerp(fov.detailFlat, fov.detailDown, down)
+  const governor = updatePerfGovernor(dt)
+  const target = Math.max(
+    EXPERIENCE_CONFIG.perf.minCutoffM,
+    THREE.MathUtils.clamp(
+      frame.cameraAltitude * lod.distanceCutoffHeightFactor,
+      lod.distanceCutoffMinM,
+      lod.distanceCutoffMaxM,
+    ) * cutoffPitch * governor,
   )
   frame.distanceCutoff = THREE.MathUtils.lerp(frame.distanceCutoff, target, alpha)
-  const fogTarget = Math.max(frame.cameraAltitude * lod.distanceCutoffHeightFactor, lod.distanceCutoffMinM)
+  // The fog follows the cutoff so its edge is never visible as a hard rim.
+  const fogTarget = Math.max(target, EXPERIENCE_CONFIG.perf.minCutoffM)
   frame.fogRange = THREE.MathUtils.lerp(frame.fogRange, fogTarget, alpha)
   frame.uniforms.cutoffDistance.value = frame.distanceCutoff
   frame.uniforms.fadeDistance.value = frame.distanceCutoff * lod.distanceFadeStart
-  const detailRange = Math.max(frame.cameraAltitude * lod.distanceDetailHeightFactor, lod.distanceDetailMinM)
+  const detailRange = Math.max(
+    frame.cameraAltitude * lod.distanceDetailHeightFactor * detailPitch,
+    lod.distanceDetailMinM * detailPitch,
+  )
   sceneState().stream?.setDistanceCutoff(frame.distanceCutoff, detailRange)
 }
 
@@ -80,7 +102,7 @@ export function Atmosphere() {
   useFrame(() => {
     const dt = lastNow ? Math.min(100, frame.now - lastNow) : 16
     lastNow = frame.now
-    updateDistanceCutoff(dt)
+    updateDistanceCutoff(camera, dt)
     if (!geo.ready) return
     updateAtmosphere(camera, dt)
   }, PHASE.PLANES)

@@ -3,13 +3,13 @@
 // quality controller, SSE policy, density ceiling and mask sphere. Port of
 // rebuildStream / updateStreaming / maybeSwapPointSource in main.ts.
 //
-// Streaming policy change vs. the old app: a drag no longer pins the error
-// target to lod.flightSse (that deselected fine tiles instantly and refilled
-// them a second later — the visible "coarsen on every drag"). The SSE floor
-// applies while springs move the camera; during gestures only the parse and
-// node queues are throttled, so tile uploads stay bounded without changing
-// what is drawn: the tiles already resident keep rendering at full density,
-// only parse + GPU upload of new ones wait for the gesture to end.
+// Streaming policy: while the camera moves — spring flight or user gesture —
+// refinement is held at lod.flightSse and ramps back down over a second after
+// it stops (flight-quality.ts). A moving view cannot resolve the finest level
+// anyway, and every tile that arrives mid-gesture pays a GPU upload inside the
+// frame the user is watching. On top of that the parse and process queues are
+// paused for the duration of the gesture, so no upload lands in a drag frame;
+// tiles already resident keep drawing at full density.
 import { useEffect, useCallback } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -28,6 +28,7 @@ import { geo, worldToEnu } from '../state/survey-frames'
 import { applyPointSize, applyStreamMemoryBudget, effectiveOptions, setPointCloudRevealed } from '../state/actions'
 import { useBootStore } from '../state/boot-store'
 import { useResolutionSync } from '../hooks/useResolutionSync'
+import { perfSseFactor, resetPerfGovernor } from '../state/perf-governor'
 
 /** How long a new zoom level has to hold before its pack is fetched. */
 const SWAP_DWELL_MS = 900
@@ -85,6 +86,8 @@ function maybeSwapPointSource(now: number, band: ZoomBand, camera: THREE.Camera)
 
 
 export function isGestureActive(): boolean {
+  // Driven by the controls' own state each frame (Basemap.tsx keeps the
+  // hold-off fresh), so a missing 'end' event can never park the queues.
   return frame.now < frame.gestureUntil
 }
 
@@ -126,6 +129,7 @@ export function PointTiles() {
     frame.appliedHighPrecision = null
     stream.setMaskSphere(frame.maskWorldActive ? frame.maskSphereWorld : null, frame.maskWorldRadius)
     frame.lastSwapAt = performance.now()
+    resetPerfGovernor()
     if (reason !== 'boot') scene.donation?.resetGroundLock()
     console.info(`[point-source] ${reason} → ${source.label} (${source.datasetPath})`)
     return () => {
@@ -170,13 +174,15 @@ export function PointTiles() {
     const gesturing = isGestureActive()
     if (frame.wasGesturing && !gesturing) frame.gestureEndedAt = now
     frame.wasGesturing = gesturing
-    if (gesturing !== queuesPaused) {
-      queuesPaused = gesturing
+    // Never during the loader: the boot staging needs its tiles.
+    const pause = gesturing && !isBootLoading()
+    if (pause !== queuesPaused) {
+      queuesPaused = pause
       const parseQueue: any = stream.tiles.parseQueue
       const processQueue: any = stream.tiles.processNodeQueue
-      parseQueue.maxJobs = gesturing ? 0 : idleParseJobs
-      processQueue.maxJobs = gesturing ? 0 : idleProcessJobs
-      if (!gesturing) {
+      parseQueue.maxJobs = pause ? 0 : idleParseJobs
+      processQueue.maxJobs = pause ? 0 : idleProcessJobs
+      if (!pause) {
         // Raising maxJobs does not wake the queue on its own.
         parseQueue.tryRunJobs?.()
         processQueue.tryRunJobs?.()
@@ -199,15 +205,17 @@ export function PointTiles() {
         isBootLoading()
           ? EXPERIENCE_CONFIG.lod.bootSse
           : flightSseFloor({
-            flying: frame.cameraBusy,
-            msSinceLanding: now - frame.flightEndedAt,
+            flying: frame.cameraBusy || gesturing,
+            msSinceLanding: now - Math.max(frame.flightEndedAt, frame.gestureEndedAt),
             targetSse: quality.sse,
           }),
       )
       : quality.sse
-    if (Math.abs(targetSse - frame.sseAuto) > 0.25) {
-      frame.sseAuto = targetSse
-      stream.setErrorTarget(targetSse)
+    // Governor stage two: coarser refinement once view distance is spent.
+    const governed = targetSse * perfSseFactor()
+    if (Math.abs(governed - frame.sseAuto) > 0.25) {
+      frame.sseAuto = governed
+      stream.setErrorTarget(governed)
     }
     stream.setDensityCeiling(isBootLoading() ? 0 : 2 - quality.band)
     applyPointSize()

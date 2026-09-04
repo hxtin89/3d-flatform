@@ -9,8 +9,14 @@ import { setLoadProgress, useBootStore } from '../state/boot-store'
 import { sceneState } from '../state/scene-store'
 import { uiState, useUiStore, type HudSnapshot } from '../state/ui-store'
 import { geo } from '../state/survey-frames'
+import { perfDebug } from '../state/perf-governor'
 
 const HUD_INTERVAL_MS = 125
+/** The basemap is not required to start: a dead imagery key (403) must not
+ * leave the loader spinning forever. Point data ready + this long without a
+ * single map tile is enough. */
+const MAP_TILE_GRACE_MS = 6_000
+let pointsReadyAt = 0
 const ZOOM_INTERVAL_MS = 250
 let lastHud = -Infinity
 let lastZoom = -Infinity
@@ -23,10 +29,14 @@ function updateLoaderVisual(): void {
     setLoadProgress(0.35 + 0.6 * stats.progress, boot.dataReady ? undefined : 'Lade erste Kronendach-Punktwolken …')
   }
   const visibleMapTiles = sceneState().globe?.stats().visible ?? 0
-  const ready = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999 && visibleMapTiles > 0)
+  const pointsReady = Boolean(stats && stats.visible > 0 && stats.points > 0 && stats.progress >= 0.999)
+  if (pointsReady && !pointsReadyAt) pointsReadyAt = frame.now
+  const mapGraceOver = pointsReadyAt > 0 && frame.now - pointsReadyAt > MAP_TILE_GRACE_MS
+  const ready = pointsReady && (visibleMapTiles > 0 || mapGraceOver)
   if (ready && !boot.dataReady) {
     useBootStore.setState({ dataReady: true })
-    setLoadProgress(1, 'Feldsystem bereit.')
+    setLoadProgress(1, visibleMapTiles > 0 ? 'Feldsystem bereit.' : 'Feldsystem bereit · Kartenbilder nicht verfügbar.')
+    if (visibleMapTiles === 0) console.warn('[basemap] no imagery tiles — starting without the satellite basemap (check the MapTiler key)')
   }
   if (boot.phase === 'entering' && frame.now >= boot.finishAt) {
     useBootStore.setState({ phase: 'entered' })
@@ -61,6 +71,8 @@ export function HudSampler() {
         originDistance: camera.position.length(),
         rebases: originStats().rebases,
         distanceCutoff: frame.distanceCutoff,
+        perfScale: perfDebug().scale,
+        perfSse: perfDebug().sse,
       }
       useUiStore.setState({ hud, pointSizePx: frame.pointSizePx })
     }

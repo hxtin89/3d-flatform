@@ -20,6 +20,7 @@ import { Rain } from './Rain'
 import { Audio } from './Audio'
 import { DonationShape } from './DonationShape'
 import { DoubleClick } from './DoubleClick'
+import { GroundFallback } from './GroundFallback'
 
 function NoPointerEvents() {
   const setEvents = useThree((s) => s.setEvents)
@@ -36,6 +37,7 @@ export function Scene() {
       <FloatingOrigin>
         {framesReady && (
           <>
+            <GroundFallback />
             <Basemap />
             <KeyboardNav />
             <CameraRig />

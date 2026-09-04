@@ -35,7 +35,7 @@ export function Hud() {
           <span className="k">LOD-Distanz</span><span className="v" id="diagRange">{hud?.range != null ? `${Math.round(hud.range)} m` : '—'}</span>
           <span className="k">Zoom-Anschlag</span><span className="v" id="diagStop">{hud ? `${Math.round(hud.clearance)} m` : '—'}</span>
           <span className="k">Fehlende Kacheln</span><span className="v" id="diagMissing">{hud?.missingTiles ?? 0}</span>
-          <span className="k">Origin-Abstand</span><span className="v" id="diagOrigin">{hud ? `${Math.round(hud.originDistance)} m · ${hud.rebases}× · cut ${Math.round(hud.distanceCutoff)} m` : '—'}</span>
+          <span className="k">Origin-Abstand</span><span className="v" id="diagOrigin">{hud ? `${Math.round(hud.originDistance)} m · ${hud.rebases}× · cut ${Math.round(hud.distanceCutoff)} m · q${hud.perfScale.toFixed(2)}/${hud.perfSse.toFixed(1)}` : '—'}</span>
         </div>
       )}
     </div>

@@ -14,6 +14,8 @@ const flag = (name, fallback) => {
 }
 const has = (name) => args.includes(`--${name}`)
 const out = resolve(flag('out', 'smoke-out'))
+const frameStats = (page) => page.evaluate(() => { const ft = (window.__ft ?? []).slice(5).sort((a, b) => a - b); const q = (p) => ft.length ? Number(ft[Math.floor(ft.length * p)].toFixed(2)) : 0; return { n: ft.length, p50: q(0.5), p95: q(0.95), p99: q(0.99), over8: ft.filter((x) => x > 8.4).length, over16: ft.filter((x) => x > 16.8).length } })
+const hasFlag = (n) => args.includes('--' + n)
 const waitMs = Number(flag('wait', 25000))
 mkdirSync(out, { recursive: true })
 
@@ -23,8 +25,10 @@ const browser = await puppeteer.launch({
   args: [
     '--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=metal',
     '--ignore-gpu-blocklist', '--window-size=1400,900', '--autoplay-policy=no-user-gesture-required',
+    // Uncapped frame rate: the 120 Hz target needs real frame times, not vsync steps.
+    ...(hasFlag('unvsync') ? ['--disable-frame-rate-limit', '--disable-gpu-vsync', '--disable-features=CalculateNativeWinOcclusion'] : []),
   ],
-  defaultViewport: { width: 1400, height: 900, deviceScaleFactor: 1 },
+  defaultViewport: { width: 1400, height: 900, deviceScaleFactor: Number(flag('dsf', 2)) },
 })
 const page = await browser.newPage()
 const consoleLines = []
@@ -41,15 +45,16 @@ while (Date.now() - started < waitMs) {
   const p = await phase()
   if (p !== last) { console.log(`${((Date.now() - started) / 1000).toFixed(1)}s  ${p}`); last = p }
   const ready = await page.evaluate(() => { const a = document.getElementById('loaderActions'); return a ? !a.hidden : true })
-  if (ready) { console.log('ready'); break }
+  if (ready) { console.log(`ready after ${((Date.now() - started) / 1000).toFixed(1)}s`); break }
   await new Promise((r) => setTimeout(r, 500))
 }
 if (has('hideLoader')) await page.evaluate(() => { const l = document.getElementById('loader'); if (l) l.style.display = 'none' })
+if (!(await page.evaluate(() => { const a = document.getElementById('loaderActions'); return a ? !a.hidden : true }))) console.log('NOT READY —', await page.evaluate(() => ({ mapTiles: document.getElementById('mapTiles')?.textContent, pointTiles: document.getElementById('blocks')?.textContent, points: document.getElementById('visible')?.textContent, status: document.getElementById('loaderStatus')?.textContent })))
 await page.screenshot({ path: resolve(out, '01-loader.png') })
 console.log('HUD:', await hudText())
 
 if (has('enter')) {
-  await page.click('#loaderStart')
+  await page.evaluate(() => document.getElementById('loaderStart')?.click())
   const series = Number(flag('series', 0))
   for (let i = 1; i <= series; i++) {
     await new Promise((r) => setTimeout(r, Number(flag('step', 1000))))
@@ -64,7 +69,7 @@ if (has('enter')) {
 const rigInfo = () => page.evaluate(() => ({ mode: window.__wild?.rig?.mode(), alt: Math.round(window.__wild?.range?.altitude ?? -1), busy: window.__wild?.flight, sse: window.__wild?.sse }))
 if (has('takeover')) {
   // Drag mid-descent: the rig must hand over without a jump, then resume C1.
-  await page.click('#loaderStart')
+  await page.evaluate(() => document.getElementById('loaderStart')?.click())
   await new Promise((r) => setTimeout(r, 3000))
   console.log('before drag', await rigInfo())
   await page.mouse.move(700, 450)
@@ -90,7 +95,7 @@ if (has('takeover')) {
   console.log('after key', await rigInfo())
 }
 if (has('panel')) {
-  await page.click('#loaderStart')
+  await page.evaluate(() => document.getElementById('loaderStart')?.click())
   await new Promise((r) => setTimeout(r, 12000))
   const hudBefore = await hudText()
   await page.click('#compareToggle')
@@ -139,9 +144,64 @@ if (has('extras')) {
     console.log('video closed:', await page.evaluate(() => document.getElementById('videoModal')?.hidden + ' inert=' + document.getElementById('appRoot')?.hasAttribute('inert')))
   }
 }
+
+
+if (has('basemap')) {
+  await new Promise((r) => setTimeout(r, 4000))
+  const report = await page.evaluate(() => {
+    const globe = window.__three?.globe
+    if (!globe) return 'no globe'
+    const out = []
+    globe.tiles.group.traverse((o) => {
+      if (!o.isMesh) return
+      const m = o.material
+      out.push({ name: o.name || o.type, mat: m?.type, hasMap: !!m?.map, mapImage: !!m?.map?.image, color: m?.color?.getHexString?.(), fog: m?.fog, visible: o.visible, geo: o.geometry?.type })
+    })
+    return { count: out.length, sample: out.slice(0, 6), visibleTiles: globe.tiles.visibleTiles.size }
+  })
+  console.log('basemap:', JSON.stringify(report))
+  await page.evaluate(() => { const l = document.getElementById('loader'); if (l) l.style.display = 'none' })
+  await page.screenshot({ path: resolve(out, 'basemap.png') })
+}
+if (has('horizon')) {
+  console.log('pre-enter:', await page.evaluate(() => ({ actionsHidden: document.getElementById('loaderActions')?.hidden, btn: !!document.getElementById('loaderStart'), loaderHidden: document.getElementById('loader')?.hidden })))
+  await page.evaluate(() => document.getElementById('loaderStart')?.click())
+  await new Promise((r) => setTimeout(r, 2500))
+  console.log('post-enter:', await page.evaluate(() => ({ loader: !!document.getElementById('loader'), sse: document.getElementById('displayed')?.textContent, status: document.getElementById('status')?.textContent })))
+  await new Promise((r) => setTimeout(r, Number(flag('settle', 14000))))
+  // Flatten the view toward the horizon, the way a user orbit ends up.
+  await page.evaluate(() => {
+    const w = window.__wild
+    w.rig?.takeover?.()
+    const cam = w.camera ?? window.__three.camera
+    const up = cam.up.clone().normalize()
+    const fwd = new (cam.position.constructor)()
+    cam.getWorldDirection(fwd)
+    // project forward onto the horizontal plane, then pitch down a few degrees
+    const flat = fwd.clone().addScaledVector(up, -fwd.dot(up)).normalize()
+    const dir = flat.clone().addScaledVector(up, -0.09).normalize()
+    const target = cam.position.clone().addScaledVector(dir, 3000)
+    cam.up.copy(up)
+    cam.lookAt(target)
+    cam.updateMatrixWorld()
+  })
+  if (has('noclouds')) await page.evaluate(() => window.__three.environmentLayer?.setCloudIntent(false, false))
+  if (has('norain')) await page.evaluate(() => { const l = window.__three; l.rainLayer?.setEnabled?.(false) })
+  if (has('freeze')) await page.evaluate(() => { const t = window.__three.stream.tiles; t.downloadQueue.maxJobs = 0; t.parseQueue.maxJobs = 0; t.processNodeQueue.maxJobs = 0 })
+  // Frame times as the renderer sees them (rAF can fire faster than we draw).
+  await page.evaluate(() => { window.__ft = []; const s = window.__three.renderer; const orig = s.render.bind(s); let last = performance.now(); s.render = (...a) => { const t0 = performance.now(); window.__ft.push(t0 - last); last = t0; const r = orig(...a); window.__cpu = (window.__cpu ?? []); window.__cpu.push(performance.now() - t0); return r } })
+  await new Promise((r) => setTimeout(r, Number(flag('hold', 8000))))
+  console.log('cpu render ms:', JSON.stringify(await page.evaluate(() => { const a = (window.__cpu ?? []).slice(10).sort((x, y) => x - y); const q = (p) => a.length ? Number(a[Math.floor(a.length * p)].toFixed(2)) : 0; return { n: a.length, p50: q(0.5), p95: q(0.95), max: a.length ? Number(Math.max(...a).toFixed(1)) : 0 } })))
+  console.log('horizon frames:', JSON.stringify(await frameStats(page)), 'perf:', JSON.stringify(await page.evaluate(() => window.__wild?.perf ?? null)))
+  const stats = await page.evaluate(() => {
+    const hud = (id) => document.getElementById(id)?.textContent
+    return { points: hud('visible'), tiles: hud('blocks'), sse: hud('displayed'), fps: hud('fpsv'), ms: hud('msv'), alt: hud('diagAltitude'), origin: hud('diagOrigin') }
+  })
+  console.log('horizon:', JSON.stringify(stats))
+  await page.screenshot({ path: resolve(out, 'horizon.png') })
+}
 if (has('perf')) {
-  const enter = await page.$('#loaderStart')
-  if (enter) await enter.click()
+  await page.evaluate(() => document.getElementById('loaderStart')?.click())
   await new Promise((r) => setTimeout(r, Number(flag('settle', 14000))))
   if (has('dumpPose')) console.log('pose:', await page.evaluate(() => { const c = window.__wild.camera; const e = window.__wild.toEcef(c.position.clone()); return JSON.stringify({ p: [e.x, e.y, e.z], q: c.quaternion.toArray() }) }))
   const pose = flag('pose', '')
@@ -177,6 +237,8 @@ if (has('drag')) {
   await page.screenshot({ path: resolve(out, '03-after-drag.png') })
   console.log('HUD after drag:', await hudText())
 }
+const httpCounts = consoleLines.filter((l) => l.startsWith('[http ')).reduce((acc, l) => { const m = /\[http (\d+)\] (\S+)/.exec(l); if (m) { const key = m[1] + ' ' + (m[2].includes('maptiler') ? 'maptiler' : m[2].includes('cloudfront') ? 'tiles' : 'other'); acc[key] = (acc[key] ?? 0) + 1 } return acc }, {})
+if (Object.keys(httpCounts).length) console.log('http errors:', JSON.stringify(httpCounts))
 const log = await page.evaluate(() => window.__log ?? [])
 writeFileSync(resolve(out, 'log.txt'), [...log, '--- console ---', ...consoleLines].join('\n'))
 console.log('log lines:', log.length, 'console lines:', consoleLines.length)

@@ -25,6 +25,10 @@ export interface HudSnapshot {
   originDistance: number
   rebases: number
   distanceCutoff: number
+  /** Frame-rate governor: 1 = full view distance. */
+  perfScale: number
+  /** Frame-rate governor stage two: error-target multiplier. */
+  perfSse: number
 }
 
 export interface ZoomSnapshot {

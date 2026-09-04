@@ -226,6 +226,58 @@ export const EXPERIENCE_CONFIG = {
     // so the refill arrives gradually instead of in a single frame.
     flightSseRampMs: 1_000,
   },
+  // Frame-rate governor for the React app (src/r3f/state/perf-governor.ts).
+  // The one stellgröße is view distance: the point cutoff (and with it the fog
+  // that hides its edge) shrinks until the frame budget is met and grows back
+  // when there is headroom. Density per distance is already handled by
+  // distance-lod's quadratic taper; this closes the loop for the cases that
+  // taper cannot know about — a flat horizon view, a weak GPU, a hot device.
+  perf: {
+    enabled: true,
+    // Frame budget: the target rate, but never tighter than the display can
+    // actually go — p10 of the recent frame times is the vsync period, so a
+    // 60 Hz screen is not throttled for missing 120 Hz.
+    targetFps: 120,
+    budgetFactor: 1.15,
+    // Above this the governor gives distance back.
+    relaxFactor: 0.8,
+    // A hitch (GC, shader compile, a burst of uploads) must not be read as a
+    // steady overload: the decision runs on the median, and only a sustained
+    // share of frames below 60 Hz counts as one.
+    stutterMs: 16.7,
+    stutterShareTighten: 0.06,
+    stutterShareRelax: 0.03,
+    // How fast the cutoff scale moves per second, tightening vs relaxing.
+    tightenPerSecond: 0.9,
+    relaxPerSecond: 0.09,
+    scaleMin: 0.3,
+    scaleMax: 1,
+    // Never below this, whatever the frame rate — the parcel must stay framed.
+    minCutoffM: 420,
+    // Second stage: once view distance is spent, refinement gets coarser —
+    // the error target is multiplied by up to this much.
+    sseFactorMax: 3,
+    ssePerSecond: 1.2,
+    // Both stages are quantised and rate-limited: every change re-selects
+    // tiles, and a continuously moving target keeps the streamer churning,
+    // which costs exactly the frames the governor is trying to save.
+    scaleStep: 0.08,
+    sseSteps: [1, 1.5, 2, 3] as readonly number[],
+    minChangeIntervalMs: 3_000,
+    sampleWindow: 90,
+    // Ignore the first frames after a rebuild/flight: uploads distort the median.
+    warmupMs: 1_200,
+  },
+  // Flat views see a much longer wedge of forest than a nadir view at the same
+  // height. Both the cutoff and the taper distance are scaled by how far the
+  // camera looks down, so the horizon shot does not cost three times the points.
+  foveation: {
+    // Scale at a fully horizontal view … at a straight-down view.
+    cutoffFlat: 0.45,
+    cutoffDown: 1,
+    detailFlat: 0.4,
+    detailDown: 1,
+  },
   navigation: {
     // Metres above the point-cloud floor where zooming stops. Single knob: the
     // navigation floor, the orbit camera radius and its minimum pivot distance

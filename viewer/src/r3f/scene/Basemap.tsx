@@ -16,6 +16,9 @@ import { useResolutionSync } from '../hooks/useResolutionSync'
 import { applyGlobeMemoryBudget } from '../state/actions'
 import { createGlobe } from './globe'
 
+/** How long after the last gesture signal streaming stays in gesture mode. */
+const GESTURE_HOLD_MS = 250
+
 export function Basemap() {
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
@@ -41,10 +44,12 @@ export function Basemap() {
       globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
       globe.controls.minDistance = 1
     }
-    // Gesture bookkeeping for the streaming policy: wheel fires start+end in
-    // one tick, so a hold-off keeps "gesturing" true across a scroll burst.
-    const onStart = () => { frame.gestureUntil = Infinity }
-    const onEnd = () => { frame.gestureUntil = performance.now() + 250 }
+    // Gesture bookkeeping for the streaming policy. A wheel zoom fires start
+    // and end in the same tick, so the window is a hold-off rather than a
+    // flag; the frame loop keeps extending it while the controls report a
+    // live gesture, which is also why a missing 'end' cannot get stuck.
+    const onStart = () => { frame.gestureUntil = performance.now() + GESTURE_HOLD_MS }
+    const onEnd = () => { frame.gestureUntil = performance.now() + GESTURE_HOLD_MS }
     globe.controls.addEventListener('start', onStart)
     globe.controls.addEventListener('end', onEnd)
     useSceneStore.setState({ globe })
@@ -76,6 +81,10 @@ export function Basemap() {
     const globe = sceneState().globe
     if (!globe) return
     globe.controls.enabled = !uiState().videoOpen
+    // EnvironmentControls.state: 0 = NONE. Inertia keeps running after the
+    // pointer is up, and that motion is just as expensive to stream into.
+    const controls = globe.controls as any
+    if (controls.state !== 0 || controls._inertiaNeedsUpdate?.()) frame.gestureUntil = frame.now + GESTURE_HOLD_MS
     globe.updateControls(() => enforceNavigationBounds(camera, globe.controls))
     globe.updateTiles()
   }, PHASE.CONTROLS)

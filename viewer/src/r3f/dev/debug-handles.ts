@@ -5,6 +5,7 @@ import { updateOrigin } from '../state/survey-frames'
 import { frame } from '../state/frame'
 import { sceneState } from '../state/scene-store'
 import { geo } from '../state/survey-frames'
+import { perfDebug } from '../state/perf-governor'
 import { openFieldVideo } from '../ui/video-modal-actions'
 
 export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: THREE.Camera): () => void {
@@ -18,6 +19,7 @@ export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: T
     get range() { return frame.rangeDebug },
     get origin() { return originStats() },
     get geo() { return geo },
+    get perf() { return perfDebug() },
     get rig() { return sceneState().rig },
     toEcef(value: THREE.Vector3) { return renderToEcef(value) },
     /** Diagnostics: open the field film without hunting for the chip. */
