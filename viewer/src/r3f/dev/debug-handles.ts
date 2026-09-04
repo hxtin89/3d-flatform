@@ -1,9 +1,11 @@
 // window.__wild / __three / __bench for console diagnosis (port of main.ts).
 import type * as THREE from 'three'
-import { originStats, renderToEcef } from '../../threejs-test/origin'
+import { ecefToRender, originStats, renderToEcef } from '../../threejs-test/origin'
+import { updateOrigin } from '../state/survey-frames'
 import { frame } from '../state/frame'
 import { sceneState } from '../state/scene-store'
 import { geo } from '../state/survey-frames'
+import { openFieldVideo } from '../ui/video-modal-actions'
 
 export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: THREE.Camera): () => void {
   const w = window as any
@@ -18,6 +20,18 @@ export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: T
     get geo() { return geo },
     get rig() { return sceneState().rig },
     toEcef(value: THREE.Vector3) { return renderToEcef(value) },
+    /** Diagnostics: open the field film without hunting for the chip. */
+    openVideo: openFieldVideo,
+    toRender(value: THREE.Vector3) { return ecefToRender(value) },
+    /** Diagnostics: put the camera at an absolute ECEF pose (perf comparisons). */
+    setPoseEcef(pose: { p: [number, number, number]; q: [number, number, number, number] }) {
+      sceneState().rig?.takeover()
+      const p = ecefToRender(new (camera.position.constructor as any)(...pose.p))
+      camera.position.copy(p)
+      camera.quaternion.set(pose.q[0], pose.q[1], pose.q[2], pose.q[3])
+      camera.updateMatrixWorld()
+      updateOrigin(camera, true)
+    },
   }
   w.__three = {
     renderer, scene, camera, uniforms: frame.uniforms,

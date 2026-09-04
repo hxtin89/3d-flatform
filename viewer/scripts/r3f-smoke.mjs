@@ -111,6 +111,63 @@ if (has('panel')) {
   await page.screenshot({ path: resolve(out, 'panel-night.png') })
   console.log('hud before/after:', hudBefore.slice(60, 200), '||', (await hudText()).slice(60, 200))
 }
+
+if (has('extras')) {
+  await page.click('#loaderStart')
+  await new Promise((r) => setTimeout(r, 12000))
+  // double-click dolly
+  const before = await rigInfo()
+  await page.mouse.click(900, 500, { clickCount: 2 })
+  await new Promise((r) => setTimeout(r, 2500))
+  console.log('dblclick:', before, '→', await rigInfo())
+  // aim mode + reticle
+  await page.keyboard.press('KeyC')
+  await new Promise((r) => setTimeout(r, 500))
+  console.log('aim:', await page.evaluate(() => document.body.classList.contains('aim-mode') + ' ' + document.getElementById('aimReticleLabel')?.textContent))
+  await page.keyboard.press('Escape')
+  // field film via marker chip
+  const chipRect = await page.evaluate(() => { const el = Array.from(document.querySelectorAll('#markerOverlay *')).find((e) => /FIELD FILM/i.test(e.textContent ?? '') && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().width < 260); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
+  console.log('video chip found', chipRect)
+  if (!chipRect) await page.evaluate(() => window.__wild?.openVideo?.())
+  {
+    if (chipRect) await page.mouse.click(chipRect.x, chipRect.y)
+    await new Promise((r) => setTimeout(r, 1500))
+    console.log('video open:', await page.evaluate(() => !document.getElementById('videoModal')?.hidden + ' inert=' + document.getElementById('appRoot')?.hasAttribute('inert') + ' fps=' + document.getElementById('fpsv')?.textContent))
+    await page.screenshot({ path: resolve(out, 'video-open.png') })
+    await page.keyboard.press('Escape')
+    await new Promise((r) => setTimeout(r, 1500))
+    console.log('video closed:', await page.evaluate(() => document.getElementById('videoModal')?.hidden + ' inert=' + document.getElementById('appRoot')?.hasAttribute('inert')))
+  }
+}
+if (has('perf')) {
+  const enter = await page.$('#loaderStart')
+  if (enter) await enter.click()
+  await new Promise((r) => setTimeout(r, Number(flag('settle', 14000))))
+  if (has('dumpPose')) console.log('pose:', await page.evaluate(() => { const c = window.__wild.camera; const e = window.__wild.toEcef(c.position.clone()); return JSON.stringify({ p: [e.x, e.y, e.z], q: c.quaternion.toArray() }) }))
+  const pose = flag('pose', '')
+  if (pose) { await page.evaluate((json) => window.__wild.setPoseEcef(JSON.parse(json)), pose); await new Promise((r) => setTimeout(r, 6000)) }
+  await page.evaluate(() => {
+    // Per-call CPU timing of the controls and the two tile traversals.
+    const g = window.__three?.globe
+    const stream = window.__three?.stream
+    window.__prof = { controls: [], basemap: [], points: [] }
+    const wrap = (obj, key, store) => { if (!obj || typeof obj[key] !== 'function') return; const orig = obj[key].bind(obj); obj[key] = (...a) => { const t = performance.now(); const r = orig(...a); window.__prof[store].push(performance.now() - t); return r } }
+    wrap(g?.controls, 'update', 'controls'); wrap(g?.tiles, 'update', 'basemap'); wrap(stream?.tiles, 'update', 'points')
+  })
+  await page.evaluate(() => { window.__ft = []; let last = performance.now(); const loop = (t) => { window.__ft.push(t - last); last = t; if (window.__ft.length < 2000) requestAnimationFrame(loop) }; requestAnimationFrame(loop) })
+  const dragMs = Number(flag('dragMs', 8000))
+  await page.mouse.move(700, 450)
+  if (dragMs > 0) await page.mouse.down({ button: 'right' })
+  const t0 = Date.now()
+  let i = 0
+  if (dragMs === 0) await new Promise((r) => setTimeout(r, 8000))
+  while (Date.now() - t0 < dragMs) { const a = i * 0.05; await page.mouse.move(700 + Math.cos(a) * 200, 450 + Math.sin(a) * 60); i++; await new Promise((r) => setTimeout(r, 16)) }
+  if (dragMs > 0) await page.mouse.up({ button: 'right' })
+  await new Promise((r) => setTimeout(r, 500))
+  const stats = await page.evaluate(() => { const ft = window.__ft.slice(5).sort((a, b) => a - b); const q = (p) => ft[Math.floor(ft.length * p)]; return { frames: ft.length, p50: q(0.5).toFixed(1), p95: q(0.95).toFixed(1), p99: q(0.99).toFixed(1), over32: ft.filter((x) => x > 32).length, max: Math.max(...ft).toFixed(1) } })
+  console.log('perf drag:', JSON.stringify(stats), '| HUD:', (await hudText()).slice(60, 260))
+  console.log('cpu ms/call:', JSON.stringify(await page.evaluate(() => Object.fromEntries(Object.entries(window.__prof).map(([k, v]) => { const a = v.slice().sort((x, y) => x - y); const q = (p) => a.length ? a[Math.floor(a.length * p)].toFixed(2) : '-'; return [k, { n: a.length, avg: a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(2) : '-', p95: q(0.95), max: a.length ? Math.max(...a).toFixed(1) : '-' }] })))))
+}
 if (has('drag')) {
   await page.mouse.move(700, 450)
   await page.mouse.down({ button: 'right' })

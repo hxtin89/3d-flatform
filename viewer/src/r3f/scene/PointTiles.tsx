@@ -8,7 +8,8 @@
 // them a second later — the visible "coarsen on every drag"). The SSE floor
 // applies while springs move the camera; during gestures only the parse and
 // node queues are throttled, so tile uploads stay bounded without changing
-// what is drawn.
+// what is drawn: the tiles already resident keep rendering at full density,
+// only parse + GPU upload of new ones wait for the gesture to end.
 import { useEffect, useCallback } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -34,8 +35,10 @@ const SWAP_DWELL_MS = 900
 const SWAP_COOLDOWN_MS = 2_500
 /** Settle time after a camera move before a swap may start. */
 const SWAP_LANDING_MS = 600
-const GESTURE_QUEUE_JOBS = 1
-const IDLE_QUEUE_JOBS = 4
+/** Parse/process concurrency the streamer was built with (streaming.ts limits). */
+let idleParseJobs = 1
+let idleProcessJobs = 1
+let queuesPaused = false
 
 const cameraEnu = { x: 0, y: 0 }
 const scratch = new THREE.Vector3()
@@ -111,6 +114,9 @@ export function PointTiles() {
       debugVolume: APP_PARAMS.showDiagnostics,
       onRootError: (url, error) => onStreamRootError(source, url, error),
     })
+    idleParseJobs = stream.tiles.parseQueue.maxJobs
+    idleProcessJobs = stream.tiles.processNodeQueue.maxJobs
+    queuesPaused = false
     useSceneStore.setState({ stream })
     applyHeightOffset()
     stream.group.visible = frame.pointCloudRevealed
@@ -164,10 +170,17 @@ export function PointTiles() {
     const gesturing = isGestureActive()
     if (frame.wasGesturing && !gesturing) frame.gestureEndedAt = now
     frame.wasGesturing = gesturing
-    const jobs = gesturing ? GESTURE_QUEUE_JOBS : IDLE_QUEUE_JOBS
-    if (stream.tiles.parseQueue.maxJobs !== jobs) {
-      stream.tiles.parseQueue.maxJobs = jobs
-      stream.tiles.processNodeQueue.maxJobs = jobs
+    if (gesturing !== queuesPaused) {
+      queuesPaused = gesturing
+      const parseQueue: any = stream.tiles.parseQueue
+      const processQueue: any = stream.tiles.processNodeQueue
+      parseQueue.maxJobs = gesturing ? 0 : idleParseJobs
+      processQueue.maxJobs = gesturing ? 0 : idleProcessJobs
+      if (!gesturing) {
+        // Raising maxJobs does not wake the queue on its own.
+        parseQueue.tryRunJobs?.()
+        processQueue.tryRunJobs?.()
+      }
     }
 
     const scene = sceneState()
