@@ -13,18 +13,28 @@
     "preview": "vite preview --base=/livingdashboard/"
   },
   "dependencies": {
+    "@react-spring/three": "^10.1.2",
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
     "@sparkjsdev/spark": "^2.1.0",
     "3d-tiles-renderer": "^0.4.28",
     "cesium": "^1.120.0",
-    "three": "^0.185.0"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.0",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@playcanvas/splat-transform": "^3.1.7",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
     "@types/three": "^0.185.0",
     "@vitejs/plugin-basic-ssl": "^1.2.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "puppeteer-core": "^25.10.0",
     "typescript": "^5.4.0",
-    "vitest": "^2.1.9",
     "vite": "^5.4.0",
-    "vite-plugin-cesium": "^1.2.23"
+    "vite-plugin-cesium": "^1.2.23",
+    "vitest": "^2.1.9"
   }
 }

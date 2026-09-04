@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import cesium from 'vite-plugin-cesium';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+import react from '@vitejs/plugin-react';
 
 // HTTPS is opt-in (npm run dev:https): WebGPU needs a secure context, so testing
 // WebGPU on a phone over LAN requires https://<ip>:5173 (self-signed cert — accept
@@ -9,7 +10,7 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 const useHttps = process.env.VITE_HTTPS === '1';
 
 export default defineConfig({
-  plugins: [cesium(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [react(), cesium(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     port: 5177,
     host: true, // listen on all interfaces + print LAN IPs for phone testing
@@ -47,6 +48,8 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         'threejs-test': resolve(__dirname, 'threejs-test.html'),
         'cesium-test': resolve(__dirname, 'cesium-test.html'),
+        // React Three Fiber port of the immersive app (src/r3f/)
+        r3f: resolve(__dirname, 'r3f.html'),
       },
     },
   },

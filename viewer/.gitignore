@@ -6,4 +6,4 @@ dist/
 *.local
 public/splats/
 .mcp.json
-mcp.json
+mcp.jsonsmoke-out/

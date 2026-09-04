@@ -21,7 +21,7 @@ await rm(cesiumOutput, { recursive: true, force: true })
 await rename(cesiumPluginOutput, cesiumOutput)
 await rm(resolve(output, 'livingdashboard'), { recursive: true, force: true })
 
-for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html', 'cesium.html']) {
+for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html', 'cesium.html', 'r3f.html']) {
   const html = await readFile(resolve(output, entry), 'utf8')
   const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
     ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)

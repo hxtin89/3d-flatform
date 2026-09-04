@@ -8,7 +8,8 @@ This directory (`viewer/`) is the Vite + TypeScript frontend of a larger point-c
 
 Two apps share this Vite project, each with its own HTML entry:
 - `index.html` → CesiumJS point-cloud viewer (the original app; source referenced by root README as `src/main.ts` etc.).
-- `threejs-test.html` → **Three.js / WebGPU immersive map app** in `src/threejs-test/`. This is where current development happens (branch `jan-threejs-test`) and where nearly all the code below lives. `vite.config.ts` auto-opens this entry.
+- `threejs-test.html` → **Three.js / WebGPU immersive map app** in `src/threejs-test/` (imperative, `main.ts` orchestrator). `vite.config.ts` auto-opens this entry.
+- `r3f.html` → **React Three Fiber port** in `src/r3f/` (React 19, R3F 9, zustand, react-spring). Same features minus field models/model editor; imports the pure logic modules of `src/threejs-test/` (config, streaming, globe layers, TSL materials) unchanged. See "React app" below.
 
 ## Commands
 
@@ -18,6 +19,8 @@ npm run dev:https      # same but HTTPS (self-signed) — WebGPU on a phone need
 npm run build          # tsc (typecheck, noEmit) + vite build --base=/livingdashboard/ + prepare-livingdashboard.mjs
 npm run preview        # preview the livingdashboard build
 npm run audio:prepare  # regenerate browser audio loops from source-assets/ (writes to public/sounds/)
+node scripts/r3f-smoke.mjs <url> [--enter] [--takeover] [--panel] [--series=N] [--hideLoader] [--drag] [--out=dir]
+                       # headless Chrome (WebGPU) smoke run of r3f.html: boots, screenshots, dumps window.__log
 ```
 
 There is **no test runner and no linter** in this package. `tsc` (via `npm run build`) is the only static check; `tsconfig.json` is `strict` but `noUnusedLocals`/`noUnusedParameters` are off. There is no way to run "a single test" here.
@@ -50,6 +53,15 @@ URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-glo
 **Loader = benchmark.** `eagle-bench.ts` renders a real point-cloud eagle during load whose density follows load progress; it measures frame time to pick a starting performance tier so weak hardware never discovers its limits through jank mid-session. `stats.ts` is the FPS meter.
 
 **`config.ts`** is the single source of product-facing tuning (flight paths, navigation clearances, keyboard speeds, cloud/atmosphere/audio/rain parameters, field-asset transforms) — all values in metres and milliseconds. Prefer changing constants here over hardcoding in layers.
+
+## Architecture — React app (`src/r3f/`)
+
+Entry `r3f.html` → `main.tsx` → `App.tsx`. `canvas/CanvasRoot.tsx` uses R3F's `createRoot` on its own canvas with an explicit window size (`<Canvas>` measures with a ResizeObserver, which never fires in a hidden tab). `<Canvas flat>`-equivalent: tone mapping off, WebGPURenderer via the async `gl` factory.
+
+- **Frame order** is fixed by `frame-phases.ts` (negative `useFrame` priorities): ORIGIN → CAMERA → CONTROLS → MASK → CUTOFF → PLANES → STREAM → ENVIRONMENT → LAYERS → RAIN → AUDIO → HUD, then R3F renders. Never add a positive priority (it disables R3F's automatic render).
+- **State**: `state/frame.ts` is the mutable per-frame object (never React state); `state/boot-store.ts` (boot phases), `state/scene-store.ts` (imperative layer handles), `state/ui-store.ts` (what React renders, throttled snapshots) are zustand stores read with `getState()` inside frame code. `state/survey-frames.ts` owns the ENU/render frames, floating-origin rebase and navigation floor.
+- **Layers** are the old `createXxxLayer` factories mounted in `useEffect` (`scene/*.tsx`), each updating in its phase. Node materials are always built imperatively; drei is only used for renderer-agnostic parts.
+- **Camera**: `camera/camera-rig.ts` is the single camera writer in story/resume/fly-to modes — react-spring `SpringValue`s on azimuth/elevation/log-range offsets over an orbit base that already turns, so the descent is the orbit (config `story`). Controls stay enabled; a controls `start` event or a navigation key takes over (`rig.takeover()`), `rig.resume()` blends back velocity-continuously. `controls/wild-globe-controls.ts` replaces the library's per-frame scene raycasts with the analytic ellipsoid and leaves near/far to `scene/Atmosphere.tsx`.
 
 ### Conventions
 

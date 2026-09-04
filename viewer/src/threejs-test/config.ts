@@ -93,6 +93,64 @@ export const EXPERIENCE_CONFIG = {
     },
     reducedMotionRate: 6,
   },
+  // Donor story for the React app (src/r3f/camera). One spring-driven camera
+  // rig relative to the parcel's ground centroid: azimuth/elevation/log-range
+  // offsets from the orbit decay on springs while the orbit itself already
+  // turns, so the descent is the orbit — no flight-then-rotate seam. Range in
+  // multiples of the framing distance, so every parcel size gets the same
+  // choreography. Spring configs use react-spring units (mass/tension/friction).
+  story: {
+    enabled: true,
+    // Where the descent starts relative to the orbit heading at t0.
+    start: { azimuthDeg: -100, elevationDeg: 58, range: 400, lookHeightFraction: 0 },
+    orbit: {
+      elevationDeg: 30,
+      range: 1,
+      degPerSec: 4,
+      // Look-at point this fraction up the parcel volume (a 200 m column
+      // aimed at its foot leaves the frame at the top).
+      lookHeightFraction: 0.42,
+      // Orbit range is raised until the camera clears the navigation floor
+      // at the orbit pitch — instead of steepening the pitch.
+      floorMarginM: 4,
+      breathing: { rangeAmp: 0.12, periodS: 34, fadeInS: 3 },
+    },
+    springs: {
+      story: {
+        azOffset: { mass: 1, tension: 0.55, friction: 1.55 },
+        elOffset: { mass: 1, tension: 0.9, friction: 1.9 },
+        logRangeOffset: { mass: 1, tension: 0.42, friction: 1.3 },
+        lookOffset: { mass: 1, tension: 0.9, friction: 1.9 },
+      },
+      resume: { mass: 1, tension: 2.2, friction: 3.0 },
+      flyTo: { mass: 1, tension: 4.0, friction: 4.0 },
+      lookBlend: { mass: 1, tension: 6.0, friction: 4.9 },
+    },
+    // Scalar effects on sequence.ts tracks. descent: t = descent progress
+    // × 1000 (1000 = start, 0 = orbit reached). arrival: ms after the springs
+    // settled at the orbit.
+    fx: {
+      descent: {
+        cloudOpacity: [] as Keyframe[],
+      },
+      arrival: {
+        outlineDraw: [{ t: 400, v: 0 }, { t: 1_800, v: 1, ease: 'easeInOutCubic' }] as Keyframe[],
+        captions: [
+          { id: 'parcel', at: 2_000, until: 12_000 },
+          { id: 'life', at: 12_000, until: 24_000 },
+        ],
+      },
+    },
+    takeover: {
+      // 'button' shows "Tour fortsetzen" once the user took the camera;
+      // 'idle' additionally resumes after resumeIdleMs without input.
+      resume: 'button' as 'button' | 'idle',
+      resumeIdleMs: 45_000,
+      // Wait for the controls' inertia to die before blending back.
+      settleMs: 400,
+    },
+    reducedMotion: { rate: 6 },
+  },
   lod: {
     // Height over the point-cloud floor at which each density band takes over.
     // Distance alone decides density; frame rate is paid for elsewhere (vignette
