@@ -18,4 +18,9 @@ if [ -n "$PUBLIC_ROOT" ]; then
   ARGS+=(--public-root "$PUBLIC_ROOT")
 fi
 
-python3 "${ARGS[@]}"
+CONDA_ENV_PYTHON="${CONDA_ENV_PYTHON:-/Volumes/WD_BLACK/conda/envs/$CONDA_ENV/bin/python}"
+if [ -x "$CONDA_ENV_PYTHON" ]; then
+  "$CONDA_ENV_PYTHON" "${ARGS[@]}"
+else
+  run_tool python "${ARGS[@]}"
+fi

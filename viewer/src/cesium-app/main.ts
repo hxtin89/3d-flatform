@@ -73,12 +73,19 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 /** Protected-parcel outline. Started here, before the viewer exists, so the
  * flight can be aimed at the parcel centroid without the boot sequence ever
  * waiting on it. `?shape=` accepts an absolute URL for a future booking API. */
-const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
-const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
-  .catch((error) => {
-    console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
-    return null
-  })
+const donationShapeOverride = params.get('shape')?.trim() || null
+const donationShapeUrl = donationShapeOverride ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
+// The bundled parcel belongs to Peru B2. Loading it for another dataset converts
+// those Peru lon/lat coordinates into that dataset's ENU frame and stages the
+// camera hundreds of kilometres away from its point cloud. Explicit ?shape=
+// remains available for a dataset-specific parcel supplied by the caller.
+const donationShapePromise: Promise<DonationShapeSource | null> =
+  dataset === 'peru-b2-globe' || donationShapeOverride
+    ? fetchDonationShape(donationShapeUrl).catch((error) => {
+      console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
+      return null
+    })
+    : Promise.resolve(null)
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
