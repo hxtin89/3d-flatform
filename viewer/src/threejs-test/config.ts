@@ -29,10 +29,15 @@ export const EXPERIENCE_CONFIG = {
      * in CSS pixels.
      *
      * This is the renderer's `errorTarget`, and for this data it reads literally.
-     * A tile's `geometricError` is `sqrt(area / pointCount)` — its own mean point
-     * spacing in metres — so the renderer's `geometricError / (distance *
-     * sseDenominator)` is that spacing projected onto the image. A tile refines
-     * while its projected spacing is wider than this number.
+     * A tile's `geometricError` is `pointSize.geometricErrorScale * sqrt(area /
+     * pointCount)` — a fixed multiple of its own mean point spacing in metres —
+     * so the renderer's `geometricError / (distance * sseDenominator)` is that
+     * spacing projected onto the image, times the same factor. A tile refines
+     * while that projected figure is wider than this number.
+     *
+     * Mind the factor when reading this value as a pixel distance: at scale 2 a
+     * tile sitting exactly on the target draws its points half this far apart,
+     * so 4 here is a 2 px spacing. The two are only equal at scale 1.
      *
      * Because that quotient already contains the distance, one constant covers
      * every camera range: constant spacing on screen means near-constant point
@@ -154,6 +159,22 @@ export const EXPERIENCE_CONFIG = {
       maxPx: 6,
       /** Used when a tile reports neither a geometric error nor a usable footprint. */
       fallbackSpacingM: 0.5,
+      /**
+       * What the pipeline multiplied the mean point spacing by before writing it
+       * as `geometricError` — `--error-scale`, `DEFAULT_ERROR_SCALE = 2.0` in
+       * build_adaptive_point_hierarchy.py. Divide it back out to recover the
+       * spacing itself; see tileSpacingMetres.
+       *
+       * It has to be a constant because nothing publishes it: the value lives in
+       * `cliProfile.errorScale` inside adaptive-point-hierarchy-report.json, which
+       * is not deployed (the tile bucket 403s it), and neither the tileset
+       * documents nor the node-diagnostics maps carry it.
+       *
+       * Verified against the deployed peru-b2-globe pack on 2026-09-07 rather
+       * than trusted from the pipeline default: a full 2 km z0 cell publishes d0
+       * with `geometricError` 14.605, and 2 * sqrt(4e6 / 75_000) = 14.606.
+       */
+      geometricErrorScale: 2,
     },
     // Base size when the per-tile spacing above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).

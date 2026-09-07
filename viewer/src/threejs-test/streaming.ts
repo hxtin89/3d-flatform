@@ -108,15 +108,21 @@ const spacingSize = new THREE.Vector3()
  * This tile's own mean point spacing in metres — what the drawn point size is
  * derived from (see createCloudMaterial).
  *
- * Internal APH nodes carry it directly: the pipeline writes `geometricError =
- * sqrt(footprint area / point count)`, which is exactly that spacing. Leaves are
- * written with `geometricError: 0` so they can never refine further, so for those
- * the footprint is measured instead — and a leaf's bounding volume *is* its content
- * bounds, since it has no children to union in, which makes the two routes agree.
+ * Internal APH nodes carry it, but scaled: the pipeline writes `geometricError =
+ * errorScale * sqrt(footprint area / point count)`, and errorScale is 2 in every
+ * published pack, so the factor has to come back out here. Leaves are written with
+ * `geometricError: 0` so they can never refine further, so for those the footprint
+ * is measured instead — and a leaf's bounding volume *is* its content bounds, since
+ * it has no children to union in.
+ *
+ * Both routes therefore return the same quantity. They used to disagree by exactly
+ * `errorScale`: the branch below measures the true spacing while the branch above
+ * returned twice it, so a leaf drew dots half the size of its own parent's for the
+ * same real point spacing.
  */
 export function tileSpacingMetres(tile: any, points: number): number {
   const error = typeof tile?.geometricError === 'number' ? tile.geometricError : 0
-  if (error > 0) return error
+  if (error > 0) return error / EXPERIENCE_CONFIG.lod.pointSize.geometricErrorScale
 
   const volume = tile?.engineData?.boundingVolume
   if (volume && points > 0) {

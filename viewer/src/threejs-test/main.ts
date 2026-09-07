@@ -505,6 +505,18 @@ let sizeMinPx: number = EXPERIENCE_CONFIG.lod.pointSize.minPx
 let sizeMaxPx: number = EXPERIENCE_CONFIG.lod.pointSize.maxPx
 
 /**
+ * How far apart, in CSS pixels, a tile sitting exactly on the error target draws
+ * its points.
+ *
+ * Not the target itself: the target is compared against `geometricError`, which the
+ * pipeline writes as a fixed multiple of the point spacing, so the spacing on screen
+ * is that much finer. Every read-out that wants a pixel distance goes through here —
+ * see lod.pointSize.geometricErrorScale and tileSpacingMetres.
+ */
+const spacingPxAtTarget = (target: number): number =>
+  target / EXPERIENCE_CONFIG.lod.pointSize.geometricErrorScale
+
+/**
  * Push the point-size uniforms.
  *
  * The size itself is computed per point in the shader, from its tile's own spacing
@@ -529,7 +541,9 @@ function applyPointSize(): void {
   // What a point at the error target resolves to — the size the cloud is tuned
   // around, with the per-tile sizes scattered about it by construction.
   const nominal = spacingMode
-    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * sseAuto, sizeMinPx, sizeMaxPx)
+    ? THREE.MathUtils.clamp(
+      sizeCoverage * pointSizeScale * spacingPxAtTarget(sseAuto), sizeMinPx, sizeMaxPx,
+    )
     : uniforms.pointSize.value
   $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${nominal.toFixed(1)}px${spacingMode ? ' at target' : ''}`
 }
@@ -3402,15 +3416,18 @@ function updateOverdrawReadout(points: number): void {
   // Nominal, not measured: with the size derived per tile there is no single diameter
   // any more. This is the one a point at the error target resolves to, which is what
   // the cloud is tuned around — the per-tile sizes scatter about it by construction.
+  const spacingPx = spacingPxAtTarget(target)
   const nominalPx = renderOptions.effective().dynamicPointSize
-    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * target, sizeMinPx, sizeMaxPx)
+    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * spacingPx, sizeMinPx, sizeMaxPx)
     : uniforms.pointSize.value
   const diameter = nominalPx * ratio
   const dotArea = Math.PI * (diameter / 2) ** 2
   const perPixel = points / bufferPixels
-  // One clean layer at the live target: points spaced `target` CSS pixels apart in both
-  // screen directions.
-  const idealPerPixel = 1 / ((target * ratio) ** 2)
+  // One clean layer at the live target: points spaced `spacingPx` CSS pixels apart in
+  // both screen directions. Not `target` pixels — that is the tile's geometricError,
+  // which is a fixed multiple of the spacing, so using it here understated the baseline
+  // by the square of that factor and inflated the stacking figure fourfold.
+  const idealPerPixel = 1 / ((spacingPx * ratio) ** 2)
   overdrawEl.textContent = `${(perPixel * dotArea).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
   // Above the working band the ideal layer is so sparse that the ratio runs to six
   // digits and reads as a fault. The boot and flight brakes live up there.
@@ -4060,7 +4077,7 @@ async function main(): Promise<void> {
         tiles: entry.tiles,
         spacingM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
         pxAtTarget: Number(THREE.MathUtils.clamp(
-          sizeCoverage * pointSizeScale * sseAuto, sizeMinPx, sizeMaxPx,
+          sizeCoverage * pointSizeScale * spacingPxAtTarget(sseAuto), sizeMinPx, sizeMaxPx,
         ).toFixed(2)),
       }))
   }
