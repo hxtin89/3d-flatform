@@ -72,6 +72,24 @@ export const EXPERIENCE_CONFIG = {
       minCosine: 0.1,
     },
     /**
+     * Measure a tile's range along the view axis rather than straight through space,
+     * so the screen-space error matches the perspective divide that actually puts it
+     * on screen — see view-depth.ts for the geometry.
+     *
+     * On by default: unlike the correction above, this fixes an error instead of
+     * trading quality for speed. It is nil at the centre of the frame and buys back
+     * roughly a level of detail at the corners.
+     */
+    viewDepthError: {
+      enabled: true,
+      /**
+       * Ceiling of 1/0.5 = 2x on the correction. The frustum corner at 60° vertical
+       * fov sits near cos 0.64, so this clears the whole visible frame and only
+       * catches a large tile whose centre falls outside it.
+       */
+      minCosine: 0.5,
+    },
+    /**
      * Ceiling on how much the view angle may stretch the camera's reported range.
      *
      * The range is the slant distance to the ground ahead, altitude / sin(pitch),

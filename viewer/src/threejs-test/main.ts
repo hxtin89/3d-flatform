@@ -11,6 +11,7 @@ import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
+import { createViewDepthCorrection, type ViewDepthCorrection } from './view-depth'
 import {
   attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, onRebase, originStats,
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
@@ -553,6 +554,7 @@ let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
 let foveation: Foveation | null = null
 let viewAngle: ViewAngleCorrection | null = null
+let viewDepth: ViewDepthCorrection | null = null
 let markerLayer: MarkerLayer | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
@@ -3810,6 +3812,9 @@ async function main(): Promise<void> {
   // so the order does not matter — but the unwind does, and view-angle checks.
   viewAngle = createViewAngleCorrection(stream.tiles, camera, enuUp)
   viewAngle.settings.enabled = renderOptions.effective().viewAngleError
+  // Last of the three error wrappers, and the only one on by default. Also a plain
+  // multiplier, so it composes with the two above in any order.
+  viewDepth = createViewDepthCorrection(stream.tiles, camera)
   applyHeightOffset()
   // The rectangle is settled exactly once, off the critical path: the survey never
   // moves. Coverage then accumulates from the point tiles the renderer loads anyway
@@ -3848,6 +3853,8 @@ async function main(): Promise<void> {
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },
+    /** Off-axis error correction — flip `.enabled` to A/B it against a still view. */
+    get viewDepth() { return viewDepth },
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },
