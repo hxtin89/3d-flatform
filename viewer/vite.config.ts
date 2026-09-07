@@ -9,6 +9,34 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 const useHttps = process.env.VITE_HTTPS === '1';
 
 /**
+ * TEMPORARY — delete together with the `setHeader('referer')` call in the
+ * `/maptiler` proxy below, as soon as the MapTiler key accepts a loopback origin.
+ *
+ * The key's "Allowed HTTP Origins" list already carries `*localhost:5177`, but that
+ * entry has never worked: MapTiler does not match it. Measured 2026-09-07 against
+ * the live key, scheme irrelevant —
+ *
+ *     Referer appbisweb.com            -> 200   (listed as *.appbisweb.com)
+ *     Referer wi-dev...                -> 200
+ *     Referer localhost:5177           -> 403   <- IS on the list
+ *     Referer 127.0.0.1:5173           -> 403   <- IS on the list
+ *     Referer total-erfunden.example   -> 403   (control: the list is enforced)
+ *
+ * So dev has always needed a workaround, and until today that workaround was to
+ * send no Referer at all, which the key used to answer with 200. It stopped: the
+ * same request measured 200 in the morning and 403 hours later, with no code
+ * change in between. Anonymous access was never a guarantee, only an absence of
+ * enforcement, and it was withdrawn.
+ *
+ * Claiming a whitelisted origin we are not actually on is no more honest than
+ * claiming none — it is only more durable, because it works *with* the key's
+ * restriction instead of around it. The real fix belongs in the MapTiler account,
+ * not here. Requested from the devs who manage it; remove this the moment they
+ * land it.
+ */
+const MAPTILER_DEV_REFERER = 'https://wi-dev.mediascenography.com/';
+
+/**
  * Serve the Three.js app at `/` in dev, the way the built site already does.
  *
  * `prepare-livingdashboard.mjs` copies threejs-test.html over index.html and moves
@@ -101,17 +129,24 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tiles/, ''),
       },
-      // The MapTiler key is domain-restricted, so every raster tile a dev server
-      // on localhost requests comes back 403 (with a placeholder PNG body) and the
-      // basemap stays empty. Strip the Referer here — the key answers 200 without
-      // one. Dev only; the production build talks to api.maptiler.com directly.
+      // The MapTiler key is domain-restricted, so every raster tile a dev server on
+      // localhost requests comes back 403 (with a placeholder PNG body) and the
+      // basemap stays empty — sky shows through the map, because the draped imagery
+      // is the only surface the globe has. This proxy borrows an origin the key does
+      // accept. See MAPTILER_DEV_REFERER above for why, and for when to delete it.
+      //
+      // Note this covers more than localhost: wi-dev.mediascenography.com serves
+      // *this dev server* behind nginx rather than a build, so it takes the same
+      // path. Only a real build (wilderness-prototype.de/livingdashboard/) talks to
+      // api.maptiler.com directly and needs none of this.
       '/maptiler': {
         target: 'https://api.maptiler.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/maptiler/, ''),
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
-            proxyReq.removeHeader('referer')
+            // Set, not remove: a Referer-less request is now refused too.
+            proxyReq.setHeader('referer', MAPTILER_DEV_REFERER)
             proxyReq.removeHeader('origin')
           })
         },
