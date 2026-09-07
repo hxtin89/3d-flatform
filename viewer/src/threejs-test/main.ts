@@ -2752,9 +2752,17 @@ const asOffset = (value: number) =>
 // They share a panel with foveation because the foveation factors multiply this
 // target: its two readouts only mean anything against a base you can see. What the
 // target resolves to is written by the frame loop, so this slider only stores it.
-bindDesignSlider('sseTarget', EXPERIENCE_CONFIG.lod.sse, (v) => `${v} px apart`, (v) => {
-  sseTarget = v
-})
+// The readout is the spacing the target actually delivers, not the target itself: the
+// slider sets `errorTarget`, which is measured against a geometricError the pipeline
+// writes at twice the point spacing (see spacingPxAtTarget). It read "4 px apart" for
+// years while drawing points 2 px apart. The raw figure stays on the line because every
+// HUD row and diagnostic in this app calls it SSE.
+bindDesignSlider(
+  'sseTarget',
+  EXPERIENCE_CONFIG.lod.sse,
+  (v) => `${spacingPxAtTarget(v).toFixed(1)} px apart · SSE ${v}`,
+  (v) => { sseTarget = v },
+)
 bindDesignSlider('sizeCoverage', POINT_SIZE.coverage, (v) => `${v.toFixed(2)}× spacing`, (v) => {
   sizeCoverage = v
   applyPointSize()
