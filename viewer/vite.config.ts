@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import cesium from 'vite-plugin-cesium';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+// Shared with src/maptiler-key.ts on purpose — see maptilerOriginFor below.
+import { isDevHost } from './src/dev-hosts';
 
 // HTTPS is opt-in (npm run dev:https): WebGPU needs a secure context, so testing
 // WebGPU on a phone over LAN requires https://<ip>:5177 (self-signed cert — accept
@@ -9,8 +11,7 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 const useHttps = process.env.VITE_HTTPS === '1';
 
 /**
- * The origin identity the `/maptiler` proxy below sends, taken from the request it
- * is proxying rather than configured.
+ * The origin identity the `/maptiler` proxy below claims.
  *
  * The MapTiler keys require **both** `Origin` and `Referer` on every request — a
  * config change the keys' owners made on 2026-09-07, which is why dev broke that
@@ -18,19 +19,31 @@ const useHttps = process.env.VITE_HTTPS === '1';
  * a real build never notices. This proxy is a *back-end* caller: nothing attaches
  * anything, so it has to do it programmatically.
  *
- * Deriving it from `req.headers.host` rather than hardcoding one origin is what
- * keeps this honest and correct at the same time. The dev server answers on two
- * hosts — `localhost:<port>` and, behind nginx, `wi-dev.mediascenography.com` —
- * each of which has its own key, and a key answers 403 for any origin but its own.
- * Since `src/maptiler-key.ts` picks the key from the browser's `location.hostname`
- * and this reads the very same host back off the request, the key and the headers
- * cannot disagree. Hardcoding either one re-opens exactly that gap.
+ * A deployed host sends its own identity, which is simply correct — behind nginx
+ * this dev server really is wi-dev.mediascenography.com.
+ *
+ * A dev host cannot, and that is the TEMPORARY half. MapTiler supports wildcards
+ * for domains but not for IP ranges, so a phone reaching this server across the LAN
+ * has an unpredictable origin (`192.168.x.y:5177`) that can never be allow-listed.
+ * The key's owner therefore whitelisted MAPTILER_DEV_STANDIN on both keys and asked
+ * us to send it for those requests. It is a borrowed identity, and it is only
+ * defensible because the party doing the checking is the party that proposed it —
+ * remove it once IP origins can be expressed directly.
+ *
+ * The dev/deployed split comes from `src/dev-hosts.ts`, the same predicate
+ * `src/maptiler-key.ts` uses to choose the key, so the key and the headers cannot
+ * disagree. That mismatch is precisely what 403s every tile, and a 403 here renders
+ * as sky through the map rather than as an error.
  *
  * Either header alone still passes today, but the stated requirement is both, so
  * both go out — a later tightening then costs us nothing.
  */
+const MAPTILER_DEV_STANDIN = 'https://dev.dev-eagles.com';
+
 function maptilerOriginFor(req: { headers: Record<string, any>; socket?: any }): string {
   const host = String(req.headers.host ?? 'localhost:5177');
+  const hostname = host.replace(/:\d+$/, '');
+  if (isDevHost(hostname)) return MAPTILER_DEV_STANDIN;
   // nginx terminates TLS in front of wi-dev, so the inner request is plain http;
   // its x-forwarded-proto is the only honest source for the scheme there.
   const forwarded = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
