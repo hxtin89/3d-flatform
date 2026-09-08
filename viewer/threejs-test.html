@@ -780,17 +780,15 @@
         </div>
         <div class="row">
           <label class="h">Point size · <span class="val" id="sizev">1.0× · 2.5px</span></label>
-          <input type="range" id="size" min="0.5" max="3" step="0.1" value="1" />
-          <span class="weather-note">Drawn dot diameter. One size for every point; the three controls below replace it with a size derived per tile, once Point size from spacing is on</span>
+          <input type="range" id="size" min="0.3" max="5" step="0.1" value="1" />
+          <span class="weather-note">The one multiplier on drawn dot diameter, in both modes: it scales the single fixed size, or the size derived from each tile's own spacing when Point size from spacing is on</span>
         </div>
+        <!-- The toggle renders itself in here, so it sits with the sliders it reveals
+             rather than among the performance switches — see RenderOptionRow.mount. -->
+        <div id="dynamicPointSizeRow"></div>
         <!-- Only meaningful while dynamicPointSize is on; main.ts hides the group otherwise,
-             because with one fixed size none of the three does anything. -->
+             because with one fixed size neither clamp does anything. -->
         <div id="perTileSizeRows">
-          <div class="row">
-            <label class="h" for="sizeCoverage">Dot coverage · <span class="val" id="sizeCoverageVal">—</span></label>
-            <input type="range" id="sizeCoverage" min="0.4" max="2.5" step="0.05" />
-            <span class="weather-note">Dot width as a multiple of that tile's own spacing on screen. 1 = dots just touch, above 1 they overlap</span>
-          </div>
           <div class="row">
             <label class="h" for="sizeMinPx">Smallest dot · <span class="val" id="sizeMinPxVal">—</span></label>
             <input type="range" id="sizeMinPx" min="0.8" max="3" step="0.1" />

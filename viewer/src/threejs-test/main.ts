@@ -502,7 +502,15 @@ const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scen
 let pointSizeScale = 1
 const scratchViewportSize = new THREE.Vector2()
 /** Design-panel state for the size derivation — see EXPERIENCE_CONFIG.lod.pointSize. */
-let sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
+/**
+ * Base dot width as a multiple of a tile's own on-screen spacing.
+ *
+ * No longer a slider. It and the Point size slider multiplied into the same uniform, so
+ * two controls were competing over one number; Point size is the one that survives,
+ * because it means the same thing in both size modes. This stays as the config-level
+ * base it always was.
+ */
+const sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
 let sizeMinPx: number = EXPERIENCE_CONFIG.lod.pointSize.minPx
 let sizeMaxPx: number = EXPERIENCE_CONFIG.lod.pointSize.maxPx
 
@@ -961,7 +969,9 @@ for (const rowDef of RENDER_OPTION_ROWS) {
   note.className = 'weather-note'
   note.textContent = rowDef.note
   row.append(label, button, note)
-  optionRowsEl.appendChild(row)
+  // A row may ask to live beside the controls it governs; the rest share the list.
+  const mount = rowDef.mount ? document.getElementById(rowDef.mount) : null
+  ;(mount ?? optionRowsEl).appendChild(row)
   optionButtons.set(rowDef.key, button)
 }
 // Buttons are created before any option transition occurs, so initialise their
@@ -2767,10 +2777,6 @@ bindDesignSlider(
   (v) => `${spacingPxAtTarget(v).toFixed(1)} px apart · SSE ${v}`,
   (v) => { sseTarget = v },
 )
-bindDesignSlider('sizeCoverage', POINT_SIZE.coverage, (v) => `${v.toFixed(2)}× spacing`, (v) => {
-  sizeCoverage = v
-  applyPointSize()
-})
 bindDesignSlider('sizeMinPx', POINT_SIZE.minPx, (v) => `${v.toFixed(1)} px`, (v) => {
   sizeMinPx = v
   applyPointSize()

@@ -73,6 +73,13 @@ export interface RenderOptionRow {
   onText: string
   offText: string
   note: string
+  /**
+   * Element id to render this row into, instead of the shared Optimizations list.
+   * For a toggle that belongs next to the controls it governs rather than among the
+   * performance switches — a look decision filed under "Optimizations" is a toggle
+   * nobody finds.
+   */
+  mount?: string
 }
 
 /** Panel rows, in display order. Test UI is English (user decision). */
@@ -135,6 +142,9 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
   },
   {
     key: 'dynamicPointSize',
+    // Rendered in the Detail & point size section, directly above the sliders it
+    // reveals — see `mount`.
+    mount: 'dynamicPointSizeRow',
     label: 'Point size from spacing',
     onText: '⚫ Size · Per tile',
     offText: '⚫ Size · Fixed',
