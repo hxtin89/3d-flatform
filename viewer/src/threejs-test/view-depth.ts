@@ -52,6 +52,20 @@ import { EXPERIENCE_CONFIG } from './config'
  * Foveation pulls the other way by construction: its `edgeFactor` coarsens the
  * periphery, which is exactly where this adds detail. Enabling both leaves the net edge
  * quality somewhere between the two, so judge them together.
+ *
+ * DO NOT add a distance taper here. It is a standing temptation — a horizon view really
+ * does pull every mid-depth tile of the survey — and `jan-threejs-test` has one:
+ * `distance-lod.ts` in 76a6d04 scales the error by `(R/d)²` beyond `R = max(h*3, 200)`,
+ * alongside a hard cutoff beyond `clamp(h*6, 1.5km, 12km)`. The cutoff is a fair idea.
+ * The taper is the distance double-count `config.lod.sse` records deleting when the
+ * three-band ladder went: the error quotient already divides by distance, so taking it
+ * out a second time only makes far views coarser than the pixel budget asked for. It
+ * also fights this file directly — both wrap the same function, one raising the error
+ * off-axis and one lowering it with range, leaving the result an accident.
+ *
+ * Deliberately not merged, 2026-09-08. The full comparison, including his frame-time
+ * measurements (which are real) and why the shared-material and quantised-position work
+ * attacks the same hitch at its source instead, is in plans/decision-distance-lod.md.
  */
 export interface ViewDepthSettings {
   enabled: boolean
