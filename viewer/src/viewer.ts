@@ -1,6 +1,7 @@
 // viewer.ts — CesiumJS viewer and 3D Tileset loader
 import * as Cesium from 'cesium';
 import { applyPreset, cacheBytesToMB, type PresetName, PRESETS } from './presets';
+import { maptilerKeyForHost } from './maptiler-key';
 import {
   applyOverviewRuntimeTuning,
   clampOverviewPointSizePx,
@@ -147,7 +148,7 @@ const ADAPTIVE_POINT_HIERARCHY_RENDER_SETTINGS = adaptivePointHierarchyRenderSet
   searchParams.get('aphEdlRadius')
 );
 const REQUESTED_BASEMAP = searchParams.get('basemap');
-const MAPTILER_API_KEY = import.meta.env.VITE_MAPTILER_API_KEY?.trim() ?? '';
+const MAPTILER_API_KEY = maptilerKeyForHost();
 const MAPTILER_BASEMAP_ENABLED = REQUESTED_BASEMAP === 'maptiler' && Boolean(MAPTILER_API_KEY);
 const MOBILE_VIEWPORT_QUERY = '(max-width: 640px)';
 //Với Peru Overview hiện tại:

@@ -58,6 +58,7 @@ import {
   type RenderOptions,
 } from './render-options'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
+import { maptilerKeyForHost } from '../maptiler-key'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -65,7 +66,7 @@ const domain = (import.meta.env.VITE_AWS_MEDIA_CLOUDFRONT_DISTRIBUTION_DOMAIN ??
   .replace(/^https?:\/\//, '').replace(/\/+$/, '')
 const folder = (import.meta.env.VITE_POINTCLOUD_TILES_FOLDER ?? 'pointcloud-tiles').replace(/^\/+|\/+$/g, '')
 const baseUrl = domain ? `https://${domain}/${folder}` : ''
-const MAPTILER_KEY = (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim()
+const MAPTILER_KEY = maptilerKeyForHost()
 const dataset = params.get('dataset') ?? 'peru-b2-globe'
 const compareParam = params.get('compare') === '1'
 const showDiagnostics = params.has('diag') || import.meta.env.DEV
