@@ -52,7 +52,11 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   fieldModels: true,
   markers: true,
   donationShape: true,
-  dynamicPointSize: true,
+  // Off: the per-tile derivation has never had a fair test — until the errorScale fix it
+  // was fed a spacing twice the real one, and the Largest dot ceiling then cut off the
+  // compensation exactly where a coarse tile needed it. One predictable size while the
+  // core is being judged; see plans/decision-distance-lod.md for the wider context.
+  dynamicPointSize: false,
   presetBudgets: true,
   pixelRatioCap: true,
   // Off by default: motion is exactly when jitter is noticed, and each switch
@@ -134,7 +138,7 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     label: 'Point size from spacing',
     onText: '⚫ Size · Per tile',
     offText: '⚫ Size · Fixed',
-    note: 'Each tile is drawn at its own point spacing, projected — so a coarse level and a leaf in the same frame get different sizes. Off = one fixed size for all of them × slider',
+    note: 'Each tile is drawn at its own point spacing, projected — so a coarse level and a leaf in the same frame get different sizes, which is what hides the step at a level boundary. On reveals three more controls. Off (default) = one fixed size for every point',
   },
   {
     key: 'presetBudgets',

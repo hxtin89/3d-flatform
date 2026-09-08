@@ -76,12 +76,20 @@ export const EXPERIENCE_CONFIG = {
      * so the screen-space error matches the perspective divide that actually puts it
      * on screen — see view-depth.ts for the geometry.
      *
-     * On by default: unlike the correction above, this fixes an error instead of
-     * trading quality for speed. It is nil at the centre of the frame and buys back
-     * roughly a level of detail at the corners.
+     * Unlike the correction above the geometry here is not in doubt — it is nil at the
+     * centre of the frame and buys back roughly a level of detail at the corners, which
+     * were being under-refined. It is off anyway, for the reason on `enabled`.
      */
     viewDepthError: {
-      enabled: true,
+      // Off by default, though the geometry it fixes is real. The correction scales with
+      // the angle off the view axis, so wherever it lifts a tile across the refine
+      // threshold it puts that boundary at a fixed angle in *screen* space — a detail
+      // ring that slides over the terrain as the camera turns. A step that stays put on
+      // the ground is the lesser artefact, so this waits until the point-size derivation
+      // is hiding level boundaries again. Measured at 134 m nadir: the threshold is
+      // 0.553 m against d5 at 0.456, so 1.21x flips it — reached at 34 degrees off axis,
+      // inside the frame. Nadir views see almost none of it either way (factor ~1).
+      enabled: false,
       /**
        * Ceiling of 1/0.5 = 2x on the correction. The frustum corner at 60° vertical
        * fov sits near cos 0.64, so this clears the whole visible frame and only

@@ -532,6 +532,9 @@ const spacingPxAtTarget = (target: number): number =>
  */
 function applyPointSize(): void {
   const spacingMode = renderOptions.effective().dynamicPointSize
+  // Coverage, floor and ceiling only shape the derived size. With one fixed size they
+  // are three sliders that do nothing, so the group follows the mode.
+  $<HTMLDivElement>('#perTileSizeRows').hidden = !spacingMode
   const height = renderer.getSize(scratchViewportSize).y
   uniforms.sizePxPerMetre.value = 0.5 * height * camera.projectionMatrix.elements[5]
   uniforms.sizeSpacingMix.value = spacingMode ? 1 : 0
