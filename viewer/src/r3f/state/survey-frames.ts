@@ -10,6 +10,7 @@ import {
 } from '../../threejs-test/origin'
 import { APP_PARAMS } from '../params'
 import { frame } from './frame'
+import { stopNavigationInertia } from '../controls/navigation-gestures'
 
 export const geo = {
   /** ENU -> ECEF, absolute, straight from the manifest. */
@@ -154,7 +155,7 @@ export function isZoomInBlocked(camera: THREE.Camera): boolean {
  * controls' own per-frame nudges (159 resets in 10 s, each cancelling the
  * live gesture). */
 const NAVIGATION_FLOOR_DEADBAND_M = 0.5
-let navigationClamped = false
+let navigationClampedFrames = 0
 const navigationCameraEnu = new THREE.Vector3()
 const navigationCameraWorld = new THREE.Vector3()
 
@@ -164,20 +165,18 @@ export function enforceNavigationBounds(camera: THREE.Camera, controls: { resetS
   const dx = navigationCameraEnu.x - geo.cloudCenterEnu.x
   const dy = navigationCameraEnu.y - geo.cloudCenterEnu.y
   if (dx * dx + dy * dy > geo.navigationBoundsRadius * geo.navigationBoundsRadius) {
-    navigationClamped = false
+    navigationClampedFrames = 0
     return
   }
   if (navigationCameraEnu.z >= geo.navigationFloorZ - NAVIGATION_FLOOR_DEADBAND_M) {
-    if (navigationCameraEnu.z > geo.navigationFloorZ + NAVIGATION_FLOOR_DEADBAND_M) navigationClamped = false
+    navigationClampedFrames = 0
     return
   }
   navigationCameraEnu.z = geo.navigationFloorZ
   camera.position.copy(enuToWorld(navigationCameraEnu, navigationCameraWorld))
   camera.updateMatrixWorld()
-  if (!navigationClamped) {
-    navigationClamped = true
-    controls?.resetState()
-  }
+  // A floor graze must not discard the pointer tracker and its held pivot.
+  if (++navigationClampedFrames >= 10) stopNavigationInertia(controls)
 }
 
 const orbitPivotEnu = new THREE.Vector3()

@@ -48,6 +48,7 @@ interface UiState {
   timeDockOpen: boolean
   backendLabel: string
   statusLine: string
+  basemapStatus: string | null
   requested: RenderOptions
   effective: RenderOptions
   compareMode: boolean
@@ -87,10 +88,11 @@ export const useUiStore = create<UiState>(() => ({
   timeDockOpen: false,
   backendLabel: '…',
   statusLine: 'Initializing…',
+  basemapStatus: null,
   requested: { ...DEFAULT_OPTIONS },
   effective: { ...DEFAULT_OPTIONS },
   compareMode: false,
-  maskMode: 2,
+  maskMode: 0,
   pointSizeScale: 1,
   pointSizePx: 0,
   highPrecision: true,

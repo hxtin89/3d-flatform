@@ -1,12 +1,12 @@
 // Point-cloud material for the streamed tiles. The geometry itself stays
 // tile-owned so Three can release CPU and GPU resources as the camera moves.
-// Points are drawn as instanced quads — see createCloudMaterial for why.
+// Points are drawn as instanced round sprites — see createCloudMaterial for why.
 import * as THREE from 'three'
 import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
   vec2, vec3, vec4, float, mix, smoothstep, length, max,
-  context, highpModelViewMatrix, positionView,
+  context, highpModelViewMatrix, positionView, varying,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -49,11 +49,11 @@ export function setCloudShadowTexture(texture: THREE.Data3DTexture): void {
   cloudShadowTextureNode = texture3D(texture, null, 0)
 }
 
-export function createUniforms(): CloudUniforms {
+export function createUniforms(maskMode = 2): CloudUniforms {
   return {
     maskCenter: uniform(new THREE.Vector2(0, 0)),
     maskRadius: uniform(120),
-    maskMode: uniform(2),
+    maskMode: uniform(maskMode),
     vignetteStrength: uniform(0),
     pointSize: uniform(2),
     enuInverse: uniform(new THREE.Matrix4()),
@@ -137,7 +137,7 @@ export function applyMatrixPrecision(material: any): void {
 /** Create a material for exactly one streamed tile. Never share it across tiles:
  * UnloadTilesPlugin disposes hidden tile materials independently.
  *
- * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
+ * The tile is drawn as instanced camera-facing sprites, not as THREE.Points:
  * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
  * backends pin a real point primitive to one pixel (WebGPU has no point-size
  * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at
@@ -150,7 +150,7 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   material.transparent = false
   material.depthWrite = true
   material.sizeAttenuation = false
-  // Distance fade: quads shrink to nothing towards the cutoff instead of
+  // Distance fade: sprites shrink to nothing towards the cutoff instead of
   // blending to a fog colour that would not match what lies behind them.
   material.sizeNode = u.pointSize.mul(smoothstep(u.cutoffDistance, u.fadeDistance, positionView.z.negate()))
   // Drives positionLocal, so positionWorld below stays the point centre rather
@@ -161,44 +161,50 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
     ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
     : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
 
+  // Every pixel of a point has the same colour, height and shadow. Evaluate
+  // these at its vertices instead of repeating the world transform, sRGB pow
+  // and shadow-volume lookup for every overlapping fragment of every dot.
+  const pointShading: any = varying(Fn(() => {
+    const shaded = pointColor.pow(2.2).mul(u.daylightColor).mul(u.daylightIntensity).toVar()
+    const maskDistance = float(0).toVar()
+    // Neutral grading without a vignette needs no ECEF-to-ENU transform.
+    // This branch is uniform across the draw, so every point takes the same path.
+    const masked = u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0))
+    If(masked.or(u.goldenFactor.greaterThan(0)).or(u.cloudShadowStrength.greaterThan(0)), () => {
+      const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz.toVar()
+
+      // Project each point up the sun ray onto the shared cloud deck.
+      if (cloudShadowTextureNode) {
+        If(u.cloudShadowStrength.greaterThan(0), () => {
+          const sunZ = max(u.sunDirectionEnu.z, float(0.15))
+          const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
+          const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))
+          const uvw = vec3(deckXY.mul(u.cloudShadowScale).add(u.cloudShadowOffset), float(0.5))
+          const shadowDensity = smoothstep(0.32, 0.62, cloudShadowTextureNode.sample(uvw).r)
+          shaded.mulAssign(float(1).sub(shadowDensity.mul(u.cloudShadowStrength)))
+        })
+      }
+
+      // Golden-hour warmth climbs the canopy: higher points catch the low sun.
+      If(u.goldenFactor.greaterThan(0), () => {
+        const height01 = smoothstep(u.canopyBaseZ, u.canopyTopZ, enu.z)
+        shaded.mulAssign(mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any))
+      })
+      If(masked, () => {
+        maskDistance.assign(length(enu.xy.sub(u.maskCenter)))
+        const fade = smoothstep(u.maskRadius, u.maskRadius.mul(0.5), maskDistance)
+        shaded.mulAssign(mix(float(1), fade.mul(0.7).add(0.3), u.vignetteStrength))
+      })
+    })
+    return vec4(shaded, maskDistance)
+  })())
+
   material.colorNode = Fn(() => {
-    // Round dots instead of squares. The mask discard below already costs this
-    // material its early-z, so the extra rejection is effectively free.
-    If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
-    // Distance cutoff: the traversal already drops far tiles, but ancestors whose
-    // volume contains the camera still carry points out to the horizon.
+    If(uv().sub(vec2(0.5)).dot(uv().sub(vec2(0.5))).greaterThan(0.25), () => Discard())
     If(positionView.z.negate().greaterThan(u.cutoffDistance), () => Discard())
-
-    const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
-    const distance = length(enu.xy.sub(u.maskCenter))
-
     If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
-      .and(distance.greaterThan(u.maskRadius)), () => Discard())
-
-    // Directional cues without normals: project each point up the sun ray onto
-    // a virtual cloud deck and shade it by the drifting cloud density there.
-    const cloudShadow = float(1).toVar()
-    if (cloudShadowTextureNode) {
-      const sunZ = max(u.sunDirectionEnu.z, float(0.15))
-      const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
-      const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))
-      const uvw = vec3(deckXY.mul(u.cloudShadowScale).add(u.cloudShadowOffset), float(0.5))
-      const shadowDensity = smoothstep(0.32, 0.62, cloudShadowTextureNode.sample(uvw).r)
-      cloudShadow.assign(float(1).sub(shadowDensity.mul(u.cloudShadowStrength)))
-    }
-
-    // Golden-hour warmth climbs the canopy: higher points catch the low sun.
-    const height01 = smoothstep(u.canopyBaseZ, u.canopyTopZ, enu.z)
-    const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
-
-    // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    return pointColor
-      .pow(2.2)
-      .mul(u.daylightColor)
-      .mul(u.daylightIntensity)
-      .mul(cloudShadow)
-      .mul(rim)
-      .mul(maskDimNode(u, 0.30))
+      .and(pointShading.w.greaterThan(u.maskRadius)), () => Discard())
+    return pointShading.xyz
   })()
 
   return material

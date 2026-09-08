@@ -134,8 +134,8 @@ export function applyBenchPreset(): void {
   const options = effectiveOptions()
   const table = {
     strong: { mask: 0, dpr: 1.25, floor: 1, tier: 'strong' as const },
-    medium: { mask: 2, dpr: 1.1, floor: 1.4, tier: 'balanced' as const },
-    constrained: { mask: 2, dpr: 1, floor: 2, tier: 'constrained' as const },
+    medium: { mask: 0, dpr: 1.1, floor: 1.4, tier: 'balanced' as const },
+    constrained: { mask: 0, dpr: 1, floor: 2, tier: 'constrained' as const },
   }[preset]
   if (!compare) setMaskMode(table.mask)
   presetPixelRatioCap = table.dpr

@@ -18,6 +18,7 @@ import { EXPERIENCE_CONFIG } from './config'
 const DROP_COUNT = 260
 
 export interface RainLayer {
+  precompile(renderer: { compileAsync(scene: THREE.Object3D, camera: THREE.Camera, targetScene?: THREE.Scene): Promise<unknown> }, camera: THREE.Camera): Promise<void>
   setEnabled(enabled: boolean): void
   update(now: number, camera: THREE.PerspectiveCamera, cameraGroundRange: number): boolean
   dispose(): void
@@ -99,6 +100,13 @@ export function createRainLayer(scene: THREE.Scene): RainLayer {
   let lastUpdate = performance.now()
 
   return {
+    async precompile(renderer, camera) {
+      // Compile a detached instance so the real layer stays hidden during boot.
+      const warmSprite = new THREE.Sprite(material)
+      warmSprite.count = DROP_COUNT
+      warmSprite.frustumCulled = false
+      await renderer.compileAsync(warmSprite, camera, scene)
+    },
     setEnabled(nextEnabled) {
       enabled = nextEnabled
     },

@@ -11,6 +11,7 @@ import { isBootLoading, useBootStore } from '../state/boot-store'
 import { sceneState, useSceneStore } from '../state/scene-store'
 import { uiState, useUiStore } from '../state/ui-store'
 import { geo } from '../state/survey-frames'
+import { perfEffectLevel } from '../state/perf-governor'
 
 export function Environment() {
   const gl = useThree((s) => s.gl)
@@ -52,6 +53,7 @@ export function Environment() {
   useFrame(() => {
     const layer = sceneState().environment
     if (!layer) return
+    layer.setPerformanceLevel(perfEffectLevel())
     const state = layer.update(
       frame.now,
       camera,

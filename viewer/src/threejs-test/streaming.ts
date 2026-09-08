@@ -10,8 +10,9 @@ import {
 } from './point-cloud'
 import { denserBand, densityBandForUri, type DensityBand } from './adaptive-quality'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
-import { installDistanceLod } from './distance-lod'
+import { installDistanceLod, type NearDetailPolicy } from './distance-lod'
 import { EXPERIENCE_CONFIG } from './config'
+import { PointHeightProbe, heightPercentile } from './point-height-probe'
 
 export interface StreamingStats {
   visible: number
@@ -42,6 +43,7 @@ export interface StreamingCloud {
   setDensityCeiling(level: number): void
   /** Tiles farther than this (metres) are neither fetched nor drawn; Infinity = off. */
   setDistanceCutoff(cutoffM: number, detailRangeM: number): void
+  setNearDetail(policy: NearDetailPolicy | null): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
@@ -88,9 +90,6 @@ export interface StreamingLimits {
 const MIB = 1024 * 1024
 
 
-// Reused by the ground probe so a per-frame sample allocates nothing.
-const scratchMatrix = new THREE.Matrix4()
-const scratchVector = new THREE.Vector3()
 
 const DEFAULT_LIMITS: StreamingLimits = {
   cacheMinTiles: 48,
@@ -187,27 +186,75 @@ export function createStreamingCloud(opts: {
 
   const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
   const failedTiles = new Set<string>()
+  const pendingMaterials: Array<{ mesh: THREE.Mesh; tile: any; model: THREE.Object3D }> = []
+  let compilingMaterial = false
+  let disposed = false
 
-  // One camera-facing quad per point, instanced. The corner offsets live in the
-  // `position` attribute because that is what PointsNodeMaterial's sprite path
-  // scales by the point size; `uv` gives the round-dot cutout.
-  const QUAD_CORNERS = new Float32Array([
-    -0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
-  ])
-  const QUAD_UVS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
-  const QUAD_INDICES = [0, 1, 2, 0, 2, 3]
+  function warmNextMaterial(): void {
+    if (compilingMaterial || disposed) return
+    for (let i = pendingMaterials.length - 1; i >= 0; i--) {
+      const pending = pendingMaterials[i]
+      if (pending.tile.engineData?.scene !== pending.model) pendingMaterials.splice(i, 1)
+    }
+    const index = pendingMaterials.findIndex(pending => tiles.visibleTiles.has(pending.tile))
+    if (index < 0) return
+    const [next] = pendingMaterials.splice(index, 1)
+    const { mesh, tile, model } = next
+    if (tile.engineData?.scene !== model) return
+    let targetScene: THREE.Object3D = scene
+    while (targetScene.parent) targetScene = targetScene.parent
+    compilingMaterial = true
+    // compileAsync accepts an individual object and builds its nodes in yielding
+    // stages. Keep the ADD ancestors visible while this new residual is prepared.
+    // The brief visible=true is synchronous; no draw can interleave with it.
+    mesh.visible = true
+    const ready = renderer.compileAsync(mesh, camera, targetScene)
+    mesh.visible = false
+    void ready.catch((error: unknown) => console.warn('[streaming] shader warmup failed', error))
+      .finally(() => {
+        compilingMaterial = false
+        if (disposed || tile.engineData?.scene !== model) {
+          mesh.geometry.dispose()
+          ;(mesh.material as THREE.Material).dispose()
+        } else if (!tiles.visibleTiles.has(tile)) {
+          // A move may hide the tile while compilation yields. Release those
+          // uploads too, and prepare it again if it comes back into view.
+          mesh.geometry.dispose()
+          ;(mesh.material as THREE.Material).dispose()
+          pendingMaterials.push(next)
+        } else mesh.visible = true
+      })
+  }
 
-  /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
+  const probes = new WeakMap<THREE.Points, PointHeightProbe>()
+  const probeMatrix = new THREE.Matrix4()
+  function prepareProbe(object: THREE.Points, enuInverse: THREE.Matrix4, onlyMissing = false) {
+    object.updateWorldMatrix(true, false)
+    probeMatrix.multiplyMatrices(enuInverse, object.matrixWorld)
+    const current = probes.get(object)
+    if (current?.matches(probeMatrix)) return onlyMissing ? null : current
+    const attribute = object.geometry.getAttribute('position')
+    if (!attribute?.count) return null
+    const probe = new PointHeightProbe(attribute, probeMatrix, EXPERIENCE_CONFIG.donationShape.probeMaxSamplesPerTile)
+    probes.set(object, probe)
+    return probe
+  }
+
+  // Camera-facing quads give the round fragment cutout its smallest footprint.
+  const POINT_CORNERS = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0])
+  const POINT_UVS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
+
+  /** Rebuild one loaded THREE.Points tile as instanced sprites. Returns null when
    * the tile carries no usable position buffer. */
-  function buildPointQuads(source: THREE.Points): THREE.Mesh | null {
+  function buildPointSprites(source: THREE.Points): THREE.Mesh | null {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
 
     const geometry = new THREE.InstancedBufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
-    geometry.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS, 2))
-    geometry.setIndex(QUAD_INDICES)
+    geometry.setAttribute('position', new THREE.BufferAttribute(POINT_CORNERS, 3))
+    geometry.setAttribute('uv', new THREE.BufferAttribute(POINT_UVS, 2))
+    geometry.setIndex([0, 1, 2, 0, 2, 3])
     // The tile's own buffers are reused as-is — no copy, no format conversion.
     // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
     // vector via NodeBuilder.getTypeFromAttribute.
@@ -239,7 +286,7 @@ export function createStreamingCloud(opts: {
     })
     for (const source of sources) {
       points += source.geometry?.getAttribute('position')?.count ?? 0
-      const mesh = buildPointQuads(source)
+      const mesh = buildPointSprites(source)
       if (!mesh) continue
 
       // TilesRenderer collected the tile's geometries and materials during
@@ -249,11 +296,15 @@ export function createStreamingCloud(opts: {
       if (Array.isArray(engineData?.geometry)) engineData.geometry.push(mesh.geometry)
       if (Array.isArray(engineData?.materials)) engineData.materials.push(mesh.material)
 
-      // The quads hang under the original Points rather than replacing it: the
+      // The sprites hang under the original Points rather than replacing it: the
       // PNTS loader hands back that Points object *as* the tile root, so at this
       // point it still has no parent to swap it out of. Parenting also inherits
       // the tile transform for free. The carrier itself draws nothing.
       source.add(mesh)
+      if (typeof renderer.compileAsync === 'function') {
+        mesh.visible = false
+        pendingMaterials.push({ mesh, tile, model })
+      }
       source.geometry.setDrawRange(0, 0)
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
@@ -285,6 +336,17 @@ export function createStreamingCloud(opts: {
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
       tiles.update()
+      warmNextMaterial()
+      // Prepare at most one visible tile per frame, after its full transform is
+      // attached. Normal pointer presses then use the small spatial index.
+      let prepared = false
+      for (const tile of tiles.visibleTiles) {
+        const model = (tile as any).engineData?.scene
+        model?.traverse((object: THREE.Points) => {
+          if (!prepared && object.isPoints) prepared = !!prepareProbe(object, uniforms.enuInverse.value, true)
+        })
+        if (prepared) break
+      }
     },
     setErrorTarget(value: number) {
       tiles.errorTarget = value
@@ -295,6 +357,7 @@ export function createStreamingCloud(opts: {
     setDistanceCutoff(cutoffM: number, detailRangeM: number) {
       distanceLod.setCutoff(cutoffM, detailRangeM)
     },
+    setNearDetail(policy) { distanceLod.setNearDetail(policy) },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
       tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)
@@ -335,65 +398,21 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.radius = radius
     },
     sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
-      // Deliberately not a raycast. The load-model handler above parks every
-      // carrier Points at drawRange 0 and hangs instanced quads underneath, so
-      // THREE.Points.raycast clamps its loop to zero vertices and the instanced
-      // child only carries four corner offsets in `position` — a raycast here
-      // finds nothing, silently, whatever threshold it is given. The raw tile
-      // positions do survive, as the instanced attribute the quads read, so we
-      // sample those directly.
+      // The carrier Points draws zero vertices, so a regular raycast sees
+      // nothing. Query its indexed sample once; its sprite child shares the same
+      // buffer and must not be counted again.
+      if (!(radiusM > 0)) return null
       const heights: number[] = []
-      // 5×5 support grid: a candidate height backed by one corner of the
-      // footprint is noise, not ground.
       const support = new Uint8Array(25)
-      const local = scratchMatrix
-      const point = scratchVector
-
       for (const tile of tiles.visibleTiles) {
         const tileScene = (tile as any)?.engineData?.scene
-        if (!tileScene) continue
-        tileScene.traverse((object: any) => {
-          const attribute = object.geometry?.getAttribute?.(POINT_POSITION_ATTRIBUTE)
-            ?? (object.isPoints ? object.geometry?.getAttribute?.('position') : null)
-          if (!attribute || attribute.count === 0) return
-          object.updateWorldMatrix(true, false)
-          local.multiplyMatrices(enuInverse, object.matrixWorld)
-
-          // Cheap reject: the tile's bounds in ENU versus the footprint disc.
-          const geometry = object.geometry
-          if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-          const bounds = geometry.boundingSphere
-          if (bounds) {
-            point.copy(bounds.center).applyMatrix4(local)
-            // The instanced quads keep their bounds around the 4 corner offsets,
-            // so only a real point bound (radius over a metre) can be trusted.
-            if (bounds.radius > 1) {
-              const dx = point.x - centreEnu.x
-              const dy = point.y - centreEnu.y
-              if (Math.hypot(dx, dy) > radiusM + bounds.radius) return
-            }
-          }
-
-          const limit = EXPERIENCE_CONFIG.donationShape.probeMaxSamplesPerTile
-          const stride = Math.max(1, Math.floor(attribute.count / limit))
-          for (let index = 0; index < attribute.count; index += stride) {
-            point.set(attribute.getX(index), attribute.getY(index), attribute.getZ(index))
-            point.applyMatrix4(local)
-            const dx = point.x - centreEnu.x
-            const dy = point.y - centreEnu.y
-            if (Math.abs(dx) > radiusM || Math.abs(dy) > radiusM) continue
-            heights.push(point.z)
-            const column = Math.min(4, Math.max(0, Math.floor(((dx / radiusM) + 1) * 2.5)))
-            const row = Math.min(4, Math.max(0, Math.floor(((dy / radiusM) + 1) * 2.5)))
-            support[row * 5 + column] = 1
-          }
+        tileScene?.traverse((object: THREE.Points) => {
+          if (!object.isPoints) return
+          prepareProbe(object, enuInverse)?.collect(centreEnu.x, centreEnu.y, radiusM, heights, support)
         })
       }
-
       if (heights.length < EXPERIENCE_CONFIG.donationShape.probeMinSamples) return null
-      heights.sort((a, b) => a - b)
-      const at = (fraction: number): number =>
-        heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
+      const at = (fraction: number) => heightPercentile(heights, fraction)
       let occupied = 0
       for (const cell of support) occupied += cell
       return {
@@ -416,13 +435,16 @@ export function createStreamingCloud(opts: {
         visible: tiles.visibleTiles.size,
         points,
         missingTiles: failedTiles.size,
-        progress: tiles.loadProgress,
+        progress: Math.min(tiles.loadProgress,
+          compilingMaterial || pendingMaterials.some(pending => tiles.visibleTiles.has(pending.tile)) ? 0.99 : 1),
         density,
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
       }
     },
     dispose() {
+      disposed = true
+      pendingMaterials.length = 0
       scene.remove(tiles.group)
       tiles.dispose()
       lifecycle.abort()

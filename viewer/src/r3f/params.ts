@@ -46,7 +46,7 @@ export const APP_PARAMS = Object.freeze({
   mouseInertia: params.has('inertia')
     ? params.get('inertia') !== '0'
     : EXPERIENCE_CONFIG.navigation.mouseInertia,
-  mouseOrbitPivot: (params.get('pivot') === 'cursor' ? 'cursor' : EXPERIENCE_CONFIG.navigation.mouseOrbitPivot) as MouseOrbitPivot,
+  mouseOrbitPivot: (params.get('pivot') === 'cursor' ? 'cursor' : params.get('pivot') === 'center' ? 'center' : 'canopy') as MouseOrbitPivot,
   /** Donor story (spring camera) instead of the plain approach; ?intro=0 disables. */
   storyEnabled: EXPERIENCE_CONFIG.story.enabled && params.get('intro') !== '0',
   /** ?scrub=1 shows the story replay slider. */

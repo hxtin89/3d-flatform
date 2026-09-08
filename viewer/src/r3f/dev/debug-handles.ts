@@ -7,6 +7,7 @@ import { sceneState } from '../state/scene-store'
 import { geo } from '../state/survey-frames'
 import { perfDebug } from '../state/perf-governor'
 import { openFieldVideo } from '../ui/video-modal-actions'
+import { setMaskMode } from '../state/actions'
 
 export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: THREE.Camera): () => void {
   const w = window as any
@@ -20,6 +21,10 @@ export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: T
     get origin() { return originStats() },
     get geo() { return geo },
     get perf() { return perfDebug() },
+    get navigation() { return sceneState().globe?.navigation.debug },
+    get frame() { return frame },
+    setMaskMode,
+    rebase() { updateOrigin(camera, true) },
     get rig() { return sceneState().rig },
     toEcef(value: THREE.Vector3) { return renderToEcef(value) },
     /** Diagnostics: open the field film without hunting for the chip. */
@@ -40,6 +45,7 @@ export function installDebugHandles(renderer: any, scene: THREE.Scene, camera: T
     get globe() { return sceneState().globe },
     get stream() { return sceneState().stream },
     get environmentLayer() { return sceneState().environment },
+    get rainLayer() { return sceneState().rain },
     get donationShapeLayer() { return sceneState().donation },
     get markerLayer() { return sceneState().markers },
     get renderOptions() { return sceneState().renderOptions },

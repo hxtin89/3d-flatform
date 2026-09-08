@@ -101,6 +101,7 @@ export function onRebase(listener: (delta: THREE.Vector3) => void): () => void {
  */
 export function rebaseTo(nextEcef: THREE.Vector3): void {
   if (!enabled) return
+  if (!Number.isFinite(nextEcef.x + nextEcef.y + nextEcef.z)) return
   scratchDelta.copy(origin).sub(nextEcef)
   if (scratchDelta.lengthSq() === 0) return
   origin.copy(nextEcef)

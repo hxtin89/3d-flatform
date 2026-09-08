@@ -12,11 +12,13 @@ import { installPointerEasing, type PointerEasing } from '../../threejs-test/poi
 import type { MemoryBudgetSnapshot } from '../../threejs-test/streaming'
 import type { MouseOrbitPivot } from '../../threejs-test/smoothed-globe-controls'
 import { WildGlobeControls } from '../controls/wild-globe-controls'
+import { createNavigationGestures, type NavigationOptions } from '../controls/navigation-gestures'
 
 export interface Globe {
   tiles: TilesRenderer
   controls: WildGlobeControls
   pointerEasing: PointerEasing
+  navigation: ReturnType<typeof createNavigationGestures>
   ellipsoid: any
   /** controls.update(), then the optional camera constraint. */
   updateControls(constrainCamera?: () => void): void
@@ -43,6 +45,8 @@ export function createGlobe(opts: {
   mouseInertia: boolean
   mouseOrbitPivot: MouseOrbitPivot
   adjustOrbitPivot?: (pivot: THREE.Vector3) => void
+  navigation: Omit<NavigationOptions, 'controls' | 'camera' | 'canvas' | 'mode'>
+  onImageryStatus?(message: string | null): void
 }): Globe {
   const {
     renderer, camera, scene, maptilerKey, cameraClearance, uniforms,
@@ -75,6 +79,7 @@ export function createGlobe(opts: {
   // backend honours flipY itself → double flip. Node material with the shared
   // daylight/vignette dim so the imagery fades with the point cloud.
   tiles.addEventListener('load-model', ({ scene: s }: any) => {
+    opts.onImageryStatus?.(null)
     s.traverse((o: any) => {
       const map = o.material?.map
       if (!map) return
@@ -90,6 +95,10 @@ export function createGlobe(opts: {
       o.material = mat
     })
   })
+  tiles.addEventListener('load-error', ({ error }: any) => {
+    const code = /(?:code|status)\s+(\d{3})/i.exec(String(error?.message ?? ''))?.[1]
+    opts.onImageryStatus?.(`MapTiler-Basemap nicht verfügbar${code ? ` (HTTP ${code})` : ''}`)
+  })
 
   const controls = new WildGlobeControls(scene, camera, renderer.domElement, tiles, {
     mouseOrbitPivot,
@@ -97,7 +106,7 @@ export function createGlobe(opts: {
   })
   const pointerEasing = installPointerEasing(controls, {
     responseMs: mouseOrbitEaseMs,
-    immediateShare: EXPERIENCE_CONFIG.navigation.mouseImmediateShare,
+    immediateShare: 0,
     mouseInertia,
   })
   controls.cameraRadius = cameraClearance
@@ -106,6 +115,9 @@ export function createGlobe(opts: {
   controls.maxAltitude = THREE.MathUtils.degToRad(EXPERIENCE_CONFIG.navigation.maximumOrbitDegrees)
   controls.enableDamping = true
   controls.rotationSpeed = mouseRotationSpeed
+  const navigation = createNavigationGestures({
+    ...opts.navigation, controls, camera, canvas: renderer.domElement, mode: mouseOrbitPivot,
+  })
 
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
   setResolution()
@@ -114,6 +126,7 @@ export function createGlobe(opts: {
     tiles,
     controls,
     pointerEasing,
+    navigation,
     ellipsoid: (tiles as any).ellipsoid,
     setMemoryBudget(cacheMaxBytes, gpuBytesTarget) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
@@ -135,7 +148,9 @@ export function createGlobe(opts: {
       ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
     },
     updateControls(constrainCamera) {
+      navigation.beforeUpdate()
       controls.update()
+      navigation.afterUpdate()
       constrainCamera?.()
       // The library's GLSL pivot marker is not a node material; WebGPURenderer
       // rejects it even on its WebGL2 backend.
@@ -143,7 +158,8 @@ export function createGlobe(opts: {
       camera.updateMatrixWorld()
     },
     updateTiles() {
-      tiles.update()
+      // Hiding imagery must also stop network traversal (Anni's branch fix).
+      if (tiles.group.visible) tiles.update()
     },
     setResolution,
     stats() {
@@ -154,6 +170,7 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      navigation.dispose()
       pointerEasing.dispose()
       controls.dispose()
       tiles.dispose()

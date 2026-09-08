@@ -12,6 +12,7 @@ export function Hud() {
   const hud = useUiStore((s) => s.hud)
   const backend = useUiStore((s) => s.backendLabel)
   const statusLine = useUiStore((s) => s.statusLine)
+  const basemapStatus = useUiStore((s) => s.basemapStatus)
   const fps = hud?.fps ?? 0
   return (
     <div id="hud" className="card">
@@ -19,10 +20,11 @@ export function Hud() {
       <h1>Adaptive Point Cloud</h1>
       <span id="backend" className={`badge ${backend === 'WebGL2' ? 'webgl' : ''}`.trim()}>{backend}</span>
       <div id="status">{statusLine}</div>
+      {basemapStatus && <div id="basemapStatus" className="warn" role="status">{basemapStatus}</div>}
       <div className="stats">
         <span className="k">Density</span><span className="v" id="loaded">{hud?.density ?? '—'}</span>
         <span className="k">Adaptive LOD</span><span className="v" id="displayed">{hud ? `SSE ${hud.sse.toFixed(0)}` : '—'}</span>
-        <span className="k">Visible points</span><span className="v" id="visible">{hud ? fmtInt(hud.points) : '0'}</span>
+        <span className="k" title="Punkte der aktiven Kacheln; nicht die Zahl der nach Verdeckung und Clipping sichtbaren Bildpunkte.">Punkte in aktiven Kacheln</span><span className="v" id="visible">{hud ? fmtInt(hud.points) : '0'}</span>
         <span className="k">Point tiles</span><span className="v" id="blocks">{hud?.pointTiles ?? 0}</span>
         <span className="k">Map tiles</span><span className="v" id="mapTiles">{hud?.mapTiles ?? 0}</span>
         <span className="k">Cache CPU · GPU</span><span className="v" id="cache">{hud ? `${fmtMiB(hud.cacheBytes)} · ${fmtMiB(hud.gpuBytes)}` : '0 MB · 0 MB'}</span>

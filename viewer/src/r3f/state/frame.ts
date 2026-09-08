@@ -72,7 +72,7 @@ export interface FrameState {
 export const frame: FrameState = {
   now: performance.now(),
   fps: new Fps(),
-  uniforms: createUniforms(),
+  uniforms: createUniforms(0),
   fog: new THREE.Fog(
     DAYLIGHT_SKY,
     EXPERIENCE_CONFIG.atmosphere.maximumFarM * EXPERIENCE_CONFIG.atmosphere.fogNearFactor,

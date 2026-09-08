@@ -24,7 +24,7 @@ import { GlobeControls } from '3d-tiles-renderer'
 
 const ROTATE = 2 // EnvironmentControls state enum
 
-export type MouseOrbitPivot = 'center' | 'cursor'
+export type MouseOrbitPivot = 'center' | 'cursor' | 'canopy'
 
 export interface SmoothedControlsOptions {
   /** Where a mouse right-drag pivots. `center` = screen centre (default). */
@@ -66,7 +66,7 @@ export class SmoothedGlobeControls extends GlobeControls {
   setState(state?: number, fireEvent?: boolean): void {
     super.setState(state, fireEvent)
     // Also reached from the parent constructor, before this class's fields exist.
-    if (state !== ROTATE || !this.mouseOrbitPivot || this.mouseOrbitPivot === 'cursor') return
+    if (state !== ROTATE || this.mouseOrbitPivot !== 'center') return
     const self = this as any
     if (self.pointerTracker?.getPointerType?.() !== 'mouse') return
     const raycaster: THREE.Raycaster = self.raycaster

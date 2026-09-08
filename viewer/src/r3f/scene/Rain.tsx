@@ -9,6 +9,7 @@ import { PHASE } from '../frame-phases'
 import { frame } from '../state/frame'
 import { sceneState, useSceneStore } from '../state/scene-store'
 import { useUiStore } from '../state/ui-store'
+import { isBootLoading } from '../state/boot-store'
 
 const DRY = EXPERIENCE_CONFIG.rain.dryDurationMs
 const ACTIVE = EXPERIENCE_CONFIG.rain.activeDurationMs
@@ -24,6 +25,7 @@ export function setRainCycleEnabled(enabled: boolean): void {
 }
 
 export function Rain() {
+  const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene) as THREE.Scene
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
 
@@ -31,17 +33,18 @@ export function Rain() {
     const layer = createRainLayer(scene)
     layer.setEnabled(frame.rainRequested)
     useSceneStore.setState({ rain: layer })
+    void layer.precompile(gl as any, camera).catch(error => console.warn('[rain] precompile failed', error))
     return () => {
       layer.dispose()
       useSceneStore.setState({ rain: null })
     }
-  }, [scene])
+  }, [scene, gl, camera])
 
   useFrame(() => {
     const layer = sceneState().rain
     if (!layer) return
     const phase = (frame.now - frame.rainCycleStartedAt) % CYCLE
-    const nextRequested = frame.rainCycleEnabled && phase >= DRY
+    const nextRequested = !isBootLoading() && frame.rainCycleEnabled && phase >= DRY
     if (nextRequested !== frame.rainRequested) {
       frame.rainRequested = nextRequested
       layer.setEnabled(nextRequested)

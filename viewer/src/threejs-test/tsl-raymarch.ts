@@ -21,7 +21,7 @@ const hitBox = /*@__PURE__*/ Fn(({ orig, dir }: any) => {
 })
 
 export function JitteredRaymarchingBox(
-  steps: number,
+  steps: any,
   jitter: any,
   callback: (args: { positionRay: any; delta: any }) => void,
 ): void {

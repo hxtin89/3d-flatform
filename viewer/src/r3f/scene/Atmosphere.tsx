@@ -100,11 +100,11 @@ export function Atmosphere() {
   useEffect(() => { updateAtmosphere(camera, 0, true) }, [fogOn, camera])
 
   useFrame(() => {
-    const dt = lastNow ? Math.min(100, frame.now - lastNow) : 16
+    const dt = lastNow ? frame.now - lastNow : 16
     lastNow = frame.now
     updateDistanceCutoff(camera, dt)
     if (!geo.ready) return
-    updateAtmosphere(camera, dt)
+    updateAtmosphere(camera, Math.min(100, dt))
   }, PHASE.PLANES)
 
   return fogOn ? <primitive object={frame.fog} attach="fog" /> : null

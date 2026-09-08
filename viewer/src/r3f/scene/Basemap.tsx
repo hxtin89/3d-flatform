@@ -10,7 +10,7 @@ import { frame } from '../state/frame'
 import { useBootStore } from '../state/boot-store'
 import { sceneState, useSceneStore } from '../state/scene-store'
 import { uiState, useUiStore } from '../state/ui-store'
-import { enforceNavigationBounds, geo, liftOrbitPivotToFloor } from '../state/survey-frames'
+import { enforceNavigationBounds, geo, liftOrbitPivotToFloor, worldToEnu, enuToWorld } from '../state/survey-frames'
 import { useOnRebase } from '../hooks/useOnRebase'
 import { useResolutionSync } from '../hooks/useResolutionSync'
 import { applyGlobeMemoryBudget } from '../state/actions'
@@ -18,6 +18,7 @@ import { createGlobe } from './globe'
 
 /** How long after the last gesture signal streaming stays in gesture mode. */
 const GESTURE_HOLD_MS = 250
+const canopySampleXY = new THREE.Vector2()
 
 export function Basemap() {
   const gl = useThree((s) => s.gl)
@@ -39,6 +40,16 @@ export function Basemap() {
       mouseInertia: APP_PARAMS.mouseInertia,
       mouseOrbitPivot: APP_PARAMS.mouseOrbitPivot,
       adjustOrbitPivot: liftOrbitPivotToFloor,
+      onImageryStatus: (basemapStatus) => useUiStore.setState({ basemapStatus }),
+      navigation: {
+        worldToEnu, enuToWorld, up: geo.enuUp,
+        floorZ: () => geo.areaMinZ,
+        canopySpan: () => geo.canopyHeightM,
+        sampleCanopy(x, y, radius) {
+          const sample = sceneState().stream?.sampleGroundZ(canopySampleXY.set(x, y), radius, geo.enuInverseRender)
+          return sample ? sample.canopyZ - geo.zOffset : null
+        },
+      },
     })
     if (APP_PARAMS.freeOrbit) {
       globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
@@ -73,6 +84,7 @@ export function Basemap() {
     controls?.pivotPoint?.add(delta)
     controls?.zoomPoint?.add(delta)
     controls?.rotationInertiaPivot?.add(delta)
+    sceneState().globe?.navigation.rebase(delta)
   })
 
   useResolutionSync(useCallback(() => sceneState().globe?.tiles ?? null, []))

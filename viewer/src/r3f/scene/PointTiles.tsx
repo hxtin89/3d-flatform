@@ -3,13 +3,8 @@
 // quality controller, SSE policy, density ceiling and mask sphere. Port of
 // rebuildStream / updateStreaming / maybeSwapPointSource in main.ts.
 //
-// Streaming policy: while the camera moves — spring flight or user gesture —
-// refinement is held at lod.flightSse and ramps back down over a second after
-// it stops (flight-quality.ts). A moving view cannot resolve the finest level
-// anyway, and every tile that arrives mid-gesture pays a GPU upload inside the
-// frame the user is watching. On top of that the parse and process queues are
-// paused for the duration of the gesture, so no upload lands in a drag frame;
-// tiles already resident keep drawing at full density.
+// Boot and entrance flights have a separate refinement brake. Manual gestures
+// retain near detail and continue admitting tile work at a bounded rate.
 import { useEffect, useCallback } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -18,6 +13,7 @@ import { flightSseFloor } from '../../threejs-test/flight-quality'
 import { getEcefRoot } from '../../threejs-test/origin'
 import { AUTO, ZOOM_BAND_ROWS, type ResolvedSource, type ZoomBand } from '../../threejs-test/point-source'
 import { createStreamingCloud } from '../../threejs-test/streaming'
+import { createStreamingBudget } from '../../threejs-test/streaming-budget'
 import { APP_PARAMS } from '../params'
 import { PHASE } from '../frame-phases'
 import { frame } from '../state/frame'
@@ -36,10 +32,9 @@ const SWAP_DWELL_MS = 900
 const SWAP_COOLDOWN_MS = 2_500
 /** Settle time after a camera move before a swap may start. */
 const SWAP_LANDING_MS = 600
-/** Parse/process concurrency the streamer was built with (streaming.ts limits). */
-let idleParseJobs = 1
-let idleProcessJobs = 1
-let queuesPaused = false
+/** Per-frame admissions shared by the parse and node-processing queues. */
+let streamingBudget: ReturnType<typeof createStreamingBudget> | null = null
+let previousFrameAt = 0
 
 const cameraEnu = { x: 0, y: 0 }
 const scratch = new THREE.Vector3()
@@ -117,9 +112,8 @@ export function PointTiles() {
       debugVolume: APP_PARAMS.showDiagnostics,
       onRootError: (url, error) => onStreamRootError(source, url, error),
     })
-    idleParseJobs = stream.tiles.parseQueue.maxJobs
-    idleProcessJobs = stream.tiles.processNodeQueue.maxJobs
-    queuesPaused = false
+    streamingBudget = createStreamingBudget([stream.tiles.processNodeQueue, stream.tiles.parseQueue] as any)
+    previousFrameAt = 0
     useSceneStore.setState({ stream })
     applyHeightOffset()
     stream.group.visible = frame.pointCloudRevealed
@@ -133,6 +127,8 @@ export function PointTiles() {
     if (reason !== 'boot') scene.donation?.resetGroundLock()
     console.info(`[point-source] ${reason} → ${source.label} (${source.datasetPath})`)
     return () => {
+      streamingBudget?.dispose()
+      streamingBudget = null
       stream.dispose()
       useSceneStore.setState({ stream: null })
     }
@@ -146,6 +142,8 @@ export function PointTiles() {
     const stream = sceneState().stream
     if (!stream) return
     const now = frame.now
+    const frameMs = previousFrameAt ? now - previousFrameAt : 16
+    previousFrameAt = now
     // Precision: high once the loader is gone; optionally dropped during
     // spring flights (rebuilds every tile material, off by default).
     if (frame.wasFlying && !frame.cameraBusy) frame.flightEndedAt = now
@@ -174,20 +172,7 @@ export function PointTiles() {
     const gesturing = isGestureActive()
     if (frame.wasGesturing && !gesturing) frame.gestureEndedAt = now
     frame.wasGesturing = gesturing
-    // Never during the loader: the boot staging needs its tiles.
-    const pause = gesturing && !isBootLoading()
-    if (pause !== queuesPaused) {
-      queuesPaused = pause
-      const parseQueue: any = stream.tiles.parseQueue
-      const processQueue: any = stream.tiles.processNodeQueue
-      parseQueue.maxJobs = pause ? 0 : idleParseJobs
-      processQueue.maxJobs = pause ? 0 : idleProcessJobs
-      if (!pause) {
-        // Raising maxJobs does not wake the queue on its own.
-        parseQueue.tryRunJobs?.()
-        processQueue.tryRunJobs?.()
-      }
-    }
+    streamingBudget?.pump(now, gesturing && !isBootLoading(), frameMs)
 
     const scene = sceneState()
     const quality = scene.adaptiveQuality.update({
@@ -205,18 +190,24 @@ export function PointTiles() {
         isBootLoading()
           ? EXPERIENCE_CONFIG.lod.bootSse
           : flightSseFloor({
-            flying: frame.cameraBusy || gesturing,
-            msSinceLanding: now - Math.max(frame.flightEndedAt, frame.gestureEndedAt),
+            flying: frame.cameraBusy,
+            msSinceLanding: now - frame.flightEndedAt,
             targetSse: quality.sse,
           }),
       )
       : quality.sse
-    // Governor stage two: coarser refinement once view distance is spent.
-    const governed = targetSse * perfSseFactor()
-    if (Math.abs(governed - frame.sseAuto) > 0.25) {
-      frame.sseAuto = governed
-      stream.setErrorTarget(governed)
+    // Quantise the flight ramp, but always land on the exact resting target.
+    if (targetSse !== frame.sseAuto && (Math.abs(targetSse - frame.sseAuto) > 0.25 || targetSse === quality.sse)) {
+      frame.sseAuto = targetSse
+      stream.setErrorTarget(targetSse)
     }
+    const protectNear = source?.packId === 'tree:aph' && !isBootLoading()
+      && (!options.sseBrakes || targetSse <= quality.sse)
+    stream.setNearDetail(protectNear ? {
+      rangeM: EXPERIENCE_CONFIG.lod.protectedNearRangeM,
+      sse: EXPERIENCE_CONFIG.lod.aphDetailSse,
+      farFactor: perfSseFactor(),
+    } : null)
     stream.setDensityCeiling(isBootLoading() ? 0 : 2 - quality.band)
     applyPointSize()
     stream.setMaskSphere(frame.maskWorldActive ? frame.maskSphereWorld : null, frame.maskWorldRadius)

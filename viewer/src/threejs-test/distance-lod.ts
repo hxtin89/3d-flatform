@@ -19,26 +19,43 @@ export interface DistanceLod {
   /** `detailRangeM`: full refinement up to here, quadratic taper beyond. */
   setCutoff(cutoffM: number, detailRangeM: number): void
   cutoff(): number
+  setNearDetail(policy: NearDetailPolicy | null): void
   dispose(): void
 }
 
-type ViewErrorTarget = { inView: boolean; error: number; distance: number }
+export interface NearDetailPolicy {
+  rangeM: number
+  sse: number
+  farFactor: number
+}
+
+type ViewErrorTarget = { inView: boolean; error: number; distanceFromCamera: number }
 
 export function installDistanceLod(tiles: any): DistanceLod {
   let cutoff = Infinity
   let detailRange = Infinity
+  let near: NearDetailPolicy | null = null
   const base = tiles.calculateTileViewError as (tile: any, target: ViewErrorTarget) => void
   const wrapped = (tile: any, target: ViewErrorTarget) => {
     base.call(tiles, tile, target)
-    if (!target.inView || cutoff === Infinity) return
-    const d = target.distance
+    if (!target.inView) return
+    const d = target.distanceFromCamera
     if (d >= cutoff) {
       target.inView = false
       target.error = 0
       return
     }
-    if (d > detailRange) {
-      const ratio = detailRange / d
+    if (near && Number.isFinite(d) && tiles.errorTarget > 0) {
+      const t = Math.min(1, Math.max(0, (d - near.rangeM) / near.rangeM))
+      const blend = t * t * (3 - 2 * t)
+      const nearSse = Math.min(tiles.errorTarget, near.sse)
+      const farSse = tiles.errorTarget * near.farFactor
+      const effectiveSse = nearSse * Math.pow(farSse / nearSse, blend)
+      target.error *= tiles.errorTarget / effectiveSse
+    }
+    const taperStart = Math.max(detailRange, near?.rangeM ?? 0)
+    if (d > taperStart) {
+      const ratio = taperStart / d
       target.error *= ratio * ratio
     }
   }
@@ -49,6 +66,10 @@ export function installDistanceLod(tiles: any): DistanceLod {
       detailRange = Number.isFinite(detailRangeM) && detailRangeM > 0 ? detailRangeM : Infinity
     },
     cutoff: () => cutoff,
+    setNearDetail(policy) {
+      near = policy && policy.rangeM > 0 && policy.sse > 0 && policy.farFactor >= 1
+        ? { ...policy } : null
+    },
     dispose() {
       if (tiles.calculateTileViewError === wrapped) tiles.calculateTileViewError = base
     },

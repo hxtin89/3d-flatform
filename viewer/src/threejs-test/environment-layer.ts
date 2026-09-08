@@ -49,6 +49,8 @@ export interface EnvironmentLayer {
   setPeruMinutes(minutes: number | null): void
   /** Multiplier on the cloud layer's range fade (intro fog reveal); null = 1. */
   setCloudOpacity(value: number | null): void
+  /** Runtime cost controls; changing these never rebuilds cloud materials. */
+  setPerformanceLevel(level: number): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -202,6 +204,8 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let promotionsLeft = EXPERIENCE_CONFIG.clouds.maxPromotions
   let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
   let cloudOpacityScale = 1
+  let performanceLevel = 0
+  const marchQuality = uniform(1)
   let lastDaylightUpdate = -Infinity
   let lastLiveRefresh = -Infinity
   let resources: {
@@ -215,6 +219,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     ambientColorUniform?: any
     sunDirUniform?: any
     nearClouds?: NearCloud[]
+    farClouds?: THREE.Mesh[]
   } | null = null
 
   const root = new THREE.Group()
@@ -373,7 +378,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       // Optical depth per light tap: step length (box units) times extinction.
       const tapExtinction = cfg.extinction * cfg.lightStepBoxFraction
 
-      JitteredRaymarchingBox(steps, jitter, ({ positionRay }) => {
+      JitteredRaymarchingBox(float(steps).mul(marchQuality).max(12), jitter, ({ positionRay }) => {
         const samplePosition = positionRay.add(0.5).add(windOffset)
         const density = smoothstep(coverageLow, coverageHigh, cloudTexture.sample(samplePosition).r).toVar()
         If(density.greaterThan(0.002), () => {
@@ -391,7 +396,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
           const lit = vec3(sunColor as any)
             .mul(transmittance.mul(powder.mul(0.7).add(0.3)).mul(phase).mul(cfg.sunBoost))
             .add(vec3(ambientColor as any).mul(cfg.ambientAmount))
-          const alpha = density.mul(cfg.stepAlpha)
+          const alpha = float(1).sub(pow(float(1).sub(density.mul(cfg.stepAlpha)), marchQuality.reciprocal()))
           finalColor.rgb.addAssign(finalColor.a.oneMinus().mul(alpha).mul(lit))
           finalColor.a.addAssign(finalColor.a.oneMinus().mul(alpha))
         })
@@ -443,6 +448,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
 
     // Distant flight-path fields: one shared material, unchanged behaviour.
     const farHandle = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.raymarchStepsStrong)
+    const farClouds: THREE.Mesh[] = []
     for (const field of EXPERIENCE_CONFIG.clouds.fields) {
       const mesh = new THREE.Mesh(geometry, farHandle.material)
       mesh.position.set(
@@ -453,6 +459,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       mesh.scale.set(field.sizeM[0], field.sizeM[1], field.sizeM[2])
       mesh.renderOrder = 2
       group.add(mesh)
+      farClouds.push(mesh)
     }
 
     // Sparse near clouds over the survey itself — each has its own material so
@@ -481,6 +488,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       sunColorUniform: farHandle.sunColor, ambientColorUniform: farHandle.ambientColor,
       sunDirUniform: farHandle.sunDir,
       nearClouds,
+      farClouds,
     }
   }
 
@@ -645,8 +653,15 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     setCloudOpacity(value) {
       cloudOpacityScale = value === null ? 1 : THREE.MathUtils.clamp(value, 0, 1)
     },
+    setPerformanceLevel(level) {
+      if (level === performanceLevel) return
+      performanceLevel = level
+      marchQuality.value = level > 0 ? 0.6 : 1
+      lastDaylightUpdate = -Infinity
+    },
     update(now, camera, cameraGroundRange, fps, qualityGuardEnabled) {
       updateDaylight(now)
+      if (performanceLevel >= 2) uniforms.cloudShadowStrength.value = 0
       const rangeOpacity = smooth01(
         EXPERIENCE_CONFIG.clouds.closeFadeEndM,
         EXPERIENCE_CONFIG.clouds.closeFadeStartM,
@@ -661,6 +676,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       if (resources?.mode === 'soft') {
         const material = resources.material as MeshBasicNodeMaterial
         material.opacity = 0.16 * rangeOpacity * motionOpacity
+        resources.group.visible = material.opacity > 0.001
         resources.group.position.set(
           Math.sin(now * 0.00003) * 240,
           Math.cos(now * 0.000025) * 110,
@@ -668,6 +684,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
         )
       } else if (resources?.mode === 'volume') {
         resources.opacityUniform.value = rangeOpacity * motionOpacity
+        for (const cloud of resources.farClouds ?? []) cloud.visible = resources.opacityUniform.value > 0.001
         resources.windUniform.value.set(windU, windV, 0)
 
         // Near clouds: individual slow life cycles (materialise → hold → dissolve
@@ -683,6 +700,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
             if (age >= fullCycle) {
               respawnNearCloud(cloud, now)
               cloud.handle.opacity.value = 0
+              cloud.mesh.visible = false
               continue
             }
             let envelope = 0
@@ -701,6 +719,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
               envelope *= smooth01(halfDiagonal * 0.8, halfDiagonal * 1.6, distance)
             }
             cloud.handle.opacity.value = envelope * cfg.maxOpacity * motionOpacity
+            cloud.mesh.visible = cloud.handle.opacity.value > 0.001
             cloud.handle.wind.value.set(windU, windV, 0)
           }
         }
