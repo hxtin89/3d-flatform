@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer-core'
 import assert from 'node:assert/strict'
 import { writeFile, mkdir } from 'node:fs/promises'
+import { localBuildOnDomain } from './local-build-on-domain.mjs'
 const url = process.argv[2] ?? 'http://127.0.0.1:5182/r3f.html?panel=1&diag=1'
 const out = process.argv[3] ?? '/private/tmp/wild-navigation-check'
 await mkdir(out, { recursive: true })
@@ -10,6 +11,7 @@ const browser = await puppeteer.launch({
   args: ['--enable-unsafe-webgpu', '--use-angle=metal', '--ignore-gpu-blocklist'],
 })
 const page = await browser.newPage()
+if (process.env.NAV_BUILD_DIR) await localBuildOnDomain(page, url, process.env.NAV_BUILD_DIR)
 const errors = []
 const redact = value => String(value).replace(/([?&]key=)[^\s"'&]+/g, '$1[redacted]')
 page.on('pageerror', e => errors.push(redact(e.message)))

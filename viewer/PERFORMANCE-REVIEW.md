@@ -29,27 +29,65 @@ Ein früherer Zwischenstand hatte stark schwankende GPU-Zeiten und unter Regen n
 
 Die Navigationstests auf WebGPU und WebGL2 ergeben **0 m Drehpunktdrift**, einschließlich erzwungenem Ursprungwechsel. Baumhöhenabfrage: 1,1 ms auf WebGPU, 1,5 ms auf WebGL2. Geprüft sind auch Fensterrand, Loslassen, Blur, Linksschwenk und Zweifingerrotation. Keine JavaScript-Fehler; der abschließende WebGL-Test prüft zusätzlich Shader-Fehler und den tatsächlich verwendeten Backend-Namen.
 
-**Offen: MapTiler**
+**MapTiler-Korrektur — 9. September 2026**
 
-MapTiler antwortet auf die konfigurierte Satelliten-Kachel mit HTTP 403 und dem Bildtext **„Invalid key“**. Das trat auch in der eingefrorenen Ausgangsversion auf. Der Schlüssel wurde nicht geändert. Der Viewer zeigt den Fehler jetzt ausdrücklich an und stoppt neue Imagery-Traversals, wenn die Basemap ausgeblendet ist.
+Die ursprüngliche Diagnose „ungültiger Schlüssel“ war für die Produktionsdomain falsch. Dort erhalten sowohl `index.html` als auch `r3f.html` mit demselben Schlüssel echte JPEG-Kacheln (HTTP 200). In R3F verdeckte die grüne `GroundFallback`-Scheibe die geladenen Satellitenbilder: Durch den Punktwolken-Höhenversatz lag sie rund 2,1 m über dem Ellipsoid und schrieb in den Tiefenpuffer. Die Scheibe wird jetzt zuerst und ohne Tiefentest/Tiefenschreiben gezeichnet. Geladene Kartenkacheln überdecken sie unabhängig von ihrer Geometrie.
 
-Alle obigen Messungen enthalten deshalb **keine MapTiler-Kacheln**. Für die vollständige visuelle und technische Abnahme muss ein gültiger `VITE_MAPTILER_API_KEY` lokal konfiguriert, der Build/Devserver erneuert und der Test mit geladener Basemap wiederholt werden. Bis dahin sind die grünen Flächen zwischen den Baumkronen der vorhandene Boden-Fallback.
+MapTilers TileJSON für `satellite-v4` meldet Zoom 0–22. Der bisherige XYZ-Standard war auf 0–19 begrenzt. R3F erlaubt jetzt alle 23 Stufen, verwendet 512 × 512 Pixel pro Kachel und die tatsächliche Canvas-Auflösung statt CSS-Pixeln. Anisotrope Filterung verbessert schräge Ansichten. Die ausgewählte Stufe bleibt vom projizierten Pixelbedarf abhängig; Zoom 22 über den gesamten Horizont würde keine zusätzliche sichtbare Qualität liefern. Die reale Aufnahmeauflösung kann je nach Gebiet geringer sein als die angebotene maximale Zoomstufe.
+
+Der alte 96-MiB-CPU-Cache war schon mit 94 Kacheln voll und ließ den nahen Schrägblick bei Zoom 15 hängen. Die R3F-Budgets für dekodierte Bilder liegen jetzt je nach Geräteklasse bei 192/256/320 MiB; GPU- und Punktwolkenbudgets werden getrennt geführt. Nach einer CPU-Verdrängung wird die Traversierung auch bei stillstehender Kamera erneut angestoßen. So können freie Plätze wieder mit benötigten Detailkacheln belegt werden.
+
+Vorübergehende Netzwerkfehler, HTTP 408/429 und Serverfehler werden mit begrenztem exponentiellem Abstand erneut versucht. Fehlgeschlagene LRU-Einträge werden vor dem Zurücksetzen entfernt, weil `resetFailedTiles()` im installierten Renderer allein kein erneutes Einreihen erlaubt. HTTP 401/403/404 werden nicht blind wiederholt.
+
+Die vier Viewer-Einstiegspunkte teilen sich eine Schlüsselauswahl. Produktionsbuilds enthalten ausschließlich `VITE_MAPTILER_API_KEY`, auch wenn sie lokal als Preview geöffnet werden. Nur der Entwicklungsserver auf einem Loopback-Host verwendet `VITE_MAPTILER_API_KEY_LOCAL`. Der Vite-Proxy übermittelt den tatsächlichen Ursprung samt Port, statt Origin und Referer zu entfernen. `strictPort` verhindert einen unbemerkten Portwechsel. Mit der aktuellen Freigabe ist `http://localhost:5177` erfolgreich; Port 5183 ist nicht freigeschaltet. Die `.env` wurde nicht geändert.
+
+Die früheren Messwerte oben enthalten keine MapTiler-Kacheln und sind deshalb keine vollständige Abnahme. Der neue Produktionsbuild wurde im isolierten Chrome unter der echten freigeschalteten Domain getestet: Nur lokale Build-Dateien wurden per Browser-Interception bereitgestellt, alle MapTiler-Anfragen gingen unverändert an den Dienst. Es wurde nichts veröffentlicht.
 
 **Prüfungen und lokale Nachweise**
 
 - `npm run build`: TypeScript und Produktionsbuild erfolgreich; bestehende Warnung zur Größe des Spark-Chunks.
-- Gezielte Vitest-Prüfung: 18/18 bestanden (Regler, tatsächlicher Renderer-Vertrag, Streaming, Navigation, Höhenabfrage).
+- Gezielte Vitest-Prüfung: 24/24 bestanden (Regler, Renderer-Vertrag, Navigation, Höhenabfrage, Schlüsselauswahl und datensatzabhängige Spendenfläche).
 - `npm run bench:verify`: 9/9 bestanden.
+- Python: 7/7 Manifest-Tests bestanden, mit kleinen LAS-Header-Fixtures und realen ENU/CRS-Transformationen; kein Dekodieren von Punktdaten. `bash -n pipeline/area-manifest.sh` bestanden.
 - Die vollständige bestehende Vitest-Suite ist nicht grün: drei bereits in der Ausgangsversion fehlschlagende Erwartungen in APH/One-LOD-Tree sowie zwei `node:test`-Dateien, die Vitest als leere Suites einsammelt. Deren Tests bestehen über `bench:verify`.
 - [Abschließende Messdaten](/private/tmp/wild-performance-verified/report.json), [Schrägblick](/private/tmp/wild-performance-verified/dry.png), [Blick nach unten](/private/tmp/wild-performance-verified/full-nadir.png).
 - [Ausgangsversion ohne Maske](/private/tmp/wild-baseline-full/report.json), [abweichender Zwischenlauf](/private/tmp/wild-acceptance-final/report.json).
 - [WebGPU-Navigation](/private/tmp/wild-navigation-verified-webgpu/report.json), [WebGL2-Navigation](/private/tmp/wild-navigation-verified-webgl/report.json), [MapTiler-Antwort](/private/tmp/wild-maptiler-response.png).
 
-Reproduktion gegen einen laufenden Produktions-Preview:
+**Abschließende Messung mit scharfer Basemap**
+
+Gleicher Mac, Chrome/WebGPU, 1400 × 900 CSS-Pixel, Renderer-DPR 1,1; jeweils zehn Sekunden. Kreis-Maske ausgeschaltet, echte Satellitenbilder geladen. Im Schrägblick sind jetzt deutlich mehr Kartenkacheln resident als im früheren Lauf mit zu kleinem Cache.
+
+| Szene | Aktive Punkte | Sichtbare Kartenkacheln | Median ms | p95 ms | p99 ms | Maximum ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Schrägblick trocken | 5,760,289 | 113 | 16.7 | 18.1 | 18.4 | 18.7 |
+| Erster Regenstart | 5,760,289 | 113 | 16.7 | 18.4 | 18.5 | 20.2 |
+| Laufender Regen | 5,760,289 | 113 | 16.7 | 18.5 | 19.3 | 20 |
+| Senkrechter Blick 186 m | 3,570,053 | 22 | 16.6 | 18.3 | 18.6 | 18.7 |
+| Regenstart senkrecht | 3,570,053 | 22 | 16.7 | 18.2 | 18.6 | 18.7 |
+| Rechts-Orbit mit Regen | 3,806,177 | 31 | 16.7 | 18.7 | 27.8 | 39.7 |
+
+Median 16,6–16,7 ms, p95 höchstens 18,7 ms. Bei trockenem Schrägblick, beiden Regenstarts, laufendem Regen und senkrechtem Blick kein Frame über 33,4 ms. Der Rechts-Orbit enthält zwei längere Frames, maximal 39,7 ms. Das ist ein lokaler Vergleichsnachweis und keine Zusage, unter jeder Bewegung oder Systemlast exakt 60 FPS zu halten. Keine MapTiler-Fehler; der unabhängige Request auf das Favicon der Website liefert weiterhin HTTP 403. [Messdaten](/private/tmp/wild-performance-sharp-basemap/report.json).
+
+Der zusätzliche WebGL2-Test mit der korrigierten Produktions-Basemap besteht ebenfalls: 0 m Drehpunktdrift, Baumhöhenabfrage 1,6 ms, Rechts-Orbit einschließlich Ursprungwechsel, Pointer-Capture, Blur, Linksschwenk und Zweifingerrotation. Keine JavaScript- oder Shaderfehler. [Navigationsbericht](/private/tmp/wild-navigation-basemap-final/report.json).
+
+**Datensatz-Unterstützung und Merge**
+
+Tins Commit `703fe8d` enthält keine neuen Punktwolken-Dateien. Er ergänzt die Erstellung eines Gebietsmanifests aus vorhandenen COPC-Headern und dem gespeicherten APH-Zustand, falls alte Konvertierungsberichte fehlen. Außerdem wird die Peru-Spendenfläche bei anderen Datensätzen nur noch mit explizitem `?shape=` geladen. Diese Regel gilt jetzt ebenfalls in R3F. Die Header-Ergänzung behält die vorhandenen Berichte als ersten Pfad bei; ihre wissenschaftlichen Python-Abhängigkeiten werden nur bei Bedarf importiert.
+
+Das veröffentlichte Peru-Manifest enthält 72 Gebiete. Der bereits aktive APH-Baum umfasst in ENU rund 12,8 × 8,5 km (Begrenzungsrechteck, keine Garantie lückenloser Befliegung). Im Browser wurden vom Ausgangspunkt jeweils 1 km westlich und östlich neue Punktkacheln desselben APH-Datensatzes geladen: 3.536.124 beziehungsweise 3.345.053 aktive Punkte, bei deaktivierter Kreis-Maske. Es wurden keine neuen Rohdaten erzeugt oder hochgeladen.
+
+Der Basemap-Browsertest prüft echte 512-Pixel-JPEGs, Tiefeneinstellungen der Ersatzfläche, Canvas-Pixelauflösung, verfügbare maximale Stufe 22, ausreichend verfeinerte Nahkacheln und neue Punktkachel-IDs nach seitlicher Bewegung. Ein absichtlich zurückgegebener HTTP-503 erholt sich ohne Seitenneuladen. Der abschließende Qualitätslauf erreichte im Schrägblick Zoom 20, in allen drei senkrechten Ansichten Zoom 19; 794 echte MapTiler-Antworten mit HTTP 200 und keine 401/403/404. [Prüfbericht](/private/tmp/wild-basemap-final/report.json).
+
+Reproduktion mit dem lokalen Produktionsbuild unter der freigeschalteten Domain (isolierter Browser, keine Veröffentlichung):
 
 ```sh
-PERF_ACCEPTANCE=1 PERF_EXTENDED=1 PERF_SAMPLE_MS=10000 node scripts/performance-check.mjs 'http://localhost:5183/livingdashboard/r3f.html?diag=1' /private/tmp/wild-performance-check
-node scripts/navigation-check.mjs 'http://localhost:5183/livingdashboard/r3f.html?diag=1&webgl=1' /private/tmp/wild-navigation-check
+npm run build
+BASEMAP_BUILD_DIR=dist BASEMAP_TEST_RETRY=1 node scripts/basemap-check.mjs 'https://wilderness-prototype.de/livingdashboard/r3f.html?diag=1' /private/tmp/wild-basemap-check
+PERF_BUILD_DIR=dist PERF_REQUIRE_BASEMAP=1 PERF_ACCEPTANCE=1 PERF_EXTENDED=1 PERF_SAMPLE_MS=10000 node scripts/performance-check.mjs 'https://wilderness-prototype.de/livingdashboard/r3f.html?diag=1' /private/tmp/wild-performance-check
+NAV_BUILD_DIR=dist node scripts/navigation-check.mjs 'https://wilderness-prototype.de/livingdashboard/r3f.html?diag=1&webgl=1' /private/tmp/wild-navigation-check
 ```
 
-Die Änderungen liegen im Arbeitsverzeichnis auf `jan-threejs-test`; sie sind nicht committed oder veröffentlicht.
+Für den normalen Entwicklungsserver: `http://localhost:5177/r3f.html?diag=1`. Ein Produktions-Preview auf Port 5183 verwendet absichtlich den Produktionsschlüssel, für den dieser lokale Ursprung nicht freigeschaltet ist.
+
+Der lokale Merge integriert Tins Datensatz-Unterstützung zusammen mit den R3F-Korrekturen. Es wurde weder gepusht noch veröffentlicht.

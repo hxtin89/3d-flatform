@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
+
 STATUS_READY = "ready"
 STATUS_NOT_BUILT = "not_built"
 EXPLORE_GROUP_SUFFIX = "explore-p10"
@@ -64,8 +65,86 @@ def chunk_reports(root: Path, args: argparse.Namespace) -> list[tuple[str, Path,
     reports = []
     for report_path in sorted(chunks_dir.glob("*/conversion-report.json")):
         reports.append((report_path.parent.name, report_path, read_json(report_path)))
-    if not reports:
-        raise SystemExit(f"No chunk conversion reports found in: {chunks_dir}")
+    if reports:
+        return reports
+    return intermediate_copc_reports(root, args, chunks_dir)
+
+
+def intermediate_copc_reports(
+    root: Path,
+    args: argparse.Namespace,
+    missing_legacy_dir: Path,
+) -> list[tuple[str, Path, dict[str, Any]]]:
+    """Recreate area records from durable APH inputs without decoding points."""
+    intermediate_dir = root / "local-storage" / "intermediate" / args.dataset / "chunks-copc"
+    logical = logical_dataset(args)
+    aph_dir = root / "local-storage" / "tilesets" / logical / f"{logical}-adaptive-point-hierarchy"
+    state_path = aph_dir / ".adaptive-point-hierarchy-state.json"
+    files = sorted(intermediate_dir.glob("*.copc.laz"))
+    if not files or not state_path.exists():
+        raise SystemExit(
+            f"No chunk conversion reports found in: {missing_legacy_dir}\n"
+            f"APH fallback requires COPC chunks in {intermediate_dir} and state {state_path}"
+        )
+
+    state = read_json(state_path)
+    required_state = ("enuOriginSource", "rootTransform", "enuOriginLonLat", "enuOriginEcef")
+    missing_state = [key for key in required_state if not state.get(key)]
+    if missing_state:
+        raise SystemExit(f"APH state is missing required manifest metadata: {', '.join(missing_state)}")
+
+    state_sources = state.get("sourceFiles") or []
+    expected_sources = {str(item.get("name")): item for item in state_sources}
+    actual_names = {path.name for path in files}
+    if expected_sources and actual_names != set(expected_sources):
+        missing = sorted(set(expected_sources) - actual_names)
+        extra = sorted(actual_names - set(expected_sources))
+        raise SystemExit(f"APH source files do not match intermediate COPC chunks: missing={missing}, extra={extra}")
+    for path in files:
+        expected_size = int(expected_sources.get(path.name, {}).get("size") or path.stat().st_size)
+        if path.stat().st_size != expected_size:
+            raise SystemExit(f"APH source size changed since build: {path}")
+
+    # Legacy reports and --help do not require the point-cloud toolchain.
+    import numpy as np
+    from laspy import open as open_las
+    from build_adaptive_point_hierarchy import build_enu_frame, transform_bounds_to_enu
+
+    with open_las(files[0]) as reader:
+        source_crs = reader.header.parse_crs()
+    if source_crs is None:
+        raise SystemExit(f"COPC source has no CRS: {files[0]}")
+    frame = build_enu_frame(source_crs, np.asarray(state["enuOriginSource"], dtype=np.float64))
+    if not np.allclose(frame["root_transform"], state["rootTransform"], rtol=0, atol=1e-6):
+        raise SystemExit("Intermediate COPC CRS/origin does not reproduce the durable APH root transform")
+
+    reports: list[tuple[str, Path, dict[str, Any]]] = []
+    total_points = 0
+    for path in files:
+        with open_las(path) as reader:
+            mins = np.asarray(reader.header.mins, dtype=np.float64)
+            maxs = np.asarray(reader.header.maxs, dtype=np.float64)
+            point_count = int(reader.header.point_count)
+        enu_mins, enu_maxs = transform_bounds_to_enu(mins, maxs, frame)
+        total_points += point_count
+        chunk_id = path.name.removesuffix(".copc.laz")
+        reports.append((chunk_id, path, {
+            "coordinateMode": "globe",
+            "root_transform": state["rootTransform"],
+            "enuOriginSource": state["enuOriginSource"],
+            "enuOriginEcef": state["enuOriginEcef"],
+            "enuOriginLonLat": state["enuOriginLonLat"],
+            "source_bbox": {"mins": mins.tolist(), "maxs": maxs.tolist()},
+            "root_bbox_enu": {"mins": enu_mins.tolist(), "maxs": enu_maxs.tolist()},
+            "source_point_count": point_count,
+        }))
+
+    expected_total = int(state.get("totalSourcePoints") or 0)
+    if expected_total and total_points != expected_total:
+        raise SystemExit(
+            f"Intermediate COPC point total does not match APH state: {total_points} != {expected_total}"
+        )
+    print(f"ℹ Area manifest source: {len(files)} intermediate COPC headers + durable APH state")
     return reports
 
 

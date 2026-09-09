@@ -2,6 +2,7 @@
 // build with the same camera pose, DPR, viewport and weather sequence.
 import puppeteer from 'puppeteer-core'
 import { mkdir, writeFile } from 'node:fs/promises'
+import { localBuildOnDomain } from './local-build-on-domain.mjs'
 const url = process.argv[2] ?? 'http://127.0.0.1:5182/r3f.html?panel=1&diag=1'
 const out = process.argv[3] ?? '/private/tmp/wild-performance-check'
 const duration = Number(process.env.PERF_SAMPLE_MS ?? 6000)
@@ -15,6 +16,7 @@ const browser = await puppeteer.launch({
   args: ['--enable-unsafe-webgpu', '--use-angle=metal', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
 })
 const page = await browser.newPage()
+if (process.env.PERF_BUILD_DIR) await localBuildOnDomain(page, url, process.env.PERF_BUILD_DIR)
 const errors = []
 const redact = value => String(value).replace(/([?&]key=)[^\s"'&]+/g, '$1[redacted]')
 page.on('pageerror', error => errors.push(redact(error.message)))
@@ -114,9 +116,13 @@ try {
         pointSize: window.__three.uniforms.pointSize.value, mask: window.__three.uniforms.maskMode.value,
         range: window.__wild.range, dpr: r.getPixelRatio(), render: { ...r.info.render },
         rain: window.__testFrame.rainVisualActive, clouds: window.__testScene().environment.getCloudState(),
+        basemap: window.__three.globe.stats(),
       }
     })
     if (result.mask !== 0) throw new Error('Measurement invalid: forest mask was enabled')
+    if (process.env.PERF_REQUIRE_BASEMAP === '1' && result.basemap.visible === 0) {
+      throw new Error('Measurement invalid: satellite imagery was missing')
+    }
     results.push({ name, ...result })
     console.log(JSON.stringify({ name, frame: result.frame, cpu: result.cpu, gpu: result.gpu, points: result.stats.points, sse: result.sse, perf: result.perf }))
     await page.screenshot({ path: `${out}/${name}.png` })

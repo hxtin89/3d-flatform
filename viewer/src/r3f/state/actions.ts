@@ -13,7 +13,7 @@ import { isBootLoading, useBootStore } from './boot-store'
 const MIB = 1024 * 1024
 /** Fixed high budgets while presetBudgets is off (compare mode). */
 export const COMPARE_STREAM_BUDGET = { cacheBytes: 768 * MIB, gpuBytes: 384 * MIB }
-export const COMPARE_GLOBE_BUDGET = { cacheBytes: 128 * MIB, gpuBytes: 96 * MIB }
+export const COMPARE_GLOBE_BUDGET = { cacheBytes: 320 * MIB, gpuBytes: 96 * MIB }
 /** Cache and GPU residency per measured device tier. */
 const STREAM_BUDGET_BY_PRESET: Record<BenchPreset, { cacheBytes: number; gpuBytes: number }> = {
   strong: { cacheBytes: 384 * MIB, gpuBytes: 256 * MIB },
@@ -21,9 +21,12 @@ const STREAM_BUDGET_BY_PRESET: Record<BenchPreset, { cacheBytes: number; gpuByte
   constrained: { cacheBytes: 160 * MIB, gpuBytes: 112 * MIB },
 }
 const GLOBE_BUDGET_BY_PRESET: Record<BenchPreset, [number, number]> = {
-  strong: [128 * MIB, 96 * MIB],
-  medium: [96 * MIB, 64 * MIB],
-  constrained: [64 * MIB, 48 * MIB],
+  // 512px imagery keeps ancestors and siblings to cover transitions. The old
+  // 96MiB cap filled at 94 tiles and stranded the near view at zoom 15.
+  // Retain decoded imagery on CPU; GPU residency still has its own budget.
+  strong: [320 * MIB, 96 * MIB],
+  medium: [256 * MIB, 64 * MIB],
+  constrained: [192 * MIB, 48 * MIB],
 }
 
 /** Cap the bench preset chose; applyPixelRatio re-applies it flag-aware. */

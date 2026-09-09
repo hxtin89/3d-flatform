@@ -2,6 +2,7 @@
 // Port of the config block at the top of src/threejs-test/main.ts, minus the
 // field models and the model editor, which the React app does not carry.
 import * as THREE from 'three'
+import { getMapTilerKey } from '../maptiler-key'
 import { EXPERIENCE_CONFIG } from '../threejs-test/config'
 import {
   assetUrl as shapeAssetUrl,
@@ -22,13 +23,15 @@ const rotParam = Number(params.get('rot'))
 const debugProgressRaw = import.meta.env.DEV ? params.get('eagleProgress') : null
 const debugProgressParsed = debugProgressRaw === null ? Number.NaN : Number(debugProgressRaw)
 const freeOrbit = params.has('freeorbit')
-const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
+const dataset = params.get('dataset') ?? 'peru-b2-globe'
+const donationShapeOverride = params.get('shape')?.trim() || null
+const donationShapeUrl = donationShapeOverride ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
 
 export const APP_PARAMS = Object.freeze({
   params,
   baseUrl,
-  maptilerKey: (import.meta.env.VITE_MAPTILER_API_KEY ?? '').trim(),
-  dataset: params.get('dataset') ?? 'peru-b2-globe',
+  maptilerKey: getMapTilerKey(),
+  dataset,
   /** 3DGS feasibility test model (Spark, own WebGL overlay). */
   gaussianSplatUrl: baseUrl ? `${baseUrl}/ply-result/point_cloud/iteration_100/point_cloud_5.ply` : '',
   pointTree: (params.get('tree') === 'one-lod' ? 'one-lod' : 'aph') as 'aph' | 'one-lod',
@@ -70,8 +73,10 @@ export const APP_PARAMS = Object.freeze({
 
 /** Started at module load, before the renderer initialises, so the story can
  * be aimed at the parcel without the boot sequence waiting on it. */
-export const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
-  .catch((error) => {
-    console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
-    return null
-  })
+export const donationShapePromise: Promise<DonationShapeSource | null> = dataset === 'peru-b2-globe' || donationShapeOverride
+  ? fetchDonationShape(donationShapeUrl)
+    .catch((error) => {
+      console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
+      return null
+    })
+  : Promise.resolve(null)

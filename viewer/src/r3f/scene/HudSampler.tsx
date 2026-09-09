@@ -12,7 +12,7 @@ import { geo } from '../state/survey-frames'
 import { perfDebug } from '../state/perf-governor'
 
 const HUD_INTERVAL_MS = 125
-/** The basemap is not required to start: a dead imagery key (403) must not
+/** The basemap is not required to start: an imagery service failure must not
  * leave the loader spinning forever. Point data ready + this long without a
  * single map tile is enough. */
 const MAP_TILE_GRACE_MS = 6_000
@@ -36,7 +36,7 @@ function updateLoaderVisual(): void {
   if (ready && !boot.dataReady) {
     useBootStore.setState({ dataReady: true })
     setLoadProgress(1, visibleMapTiles > 0 ? 'Feldsystem bereit.' : 'Feldsystem bereit · Kartenbilder nicht verfügbar.')
-    if (visibleMapTiles === 0) console.warn('[basemap] no imagery tiles — starting without the satellite basemap (check the MapTiler key)')
+    if (visibleMapTiles === 0) console.warn('[basemap] no imagery tiles — starting while satellite imagery is unavailable; inspect failed requests')
   }
   if (boot.phase === 'entering' && frame.now >= boot.finishAt) {
     useBootStore.setState({ phase: 'entered' })

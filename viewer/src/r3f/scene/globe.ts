@@ -33,7 +33,11 @@ export interface Globe {
 }
 
 export function createGlobe(opts: {
-  renderer: { domElement: HTMLCanvasElement; getSize(v: THREE.Vector2): THREE.Vector2 }
+  renderer: {
+    domElement: HTMLCanvasElement
+    getDrawingBufferSize(v: THREE.Vector2): THREE.Vector2
+    getMaxAnisotropy(): number
+  }
   camera: THREE.PerspectiveCamera
   /** ECEF-anchored parent — the floating-origin root. */
   scene: THREE.Object3D
@@ -55,9 +59,9 @@ export function createGlobe(opts: {
 
   const tiles = new TilesRenderer()
   tiles.lruCache.minSize = 24
-  tiles.lruCache.maxSize = 160
+  tiles.lruCache.maxSize = 320
   tiles.lruCache.minBytesSize = 32 * 1024 * 1024
-  tiles.lruCache.maxBytesSize = 96 * 1024 * 1024
+  tiles.lruCache.maxBytesSize = 256 * 1024 * 1024
   tiles.downloadQueue.maxJobs = 10
   tiles.parseQueue.maxJobs = 4
   tiles.processNodeQueue.maxJobs = 4
@@ -66,10 +70,17 @@ export function createGlobe(opts: {
     shape: 'ellipsoid',
     useRecommendedSettings: true,
     tileDimension: 512,
-    // Dev goes through the vite proxy that strips the Referer (domain-restricted key).
+    // MapTiler satellite-v4 TileJSON advertises zoom 0 through 22, inclusive.
+    // The XYZ plugin otherwise stops at zoom 19 (20 levels).
+    levels: 23,
+    // Dev proxy forwards the actual localhost origin for its separate key.
     url: `${import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
   }))
-  tiles.registerPlugin(new UpdateOnChangePlugin())
+  const updatePlugin = new UpdateOnChangePlugin()
+  tiles.registerPlugin(updatePlugin)
+  // CPU eviction runs after traversal. Wake a stationary camera when that
+  // frees room for queued detail; otherwise it can stay on a coarse parent.
+  tiles.addEventListener('dispose-model', () => tiles.dispatchEvent({ type: 'needs-update' }))
   const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 64 * 1024 * 1024 })
   tiles.registerPlugin(unloadPlugin as any)
   tiles.setCamera(camera)
@@ -78,12 +89,23 @@ export function createGlobe(opts: {
   // flipY: the image plugin pre-flips ImageBitmaps for WebGL; three's WebGPU
   // backend honours flipY itself → double flip. Node material with the shared
   // daylight/vignette dim so the imagery fades with the point cloud.
-  tiles.addEventListener('load-model', ({ scene: s }: any) => {
-    opts.onImageryStatus?.(null)
+  const failedTiles = new Set<any>()
+  let retryAt = Infinity
+  let retryCount = 0
+  let lastFailure = -Infinity
+  tiles.addEventListener('load-root-tileset', () => {
+    failedTiles.delete(null)
+    if (failedTiles.size === 0) opts.onImageryStatus?.(null)
+  })
+  tiles.addEventListener('load-model', ({ scene: s, tile }: any) => {
+    failedTiles.delete(tile)
+    if (failedTiles.size === 0) opts.onImageryStatus?.(null)
     s.traverse((o: any) => {
       const map = o.material?.map
       if (!map) return
       map.flipY = false
+      map.anisotropy = renderer.getMaxAnisotropy()
+      map.needsUpdate = true
       const mat = new MeshBasicNodeMaterial()
       mat.map = map
       applyHighPrecisionAlways(mat)
@@ -95,9 +117,19 @@ export function createGlobe(opts: {
       o.material = mat
     })
   })
-  tiles.addEventListener('load-error', ({ error }: any) => {
+  tiles.addEventListener('load-error', ({ error, tile }: any) => {
+    failedTiles.add(tile)
     const code = /(?:code|status)\s+(\d{3})/i.exec(String(error?.message ?? ''))?.[1]
     opts.onImageryStatus?.(`MapTiler-Basemap nicht verfügbar${code ? ` (HTTP ${code})` : ''}`)
+    // A temporary network/server failure must not leave a tile permanently
+    // failed. Bound retries; permission and missing-resource errors need a fix.
+    const now = performance.now()
+    if (now - lastFailure > 60_000) retryCount = 0
+    lastFailure = now
+    const transient = !code || code === '408' || code === '429' || Number(code) >= 500
+    if (transient && retryCount < 3 && !Number.isFinite(retryAt)) {
+      retryAt = now + 1000 * 2 ** retryCount
+    }
   })
 
   const controls = new WildGlobeControls(scene, camera, renderer.domElement, tiles, {
@@ -119,7 +151,11 @@ export function createGlobe(opts: {
     ...opts.navigation, controls, camera, canvas: renderer.domElement, mode: mouseOrbitPivot,
   })
 
-  const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
+  const resolution = new THREE.Vector2()
+  const setResolution = () => {
+    renderer.getDrawingBufferSize(resolution)
+    tiles.setResolution(camera, resolution.x, resolution.y)
+  }
   setResolution()
 
   return {
@@ -159,7 +195,18 @@ export function createGlobe(opts: {
     },
     updateTiles() {
       // Hiding imagery must also stop network traversal (Anni's branch fix).
-      if (tiles.group.visible) tiles.update()
+      if (tiles.group.visible) {
+        if (performance.now() >= retryAt) {
+          retryAt = Infinity
+          retryCount++
+          // resetFailedTiles only changes loadingState in 0.4.28. Its stale
+          // LRU entry still prevents requestTileContents from enqueueing it.
+          for (const tile of failedTiles) if (tile) tiles.lruCache.remove(tile)
+          tiles.resetFailedTiles()
+          tiles.dispatchEvent({ type: 'needs-update' })
+        }
+        tiles.update()
+      }
     },
     setResolution,
     stats() {

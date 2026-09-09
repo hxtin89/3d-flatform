@@ -3,9 +3,9 @@
 // Satellite tiles arrive one by one and can fail outright (a rate-limited or
 // restricted MapTiler key answers 403 for every tile). Without something
 // behind them the sky's clear colour shows through each missing tile as a
-// bright blue rectangle in the middle of the forest. The disc sits slightly
-// below the ellipsoid surface, so it is only ever visible through those holes,
-// and it takes the same daylight tint as the rest of the scene.
+// bright blue rectangle in the middle of the forest. Draw the disc first,
+// without writing depth, so loaded imagery always covers it. Its height follows
+// the lifted point cloud, not the ellipsoid, and cannot establish tile depth.
 import { useEffect, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -19,8 +19,7 @@ import { geo } from '../state/survey-frames'
 
 /** Damp forest tone: never brighter than the imagery it stands in for. */
 const GROUND_COLOR = 0x35502f
-/** Metres below the ellipsoid surface — deep enough to lose the depth fight
- * against a loaded tile, shallow enough to stay under the point cloud. */
+/** Metres below the displayed point-cloud floor. */
 const SINK_M = 6
 
 export function GroundFallback() {
@@ -34,7 +33,8 @@ export function GroundFallback() {
     // the canopy it stands behind.
     material.colorNode = tint.mul(frame.uniforms.daylightColor).mul(frame.uniforms.daylightIntensity)
     material.fog = true
-    material.depthWrite = true
+    material.depthWrite = false
+    material.depthTest = false
     const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 64), material)
     mesh.name = 'ground-fallback'
     mesh.frustumCulled = false

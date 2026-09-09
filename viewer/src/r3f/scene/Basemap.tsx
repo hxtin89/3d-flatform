@@ -87,7 +87,7 @@ export function Basemap() {
     sceneState().globe?.navigation.rebase(delta)
   })
 
-  useResolutionSync(useCallback(() => sceneState().globe?.tiles ?? null, []))
+  useResolutionSync(useCallback(() => sceneState().globe?.tiles ?? null, []), true)
 
   useFrame(() => {
     const globe = sceneState().globe

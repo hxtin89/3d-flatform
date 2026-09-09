@@ -13,6 +13,7 @@ export default defineConfig({
   plugins: [react(), cesium(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     port: 5177,
+    strictPort: true, // a silent port change can invalidate the MapTiler origin allowlist
     host: true, // listen on all interfaces + print LAN IPs for phone testing
     open: '/threejs-test.html', // auto-open the Three.js/WebGPU map app
     proxy: {
@@ -22,18 +23,18 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tiles/, ''),
       },
-      // The MapTiler key is domain-restricted, so every raster tile a dev server
-      // on localhost requests comes back 403 (with a placeholder PNG body) and the
-      // basemap stays empty. Strip the Referer here — the key answers 200 without
-      // one. Dev only; the production build talks to api.maptiler.com directly.
+      // Preserve the real development origin (including its port) for the
+      // localhost key's allowlist. Production requests MapTiler directly.
       '/maptiler': {
         target: 'https://api.maptiler.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/maptiler/, ''),
         configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            proxyReq.removeHeader('referer')
-            proxyReq.removeHeader('origin')
+          proxy.on('proxyReq', (proxyReq, req) => {
+            const protocol = (req.socket as any).encrypted ? 'https' : 'http'
+            const origin = `${protocol}://${req.headers.host}`
+            proxyReq.setHeader('origin', origin)
+            proxyReq.setHeader('referer', `${origin}/`)
           })
         },
       },
