@@ -88,6 +88,11 @@ const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
 /** `?noorigin` pins the origin at (0,0,0): the same code path with one value
  * different, so an A/B compares the real implementation against itself. */
 const originEnabled = !params.has('noorigin')
+/** `?gputime` opens the renderer's timestamp query pool, which costs a little per
+ * frame and so is not on by default. Everything that reports GPU milliseconds is
+ * dark without it — see the renderer construction below for why it cannot be a
+ * runtime toggle. */
+const gpuTiming = params.has('gputime')
 /** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
  * measures. The benchmark samples frame times while tiles are still streaming,
  * so a hitch can collapse the median past its 60 fps threshold and pin a
@@ -431,7 +436,13 @@ document.querySelectorAll<HTMLButtonElement>('.close').forEach((button) => {
 
 // ---------------------------------------------------------------- renderer / scene
 const canvas = $<HTMLCanvasElement>('#view')
-const renderer = new WebGPURenderer({ canvas, antialias: false, forceWebGL } as any)
+// GPU timing behind ?gputime, because trackTimestamp is a constructor parameter and
+// cannot be flipped later. Wall-clock frame time is useless for comparing GPU cost on a
+// vsync-locked display — it snaps to whole refresh intervals — so measuring anything
+// about shading cost needs the real timestamps.
+const renderer = new WebGPURenderer({
+  canvas, antialias: false, forceWebGL, trackTimestamp: gpuTiming,
+} as any)
 // A device-independent cap avoids allocating a native 3x iPhone backbuffer while
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
@@ -3963,6 +3974,16 @@ async function main(): Promise<void> {
     /** Every height in one place, as the ruler last read them. */
     get heights() { return heightRulerMarks },
     mask: groundPatchMask,
+    /**
+     * GPU milliseconds for the last frame. Zero unless started with ?gputime, and the
+     * query pool has to be resolved before info carries anything, so this is async.
+     * Wall-clock frame time cannot answer questions about shading cost on a vsync-locked
+     * display: it snaps to whole refresh intervals.
+     */
+    async resolveGpuMs() {
+      await (renderer as any).resolveTimestampsAsync?.()
+      return (renderer.info as any).render?.timestamp ?? 0
+    },
     /** Diagnostic: what the mask holds under a screen pixel. */
     probeMask: probeMaskAt,
     /** Floating origin: the two ENU frames and where the origin currently sits.
