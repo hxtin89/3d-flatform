@@ -47,6 +47,7 @@ import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
 import { createGroundPatchMask } from './ground-patch-mask'
+import { createRenderBench } from './render-bench'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
 import {
   createRenderOptions,
@@ -3540,7 +3541,9 @@ function updateOverdrawReadout(points: number): void {
   // which is a fixed multiple of the spacing, so using it here understated the baseline
   // by the square of that factor and inflated the stacking figure fourfold.
   const idealPerPixel = 1 / ((spacingPx * ratio) ** 2)
-  overdrawEl.textContent = `${(shadedPx / bufferPixels).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
+  lastOverdraw = shadedPx / bufferPixels
+  lastAreaPerPoint = dotArea
+  overdrawEl.textContent = `${lastOverdraw.toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
   // Above the working band the ideal layer is so sparse that the ratio runs to six
   // digits and reads as a fault. The boot and flight brakes live up there.
   stackingEl.textContent = target > 32
@@ -3591,6 +3594,10 @@ let gpuResolveInFlight = false
 /** Draw calls of the frame just drawn — see the end of the render loop for why it
  *  cannot be read from `renderer.info` at HUD time. */
 let lastDrawCalls = 0
+/** The overdraw readout's own numbers, kept so the bench can record them without
+ *  recomputing the sum over every visible tile a second time. */
+let lastOverdraw = 0
+let lastAreaPerPoint = 0
 function pollGpuMs(): void {
   if (!gpuTiming || gpuResolveInFlight) return
   const resolving = (renderer as any).resolveTimestampsAsync?.()
@@ -4284,6 +4291,35 @@ async function main(): Promise<void> {
         ).toFixed(2)),
       }))
   }
+  // Named camera poses, so a change can be measured at the view it was tuned against
+  // rather than at wherever the camera happened to stop. See render-bench.ts.
+  ;(window as any).__poses = createRenderBench({
+    camera,
+    sample: () => ({
+      points: lastStreamStats?.points ?? 0,
+      tiles: lastStreamStats?.visible ?? 0,
+      drawCalls: lastDrawCalls,
+      overdraw: Number(lastOverdraw.toFixed(2)),
+      areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
+    }),
+    // The boot and flight brakes hold the error target far above the working band, so a
+    // measurement taken under them describes the brake and not the setting being tested.
+    // `bootLoading` stays true until the entrance is started, so this reads as "press
+    // start first" rather than as a fault.
+    unsettled: () => {
+      if (bootLoading) return 'still on the loader — start the experience first'
+      if (cameraFlight.active) return 'the camera is flying'
+      if ((lastStreamStats?.progress ?? 0) < 1) return 'tiles are still arriving'
+      if (sseAuto > 32) return `the error target is still braked at ${sseAuto.toFixed(0)}`
+      return null
+    },
+    // The value pollGpuMs() already keeps fresh, rather than a second resolve — see the
+    // note on RenderBenchOptions.gpuMs for why a resolve of its own reads double.
+    gpuMs: () => gpuMs,
+    // GlobeControls damps toward its own idea of where the camera was going, so a jump
+    // has to clear that state or the camera slides back out of the pose.
+    afterJump: () => globe?.forceResetState?.(),
+  })
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
     for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
