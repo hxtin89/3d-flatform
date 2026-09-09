@@ -95,6 +95,21 @@ export interface StreamingCloud {
    * why this is a statistic and not a raycast. */
   sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4): GroundSample | null
   stats(): StreamingStats
+  /**
+   * Backbuffer pixels the drawn quads cover this frame, summed over every visible tile.
+   *
+   * `diameterPx` is handed one tile's own point spacing and the view depth to its
+   * centre, and returns the diameter that tile draws at in device pixels. The caller
+   * owns that formula because it is the CPU mirror of the `sizeNode` expression in
+   * point-cloud.ts — the two have to move together or the readout quietly measures a
+   * size the shader is not using, which is exactly the state this replaced.
+   *
+   * The area counted is the **quad**, not the round dot inside it. Every fragment of
+   * the quad is rasterised and shaded; the circle is a Discard in the colour node, which
+   * runs afterwards. So this is fragments shaded — what it costs — rather than pixels
+   * lit, which is what shows.
+   */
+  shadedPixelArea(diameterPx: (spacingM: number, viewDepthM: number) => number): number
   dispose(): void
 }
 
@@ -129,6 +144,10 @@ const scratchVector = new THREE.Vector3()
 const spacingBox = new THREE.Box3()
 const spacingObb = new THREE.Matrix4()
 const spacingSize = new THREE.Vector3()
+
+// Reused by shadedPixelArea, which runs once per visible tile per frame.
+const coverCentre = new THREE.Vector3()
+const coverForward = new THREE.Vector3()
 
 /**
  * This tile's own mean point spacing in metres — what the drawn point size is
@@ -280,6 +299,9 @@ export function createStreamingCloud(opts: {
     points: number
     density: DensityBand
     debugTiles: any[]
+    /** The quad meshes this tile draws, for measuring the area they cover. Kept as a
+     *  list because one tile can carry several point sources. */
+    quads: THREE.Mesh[]
   }>()
   const failedTiles = new Set<string>()
 
@@ -350,6 +372,7 @@ export function createStreamingCloud(opts: {
       `${url ?? ''} ${tile?.content?.uri ?? ''} ${tile?.internal?.basePath ?? ''}`,
     )
     const debugTiles: any[] = []
+    const quads: THREE.Mesh[] = []
     for (const source of sources) {
       points += source.geometry?.getAttribute('position')?.count ?? 0
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay
@@ -358,6 +381,7 @@ export function createStreamingCloud(opts: {
 
       const mesh = buildPointQuads(source, tile, density)
       if (!mesh) continue
+      quads.push(mesh)
       const debugTile = (mesh.material as any)?.userData?.debugTile
       if (debugTile) debugTiles.push(debugTile)
 
@@ -377,7 +401,7 @@ export function createStreamingCloud(opts: {
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
     }
-    tileStats.set(tile, { points, density, debugTiles })
+    tileStats.set(tile, { points, density, debugTiles, quads })
   })
   tiles.addEventListener('dispose-model', ({ tile }: any) => tileStats.delete(tile))
   // A missing tile is a gap in the published data, not a crash, and the
@@ -657,6 +681,40 @@ export function createStreamingCloud(opts: {
         cacheTilesFloor: tiles.lruCache.minSize,
         cacheBytesFloor: tiles.lruCache.minBytesSize,
       }
+    },
+    shadedPixelArea(diameterPx) {
+      // The shader divides by view depth — the distance along the camera axis, not the
+      // radial distance — so the forward axis is taken once and the tile centres are
+      // projected onto it. Radial distance would over-report depth toward the corners
+      // of a wide frame and quietly shrink the dots the readout thinks are drawn there.
+      camera.getWorldDirection(coverForward)
+      let area = 0
+      for (const tile of tiles.visibleTiles) {
+        const stats = tileStats.get(tile)
+        if (!stats) continue
+        for (const mesh of stats.quads) {
+          const instances = (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
+          if (!instances) continue
+          const spacingM = (mesh.material as any)?.userData?.pointSpacingM
+          if (!(spacingM > 0)) continue
+          // The carrier this mesh hangs under still holds the tile's real point bounds;
+          // the quad geometry's own sphere describes the four corner offsets and says
+          // nothing about where the tile is (see sampleGroundZ for the same trap).
+          const carrier = mesh.parent
+          const bounds = carrier ? (carrier as any).geometry?.boundingSphere : null
+          if (!bounds) continue
+          coverCentre.copy(bounds.center).applyMatrix4((carrier as THREE.Object3D).matrixWorld)
+          const depth = coverCentre.sub(camera.position).dot(coverForward)
+          // A tile straddling the camera plane has a centre behind it and so a negative
+          // depth. Handed on as-is rather than skipped: the shader has no notion of
+          // behind, it floors the depth and lets the max-pixel clamp catch the result,
+          // and `diameterPx` mirrors that. Skipping instead would drop the tile's area
+          // while its points still counted, which reads as the dots having shrunk.
+          const diameter = diameterPx(spacingM, depth)
+          area += instances * diameter * diameter
+        }
+      }
+      return area
     },
     dispose() {
       scene.remove(tiles.group)

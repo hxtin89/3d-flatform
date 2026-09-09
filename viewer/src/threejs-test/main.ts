@@ -3469,12 +3469,39 @@ const diagLeavesEl = $('#diagLeaves')
 if (showDiagnostics) diagStatsEl.hidden = false
 
 /**
+ * The drawn diameter of one point, in CSS pixels — the CPU mirror of the `sizeNode`
+ * expression in point-cloud.ts.
+ *
+ * Read off the uniforms rather than off config, so the two cannot disagree: the size
+ * the shader uses *is* these values. `sizeCoverage` already carries the size slider,
+ * applied in applyPointSize().
+ *
+ * Kept in step with createCloudMaterial() by hand. Change one and change the other —
+ * the readout measuring a size the shader was not using is precisely the fault this
+ * replaced.
+ */
+function drawnDiameterCssPx(spacingM: number, viewDepthM: number): number {
+  const spacingPx = spacingM * uniforms.sizeCoverage.value * uniforms.sizePxPerMetre.value
+    / Math.max(viewDepthM, 0.001)
+  return THREE.MathUtils.lerp(
+    uniforms.pointSize.value,
+    THREE.MathUtils.clamp(spacingPx, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value),
+    uniforms.sizeSpacingMix.value,
+  )
+}
+
+/**
  * Two numbers that the point count alone hides.
  *
- * `Overdraw` is fragments shaded per screen pixel — points per pixel times the area of
- * one dot. The dot area is the multiplier nobody watches: the size is a single uniform
- * with `sizeAttenuation` off, so every point costs the same fragments however far away
- * it is, and it grows with the square of the size slider.
+ * `Overdraw` is fragments shaded per screen pixel: the quad areas of every drawn point,
+ * summed over the visible tiles and divided by the backbuffer. Summed rather than taken
+ * from one nominal diameter because the size is per tile — under tilt the near and far
+ * halves of the frame sit at opposite ends of the min/max clamp, and a single figure for
+ * both describes neither.
+ *
+ * The area counted is the quad, not the circle inside it. The round dot is a Discard in
+ * the colour node, which runs *after* rasterisation, so the corners are shaded and then
+ * thrown away: 4/π of the fragments are paid for and 1 of them is kept.
  *
  * `Stacking` is how far the on-screen point density sits above what one clean layer at
  * the live error target would give. The target is enforced per tile, but ADD refinement
@@ -3502,22 +3529,18 @@ function updateOverdrawReadout(points: number): void {
   // is expected to hold while the pixel counts follow the window. Shown because the two
   // are easy to confuse and the cap is invisible otherwise.
   renderScaleEl.textContent = `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
-  // Nominal, not measured: with the size derived per tile there is no single diameter
-  // any more. This is the one a point at the error target resolves to, which is what
-  // the cloud is tuned around — the per-tile sizes scatter about it by construction.
+  // Measured per tile and summed. The mirror works in CSS pixels, so one ratio² at the
+  // end converts the whole area to backbuffer pixels rather than every diameter.
+  const shadedPx = (stream?.shadedPixelArea(drawnDiameterCssPx) ?? 0) * ratio * ratio
+  const dotArea = shadedPx / points
   const spacingPx = spacingPxAtTarget(target)
-  const nominalPx = renderOptions.effective().dynamicPointSize
-    ? THREE.MathUtils.clamp(sizeCoverage * pointSizeScale * spacingPx, sizeMinPx, sizeMaxPx)
-    : uniforms.pointSize.value
-  const diameter = nominalPx * ratio
-  const dotArea = Math.PI * (diameter / 2) ** 2
   const perPixel = points / bufferPixels
   // One clean layer at the live target: points spaced `spacingPx` CSS pixels apart in
   // both screen directions. Not `target` pixels — that is the tile's geometricError,
   // which is a fixed multiple of the spacing, so using it here understated the baseline
   // by the square of that factor and inflated the stacking figure fourfold.
   const idealPerPixel = 1 / ((spacingPx * ratio) ** 2)
-  overdrawEl.textContent = `${(perPixel * dotArea).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
+  overdrawEl.textContent = `${(shadedPx / bufferPixels).toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
   // Above the working band the ideal layer is so sparse that the ratio runs to six
   // digits and reads as a fault. The boot and flight brakes live up there.
   stackingEl.textContent = target > 32
@@ -3565,6 +3588,9 @@ function updateCacheFloorReadout(stats: StreamingStats | null): void {
  */
 let gpuMs = 0
 let gpuResolveInFlight = false
+/** Draw calls of the frame just drawn — see the end of the render loop for why it
+ *  cannot be read from `renderer.info` at HUD time. */
+let lastDrawCalls = 0
 function pollGpuMs(): void {
   if (!gpuTiming || gpuResolveInFlight) return
   const resolving = (renderer as any).resolveTimestampsAsync?.()
@@ -3589,9 +3615,9 @@ function updateHud(stats: StreamingStats | null): void {
   cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
   updateCacheFloorReadout(stats)
 
-  // Both read the frame *before* the one being assembled: updateHud runs ahead of the
-  // draw, and renderer.info is reset by each render.
-  drawCallsEl.textContent = String((renderer.info as any).render?.drawCalls ?? 0)
+  // Both belong to the previous frame: this runs ahead of the draw, and the GPU
+  // timestamps need a round trip before they resolve.
+  drawCallsEl.textContent = String(lastDrawCalls)
   pollGpuMs()
   gpuMsEl.textContent = !gpuTiming ? '— · ?gputime' : gpuMs ? gpuMs.toFixed(2) : '…'
 
@@ -3817,6 +3843,10 @@ function loop(now: number): void {
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
   depthOfField.render()
+  // Taken here, after the draw, and shown on the next frame. The animation loop resets
+  // renderer.info immediately before calling this function, so anything read further up
+  // — updateHud included — sees a counter that has just been zeroed.
+  lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
 }
 
 // ---------------------------------------------------------------- boot
