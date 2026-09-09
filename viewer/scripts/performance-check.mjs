@@ -117,11 +117,16 @@ try {
         range: window.__wild.range, dpr: r.getPixelRatio(), render: { ...r.info.render },
         rain: window.__testFrame.rainVisualActive, clouds: window.__testScene().environment.getCloudState(),
         basemap: window.__three.globe.stats(),
+        fog: { attached: window.__three.scene.fog === window.__testFrame.fog,
+          near: window.__three.scene.fog?.near, far: window.__three.scene.fog?.far },
       }
     })
     if (result.mask !== 0) throw new Error('Measurement invalid: forest mask was enabled')
     if (process.env.PERF_REQUIRE_BASEMAP === '1' && result.basemap.visible === 0) {
       throw new Error('Measurement invalid: satellite imagery was missing')
+    }
+    if (process.env.PERF_REQUIRE_FOG === '1' && !result.fog.attached) {
+      throw new Error('Measurement invalid: scene fog was missing')
     }
     results.push({ name, ...result })
     console.log(JSON.stringify({ name, frame: result.frame, cpu: result.cpu, gpu: result.gpu, points: result.stats.points, sse: result.sse, perf: result.perf }))

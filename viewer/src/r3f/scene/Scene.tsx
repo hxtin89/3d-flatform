@@ -44,7 +44,6 @@ export function Scene() {
             <CameraStaging />
             <PointTiles />
             <MaskFollow />
-            <Atmosphere />
             <Environment />
             <DonationShape />
             <Markers />
@@ -52,6 +51,8 @@ export function Scene() {
           </>
         )}
       </FloatingOrigin>
+      {/* Fog attaches to the rendered Scene, never to the ECEF Group. */}
+      {framesReady && <Atmosphere />}
       {framesReady && <Rain />}
       {framesReady && <Audio />}
       <HudSampler />

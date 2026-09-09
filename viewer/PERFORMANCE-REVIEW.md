@@ -1,3 +1,35 @@
+**Nachtrag: Nebel und Culling im R3F-Port**
+
+Die vorherigen Basemap-/Performance-Prüfungen haben eine weitere Portierungsregression übersehen: `Atmosphere` lag unter `FloatingOrigin`. Dadurch band R3F das Fog-Objekt an `ecef-root` (eine `Group`), während die tatsächlich gerenderte `Scene.fog` leer blieb. Die vorherigen Bildzeitmessungen enthalten deshalb trotz aktivierter UI-Option keinen wirksamen Szenennebel.
+
+`Atmosphere` ist jetzt ein direktes Kind der Szene. Raster-Traversierung läuft nach der Berechnung der Kameraebenen, genauso wie die Punkt-Traversierung. Der Ebenenvergleich prüft die tatsächlichen Kameraeigenschaften, damit ein R3F-Reset bei Resize/DPR nicht unbemerkt eine große Far-Plane stehen lässt. Der Nebel folgt im Nahbereich der Punkt-Ausblendung; bei großer Flughöhe gilt wieder die ursprüngliche, nicht auf 12 km begrenzte Höhenregel aus der Three.js-Variante.
+
+Rasterkacheln, deren komplette Begrenzung sicher hinter dem vollständig deckenden Nebel liegt, werden jetzt ebenfalls über die Distanzprüfung ausgeschlossen. Die Grenze umfasst die vier Frustum-Ecken an `fog.far`: Nebel arbeitet mit Blickachsen-Tiefe, die Kachelprüfung mit räumlichem Abstand. Ein einfacher Kugelradius von `fog.far` würde die sichtbaren Seiten eines breiten Bildes zu früh abschneiden. Ohne Nebel entfällt diese zusätzliche Begrenzung.
+
+Der Browsertest `scripts/atmosphere-check.mjs` prüft den echten Fog-Anschluss, Ein-/Ausschalten, Wiederherstellung nach einem Kamera-Reset schon beim nächsten Raster-Update sowie Frustum-/Distanzculling mit dem installierten Renderer. Nahe Raster- und Punktkacheln bleiben sichtbar, Raster hinter der Kamera oder jenseits der Far-Plane sowie Punkte jenseits der Distanzgrenze werden verworfen. Die Kreis-Maske bleibt ausgeschaltet. In der festen Nahansicht liegen Nebelanfang/-ende bei rund 455/1010 m und die Far-Plane bei 24 km. In 100 km Höhe liegt das Nebelende bei rund 206 km.
+
+[WebGPU-Prüfung](/private/tmp/wild-atmosphere-webgpu/report.json), [WebGL2 mit Rasterbegrenzung](/private/tmp/wild-atmosphere-webgl-culling/report.json), [Ansicht mit Nebel](/private/tmp/wild-atmosphere-webgpu/fog-on.png). Die Rasterbegrenzung reduziert die gezeichneten Kartenkacheln an der festen Kamerapose von 116 auf 57. 18 gezielte Regressionstests für LOD, Streaming, Navigation und Höhenabfrage sowie der Produktionsbuild bestehen. Die WebGL-Prüfung belegt Funktion und Bildaufbau; sie ist kein Nachweis von 60 FPS für diesen Backend-Pfad.
+
+Die erneute WebGPU-Messung mit beiden Korrekturen prüft geladene Satellitenbilder, `maskMode = 0` und den tatsächlich angeschlossenen Szenennebel in jeder Messphase. Der automatische Startbenchmark wählte diesmal DPR 1,25; die früheren Läufe verwendeten 1,1. Daher ist dieser Lauf kein isolierter Vergleich der Nebelkosten. Es gelten dieselbe feste Kamera, 1400 × 900 CSS-Pixel und jeweils zehn Sekunden Messdauer.
+
+| Szene | Aktive Punkte | Kartenkacheln | Median ms | p95 ms | p99 ms | Maximum ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Schrägblick trocken | 5.160.289 | 70 | 19,4 | 29,0 | 35,1 | 41,0 |
+| Erster Regenstart | 5.160.289 | 70 | 19,8 | 28,4 | 39,9 | 66,3 |
+| Laufender Regen | 5.160.289 | 70 | 17,4 | 24,8 | 29,1 | 34,8 |
+| Senkrechter Blick | 3.570.053 | 22 | 16,6 | 17,4 | 18,1 | 21,0 |
+| Regenstart senkrecht | 3.570.053 | 22 | 16,7 | 17,7 | 18,4 | 23,0 |
+| Rechts-Orbit mit Regen | 3.345.053 | 33 | 17,0 | 27,5 | 59,1 | 90,0 |
+
+**Die funktionalen Prüfungen bestehen; das frühere Bildzeitziel wird mit der vollständig dargestellten Szene nicht durchgehend erreicht.** Insbesondere Schrägblick und Orbit benötigen weitere Leistungsarbeit. Die Werte belegen keine pauschale Beschleunigung durch die Rasterbegrenzung. Keine MapTiler-Fehler; nur der unabhängige Favicon-Request liefert HTTP 403. [Aktuelle Messdaten](/private/tmp/wild-performance-fog-culling/report.json), [aktueller Schrägblick](/private/tmp/wild-performance-fog-culling/dry.png).
+
+```sh
+ATMOSPHERE_BUILD_DIR=dist node scripts/atmosphere-check.mjs 'https://wilderness-prototype.de/livingdashboard/r3f.html?diag=1&webgl=1' /private/tmp/wild-atmosphere-check
+PERF_BUILD_DIR=dist PERF_REQUIRE_BASEMAP=1 PERF_REQUIRE_FOG=1 PERF_ACCEPTANCE=1 PERF_EXTENDED=1 PERF_SAMPLE_MS=10000 node scripts/performance-check.mjs 'https://wilderness-prototype.de/livingdashboard/r3f.html?diag=1' /private/tmp/wild-performance-check
+```
+
+Die folgenden Abschnitte dokumentieren frühere Zwischenstände. Ihre Abnahmeaussagen werden durch die Korrekturen und Einschränkungen dieses Nachtrags ersetzt.
+
 **R3F: Walddarstellung, Distanz-LOD und Navigation — 8. September 2026**
 
 Die automatische Kreis-Maske ist für alle R3F-Leistungsklassen ausgeschaltet. Der Wald bleibt über das Sichtfeld zusammenhängend. Der Nahbereich erhält die APH-Detailvorgabe SSE 4; weiter entfernte Kacheln verfeinern sich schrittweise weniger. Unter Last reduziert der Regler zuerst Wolken und Schatten, dann entfernte Details. Die additive APH-Struktur und ihre Quelldaten bleiben erhalten.

@@ -6,7 +6,7 @@ export const PHASE = {
   ORIGIN: -100,
   /** The single camera writer: story/resume/fly-to springs or keyboard. */
   CAMERA: -90,
-  /** controls.update → navigation floor → basemap tiles.update. */
+  /** controls.update → navigation floor. */
   CONTROLS: -70,
   /** Screen-centre ground hit → camera ranges, vignette mask. */
   MASK: -40,
@@ -14,6 +14,8 @@ export const PHASE = {
   CUTOFF: -35,
   /** Sole owner of camera.near/far and the fog range. */
   PLANES: -30,
+  /** Raster traversal with the final camera projection and atmosphere. */
+  BASEMAP: -25,
   /** Adaptive quality, SSE, density ceiling, point tiles.update, stats. */
   STREAM: -20,
   /** Daylight + clouds. */

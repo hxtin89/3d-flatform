@@ -15,7 +15,7 @@ export default defineConfig({
     port: 5177,
     strictPort: true, // a silent port change can invalidate the MapTiler origin allowlist
     host: true, // listen on all interfaces + print LAN IPs for phone testing
-    open: '/threejs-test.html', // auto-open the Three.js/WebGPU map app
+    open: '/r3f.html', // auto-open the Three.js/WebGPU map app
     proxy: {
       // Proxy tile requests to the local tile server
       '/tiles': {
@@ -45,12 +45,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 5000,
     rollupOptions: {
       input: {
-        // Legacy Cesium viewer + Three.js/WebGPU map app + full Cesium variant
         main: resolve(__dirname, 'index.html'),
-        'threejs-test': resolve(__dirname, 'threejs-test.html'),
-        'cesium-test': resolve(__dirname, 'cesium-test.html'),
-        // React Three Fiber port of the immersive app (src/r3f/)
-        r3f: resolve(__dirname, 'r3f.html'),
+        'r3f': resolve(__dirname, 'r3f.html'),
+        'cesium-test': resolve(__dirname, 'cesium-test.html')
       },
     },
   },

@@ -1,5 +1,5 @@
 // Satellite basemap + globe controls (scene/globe.ts) as a component.
-// CONTROLS phase: controls.update → navigation floor → basemap tiles.update.
+// CONTROLS updates navigation; BASEMAP traverses after the camera planes settle.
 import { useEffect, useCallback } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -98,8 +98,21 @@ export function Basemap() {
     const controls = globe.controls as any
     if (controls.state !== 0 || controls._inertiaNeedsUpdate?.()) frame.gestureUntil = frame.now + GESTURE_HOLD_MS
     globe.updateControls(() => enforceNavigationBounds(camera, globe.controls))
-    globe.updateTiles()
   }, PHASE.CONTROLS)
+
+  useFrame(() => {
+    const globe = sceneState().globe
+    if (!globe) return
+    // Fog uses view-axis depth, culling uses the nearest bounding-volume
+    // distance. Enclose all four frustum corners at fog.far so the sides of
+    // a wide view are never cut before the fog is opaque.
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov) * .5) / camera.zoom
+    const cornerScale = Math.sqrt(1 + halfHeight ** 2 * (1 + camera.aspect ** 2))
+    globe.setDistanceCutoff(uiState().effective.fogAtmosphere
+      ? frame.fog.far * cornerScale + 1
+      : Infinity)
+    globe.updateTiles()
+  }, PHASE.BASEMAP)
 
   return null
 }

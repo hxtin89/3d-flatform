@@ -16,15 +16,13 @@ import { updatePerfGovernor } from '../state/perf-governor'
 const SMOOTH_TAU_MS = 270
 let lastNow = 0
 const _forward = new THREE.Vector3()
-let appliedNear = -1
-let appliedFar = -1
 
 function applyPlanes(camera: THREE.PerspectiveCamera, near: number, far: number, force = false): void {
-  const nearMoved = Math.abs(near - appliedNear) > appliedNear * 0.01
-  const farMoved = Math.abs(far - appliedFar) > appliedFar * 0.01
+  // R3F can reset camera options during a resize/DPR change. Compare the
+  // actual camera, so an unchanged target still repairs an external reset.
+  const nearMoved = Math.abs(near - camera.near) > camera.near * 0.01
+  const farMoved = Math.abs(far - camera.far) > camera.far * 0.01
   if (!force && !nearMoved && !farMoved) return
-  appliedNear = near
-  appliedFar = far
   camera.near = near
   camera.far = far
   camera.updateProjectionMatrix()
@@ -80,8 +78,14 @@ export function updateDistanceCutoff(camera: THREE.PerspectiveCamera, dt: number
     ) * cutoffPitch * governor,
   )
   frame.distanceCutoff = THREE.MathUtils.lerp(frame.distanceCutoff, target, alpha)
-  // The fog follows the cutoff so its edge is never visible as a hard rim.
-  const fogTarget = Math.max(target, EXPERIENCE_CONFIG.perf.minCutoffM)
+  // Follow the point fade at close range, but preserve the original Three.js
+  // uncapped height rule in the entrance flight: a 12km fog ceiling hides the
+  // whole basemap when the camera is still far above it.
+  const fogTarget = Math.max(
+    Math.max(frame.cameraAltitude * lod.distanceCutoffHeightFactor, lod.distanceCutoffMinM)
+      * cutoffPitch * governor,
+    EXPERIENCE_CONFIG.perf.minCutoffM,
+  )
   frame.fogRange = THREE.MathUtils.lerp(frame.fogRange, fogTarget, alpha)
   frame.uniforms.cutoffDistance.value = frame.distanceCutoff
   frame.uniforms.fadeDistance.value = frame.distanceCutoff * lod.distanceFadeStart

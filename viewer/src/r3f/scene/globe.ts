@@ -13,6 +13,7 @@ import type { MemoryBudgetSnapshot } from '../../threejs-test/streaming'
 import type { MouseOrbitPivot } from '../../threejs-test/smoothed-globe-controls'
 import { WildGlobeControls } from '../controls/wild-globe-controls'
 import { createNavigationGestures, type NavigationOptions } from '../controls/navigation-gestures'
+import { installDistanceLod } from '../../threejs-test/distance-lod'
 
 export interface Globe {
   tiles: TilesRenderer
@@ -24,6 +25,7 @@ export interface Globe {
   updateControls(constrainCamera?: () => void): void
   /** Basemap traversal — after the camera is final for this frame. */
   updateTiles(): void
+  setDistanceCutoff(distanceM: number): void
   setResolution(): void
   setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number): void
   getMemoryBudget(): MemoryBudgetSnapshot
@@ -58,6 +60,8 @@ export function createGlobe(opts: {
   } = opts
 
   const tiles = new TilesRenderer()
+  const distanceCull = installDistanceLod(tiles)
+  let distanceCutoff = Infinity
   tiles.lruCache.minSize = 24
   tiles.lruCache.maxSize = 320
   tiles.lruCache.minBytesSize = 32 * 1024 * 1024
@@ -164,6 +168,13 @@ export function createGlobe(opts: {
     pointerEasing,
     navigation,
     ellipsoid: (tiles as any).ellipsoid,
+    setDistanceCutoff(distanceM) {
+      const next = Number.isFinite(distanceM) && distanceM > 0 ? distanceM : Infinity
+      if (next === distanceCutoff) return
+      distanceCutoff = next
+      distanceCull.setCutoff(next, Infinity)
+      tiles.dispatchEvent({ type: 'needs-update' })
+    },
     setMemoryBudget(cacheMaxBytes, gpuBytesTarget) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
       tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (400 * 1024)))
@@ -220,6 +231,7 @@ export function createGlobe(opts: {
       navigation.dispose()
       pointerEasing.dispose()
       controls.dispose()
+      distanceCull.dispose()
       tiles.dispose()
       scene.remove(tiles.group)
     },
