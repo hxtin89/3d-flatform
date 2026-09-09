@@ -2806,15 +2806,13 @@ function bindSeg(id: string, key: string, apply: (value: number) => void): void 
 const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
-const debugSweepKeyRowEl = $<HTMLDivElement>('#debugSweepKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
   debugViewRowsEl.hidden = mode === 0
-  // Each key is static markup, so it only has to be revealed for the mode it
+  // The band key is static markup, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
-  debugSweepKeyRowEl.hidden = mode !== 3
 })
 bindSeg('debugIsolateSeg', 'debugIsolate', (isolate) => {
   uniforms.debugIsolate.value = isolate

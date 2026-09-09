@@ -103,8 +103,12 @@ export interface CloudUniforms {
   /**
    * False-colour inspector over the finished image. 0 = off, and at 0 the frame is
    * exactly what it was before the inspector existed; 1 = colour by level; 2 = error
-   * headroom in flat bands; 3 = the same headroom swept continuously. See
-   * createCloudMaterial for all three palettes.
+   * headroom in flat bands. See createCloudMaterial for both palettes.
+   *
+   * A continuous sweep of the same headroom was mode 3 for one afternoon and was dropped:
+   * it only ever answered whether a band edge was real, which is a question you ask once,
+   * and a second error view that close to the first is a way to lose track of which one
+   * you are looking at.
    *
    * A uniform rather than an effect flag, so switching costs one write instead of a
    * TSL rebuild across every live tile material — the same trade `sizeSpacingMix`
@@ -716,42 +720,8 @@ export function createCloudMaterial(
       vec3(0.961, 0.620, 0.043), step(1.0, ratio)),    // 1–2      over it, still asking
       vec3(0.863, 0.149, 0.149), step(2.0, ratio))     // >= 2     two levels behind
 
-    /**
-     * The same quantity, swept continuously — the bands' counterpart, not a replacement.
-     *
-     * Bands answer "which class is this tile in"; the sweep answers "how is headroom
-     * distributed across the frame". Quantising invents contours: two tiles either side
-     * of 0.7 look maximally different while being nearly identical, so a smooth field
-     * reads as terraces. Only one of the band edges is real — refinement genuinely steps
-     * at ratio 1 — and this keeps exactly that one and drops the other three.
-     *
-     * Domain is [0, 1] rather than the old sixteenth-to-sixteen: that is where terminal
-     * tiles actually live, so the whole ramp is spent on values that occur. Anything at
-     * or over the target is flat red instead, which puts a hard edge on the one
-     * discontinuity that is in the mechanism rather than in the palette.
-     *
-     * Purple through pink on purpose. It shares no hue with the banded view's
-     * navy/blue/green, so the two are never mistaken for one another at a glance — the
-     * one risk in having both. Four stops rather than two, picked so lightness climbs
-     * roughly evenly, because a straight two-point lerp in RGB is not perceptually even
-     * and was half of what went wrong the first time.
-     */
-    const sweepT = ratio.clamp(0, 1)
-    const sweep = mix(mix(mix(
-      vec3(0.176, 0.043, 0.247),                                      // 0.00
-      vec3(0.482, 0.176, 0.557), sweepT.mul(3).clamp(0, 1)),          // 0.33
-      vec3(0.753, 0.294, 0.627), sweepT.sub(1 / 3).mul(3).clamp(0, 1)), // 0.67
-      vec3(0.949, 0.561, 0.761), sweepT.sub(2 / 3).mul(3).clamp(0, 1))  // 1.00
-    // Same red as the banded view's "over the target", so that one state reads alike in
-    // both. Everything else about the two palettes is deliberately unalike.
-    const sweepBanded = mix(sweep, vec3(0.863, 0.149, 0.149), step(1.0, ratio))
-
-    // A leaf is white in both error views; the level view keeps its own palette.
-    const errorColor = mix(
-      mix(band, vec3(1), debugTile.y),
-      mix(sweepBanded, vec3(1), debugTile.y),
-      step(2.5, u.debugMode),
-    )
+    // A leaf is white here; the level view keeps its own palette.
+    const errorColor = mix(band, vec3(1), debugTile.y)
     const debugColor = mix(vec3(debugTint), errorColor, step(1.5, u.debugMode))
 
     // Over the finished image rather than in place of the albedo: fog and the daylight
