@@ -6,7 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
-  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, log2,
+  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -102,8 +102,9 @@ export interface CloudUniforms {
   canopyTopZ: any
   /**
    * False-colour inspector over the finished image. 0 = off, and at 0 the frame is
-   * exactly what it was before the inspector existed; 1 = colour by level; 2 = colour
-   * by error headroom. See createCloudMaterial for both ramps.
+   * exactly what it was before the inspector existed; 1 = colour by level; 2 = error
+   * headroom in flat bands; 3 = the same headroom swept continuously. See
+   * createCloudMaterial for all three palettes.
    *
    * A uniform rather than an effect flag, so switching costs one write instead of a
    * TSL rebuild across every live tile material — the same trade `sizeSpacingMix`
@@ -689,21 +690,69 @@ export function createCloudMaterial(
     const finished = applyMaskSurround(u, atmospheric, 0.30)
 
     /**
-     * Error headroom: where this tile's own error sat against the live target, on a
-     * log scale so the ramp spans a sixteenth of the target to sixteen times it —
-     * blue finer than asked for, green sitting on it, red still asking.
+     * Error headroom: where this tile's own error sat against the live target.
+     *
+     * Five hard bands, not a gradient. This was a continuous log ramp blending blue to
+     * green to red, and it could not answer the one question the view is for — which
+     * tiles are sitting *on* the target. Two reasons it failed. A settled frame has no
+     * tile above the target at all, so the whole red half went unused and every tile
+     * crowded into the blue-to-green half; and inside that half a linear blend passes
+     * through teal, so 0.5 and 0.9 differed by a shade no one can name. `step()` gives
+     * each band one flat colour, so the on-target set reads as a region with an edge.
+     *
+     * Bands ascend, so the mixes cascade: each `step` overwrites the one below it.
+     * Neighbouring bands differ in hue, and the two blues differ in lightness as well,
+     * because a hue step alone is not enough at the bottom where most tiles land.
      *
      * A leaf is called out in white instead. It carries `geometricError: 0` and so
-     * reports error 0, which on the ramp alone would read as "far finer than needed"
-     * when what it means is "nothing left to give" — a step the target can never move.
+     * reports error 0, which on any ramp would read as "far finer than needed" when
+     * what it means is "nothing left to give" — a step the target can never move.
      */
-    const headroom = log2(max(debugTile.z, float(1e-6))).div(8).add(0.5).clamp(0, 1)
-    const ramp = mix(
-      mix(vec3(0.11, 0.31, 0.85), vec3(0.13, 0.77, 0.37), headroom.mul(2).clamp(0, 1)),
-      vec3(0.94, 0.27, 0.27),
-      headroom.sub(0.5).mul(2).clamp(0, 1),
+    const ratio = debugTile.z
+    const band = mix(mix(mix(mix(
+      vec3(0.118, 0.227, 0.541),                       // < 0.4  far finer than asked
+      vec3(0.231, 0.510, 0.965), step(0.4, ratio)),    // 0.4–0.7  a level in hand
+      vec3(0.133, 0.773, 0.369), step(0.7, ratio)),    // 0.7–1    sitting on the target
+      vec3(0.961, 0.620, 0.043), step(1.0, ratio)),    // 1–2      over it, still asking
+      vec3(0.863, 0.149, 0.149), step(2.0, ratio))     // >= 2     two levels behind
+
+    /**
+     * The same quantity, swept continuously — the bands' counterpart, not a replacement.
+     *
+     * Bands answer "which class is this tile in"; the sweep answers "how is headroom
+     * distributed across the frame". Quantising invents contours: two tiles either side
+     * of 0.7 look maximally different while being nearly identical, so a smooth field
+     * reads as terraces. Only one of the band edges is real — refinement genuinely steps
+     * at ratio 1 — and this keeps exactly that one and drops the other three.
+     *
+     * Domain is [0, 1] rather than the old sixteenth-to-sixteen: that is where terminal
+     * tiles actually live, so the whole ramp is spent on values that occur. Anything at
+     * or over the target is flat red instead, which puts a hard edge on the one
+     * discontinuity that is in the mechanism rather than in the palette.
+     *
+     * Purple through pink on purpose. It shares no hue with the banded view's
+     * navy/blue/green, so the two are never mistaken for one another at a glance — the
+     * one risk in having both. Four stops rather than two, picked so lightness climbs
+     * roughly evenly, because a straight two-point lerp in RGB is not perceptually even
+     * and was half of what went wrong the first time.
+     */
+    const sweepT = ratio.clamp(0, 1)
+    const sweep = mix(mix(mix(
+      vec3(0.176, 0.043, 0.247),                                      // 0.00
+      vec3(0.482, 0.176, 0.557), sweepT.mul(3).clamp(0, 1)),          // 0.33
+      vec3(0.753, 0.294, 0.627), sweepT.sub(1 / 3).mul(3).clamp(0, 1)), // 0.67
+      vec3(0.949, 0.561, 0.761), sweepT.sub(2 / 3).mul(3).clamp(0, 1))  // 1.00
+    // Same red as the banded view's "over the target", so that one state reads alike in
+    // both. Everything else about the two palettes is deliberately unalike.
+    const sweepBanded = mix(sweep, vec3(0.863, 0.149, 0.149), step(1.0, ratio))
+
+    // A leaf is white in both error views; the level view keeps its own palette.
+    const errorColor = mix(
+      mix(band, vec3(1), debugTile.y),
+      mix(sweepBanded, vec3(1), debugTile.y),
+      step(2.5, u.debugMode),
     )
-    const debugColor = mix(vec3(debugTint), mix(ramp, vec3(1), debugTile.y), step(1.5, u.debugMode))
+    const debugColor = mix(vec3(debugTint), errorColor, step(1.5, u.debugMode))
 
     // Over the finished image rather than in place of the albedo: fog and the daylight
     // grade would otherwise wash the diagnostic out at exactly the distances it is being

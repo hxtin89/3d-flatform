@@ -817,9 +817,34 @@
           <div class="seg" id="debugModeSeg">
             <button data-debug-mode="0" class="on">Off</button>
             <button data-debug-mode="1">Level</button>
-            <button data-debug-mode="2">Error</button>
+            <button data-debug-mode="2">Bands</button>
+            <button data-debug-mode="3">Sweep</button>
           </div>
-          <span class="weather-note">Off is the normal render, untouched. <em>Level</em> paints each tile with the depth it came from — d0 coarsest and violet, running warm to the finest. <em>Error</em> paints where that tile's own screen-space error sat against the live target: blue finer than asked for, green sitting on it, red still asking, white a leaf that can never refine however close you get</span>
+          <span class="weather-note">Off is the normal render, untouched. <em>Level</em> paints each tile with the depth it came from — d0 coarsest and violet, running warm to the finest. <em>Bands</em> and <em>Sweep</em> are the same error measurement, quantised or continuous: how the tile's own screen-space error compares with the live target, where 1.0 is the refine threshold. Bands answer “which tiles are on target”, Sweep answers “how is the headroom spread across the frame”</span>
+        </div>
+        <div class="row" id="debugErrorKeyRow" hidden>
+          <label class="h">Error bands</label>
+          <div class="legend" id="debugErrorKey">
+            <span><i style="background:#1e3a8a"></i>&lt; 0.4× far finer</span>
+            <span><i style="background:#3b82f6"></i>0.4–0.7× a level in hand</span>
+            <span><i style="background:#22c55e"></i>0.7–1× on target</span>
+            <span><i style="background:#f59e0b"></i>1–2× still asking</span>
+            <span><i style="background:#dc2626"></i>≥ 2× two levels behind</span>
+            <span><i style="background:#ffffff"></i>leaf · cannot refine</span>
+          </div>
+          <span class="weather-note">Flat bands rather than a gradient: a settled frame puts almost every tile under 1×, so a continuous ramp squeezed them all into one indistinguishable blue-green. A tile over 1× is either still streaming or has run out of children</span>
+        </div>
+        <div class="row" id="debugSweepKeyRow" hidden>
+          <label class="h">Headroom sweep</label>
+          <div class="legend" id="debugSweepKey">
+            <span><i style="background:#2d0b3f"></i>0</span>
+            <span><i style="background:#7b2d8e"></i>0.33</span>
+            <span><i style="background:#c04ba0"></i>0.67</span>
+            <span><i style="background:#f28fc2"></i>1.0 · on target</span>
+            <span><i style="background:#dc2626"></i>&gt; 1 · over</span>
+            <span><i style="background:#ffffff"></i>leaf</span>
+          </div>
+          <span class="weather-note">The same number as Bands, swept continuously over 0–1 instead of classed, so a smooth field looks smooth instead of terraced. Only the edge at 1.0 stays hard, because that one is real — it is where refinement actually stops. Purple rather than the banded palette so the two views are never confused</span>
         </div>
         <div id="debugViewRows" hidden>
           <div class="row">
