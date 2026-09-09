@@ -28,6 +28,27 @@ export interface StreamingStats {
   cacheBytesFloor: number
   /** Distinct tiles the server never returned — gaps in the published data. */
   missingTiles: number
+  /**
+   * Where refinement *stopped*, counted per density level, coarsest first — and how
+   * many of those stops are leaves the pipeline wrote with `geometricError: 0`, which
+   * can never refine however close the camera gets.
+   *
+   * Only terminal tiles are counted, and that restriction is the whole point. `refine:
+   * ADD` draws every ancestor along with its children, so a frame refined uniformly to
+   * d6 still *contains* d0…d5 — counting all visible tiles per level reports a
+   * seven-level jumble in a perfectly uniform view. What produces a visible hard edge
+   * is two neighbouring places that stopped at different depths, and only the terminal
+   * set shows that.
+   *
+   * Reading it: one level means the frame is uniform. Two or more means the refine
+   * threshold falls inside the frame, so there is a contour across it. A single level
+   * alongside terminal leaves means the step is in the data rather than the metric — a
+   * clearing has too few returns to subdivide, so its node stops early and stays
+   * coarser than the canopy beside it at every altitude.
+   */
+  terminalLevels: { band: DensityBand; tiles: number; points: number }[]
+  /** Terminal tiles that are leaves, i.e. stops the error target can never move. */
+  leafTiles: number
 }
 
 export interface MemoryBudgetSnapshot {
@@ -531,11 +552,31 @@ export function createStreamingCloud(opts: {
     stats() {
       let points = 0
       let density: DensityBand = 'Overview p02'
+      let leafTiles = 0
+      const mix = new Map<DensityBand, { tiles: number; points: number }>()
       for (const tile of tiles.visibleTiles) {
         const stats = tileStats.get(tile)
         if (!stats) continue
         points += stats.points
         density = denserBand(density, stats.density)
+        // Terminal = refinement stopped here, i.e. no child of this tile is also on
+        // screen. Checked against the visible set rather than a traversal flag because
+        // that is what the eye sees: a drawn tile with drawn children is an ancestor
+        // under a finer layer, not a stopping point. Children that are external tileset
+        // documents (the z0 seams) hold their content one level down, so a stop right at
+        // a seam can read as terminal — rare, and it does not change the shape.
+        const children = (tile as any)?.children as any[] | undefined
+        const refined = Array.isArray(children)
+          && children.some((child) => tiles.visibleTiles.has(child))
+        if (refined) continue
+        // A leaf carries geometricError 0 — the pipeline's way of saying "this cannot
+        // refine further", which it writes both for genuine bottom nodes and for any
+        // node too sparse to subdivide. Counted because the second kind is a step the
+        // error target can never move.
+        if (tile?.geometricError === 0) leafTiles++
+        const entry = mix.get(stats.density)
+        if (entry) { entry.tiles++; entry.points += stats.points }
+        else mix.set(stats.density, { tiles: 1, points: stats.points })
       }
       return {
         visible: tiles.visibleTiles.size,
@@ -543,6 +584,11 @@ export function createStreamingCloud(opts: {
         missingTiles: failedTiles.size,
         progress: tiles.loadProgress,
         density,
+        leafTiles,
+        // Coarsest first, so the readout reads like the ladder it is.
+        terminalLevels: [...mix.entries()]
+          .map(([band, entry]) => ({ band, tiles: entry.tiles, points: entry.points }))
+          .sort((a, b) => a.band.localeCompare(b.band, undefined, { numeric: true })),
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
         cacheTiles: (tiles.lruCache as any).itemSet?.size ?? 0,

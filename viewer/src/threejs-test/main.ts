@@ -3397,6 +3397,8 @@ const diagAltitudeEl = $('#diagAltitude')
 const diagRangeEl = $('#diagRange')
 const diagStopEl = $('#diagStop')
 const diagMissingEl = $('#diagMissing')
+const diagLevelMixEl = $('#diagLevelMix')
+const diagLeavesEl = $('#diagLeaves')
 if (showDiagnostics) diagStatsEl.hidden = false
 
 /**
@@ -3520,6 +3522,15 @@ function updateHud(stats: StreamingStats | null): void {
   diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
   diagStopEl.textContent = `${Math.round(navigationClearance)} m`
   diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+  // Where refinement stopped, and how many of those stops can never move. One level
+  // means the frame is uniform; two or more means the refine threshold falls inside it;
+  // one level plus leaves means the step is in the data, not the metric.
+  const mix = stats?.terminalLevels ?? []
+  diagLevelMixEl.textContent = mix.length
+    ? mix.map((entry) => `${entry.band.replace('APH ', '')}:${entry.tiles}`).join(' ')
+    : '—'
+  const terminal = mix.reduce((sum, entry) => sum + entry.tiles, 0)
+  diagLeavesEl.textContent = stats ? `${stats.leafTiles} of ${terminal} stops` : '—'
 }
 
 const foveationReadoutEl = $('#foveationReadout')
