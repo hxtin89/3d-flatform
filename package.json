@@ -1,7 +1,7 @@
 {
   "name": "sbb-pointcloud-pipeline",
   "version": "1.0.0",
-  "description": "Local self-hosted point cloud pipeline: LAZ → PDAL → COPC → 3D Tiles → CesiumJS",
+  "description": "Local self-hosted point cloud pipeline: LAZ → PDAL → COPC → 3D Tiles → Three.js/WebGPU",
   "scripts": {
     "dev": "npm run viewer:dev",
     "pipeline:download": "bash pipeline/download.sh",

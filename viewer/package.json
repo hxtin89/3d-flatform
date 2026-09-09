@@ -1,7 +1,7 @@
 {
-  "name": "sbb-cesium-viewer",
+  "name": "sbb-pointcloud-viewer",
   "version": "1.0.0",
-  "description": "CesiumJS point cloud viewer — local self-hosted pipeline",
+  "description": "Three.js/WebGPU point cloud viewer — local self-hosted pipeline",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -9,21 +9,17 @@
     "audio:prepare": "node scripts/prepare-sounds.mjs",
     "bench:verify": "node --experimental-strip-types --test src/threejs-test/*.test.ts",
     "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
-    "test": "vitest run",
     "preview": "vite preview --base=/livingdashboard/"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.1.0",
     "3d-tiles-renderer": "^0.4.28",
-    "cesium": "^1.120.0",
     "three": "^0.185.0"
   },
   "devDependencies": {
-    "@playcanvas/splat-transform": "^3.1.7",
     "@types/three": "^0.185.0",
     "@vitejs/plugin-basic-ssl": "^1.2.0",
     "typescript": "^5.4.0",
-    "vite": "^5.4.0",
-    "vite-plugin-cesium": "^1.2.23"
+    "vite": "^5.4.0"
   }
 }

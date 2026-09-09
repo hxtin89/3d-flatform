@@ -1,27 +1,16 @@
-import { copyFile, rename, rm, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const output = resolve('dist')
 const viewerEntry = resolve(output, 'threejs-test.html')
 const indexEntry = resolve(output, 'index.html')
-const cesiumEntry = resolve(output, 'cesium.html')
-const cesiumPluginOutput = resolve(output, 'livingdashboard', 'cesium')
-const cesiumOutput = resolve(output, 'cesium')
 
-// Preserve CesiumJS viewer under cesium.html before overwriting index.html
-await copyFile(indexEntry, cesiumEntry)
-
-// Default landing page stays the Three.js app; threejs-test.html and
-// cesium-test.html survive as their own URLs so the variants can cross-link.
+// threejs-test.html is the only entry Vite builds, so index.html is this file's to
+// create. It keeps its own URL as well, because that is the address the app has been
+// deployed and bookmarked under.
 await copyFile(viewerEntry, indexEntry)
 
-// vite-plugin-cesium includes Vite's public base in its filesystem path.
-// Apache already mounts dist/ at that base, so keep the deploy artifact flat.
-await rm(cesiumOutput, { recursive: true, force: true })
-await rename(cesiumPluginOutput, cesiumOutput)
-await rm(resolve(output, 'livingdashboard'), { recursive: true, force: true })
-
-for (const entry of ['index.html', 'threejs-test.html', 'cesium-test.html', 'cesium.html']) {
+for (const entry of ['index.html', 'threejs-test.html']) {
   const html = await readFile(resolve(output, entry), 'utf8')
   const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
     ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)

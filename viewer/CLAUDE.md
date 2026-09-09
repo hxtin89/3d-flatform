@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This directory (`viewer/`) is the Vite + TypeScript frontend of a larger point-cloud project. The repo root (`../`) holds the LAZ → PDAL → COPC → 3D Tiles pipeline (bash scripts in `../pipeline/`, driven by `../package.json` `pipeline:*` scripts) that produces the tilesets this viewer consumes. Root `README.md` documents that pipeline; `../.agents/skills/*/SKILL.md` document individual pipeline stages (notably `one-lod-tree`, the core streaming concept below).
 
-Two apps share this Vite project, each with its own HTML entry:
-- `index.html` → CesiumJS point-cloud viewer (the original app; source referenced by root README as `src/main.ts` etc.).
-- `threejs-test.html` → **Three.js / WebGPU immersive map app** in `src/threejs-test/`. This is where current development happens (branch `jan-threejs-test`) and where nearly all the code below lives. `vite.config.ts` auto-opens this entry.
+One app, one HTML entry: `threejs-test.html` → the **Three.js / WebGPU immersive map app** in `src/threejs-test/`, which is where essentially all the code below lives. `vite.config.ts` auto-opens it and redirects `/` to it.
+
+A CesiumJS viewer used to share this project at `index.html`, with its own copy of the LOD code at `src/` root. That route was abandoned and deleted on 2026-09-09 (see `../plans/plan-remove-cesium.md`); older commits, plans and skill docs still describe it. Outside `src/threejs-test/`, only `dev-hosts.ts`, `maptiler-key.ts`, `types/` and `vite-env.d.ts` remain.
 
 ## Commands
 
@@ -20,7 +20,7 @@ npm run preview        # preview the livingdashboard build
 npm run audio:prepare  # regenerate browser audio loops from source-assets/ (writes to public/sounds/)
 ```
 
-There is **no test runner and no linter** in this package. `tsc` (via `npm run build`) is the only static check; `tsconfig.json` is `strict` but `noUnusedLocals`/`noUnusedParameters` are off. There is no way to run "a single test" here.
+There is **no linter** in this package, and no general test runner: `npm run bench:verify` runs the handful of `src/threejs-test/*.test.ts` files under `node --test`, and `tsc` (via `npm run build`) is the only static check. `tsconfig.json` is `strict` but `noUnusedLocals`/`noUnusedParameters` are off.
 
 Tiles are served separately by the root pipeline (`cd ..; npm run pipeline:serve` → static tiles on :8081); the dev server proxies `/tiles` there. In practice the Three.js app loads tiles from CloudFront by default (see env below), not the local proxy.
 
@@ -62,4 +62,4 @@ URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-glo
 
 ## Deployment
 
-`npm run build` targets an Apache mount at base `/livingdashboard/`. `scripts/prepare-livingdashboard.mjs` post-processes `dist/`: it copies the Three.js entry over `index.html` (so the immersive app is the default page) and flattens the Cesium plugin output. Keep that base/flatten behavior intact if you touch the build.
+`npm run build` targets an Apache mount at base `/livingdashboard/`. Vite builds the single `threejs-test.html` entry; `scripts/prepare-livingdashboard.mjs` then copies it over `index.html` so the app is the default page, checks both files for root-relative asset paths that would escape the base, and writes the `.htaccess`. Keep that base behaviour intact if you touch the build.

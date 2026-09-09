@@ -1,7 +1,11 @@
 // Minimal area-manifest reader — just the placement and One LOD entry the map needs:
 //   rootTransform    ENU→ECEF matrix (column-major 16) that places local-ENU point
-//                    coordinates onto the WGS84 globe (same one Cesium uses)
-// Full manifest schema lives in the Cesium viewer's src/manifest.ts.
+//                    coordinates onto the WGS84 globe
+// This reads a subset. `area-manifest.json` as the pipeline writes it also carries
+// defaultMode/defaultAreaId, coordinateMode ('local' | 'globe'), bboxFrame
+// ('source' | 'enu'), the enuOrigin triple (source/ecef/lonLat) and per-area
+// entries with label, sourceChunkId, bbox, sourceBbox and pointCount. Nothing here
+// needs them; `pipeline/area-manifest.sh` is the authority on the full shape.
 
 /** One published density pack, as the pipeline records it. `status` is free-form
  * on purpose — the panel shows whatever the manifest says instead of filtering

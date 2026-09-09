@@ -1,6 +1,5 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
-import cesium from 'vite-plugin-cesium';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 // Shared with src/maptiler-key.ts on purpose — see maptilerOriginFor below.
 import { isDevHost } from './src/dev-hosts';
@@ -54,19 +53,19 @@ function maptilerOriginFor(req: { headers: Record<string, any>; socket?: any }):
 /**
  * Serve the Three.js app at `/` in dev, the way the built site already does.
  *
- * `prepare-livingdashboard.mjs` copies threejs-test.html over index.html and moves
- * the CesiumJS viewer to cesium.html, so in production the root IS this app. Only
- * the dev server disagreed: there `/` served the legacy Cesium viewer, which needs
- * the local tile server on :8081 and shows "tileset.json not found" without it.
+ * `prepare-livingdashboard.mjs` copies threejs-test.html over index.html, so in
+ * production the root IS this app. Only the dev server disagreed: there `/` used to
+ * serve the CesiumJS viewer that used to live at index.html, and anything opening
+ * the origin without a path — an embedded preview pane, a bookmark, a pasted
+ * "localhost:5177" — landed on it and read as the dev server being broken.
  *
- * That mismatch is a recurring trap rather than a cosmetic one. Anything that
- * opens the origin without a path — an embedded preview pane, a bookmark, a
- * pasted "localhost:5177" — lands on an app that cannot work locally, and it
- * reads as the dev server being broken.
+ * The Cesium route is gone, so the redirect now only saves `/` from a 404. Keeping
+ * it is still worth it: threejs-test.html remains the entry filename, and the two
+ * differ until that is renamed.
  *
  * A redirect rather than a rewrite so the address bar shows where you actually
  * are, and the query string is carried over because `?preset=` and friends are
- * how this app is driven. The Cesium viewer stays reachable at /index.html.
+ * how this app is driven.
  */
 function serveThreeJsAtRoot() {
   return {
@@ -121,7 +120,7 @@ function serveThreeJsAtRoot() {
  */
 
 export default defineConfig({
-  plugins: [cesium(), serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     // PORT set in the environment means something upstream already picked a free port
     // for this process — an agent session running a second instance alongside the one
@@ -179,10 +178,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 5000,
     rollupOptions: {
       input: {
-        // Legacy Cesium viewer + Three.js/WebGPU map app + full Cesium variant
-        main: resolve(__dirname, 'index.html'),
+        // The Three.js/WebGPU map app is the only entry.
         'threejs-test': resolve(__dirname, 'threejs-test.html'),
-        'cesium-test': resolve(__dirname, 'cesium-test.html'),
       },
     },
   },

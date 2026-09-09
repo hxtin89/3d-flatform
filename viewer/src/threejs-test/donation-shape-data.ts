@@ -17,9 +17,10 @@
 // `organic` is therefore a stylised representation. `exact` is the authoritative
 // boundary — never quote areas or borders off the organic ring.
 //
-// Nothing here imports three or cesium: the lon/lat -> local metre conversion is
-// injected by the caller so both viewers land on identical ENU numbers. Keep
-// this file byte-identical between src/threejs-test/ and src/cesium-app/.
+// Nothing here imports a renderer: the lon/lat -> local metre conversion is injected
+// by the caller, which is what kept this file byte-identical with the Cesium viewer's
+// copy while that existed. Worth preserving — it makes the shape data testable on its
+// own.
 
 export type DonationShapeStyle = 'column' | 'xray' | 'canopy' | 'wall'
 export type DonationShapeForm = 'exact' | 'organic'

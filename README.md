@@ -1,6 +1,6 @@
 # SBB — Adaptive Point Hierarchy (APH) Point-Cloud Pipeline
 
-This repository builds and serves large point clouds for the CesiumJS viewer.
+This repository builds and serves large point clouds for the Three.js/WebGPU viewer.
 Its primary production mode is **Adaptive Point Hierarchy (APH)**:
 
 ```text
@@ -310,7 +310,7 @@ To inspect one published z0 or the request-volume experiment:
 ?lod=adaptive-point-hierarchy&aphPreviewZ0=z0_x000002_y000004&aphVrv=frontier-tight
 ```
 
-- `aphController=simple` uses direct Cesium traversal and is the A/B quality
+- `aphController=simple` uses direct traversal and is the A/B quality
   baseline. `advanced` enables adaptive SSE/pressure behavior.
 - `aphVrv=none` has no request-volume gate. `frontier-tight` is an
   optimization experiment and should not be mixed with unrelated quality
