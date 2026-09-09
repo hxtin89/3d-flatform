@@ -8,7 +8,9 @@ import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
   POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
-import { denserBand, densityBandForUri, type DensityBand } from './density-band'
+import {
+  denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
+} from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -70,6 +72,9 @@ export interface StreamingCloud {
   setLeafLoading(enabled: boolean): void
   /** 0 = p02, 1 = p10, 2 = p100. */
   setDensityCeiling(level: number): void
+  /** Push this frame's traversal error and stopped-here flag into the visible tiles'
+   *  materials, for the false-colour inspector. A no-op while it is switched off. */
+  updateDebugTiles(active: boolean): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
@@ -269,7 +274,13 @@ export function createStreamingCloud(opts: {
   })
   tiles.registerPlugin(unloadPlugin as any)
 
-  const tileStats = new WeakMap<object, { points: number; density: DensityBand }>()
+  /** `debugTiles` are this tile's own materials, kept so the false-colour inspector can
+   *  write their per-frame uniforms without traversing the scene graph every frame. */
+  const tileStats = new WeakMap<object, {
+    points: number
+    density: DensityBand
+    debugTiles: any[]
+  }>()
   const failedTiles = new Set<string>()
 
   // One camera-facing quad per point, instanced. The corner offsets live in the
@@ -283,7 +294,7 @@ export function createStreamingCloud(opts: {
 
   /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
    * the tile carries no usable position buffer. */
-  function buildPointQuads(source: THREE.Points, tile: any): THREE.Mesh | null {
+  function buildPointQuads(source: THREE.Points, tile: any, density: DensityBand): THREE.Mesh | null {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
@@ -306,7 +317,14 @@ export function createStreamingCloud(opts: {
     geometry.instanceCount = position.count
 
     const spacing = tileSpacingMetres(tile, position.count)
-    const material = createCloudMaterial(uniforms, color?.itemSize ?? 3, spacing)
+    const material = createCloudMaterial(uniforms, color?.itemSize ?? 3, spacing, {
+      level: densityLevel(density),
+      tint: densityLevelColor(density),
+      // The pipeline's way of saying "this cannot refine further" — written both for
+      // genuine bottom nodes and for any node too sparse to subdivide, which is why the
+      // error view gives it a colour of its own rather than a place on the ramp.
+      isLeaf: tile?.geometricError === 0,
+    })
     // Read back by the tile trace in main.ts — the one place the derived size can
     // be checked against the depth the tile came from.
     material.userData.pointSpacingM = spacing
@@ -326,14 +344,22 @@ export function createStreamingCloud(opts: {
     model.traverse((object: any) => {
       if (object.isPoints) sources.push(object)
     })
+    // Resolved before the loop rather than after it: the material each source gets is
+    // told its own level, so the false-colour views need no second lookup at draw time.
+    const density = densityBandForUri(
+      `${url ?? ''} ${tile?.content?.uri ?? ''} ${tile?.internal?.basePath ?? ''}`,
+    )
+    const debugTiles: any[] = []
     for (const source of sources) {
       points += source.geometry?.getAttribute('position')?.count ?? 0
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay
       // readable either way, but taking the tile here keeps the handoff obvious.
       opts.onPointTile?.(source, String(url ?? ''))
 
-      const mesh = buildPointQuads(source, tile)
+      const mesh = buildPointQuads(source, tile, density)
       if (!mesh) continue
+      const debugTile = (mesh.material as any)?.userData?.debugTile
+      if (debugTile) debugTiles.push(debugTile)
 
       // TilesRenderer collected the tile's geometries and materials during
       // parseTile, which runs before this event fires, so anything created here
@@ -351,8 +377,7 @@ export function createStreamingCloud(opts: {
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
     }
-    const source = `${url ?? ''} ${tile?.content?.uri ?? ''} ${tile?.internal?.basePath ?? ''}`
-    tileStats.set(tile, { points, density: densityBandForUri(source) })
+    tileStats.set(tile, { points, density, debugTiles })
   })
   tiles.addEventListener('dispose-model', ({ tile }: any) => tileStats.delete(tile))
   // A missing tile is a gap in the published data, not a crash, and the
@@ -425,6 +450,43 @@ export function createStreamingCloud(opts: {
     },
     setDensityCeiling(level: number) {
       requestVolumePlugin?.setDensityCeiling(level)
+    },
+    /**
+     * Refresh the two per-tile values the false-colour inspector needs from the
+     * traversal: the tile's error over the live target, and whether refinement stopped
+     * there. Call after `update()`, so both come from the traversal that just ran.
+     *
+     * Off is a single early return — no walk, no writes — because this is the only part
+     * of the inspector that costs anything per frame. On, it is one Vector4 write per
+     * visible tile, which is the same order as the read-outs already do.
+     *
+     * The error is the *corrected* one: foveation, the view-angle and view-depth
+     * wrappers all multiply `calculateTileViewError`, so what lands here is the number
+     * refinement actually judged the tile by rather than the plain distance quotient.
+     * That is the whole point of reading it back instead of recomputing it.
+     */
+    updateDebugTiles(active: boolean) {
+      if (!active) return
+      const target = tiles.errorTarget || 1
+      for (const tile of tiles.visibleTiles) {
+        const stats = tileStats.get(tile)
+        if (!stats || stats.debugTiles.length === 0) continue
+        // Terminal = no child of this tile is also on screen. Same test as `stats()`,
+        // and for the same reason: a drawn tile with drawn children is an ancestor
+        // under a finer layer, not a stopping point.
+        const children = (tile as any)?.children as any[] | undefined
+        const refined = Array.isArray(children)
+          && children.some((child) => tiles.visibleTiles.has(child))
+        const error = (tile as any)?.traversal?.error
+        // Infinity is the camera standing inside the tile's box, where the library
+        // reports an unbounded error. Parked at the top of the ramp rather than passed
+        // on, so it reads as "as far past the target as the ramp goes" instead of NaN.
+        const ratio = Number.isFinite(error) ? (error as number) / target : 1e6
+        for (const debugTile of stats.debugTiles) {
+          debugTile.value.z = ratio
+          debugTile.value.w = refined ? 0 : 1
+        }
+      }
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes

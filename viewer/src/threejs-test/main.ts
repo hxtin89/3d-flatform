@@ -18,7 +18,7 @@ import {
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
-import { densityBandForUri } from './density-band'
+import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
@@ -2785,6 +2785,39 @@ bindDesignSlider('sizeMaxPx', POINT_SIZE.maxPx, (v) => `${v.toFixed(1)} px`, (v)
   sizeMaxPx = v
   applyPointSize()
 })
+
+/** A segmented control whose buttons carry their value in a data attribute. The
+ *  starting selection is the one marked `on` in the markup. */
+function bindSeg(id: string, key: string, apply: (value: number) => void): void {
+  const buttons = [...$<HTMLDivElement>(`#${id}`).querySelectorAll<HTMLButtonElement>('button')]
+  const select = (value: number) => {
+    for (const button of buttons) button.classList.toggle('on', Number(button.dataset[key]) === value)
+    apply(value)
+  }
+  for (const button of buttons) {
+    button.addEventListener('click', () => select(Number(button.dataset[key])))
+  }
+  select(Number(buttons.find((button) => button.classList.contains('on'))?.dataset[key] ?? 0))
+}
+
+// ---- level & error inspector. Every control here writes a uniform, so the whole
+// section costs nothing until it is switched on and needs no material rebuild when it
+// is. Mode 0 is the untouched render; see CloudUniforms.debugMode.
+const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
+const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
+const debugLegendEl = $<HTMLDivElement>('#debugLegend')
+bindSeg('debugModeSeg', 'debugMode', (mode) => {
+  uniforms.debugMode.value = mode
+  debugViewRowsEl.hidden = mode === 0
+})
+bindSeg('debugIsolateSeg', 'debugIsolate', (isolate) => {
+  uniforms.debugIsolate.value = isolate
+  debugLevelRowEl.hidden = isolate !== 2
+})
+bindDesignSlider('debugIsolateLevel', 0, (v) => `d${Math.round(v)}`, (v) => {
+  uniforms.debugIsolateLevel.value = Math.round(v)
+})
+bindDesignSlider('debugStrength', 0.85, asPercent, (v) => { uniforms.debugStrength.value = v })
 bindDesignSlider('foveationWidth', FOVEATION.width, asScreenHeights, (v) => {
   foveationSettings.width = v
   updateFoveationGuides()
@@ -3374,6 +3407,9 @@ function updateStreaming(now: number): StreamingStats | null {
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   foveation?.beginFrame()
   stream.update()
+  // After the traversal, so the error and the stopped-here flag the inspector paints
+  // come from the selection that is about to be drawn rather than the previous frame's.
+  stream.updateDebugTiles(uniforms.debugMode.value > 0)
   lastStreamStats = stream.stats()
   return lastStreamStats
 }
@@ -3527,10 +3563,39 @@ function updateHud(stats: StreamingStats | null): void {
   // one level plus leaves means the step is in the data, not the metric.
   const mix = stats?.terminalLevels ?? []
   diagLevelMixEl.textContent = mix.length
-    ? mix.map((entry) => `${entry.band.replace('APH ', '')}:${entry.tiles}`).join(' ')
+    ? mix.map((entry) => `${shortBandLabel(entry.band)}:${entry.tiles}`).join(' ')
     : '—'
   const terminal = mix.reduce((sum, entry) => sum + entry.tiles, 0)
   diagLeavesEl.textContent = stats ? `${stats.leafTiles} of ${terminal} stops` : '—'
+  updateDebugLegend(mix)
+}
+
+/**
+ * Swatches for the levels refinement stopped at, drawn from the same palette the tile
+ * materials were handed — a legend built from a second source is a legend that lies.
+ *
+ * The counts are worth having in either mode, but the swatch is only drawn in the level
+ * view: in the error view the points carry the headroom ramp instead, and a level colour
+ * beside them would be a legend contradicting the image it sits next to.
+ *
+ * Only while a mode is on: the rows are hidden otherwise, so rebuilding them would be
+ * per-frame DOM work for something nobody is looking at.
+ */
+function updateDebugLegend(mix: StreamingStats['terminalLevels']): void {
+  if (uniforms.debugMode.value === 0) return
+  debugLegendEl.textContent = ''
+  if (!mix.length) { debugLegendEl.textContent = '—'; return }
+  const byLevel = uniforms.debugMode.value === 1
+  for (const entry of mix) {
+    const row = document.createElement('span')
+    if (byLevel) {
+      const swatch = document.createElement('i')
+      swatch.style.background = `#${densityLevelColor(entry.band).toString(16).padStart(6, '0')}`
+      row.append(swatch)
+    }
+    row.append(`${shortBandLabel(entry.band)} · ${entry.tiles}`)
+    debugLegendEl.append(row)
+  }
 }
 
 const foveationReadoutEl = $('#foveationReadout')

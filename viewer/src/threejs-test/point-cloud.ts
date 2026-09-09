@@ -6,7 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
-  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
+  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, log2,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -100,6 +100,31 @@ export interface CloudUniforms {
   warmRimColor: any
   canopyBaseZ: any
   canopyTopZ: any
+  /**
+   * False-colour inspector over the finished image. 0 = off, and at 0 the frame is
+   * exactly what it was before the inspector existed; 1 = colour by level; 2 = colour
+   * by error headroom. See createCloudMaterial for both ramps.
+   *
+   * A uniform rather than an effect flag, so switching costs one write instead of a
+   * TSL rebuild across every live tile material — the same trade `sizeSpacingMix`
+   * makes, and worth it here for a handful of ALU ops in a shader that already
+   * samples a 3D texture.
+   */
+  debugMode: any
+  /** How far the false colour covers the real one, 0..1. Below 1 the canopy structure
+   *  stays readable underneath, which is usually how a level boundary is judged. */
+  debugStrength: any
+  /**
+   * 0 = paint every drawn tile, 1 = only the tiles where refinement stopped, 2 = only
+   * `debugIsolateLevel`. Inert while `debugMode` is 0.
+   *
+   * Needed because `refine: ADD` draws every ancestor along with its children, so
+   * false-colouring a whole frame stacks ten levels into one pile of pixels. 1 is the
+   * set the eye actually sees the edges of — the same terminal set the Level mix
+   * read-out counts.
+   */
+  debugIsolate: any
+  debugIsolateLevel: any
 }
 
 let cloudShadowTextureNode: any = null
@@ -173,6 +198,13 @@ export function createUniforms(): CloudUniforms {
     warmRimColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.pointLighting.warmRim)),
     canopyBaseZ: uniform(0),
     canopyTopZ: uniform(140),
+    // Off, so nothing about the default render changes. Isolate still defaults to
+    // "terminal only": it does nothing at mode 0, and it is the setting that makes the
+    // very first click on a mode show a readable picture rather than a stack of levels.
+    debugMode: uniform(0),
+    debugStrength: uniform(0.85),
+    debugIsolate: uniform(1),
+    debugIsolateLevel: uniform(0),
   }
 }
 
@@ -502,6 +534,20 @@ export function applyMatrixPrecision(material: any): void {
   material.needsUpdate = true
 }
 
+/** What the false-colour inspector needs to know about one tile that never changes
+ *  while it is loaded. The two per-frame values come from the traversal instead — see
+ *  `debugTile` in createCloudMaterial and updateDebugTiles in streaming.ts. */
+export interface TileDebugInfo {
+  /** APH node depth, or 0/1/2 for the One-LOD tiers — see densityLevel. */
+  level: number
+  /** That level's palette entry, hex. */
+  tint: number
+  /** The pipeline wrote `geometricError: 0`, so this tile can never refine. */
+  isLeaf: boolean
+}
+
+const NO_TILE_DEBUG: TileDebugInfo = { level: 0, tint: 0xffffff, isLeaf: false }
+
 /** Create a material for exactly one streamed tile. Never share it across tiles:
  * UnloadTilesPlugin disposes hidden tile materials independently.
  *
@@ -520,6 +566,7 @@ export function createCloudMaterial(
    * materials make free: they already have to be per tile because
    * UnloadTilesPlugin disposes them independently. */
   spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
+  debug: TileDebugInfo = NO_TILE_DEBUG,
 ): PointsNodeMaterial {
   const material = new PointsNodeMaterial()
   if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
@@ -550,6 +597,24 @@ export function createCloudMaterial(
     ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
     : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
 
+  /**
+   * The inspector's per-tile inputs: x = level, y = 1 for a leaf, z = the tile's own
+   * error over the live target, w = 1 where refinement stopped. x and y are set once,
+   * here; z and w are refreshed from the traversal each frame while a mode is on.
+   *
+   * Uniforms rather than baked constants, unlike `spacingM` above. A literal is inlined
+   * into the generated shader, so a per-tile value forks the program — and per-tile
+   * codegen is exactly the cost the shared-material work is aimed at (see
+   * plans/decision-distance-lod.md). A diagnostic must not add to it.
+   */
+  // z and w start neutral — on target, and drawing — so a tile that has not been
+  // walked yet (the first frame after a mode is switched on) looks ordinary instead of
+  // vanishing under the isolate test or reading as wildly over-refined.
+  const debugTile = uniform(new THREE.Vector4(debug.level, debug.isLeaf ? 1 : 0, 1, 1))
+  const debugTint: any = uniform(new THREE.Color(debug.tint))
+  // Read back per frame by updateDebugTiles, which has the tile but not the mesh.
+  material.userData.debugTile = debugTile
+
   const buildColorNode = () => Fn(() => {
     // Round dots instead of squares. The mask discard below already costs this
     // material its early-z, so the extra rejection is effectively free.
@@ -574,6 +639,15 @@ export function createCloudMaterial(
     const dissolveSeed = hash(abs(enu.x.mul(131).add(enu.y.mul(1367))).mod(1_048_576))
     If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
       .and(dissolveSeed.greaterThan(keepChance)), () => Discard())
+
+    // Isolate one layer, and only while a mode is on — at debugMode 0 this whole test
+    // collapses to false and every tile draws as before. Uniform branching, so the
+    // cost is one comparison for the whole draw rather than per point.
+    const notTerminal = u.debugIsolate.greaterThan(0.5).and(u.debugIsolate.lessThan(1.5))
+      .and(debugTile.w.lessThan(0.5))
+    const otherLevel = u.debugIsolate.greaterThan(1.5)
+      .and(abs(debugTile.x.sub(u.debugIsolateLevel)).greaterThan(0.5))
+    If(u.debugMode.greaterThan(0.5).and(notTerminal.or(otherLevel)), () => Discard())
 
     // Directional cues without normals: project each point up the sun ray onto
     // a virtual cloud deck and shade it by the drifting cloud density there.
@@ -612,7 +686,30 @@ export function createCloudMaterial(
     // rather than the fog re-lighting the vignette edge.
     const fog = groundFogNode(u)
     const atmospheric = fog ? mix(graded, fog.color, fog.amount) : graded
-    return applyMaskSurround(u, atmospheric, 0.30)
+    const finished = applyMaskSurround(u, atmospheric, 0.30)
+
+    /**
+     * Error headroom: where this tile's own error sat against the live target, on a
+     * log scale so the ramp spans a sixteenth of the target to sixteen times it —
+     * blue finer than asked for, green sitting on it, red still asking.
+     *
+     * A leaf is called out in white instead. It carries `geometricError: 0` and so
+     * reports error 0, which on the ramp alone would read as "far finer than needed"
+     * when what it means is "nothing left to give" — a step the target can never move.
+     */
+    const headroom = log2(max(debugTile.z, float(1e-6))).div(8).add(0.5).clamp(0, 1)
+    const ramp = mix(
+      mix(vec3(0.11, 0.31, 0.85), vec3(0.13, 0.77, 0.37), headroom.mul(2).clamp(0, 1)),
+      vec3(0.94, 0.27, 0.27),
+      headroom.sub(0.5).mul(2).clamp(0, 1),
+    )
+    const debugColor = mix(vec3(debugTint), mix(ramp, vec3(1), debugTile.y), step(1.5, u.debugMode))
+
+    // Over the finished image rather than in place of the albedo: fog and the daylight
+    // grade would otherwise wash the diagnostic out at exactly the distances it is being
+    // read at. The discards above still apply, so the frame keeps the shape the real
+    // render has.
+    return mix(finished, debugColor, u.debugStrength.mul(step(0.5, u.debugMode)))
   })()
   material.colorNode = buildColorNode()
   // Recorded so an effect toggle can rebuild this graph later without the caller

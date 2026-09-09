@@ -388,6 +388,11 @@
                                  font-size: 9px; letter-spacing: .04em; color: #7d8590;
                                  white-space: nowrap; pointer-events: none; }
       .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+      /* Swatch rows for the level inspector: the colour beside the level it names, so
+         the legend cannot drift from the palette the shader was handed. */
+      .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: #b9c0c8; }
+      .legend > span { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+      .legend i { width: 10px; height: 10px; border-radius: 2px; }
       button.act { background: #21262d; color: #e8eaed; border: 1px solid #2d333b; border-radius: 8px;
                    padding: 9px; font: inherit; cursor: pointer; }
       button.act.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
@@ -803,6 +808,44 @@
             <span class="ref-label" id="pointerResponseRefLabel" aria-hidden="true"></span>
           </span>
           <span class="weather-note">Higher is smoother, but more latency</span>
+        </div>
+      </details>
+      <details class="design-section">
+        <summary>Level &amp; error inspector (test)</summary>
+        <div class="row">
+          <label class="h">False colour</label>
+          <div class="seg" id="debugModeSeg">
+            <button data-debug-mode="0" class="on">Off</button>
+            <button data-debug-mode="1">Level</button>
+            <button data-debug-mode="2">Error</button>
+          </div>
+          <span class="weather-note">Off is the normal render, untouched. <em>Level</em> paints each tile with the depth it came from — d0 coarsest and violet, running warm to the finest. <em>Error</em> paints where that tile's own screen-space error sat against the live target: blue finer than asked for, green sitting on it, red still asking, white a leaf that can never refine however close you get</span>
+        </div>
+        <div id="debugViewRows" hidden>
+          <div class="row">
+            <label class="h">Isolate</label>
+            <div class="seg" id="debugIsolateSeg">
+              <button data-debug-isolate="0">All</button>
+              <button data-debug-isolate="1" class="on">Terminal</button>
+              <button data-debug-isolate="2">One level</button>
+            </div>
+            <span class="weather-note">Every level draws at once — a coarse node and its own children are both on screen — so <em>All</em> stacks the whole ladder into one pile of pixels. <em>Terminal</em> keeps only the tiles where refinement stopped, which is the layer whose edges you actually see. <em>One level</em> keeps a single depth</span>
+          </div>
+          <div class="row" id="debugLevelRow" hidden>
+            <label class="h" for="debugIsolateLevel">Level · <span class="val" id="debugIsolateLevelVal">—</span></label>
+            <input type="range" id="debugIsolateLevel" min="0" max="12" step="1" />
+            <span class="weather-note">APH node depth, or 0/1/2 for the One-LOD tiers. A depth with nothing on screen leaves an empty frame — check the row below for which ones are there</span>
+          </div>
+          <div class="row">
+            <label class="h" for="debugStrength">Tint strength · <span class="val" id="debugStrengthVal">—</span></label>
+            <input type="range" id="debugStrength" min="0.1" max="1" step="0.05" />
+            <span class="weather-note">Below 1 the real colours show through, so the canopy keeps its shape while the level still reads off it</span>
+          </div>
+          <div class="row">
+            <label class="h">Stopped at</label>
+            <div id="debugLegend" class="legend">—</div>
+            <span class="weather-note">The levels refinement stopped at this frame, coarsest first, with tile counts — the same set the HUD's Level mix row counts. One entry means the frame is uniform; two or more means the refine threshold falls inside it, so there is a contour across the view</span>
+          </div>
         </div>
       </details>
       <details class="design-section">
