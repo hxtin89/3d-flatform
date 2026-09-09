@@ -342,8 +342,11 @@
       #fpsv.good { color: #6ee787; } #fpsv.warn { color: #f0c674; } #fpsv.bad { color: #ff7b72; }
 
       /* control panel */
+      /* The max-height reserves --corner-stack rather than a bare margin: the panel and
+         the build stamp share the right-hand column, and the version has to stay
+         readable with the panel open — which is exactly when you are about to quote it. */
       #panel { top: calc(52px + var(--safe-t)); right: 10px; width: 240px; display: none; flex-direction: column; gap: 11px;
-               max-height: calc(100vh - 70px - var(--safe-t)); overflow-y: auto; }
+               max-height: calc(100vh - 52px - var(--safe-t) - var(--safe-b) - var(--corner-stack)); overflow-y: auto; }
       body.panel-open #panel { display: flex; }
       /* .zoom-row ist ausgenommen: die Punktquelle ist Vergleichsgegenstand, keine Optimierung. */
       #markerOverlay.markers-hidden { display: none !important; }
@@ -469,8 +472,30 @@
       button.act:active { transform: translateY(1px); }
       button:disabled { opacity: .45; pointer-events: none; }
 
+      /* The bottom-right corner stack, outward from the map: build stamp, then
+         attribution at the very edge. The credit takes the corner because it only has
+         to be *present*; the version sits one row in, where it is read.
+         --corner-stack is the height the pair claims, so #panel can reserve it below. */
+      :root { --corner-stack: 72px; }
+
       #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
       #attribution a { color: inherit; }
+
+      /* Which build is on screen — the first thing a bug report needs, and the one
+         thing the picture itself cannot tell you. Monospace and tabular so two
+         stamps held side by side line up digit for digit; selectable (the body is
+         not) so the hash can be copied into a message instead of retyped.
+         Darker than .card and at full strength rather than the recessive treatment the
+         attribution gets: 10px type at 60% opacity over a bright sky was unreadable,
+         and a version you have to squint at is not doing its job. */
+      #buildStamp { bottom: calc(40px + var(--safe-b)); right: 10px; z-index: 10; padding: 4px 8px;
+                    background: rgba(4,6,9,.9); border-color: rgba(255,255,255,.16); color: rgba(242,244,247,.94);
+                    font: 10px/1.3 ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums;
+                    letter-spacing: .02em; white-space: nowrap;
+                    user-select: text; -webkit-user-select: text; }
+      /* vite.config.ts's stampBuild() substitutes the __BUILD_STAMP__ placeholder in
+         the markup — no script runs, so the version is legible even on a build whose
+         JS is what broke. */
 
       /* Peru daylight instrument: a compact field readout expands into a
          tactile map timeline without covering the survey. */
@@ -569,14 +594,24 @@
 
       /* ---------- mobile: panel becomes a bottom sheet ---------- */
       @media (max-width: 700px) {
+        :root { --sheet-max: 58vh; --design-sheet-max: 64vh; }
         #hud { left: 10px; right: 10px; min-width: 0; }
-        #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: 58vh; overflow-y: auto;
+        #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: var(--sheet-max); overflow-y: auto;
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
         /* Bottom sheet as well, but above #panel so it stays usable if both are open. */
         #designPanel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; z-index: 21;
-                       max-height: 64vh; border-radius: 16px 16px 0 0;
+                       max-height: var(--design-sheet-max); border-radius: 16px 16px 0 0;
                        padding-bottom: calc(14px + var(--safe-b)); }
+        /* Left rail here, same order as the desktop corner: attribution outermost. */
         #attribution { left: 10px; right: auto; bottom: calc(70px + var(--safe-b)); }
+        #buildStamp { left: 10px; right: auto; bottom: calc(96px + var(--safe-b)); }
+        /* Both panels are bottom sheets on mobile, anchored to the bottom edge, so no
+           height cap can clear the corner the way it does on desktop. The stamp steps
+           over whichever sheet is open instead. The attribution keeps its slot and is
+           covered — as it already was before the stamp existed. Design last: it is the
+           taller sheet, so it wins when both are open. */
+        body.panel-open #buildStamp { bottom: calc(var(--sheet-max) + 10px); }
+        body.design-open #buildStamp { bottom: calc(var(--design-sheet-max) + 10px); }
         .loader-kicker { left: 18px; right: 18px; }
         .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
         .temperature-value { font-size: 18px; }
@@ -1293,6 +1328,7 @@
 
     <span id="audioStatus" class="sr-only" role="status" aria-live="polite"></span>
     <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
+    <div id="buildStamp" class="card" title="Build date and time (Berlin) · commit — a trailing + means the build had uncommitted changes">__BUILD_STAMP__</div>
 
     <div id="videoModal" class="video-modal" role="dialog" aria-modal="true" aria-labelledby="videoTitle" hidden>
       <section class="video-card">
