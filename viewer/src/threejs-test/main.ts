@@ -88,10 +88,24 @@ const showDiagnostics = freeOrbit || params.has('diag') || import.meta.env.DEV
 /** `?noorigin` pins the origin at (0,0,0): the same code path with one value
  * different, so an A/B compares the real implementation against itself. */
 const originEnabled = !params.has('noorigin')
-/** `?gputime` opens the renderer's timestamp query pool, which costs a little per
- * frame and so is not on by default. Everything that reports GPU milliseconds is
- * dark without it — see the renderer construction below for why it cannot be a
- * runtime toggle. */
+/**
+ * `?gputime` opens the renderer's timestamp query pool, which costs a little per frame
+ * and so is not on by default. Everything that reports GPU milliseconds is dark without
+ * it — see the renderer construction below for why it cannot be a runtime toggle.
+ *
+ * It also needs a browser willing to hand out real timestamps, and a steady 0.00 ms is
+ * the symptom when it will not. Two known causes, neither of them broken wiring — the
+ * pool allocates, resolves and writes info.render.timestamp, checked against the raw
+ * query set:
+ *   - the surface has no area. A render pass into a 0x0 swapchain writes no usable
+ *     timestamps, and the console fills with "texture size ... is empty" beside it.
+ *     Any embedded or hidden canvas can be in this state.
+ *   - Chrome quantises GPU timestamps as a privacy measure, so a pass shorter than the
+ *     quantum collapses to begin == end. Enable
+ *     chrome://flags/#enable-webgpu-developer-features to switch that off.
+ * Read this number in a real, visible browser window before drawing any conclusion
+ * from it.
+ */
 const gpuTiming = params.has('gputime')
 /** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
  * measures. The benchmark samples frame times while tiles are still streaming,
@@ -3431,8 +3445,10 @@ function updateStreaming(now: number): StreamingStats | null {
 
 const fpsEl = $('#fpsv')
 const msEl = $('#msv')
+const gpuMsEl = $('#gpuMs')
 const visibleEl = $('#visible')
 const pointTilesEl = $('#blocks')
+const drawCallsEl = $('#drawCalls')
 const renderScaleEl = $('#renderScale')
 const overdrawEl = $('#overdraw')
 const stackingEl = $('#stacking')
@@ -3537,6 +3553,31 @@ function updateCacheFloorReadout(stats: StreamingStats | null): void {
   cacheBytesEl.className = `v sbb${holding && bytesFill > tilesFill ? ' hold' : ''}`
 }
 
+/**
+ * GPU milliseconds for the last resolved frame, and the poll that keeps it fresh.
+ *
+ * The timestamp query pool carries nothing until it is resolved, and resolving is
+ * asynchronous, so this always lags the frame on screen by however long the resolve
+ * takes. Only one resolve is allowed in flight: queueing them would report a backlog
+ * rather than the present, and the numbers would drift further behind the longer the
+ * session ran. Zero until the first resolve lands, and permanently zero without
+ * ?gputime — see `gpuTiming`.
+ */
+let gpuMs = 0
+let gpuResolveInFlight = false
+function pollGpuMs(): void {
+  if (!gpuTiming || gpuResolveInFlight) return
+  const resolving = (renderer as any).resolveTimestampsAsync?.()
+  // The WebGL backend may not carry the method at all, in which case there is nothing
+  // to await and nothing to report.
+  if (!resolving?.then) return
+  gpuResolveInFlight = true
+  resolving
+    .then(() => { gpuMs = (renderer.info as any).render?.timestamp ?? 0 })
+    .catch(() => { gpuMs = 0 })
+    .finally(() => { gpuResolveInFlight = false })
+}
+
 function updateHud(stats: StreamingStats | null): void {
   const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
   densityEl.textContent = stats?.density ?? '—'
@@ -3547,6 +3588,12 @@ function updateHud(stats: StreamingStats | null): void {
   mapTilesEl.textContent = String(globeStats.visible)
   cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
   updateCacheFloorReadout(stats)
+
+  // Both read the frame *before* the one being assembled: updateHud runs ahead of the
+  // draw, and renderer.info is reset by each render.
+  drawCallsEl.textContent = String((renderer.info as any).render?.drawCalls ?? 0)
+  pollGpuMs()
+  gpuMsEl.textContent = !gpuTiming ? '— · ?gputime' : gpuMs ? gpuMs.toFixed(2) : '…'
 
   const value = fps.fps
   fpsEl.textContent = value ? value.toFixed(0) : '—'
