@@ -481,8 +481,8 @@
       #attribution { bottom: calc(10px + var(--safe-b)); right: 10px; font-size: 10px; opacity: .6; padding: 4px 8px; z-index: 10; }
       #attribution a { color: inherit; }
 
-      /* Which build is on screen — the first thing a bug report needs, and the one
-         thing the picture itself cannot tell you. Monospace and tabular so two
+      /* Which commit is on screen, and when it was made — the first thing a bug report
+         needs, and the one thing the picture itself cannot tell you. Monospace and tabular so two
          stamps held side by side line up digit for digit; selectable (the body is
          not) so the hash can be copied into a message instead of retyped.
          Darker than .card and at full strength rather than the recessive treatment the
@@ -1315,7 +1315,7 @@
 
     <span id="audioStatus" class="sr-only" role="status" aria-live="polite"></span>
     <div id="attribution" class="card">© <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors</div>
-    <div id="buildStamp" class="card" title="Build date and time (Berlin) · commit — a trailing + means the build had uncommitted changes">__BUILD_STAMP__</div>
+    <div id="buildStamp" class="card" title="Date and time of this commit (Berlin) · its short hash — a trailing + means the build also carried uncommitted changes">__BUILD_STAMP__</div>
 
     <div id="videoModal" class="video-modal" role="dialog" aria-modal="true" aria-labelledby="videoTitle" hidden>
       <section class="video-card">

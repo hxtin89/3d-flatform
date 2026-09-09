@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 // Shared with src/maptiler-key.ts on purpose — see maptilerOriginFor below.
 import { isDevHost } from './src/dev-hosts';
@@ -119,8 +120,83 @@ function serveThreeJsAtRoot() {
  * for. One connection per tile is slower and completely reliable.
  */
 
+/**
+ * The version identity painted into the page corner (`#buildStamp`).
+ *
+ * A shared URL answers "what does it look like" but not "which version am I looking
+ * at" — and that is the question every bug report starts with. Baking the answer in
+ * at build time is the only way it can be trusted: anything read at runtime would
+ * describe the browser, not the deploy.
+ *
+ * Both halves describe the *commit*, not the build event: the timestamp is when that
+ * commit was made, so it moves only when the code does. Two builds of the same commit
+ * therefore stamp identically, and a stamp read off a screen names a point in the
+ * history rather than the moment someone happened to run a build.
+ *
+ * Shown in Berlin time whoever authored it, so two people comparing stamps are
+ * comparing one clock. `+` means the working tree had uncommitted changes, i.e. the
+ * named commit is the closest ancestor but not exactly what is running — a dev build,
+ * never a deploy. On a dirty tree the timestamp can be much older than the bundle,
+ * which is what `+` is there to warn about.
+ *
+ * `stampBuild()` below writes this straight into the HTML, so it survives a broken
+ * bundle: no script has to run for the version to be readable, which matters most
+ * on exactly the build where scripts are what broke.
+ */
+function berlinStamp(when: Date): string {
+  // Assembled from parts rather than formatted straight to a string: every locale
+  // that gives dd.mm.yy also inserts a comma before the time, and picking the pieces
+  // out is clearer than trimming it back off. Intl is here for the timezone shift,
+  // which is the one part worth not hand-rolling. h23 so midnight is 00, not 24.
+  const parts = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
+    year: '2-digit', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(when);
+  const at = (type: string) => parts.find((part) => part.type === type)!.value;
+  return `${at('day')}.${at('month')}.${at('year')} ${at('hour')}:${at('minute')}`; // "09.09.26 14:32"
+}
+
+function buildStamp(): string {
+  const git = (cmd: string) =>
+    execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+  let commit: string;
+  let committed: Date;
+  try {
+    commit = git('git rev-parse --short HEAD');
+    if (git('git status --porcelain')) commit += '+';
+    // %cI = committer date, strict ISO 8601 with offset, so it parses unambiguously
+    // wherever this runs. Committer rather than author date because a rebase rewrites
+    // it: this is when the commit reached the branch you are looking at.
+    committed = new Date(git('git log -1 --format=%cI'));
+  } catch {
+    // No git (exported tarball, CI without history): the commit and its date are both
+    // unknowable, so fall back to the build clock and label it, rather than let a
+    // build time be misread as a commit time.
+    return `built ${berlinStamp(new Date())} · nogit`;
+  }
+
+  return `${berlinStamp(committed)} · ${commit}`;
+}
+
+/**
+ * Substitutes `__BUILD_STAMP__` in the HTML with the identity above.
+ *
+ * `transformIndexHtml` runs once per production build and once per page load in dev,
+ * so a reload after committing picks up the new hash and its date without restarting
+ * the server.
+ */
+function stampBuild() {
+  return {
+    name: 'sbb:stamp-build',
+    // `pre` so the placeholder is gone before any other plugin reads the HTML.
+    transformIndexHtml: { order: 'pre' as const, handler: (html: string) => html.replaceAll('__BUILD_STAMP__', buildStamp()) },
+  };
+}
+
 export default defineConfig({
-  plugins: [serveThreeJsAtRoot(), ...(useHttps ? [basicSsl()] : [])],
+  plugins: [serveThreeJsAtRoot(), stampBuild(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     // PORT set in the environment means something upstream already picked a free port
     // for this process — an agent session running a second instance alongside the one
