@@ -2633,13 +2633,43 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * graphics card keeps assuming a fragment might discard and the fast path never returns.
  * Nothing else differs between the two — same geometry, same size, same colour.
  */
+/**
+ * Point thinning — the lever the Stage 1 measurement pointed at.
+ *
+ * Frame cost was measured to track point count almost exactly and to be indifferent to
+ * painted area, so the only thing that moves it is drawing fewer points. These settings
+ * feed `stream.applyThinning`, which lowers each tile's instance count.
+ *
+ * `thinTargetScale` multiplies the spacing the error target already asks for: 1 means
+ * "thin anything finer than the target", above 1 asks for coarser than the target and is
+ * where the savings are, below 1 keeps more than asked.
+ */
+let thinningOn = false
+let thinTargetScale = 1
+let ancestorKeep = 1
+const THINNING_MIN_KEEP = 0.02
+let lastThinning: { drawn: number; loaded: number } | null = null
+
 let roundDots = true
 const roundDotsToggleEl = $<HTMLButtonElement>('#roundDotsToggle')
 const syncRoundDotsToggle = () => {
   roundDotsToggleEl.classList.toggle('on', roundDots)
   roundDotsToggleEl.setAttribute('aria-pressed', String(roundDots))
-  roundDotsToggleEl.textContent = roundDots ? '● Round · A' : '■ Square · B'
+  roundDotsToggleEl.textContent = roundDots ? '● A' : '■ B'
 }
+const thinToggleEl = $<HTMLButtonElement>('#thinToggle')
+const syncThinToggle = () => {
+  thinToggleEl.classList.toggle('on', thinningOn)
+  thinToggleEl.setAttribute('aria-pressed', String(thinningOn))
+  thinToggleEl.textContent = thinningOn ? '◐ On' : '✕ Off'
+}
+thinToggleEl.addEventListener('click', () => { thinningOn = !thinningOn; syncThinToggle() })
+syncThinToggle()
+bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacing`, (v) => {
+  thinTargetScale = v
+})
+bindDesignSlider('ancestorKeep', ancestorKeep, asPercent, (v) => { ancestorKeep = v })
+
 roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
   if (setCloudEffectEnabled('roundDots', roundDots)) stream?.refreshEffects()
@@ -3475,6 +3505,14 @@ function updateStreaming(now: number): StreamingStats | null {
   // After the traversal, so the error and the stopped-here flag the inspector paints
   // come from the selection that is about to be drawn rather than the previous frame's.
   stream.updateDebugTiles(uniforms.debugMode.value > 0)
+  // After the traversal too: the set of visible tiles, and which of them have visible
+  // children, is exactly what decides how much of each one is worth drawing.
+  lastThinning = stream.applyThinning(thinningOn ? {
+    targetPx: spacingPxAtTarget(sseAuto) * thinTargetScale,
+    pxPerMetre: uniforms.sizePxPerMetre.value,
+    ancestorKeep,
+    minKeep: THINNING_MIN_KEEP,
+  } : null)
   lastStreamStats = stream.stats()
   return lastStreamStats
 }
@@ -3716,14 +3754,22 @@ function updateHud(stats: StreamingStats | null): void {
   // Amber whenever the target is not the one that was set — a brake or a per-tile
   // modifier — so a coarse picture is never read as the setting's own doing.
   setState(lodEl, !cloudDrawn ? '' : (foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
-  visibleEl.textContent = cloudDrawn ? fmtInt(stats!.points) : dash
+  // What is actually submitted, which is not what is loaded once thinning is on. The
+  // share is shown beside it rather than left to be worked out from two rows.
+  const drawnPoints = lastThinning ? lastThinning.drawn : (stats?.points ?? 0)
+  const thinned = Boolean(lastThinning) && lastThinning!.drawn < lastThinning!.loaded
+  visibleEl.textContent = !cloudDrawn ? dash
+    : thinned
+      ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
+      : fmtInt(drawnPoints)
+  setState(visibleEl, thinned ? 'ok' : '')
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
   const mapVisible = renderOptions.effective().basemapImagery ? globeStats.visible : 0
   pointTilesEl.textContent = cloudDrawn
     ? `${stats!.visible} pt · ${mapVisible} map`
     : `— · ${mapVisible} map`
-  updateOverdrawReadout(cloudDrawn ? stats!.points : 0)
+  updateOverdrawReadout(cloudDrawn ? drawnPoints : 0)
   // Against the ceiling, not a floor: the ceiling is the limit that silently stops
   // downloads and leaves holes in the ground. The floors are a drain target the cache
   // legitimately sits far above, and they live in the diagnostics block.

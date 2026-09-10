@@ -121,10 +121,35 @@ export interface StreamingCloud {
    * tiles wholly behind the camera are excluded here, and dividing a partial area by a
    * total point count would report dots that had shrunk.
    */
+  /**
+   * Draw fewer of each tile's points, by lowering `instanceCount` so a shorter prefix of
+   * the (shuffled) buffer is drawn.
+   *
+   * This removes primitives, which is the only thing that has been measured to move the
+   * frame cost — shrinking points instead saves fragments, and fragments turned out to be
+   * free. Pass null to restore every tile to its full buffer.
+   *
+   * Returns what was drawn against what is loaded, so the panel can report the fraction
+   * rather than leaving it to be inferred.
+   */
+  applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
   shadedPixelArea(
     diameterPx: (spacingM: number, viewDepthM: number) => number,
   ): { areaPx: number; points: number }
   dispose(): void
+}
+
+export interface ThinningSettings {
+  /** How far apart the drawn points are wanted on screen, in CSS pixels. */
+  targetPx: number
+  /** CSS pixels per metre at one metre of view depth — the projection scale the shader
+   *  uses, so both sides agree on what a spacing looks like on screen. */
+  pxPerMetre: number
+  /** Extra thinning for a tile whose children are also being drawn: its ground is already
+   *  covered by finer data, so its own points are duplicates. 1 leaves it alone. */
+  ancestorKeep: number
+  /** Never draw less than this fraction of a tile, so nothing vanishes outright. */
+  minKeep: number
 }
 
 export interface GroundSample {
@@ -319,6 +344,59 @@ export function createStreamingCloud(opts: {
   }>()
   const failedTiles = new Set<string>()
 
+  /**
+   * Put a tile's points into a random order, once, in place.
+   *
+   * This is what makes thinning possible without a compute pass. Drawing fewer points is
+   * done by lowering `instanceCount`, which draws a *prefix* of the buffer — and a prefix
+   * is only a fair sample of the tile if the order carries no spatial structure. The
+   * points arrive from a COPC octree, so their natural order is spatially clustered:
+   * taking the first half would take one half of the tile's ground and leave the other
+   * half empty.
+   *
+   * Seeded from the tile's own size and first coordinate rather than Math.random, so a
+   * tile shuffles identically on every load and two measurement runs compare the same
+   * picture. Done in place: the tile owns these arrays, nothing else depends on their
+   * order (`sampleGroundZ` and the mask builder both stride over them as a sample, which
+   * a shuffle only makes more representative), and copying would double tile memory.
+   */
+  function shufflePoints(geometry: any, position: any, color: any): void {
+    if (geometry.userData?.pointsShuffled) return
+    const count = position.count
+    if (!(count > 2)) return
+    const pos = position.array as Float32Array
+    const ps = position.itemSize
+    const col = color ? (color.array as Uint8Array | Float32Array) : null
+    const cs = color ? color.itemSize : 0
+    // xorshift32, seeded so the permutation is reproducible across loads and sessions.
+    let seed = (count * 2654435761 + Math.round(pos[0] * 1000)) >>> 0 || 1
+    const next = () => {
+      seed ^= seed << 13; seed >>>= 0
+      seed ^= seed >>> 17
+      seed ^= seed << 5; seed >>>= 0
+      return seed / 4294967296
+    }
+    for (let i = count - 1; i > 0; i--) {
+      const j = (next() * (i + 1)) | 0
+      if (j === i) continue
+      for (let k = 0; k < ps; k++) {
+        const a = i * ps + k, b = j * ps + k
+        const t = pos[a]; pos[a] = pos[b]; pos[b] = t
+      }
+      if (col) {
+        for (let k = 0; k < cs; k++) {
+          const a = i * cs + k, b = j * cs + k
+          const t = col[a]; col[a] = col[b]; col[b] = t
+        }
+      }
+    }
+    geometry.userData = geometry.userData ?? {}
+    geometry.userData.pointsShuffled = true
+    // The sphere is derived from the same positions, and a permutation cannot change it —
+    // but it may already have been built, and re-deriving costs nothing here.
+    geometry.boundingSphere = null
+  }
+
   // One camera-facing quad per point, instanced. The corner offsets live in the
   // `position` attribute because that is what PointsNodeMaterial's sprite path
   // scales by the point size; `uv` gives the round-dot cutout.
@@ -334,6 +412,7 @@ export function createStreamingCloud(opts: {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
+    shufflePoints(source.geometry, position, color)
 
     const geometry = new THREE.InstancedBufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
@@ -697,6 +776,88 @@ export function createStreamingCloud(opts: {
         cacheTilesCeiling: tiles.lruCache.maxSize,
         cacheBytesCeiling: tiles.lruCache.maxBytesSize,
       }
+    },
+    applyThinning(settings) {
+      let drawn = 0
+      let loaded = 0
+      if (!settings) {
+        // Off: every tile back to its full buffer and its own spacing.
+        for (const tile of tiles.visibleTiles) {
+          const stats = tileStats.get(tile)
+          if (!stats) continue
+          loaded += stats.points
+          for (const mesh of stats.quads) {
+            const full = (mesh.geometry as any).userData?.fullCount
+              ?? (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
+            ;(mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = full
+            const scale = (mesh.material as any)?.userData?.thinScale
+            if (scale) scale.value = 1
+            drawn += full
+          }
+        }
+        return { drawn, loaded }
+      }
+
+      camera.getWorldDirection(coverForward)
+      for (const tile of tiles.visibleTiles) {
+        const stats = tileStats.get(tile)
+        if (!stats) continue
+        loaded += stats.points
+        // A tile with any of its children also on screen is an ancestor under a finer
+        // layer. Under ADD refinement it keeps drawing anyway, and its points land on
+        // ground the children are already covering — so it is the cheapest place to take
+        // points away from.
+        const children = (tile as any)?.children as any[] | undefined
+        const covered = Array.isArray(children)
+          && children.some((child) => tiles.visibleTiles.has(child))
+
+        for (const mesh of stats.quads) {
+          const geometry = mesh.geometry as THREE.InstancedBufferGeometry
+          const anyGeometry = geometry as any
+          if (anyGeometry.userData?.fullCount === undefined) {
+            anyGeometry.userData = anyGeometry.userData ?? {}
+            anyGeometry.userData.fullCount = geometry.instanceCount
+          }
+          const full: number = anyGeometry.userData.fullCount
+          const spacingM = (mesh.material as any)?.userData?.pointSpacingM
+          const scale = (mesh.material as any)?.userData?.thinScale
+          if (!full || !(spacingM > 0) || !scale) { drawn += geometry.instanceCount; continue }
+
+          const carrier = mesh.parent as THREE.Object3D | null
+          const carrierGeometry = carrier ? (carrier as any).geometry : null
+          if (carrierGeometry && !carrierGeometry.boundingSphere) carrierGeometry.computeBoundingSphere()
+          const bounds = carrierGeometry?.boundingSphere
+          let keep = 1
+          if (bounds) {
+            coverCentre.copy(bounds.center).applyMatrix4(carrier!.matrixWorld)
+            const depth = Math.max(coverCentre.sub(camera.position).dot(coverForward), camera.near)
+            // How far apart this tile's points land on screen, against how far apart they
+            // are wanted. Below the target the tile is finer than anything can be seen,
+            // and the surplus is the square of the ratio because the spacing is in two
+            // directions.
+            const projPx = spacingM * settings.pxPerMetre / depth
+            keep = Math.min(1, (projPx / settings.targetPx) ** 2)
+          }
+          if (covered) keep *= settings.ancestorKeep
+          // A floor, because a tile that draws nothing at all pops back in as a block the
+          // moment the camera moves, and one point in a hundred still reads as texture.
+          keep = Math.max(settings.minKeep, Math.min(1, keep))
+          const count = Math.max(1, Math.round(full * keep))
+          geometry.instanceCount = count
+          // Survivors stand in for the ones that went, so they are drawn as wide as the
+          // gap they now have to cover. Without this the ground thins into holes instead
+          // of staying covered.
+          //
+          // The widening is not unlimited: it feeds the same spacing the size clamp acts
+          // on, so once `sqrt(full / count)` asks for more than `sizeMaxPx` allows, the
+          // dots stop growing and coverage really is lost. Measured at 13% of points the
+          // scale wanted 7.07x against a 6 px ceiling, and the canopy visibly broke into
+          // stipple. Thinning hard therefore means raising the maximum dot size with it.
+          scale.value = Math.sqrt(full / count)
+          drawn += count
+        }
+      }
+      return { drawn, loaded }
     },
     shadedPixelArea(diameterPx) {
       // The shader divides by view depth — the distance along the camera axis, not the

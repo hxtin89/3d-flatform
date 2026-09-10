@@ -334,16 +334,22 @@
                      font-size: 17px; line-height: 1; cursor: pointer; padding: 4px; }
 
       /* HUD (stats) */
-      #hud { top: calc(52px + var(--safe-t)); left: 10px; min-width: 210px; display: none; }
+      /* Bounded, or a long value sets the width: "Stops at" grows an entry per level the
+         frame stopped on, and at four or five of them it was dragging the whole card
+         wider than everything else in it. Capped here, wrapped below. */
+      #hud { top: calc(52px + var(--safe-t)); left: 10px; min-width: 210px; max-width: 300px; display: none; }
       body.hud-open #hud { display: block; }
       #hud h1 { margin: 0 14px 6px 0; font-size: 14px; font-weight: 600; }
       .badge { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
                padding: 2px 7px; border-radius: 5px; background: #1f6feb33; color: #79b8ff; border: 1px solid #1f6feb55; }
       .badge.webgl { background: #b5842033; color: #f0c674; border-color: #b5842055; }
       #status { margin: 8px 0 0; opacity: .8; font-size: 12px; }
-      .stats { margin-top: 8px; display: grid; grid-template-columns: auto auto; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+      /* minmax(0, …) on the value column is what lets it wrap: an `auto` track sizes to
+         its longest line and would keep pushing the card wider instead. */
+      .stats { margin-top: 8px; display: grid; grid-template-columns: auto minmax(0, 1fr);
+               gap: 2px 12px; font-variant-numeric: tabular-nums; }
       .stats .k { opacity: .55; }
-      .stats .v { text-align: right; font-weight: 600; }
+      .stats .v { text-align: right; font-weight: 600; overflow-wrap: anywhere; }
       /* Group heading: spans both columns and opens a little air above itself, so the
          four groups read as four blocks rather than one list of fourteen. */
       .stats .h { grid-column: 1 / -1; margin-top: 9px; font-size: 10px; text-transform: uppercase;
@@ -625,7 +631,9 @@
       /* ---------- mobile: panel becomes a bottom sheet ---------- */
       @media (max-width: 700px) {
         :root { --sheet-max: 58vh; --design-sheet-max: 64vh; }
-        #hud { left: 10px; right: 10px; min-width: 0; }
+        /* On a narrow screen left/right already set the width, so the desktop cap has to
+           come off or the card stops short of the edge. */
+        #hud { left: 10px; right: 10px; min-width: 0; max-width: none; }
         #panel { top: auto; right: 0; left: 0; bottom: 0; width: 100%; max-height: var(--sheet-max); overflow-y: auto;
                  border-radius: 16px 16px 0 0; padding-bottom: calc(14px + var(--safe-b)); }
         /* Bottom sheet as well, but above #panel so it stays usable if both are open. */
@@ -818,8 +826,23 @@
       <details class="design-section" open>
         <summary>Point spacing &amp; size</summary>
         <div class="row">
+          <label class="h" for="thinToggle">Thin points · A/B</label>
+          <button class="act" id="thinToggle" type="button" aria-pressed="false" aria-describedby="thinNote">✕ Off</button>
+          <span class="weather-note" id="thinNote">Draws fewer of each tile's points instead of all of them, and widens the survivors to cover the gap. This is the one lever measured to change the frame cost: cost tracks point count almost exactly and ignores how much ground gets painted. Watch <b>Points drawn</b> and <b>GPU ms</b> together</span>
+        </div>
+        <div class="row">
+          <label class="h" for="thinTarget">Thin to · <span class="val" id="thinTargetVal">—</span></label>
+          <input type="range" id="thinTarget" min="1" max="4" step="0.1" />
+          <span class="weather-note">How far apart the kept points should sit, as a multiple of the spacing the error target already asks for. 1 only removes points finer than the target; higher asks for a coarser picture and saves more</span>
+        </div>
+        <div class="row">
+          <label class="h" for="ancestorKeep">Covered tiles · <span class="val" id="ancestorKeepVal">—</span></label>
+          <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
+          <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points fall on ground that finer data already covers — they are the cheapest ones to drop. 100% leaves them all in</span>
+        </div>
+        <div class="row">
           <label class="h" for="roundDotsToggle">Dot shape · A/B</label>
-          <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● Round · A</button>
+          <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● A</button>
           <span class="weather-note" id="roundDotsNote"><b>A · Round</b> cuts each square into a circle in the shader. That cut is a discard, and a shader that can discard is denied the graphics card's early depth test — so every one of the ~19 points stacked on a pixel is shaded in full before all but one is thrown away. <b>B · Square</b> removes the cut. Dots become squares, covering 27% more area, but hidden points can be rejected before they are shaded. Watch GPU ms, not Overdraw: Overdraw counts area and is <em>expected</em> to rise</span>
         </div>
         <div class="row">

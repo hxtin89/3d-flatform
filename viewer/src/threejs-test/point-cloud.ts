@@ -659,7 +659,12 @@ export function createCloudMaterial(
   // sizeNode is a diameter in CSS pixels (PointsNodeMaterial multiplies by screenDPR
   // afterwards), which is the same unit the screen-space error target is in — so at
   // coverage 1 a point is exactly as wide as the gap to its neighbour.
+  // Per material, not shared: thinning is decided per tile, so the widening that
+  // compensates for it has to be too. 1 while nothing is being thinned away.
+  const thinScale = uniform(1)
+  material.userData.thinScale = thinScale
   const spacingPx = float(spacingM)
+    .mul(thinScale)
     .mul(u.sizeCoverage)
     .mul(u.sizePxPerMetre)
     // The point centre, not a quad corner: setupPositionView derives positionView
