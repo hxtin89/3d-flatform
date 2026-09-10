@@ -151,6 +151,13 @@ export interface ThinningSettings {
   /** Never draw less than this fraction of a tile, so nothing vanishes outright. */
   minKeep: number
   /**
+   * Ceiling on how far a survivor may be widened to stand in for the points that went.
+   *
+   * Not the same limit as `design` point size: in fixed-size mode `sizeMinPx`/`sizeMaxPx`
+   * are not consulted at all, so this is the only thing bounding the drawn diameter.
+   */
+  maxWiden: number
+  /**
    * The distance ramp. Nearer than `nearM` a tile is left entirely alone; beyond `farM`
    * the settings above apply at full strength; between the two the strength eases in.
    *
@@ -868,12 +875,16 @@ export function createStreamingCloud(opts: {
           // gap they now have to cover. Without this the ground thins into holes instead
           // of staying covered.
           //
-          // The widening is not unlimited: it feeds the same spacing the size clamp acts
-          // on, so once `sqrt(full / count)` asks for more than `sizeMaxPx` allows, the
-          // dots stop growing and coverage really is lost. Measured at 13% of points the
-          // scale wanted 7.07x against a 6 px ceiling, and the canopy visibly broke into
-          // stipple. Thinning hard therefore means raising the maximum dot size with it.
-          scale.value = Math.sqrt(full / count)
+          // Area, not width: dropping to a quarter of the points leaves each survivor
+          // four times the ground to cover, which is twice the diameter.
+          //
+          // Capped, because the compensation overshoots long before the thinning does.
+          // Where the keep fraction bottoms out the exact figure asks for about 7x, and a
+          // 2.5 px dot drawn at 17 px stops reading as canopy and starts reading as a
+          // quilt of blobs along the horizon — visibly worse than the gaps it was there
+          // to fill. Past the cap the far field is allowed to go slightly open instead,
+          // which at that distance reads as texture.
+          scale.value = Math.min(Math.sqrt(full / count), settings.maxWiden)
           drawn += count
         }
       }

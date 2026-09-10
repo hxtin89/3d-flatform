@@ -673,10 +673,25 @@ export function createCloudMaterial(
     .div(positionView.z.negate().max(float(0.001)))
   // Both paths always compiled, so the mode switch is a uniform write rather than a
   // shader rebuild across every live tile material.
-  // The vignette's keep test rides on the size: a dissolved point is drawn at zero
+  // `thinScale` has to widen BOTH branches, not just the spacing one.
+  //
+  // It used to sit only inside `spacingPx`, and `sizeSpacingMix` is 0 in the fixed-size
+  // mode this runs in by default — so the whole compensation was multiplied away and
+  // thinned points were drawn at the same flat diameter as unthinned ones. Thinning
+  // opened holes with nothing filling them, and the size clamp that appeared to be the
+  // culprit was never consulted at all in that mode.
+  //
+  // The fixed branch is deliberately left unclamped: `sizeMinPx`/`sizeMaxPx` bound the
+  // spacing-derived size, and applying that ceiling here would reintroduce exactly the
+  // limit that made hard thinning lose coverage.
+  //
+  // The vignette's keep test rides on the same size: a dissolved point is drawn at zero
   // width, which the rasteriser drops before it can cost a single fragment.
-  material.sizeNode = mix(u.pointSize, spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx), u.sizeSpacingMix)
-    .mul(maskDissolveKeep(u))
+  material.sizeNode = mix(
+    u.pointSize.mul(thinScale),
+    spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx),
+    u.sizeSpacingMix,
+  ).mul(maskDissolveKeep(u))
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')

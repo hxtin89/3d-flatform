@@ -2653,6 +2653,10 @@ let ancestorKeep = 1
 let thinNearM = 100
 let thinFarM = 1200
 const THINNING_MIN_KEEP = 0.02
+/** How far a survivor may be widened to stand in for what was dropped. 2 doubles the
+ *  drawn diameter at most — measured, the uncapped figure reaches 7 and turns the horizon
+ *  into blobs, which reads worse than the gaps the widening exists to fill. */
+let thinMaxWiden = 2
 let lastThinning: { drawn: number; loaded: number } | null = null
 
 let roundDots = true
@@ -2675,6 +2679,7 @@ bindDesignSlider('thinFarM', thinFarM, asMetres, (v) => { thinFarM = v })
 bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacing`, (v) => {
   thinTargetScale = v
 })
+bindDesignSlider('thinMaxWiden', thinMaxWiden, (v) => `${v.toFixed(1)}×`, (v) => { thinMaxWiden = v })
 bindDesignSlider('ancestorKeep', ancestorKeep, asPercent, (v) => { ancestorKeep = v })
 
 roundDotsToggleEl.addEventListener('click', () => {
@@ -3519,6 +3524,7 @@ function updateStreaming(now: number): StreamingStats | null {
     pxPerMetre: uniforms.sizePxPerMetre.value,
     ancestorKeep,
     minKeep: THINNING_MIN_KEEP,
+    maxWiden: thinMaxWiden,
     nearM: thinNearM,
     // Guarded so dragging the near slider past the far one cannot invert the ramp.
     farM: Math.max(thinFarM, thinNearM + 50),

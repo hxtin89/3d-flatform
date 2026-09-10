@@ -881,6 +881,11 @@
           <span class="weather-note">How far apart the kept points should sit out there, as a multiple of the spacing the error target already asks for. 1 only removes points finer than the target</span>
         </div>
         <div class="row">
+          <label class="h" for="thinMaxWiden">Widen survivors up to · <span class="val" id="thinMaxWidenVal">—</span></label>
+          <input type="range" id="thinMaxWiden" min="1" max="4" step="0.1" />
+          <span class="weather-note">Kept points are drawn wider to stand in for the ones dropped. This caps how far that goes. 1 disables it entirely. Note this is the only limit on dot size while Point size is Fixed — the smallest/largest dot sliders above apply to the spacing-derived size only</span>
+        </div>
+        <div class="row">
           <label class="h" for="ancestorKeep">Covered tiles · <span class="val" id="ancestorKeepVal">—</span></label>
           <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
           <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points land on ground finer data already covers — the cheapest ones to drop. This is where most of the saving comes from</span>
