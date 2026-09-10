@@ -826,24 +826,9 @@
       <details class="design-section" open>
         <summary>Point spacing &amp; size</summary>
         <div class="row">
-          <label class="h" for="thinToggle">Thin points · A/B</label>
-          <button class="act" id="thinToggle" type="button" aria-pressed="false" aria-describedby="thinNote">✕ Off</button>
-          <span class="weather-note" id="thinNote">Draws fewer of each tile's points instead of all of them, and widens the survivors to cover the gap. This is the one lever measured to change the frame cost: cost tracks point count almost exactly and ignores how much ground gets painted. Watch <b>Points drawn</b> and <b>GPU ms</b> together</span>
-        </div>
-        <div class="row">
-          <label class="h" for="thinTarget">Thin to · <span class="val" id="thinTargetVal">—</span></label>
-          <input type="range" id="thinTarget" min="1" max="4" step="0.1" />
-          <span class="weather-note">How far apart the kept points should sit, as a multiple of the spacing the error target already asks for. 1 only removes points finer than the target; higher asks for a coarser picture and saves more</span>
-        </div>
-        <div class="row">
-          <label class="h" for="ancestorKeep">Covered tiles · <span class="val" id="ancestorKeepVal">—</span></label>
-          <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
-          <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points fall on ground that finer data already covers — they are the cheapest ones to drop. 100% leaves them all in</span>
-        </div>
-        <div class="row">
           <label class="h" for="roundDotsToggle">Dot shape · A/B</label>
-          <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● A</button>
-          <span class="weather-note" id="roundDotsNote"><b>A · Round</b> cuts each square into a circle in the shader. That cut is a discard, and a shader that can discard is denied the graphics card's early depth test — so every one of the ~19 points stacked on a pixel is shaded in full before all but one is thrown away. <b>B · Square</b> removes the cut. Dots become squares, covering 27% more area, but hidden points can be rejected before they are shaded. Watch GPU ms, not Overdraw: Overdraw counts area and is <em>expected</em> to rise</span>
+          <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● Round</button>
+          <span class="weather-note" id="roundDotsNote">Square removes the shader's circular cut, which lets the card skip hidden points. Measured worth 0.8% — a look decision, not a speed one</span>
         </div>
         <div class="row">
           <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>
@@ -871,6 +856,34 @@
             <input type="range" id="sizeMaxPx" min="2" max="16" step="0.5" />
             <span class="weather-note">Ceiling in CSS pixels, so a coarse tile seen from arm's length cannot paint the screen. Set at or near its floor and the derived size collapses back to one constant</span>
           </div>
+        </div>
+      </details>
+      <details class="design-section">
+        <summary>Distance thinning (test)</summary>
+        <div class="row">
+          <label class="h" for="thinToggle">Thinning</label>
+          <button class="act" id="thinToggle" type="button" aria-pressed="false" aria-describedby="thinNote">✕ Off</button>
+          <span class="weather-note" id="thinNote">Draws fewer of each tile's points and widens the survivors to cover the gap. Nothing below has any effect while this is off, and off is exactly the picture you get with the whole feature removed. This is the one lever measured to change frame cost: cost tracks point count and ignores how much ground gets painted</span>
+        </div>
+        <div class="row">
+          <label class="h" for="thinNearM">Full detail within · <span class="val" id="thinNearMVal">—</span></label>
+          <input type="range" id="thinNearM" min="0" max="600" step="10" />
+          <span class="weather-note">Everything closer than this is left completely alone — every point it loaded, drawn. Roughly 87% of the points in a normal view sit beyond 100 m, so protecting the near field costs very little</span>
+        </div>
+        <div class="row">
+          <label class="h" for="thinFarM">Full strength beyond · <span class="val" id="thinFarMVal">—</span></label>
+          <input type="range" id="thinFarM" min="200" max="6000" step="50" />
+          <span class="weather-note">Where the two sliders below reach their full effect. Between the near and far distance the strength eases in. Keep the two far apart: the ramp is decided per tile, so a narrow band can show as a ring</span>
+        </div>
+        <div class="row">
+          <label class="h" for="thinTarget">Thin to · <span class="val" id="thinTargetVal">—</span></label>
+          <input type="range" id="thinTarget" min="1" max="4" step="0.1" />
+          <span class="weather-note">How far apart the kept points should sit out there, as a multiple of the spacing the error target already asks for. 1 only removes points finer than the target</span>
+        </div>
+        <div class="row">
+          <label class="h" for="ancestorKeep">Covered tiles · <span class="val" id="ancestorKeepVal">—</span></label>
+          <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
+          <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points land on ground finer data already covers — the cheapest ones to drop. This is where most of the saving comes from</span>
         </div>
       </details>
       <details class="design-section">

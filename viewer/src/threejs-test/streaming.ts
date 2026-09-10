@@ -150,6 +150,19 @@ export interface ThinningSettings {
   ancestorKeep: number
   /** Never draw less than this fraction of a tile, so nothing vanishes outright. */
   minKeep: number
+  /**
+   * The distance ramp. Nearer than `nearM` a tile is left entirely alone; beyond `farM`
+   * the settings above apply at full strength; between the two the strength eases in.
+   *
+   * This exists because the rest of the rule is not actually a distance gradient. It keys
+   * on *projected* spacing, and the error target already picks coarser tiles further out,
+   * so distance largely cancels: measured keep by depth band ran 84% / 57% / 55% / 69% /
+   * 46%, which is not a slope at all. Without this ramp the aggressive settings cut the
+   * near field to a third along with everything else, which is precisely the ground the
+   * viewer is looking at.
+   */
+  nearM: number
+  farM: number
 }
 
 export interface GroundSample {
@@ -837,8 +850,15 @@ export function createStreamingCloud(opts: {
             // directions.
             const projPx = spacingM * settings.pxPerMetre / depth
             keep = Math.min(1, (projPx / settings.targetPx) ** 2)
+            if (covered) keep *= settings.ancestorKeep
+            // The ramp multiplies the *whole* decision rather than any one term, so at
+            // ramp 0 the result is exactly 1 — the near field is untouched by
+            // construction, not merely thinned a little. smoothstep rather than a linear
+            // fade so neither end has a corner where the density visibly starts moving.
+            const span = Math.max(1, settings.farM - settings.nearM)
+            const x = Math.min(1, Math.max(0, (depth - settings.nearM) / span))
+            keep = 1 + (keep - 1) * (x * x * (3 - 2 * x))
           }
-          if (covered) keep *= settings.ancestorKeep
           // A floor, because a tile that draws nothing at all pops back in as a block the
           // moment the camera moves, and one point in a hundred still reads as texture.
           keep = Math.max(settings.minKeep, Math.min(1, keep))

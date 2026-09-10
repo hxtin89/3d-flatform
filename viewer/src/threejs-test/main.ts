@@ -2647,6 +2647,11 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
 let thinningOn = false
 let thinTargetScale = 1
 let ancestorKeep = 1
+/** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
+ *  points in a normal view sit beyond it — and 1200 m is far enough from 100 that the
+ *  per-tile steps in between cannot read as a ring. */
+let thinNearM = 100
+let thinFarM = 1200
 const THINNING_MIN_KEEP = 0.02
 let lastThinning: { drawn: number; loaded: number } | null = null
 
@@ -2655,7 +2660,7 @@ const roundDotsToggleEl = $<HTMLButtonElement>('#roundDotsToggle')
 const syncRoundDotsToggle = () => {
   roundDotsToggleEl.classList.toggle('on', roundDots)
   roundDotsToggleEl.setAttribute('aria-pressed', String(roundDots))
-  roundDotsToggleEl.textContent = roundDots ? '● A' : '■ B'
+  roundDotsToggleEl.textContent = roundDots ? '● Round' : '■ Square'
 }
 const thinToggleEl = $<HTMLButtonElement>('#thinToggle')
 const syncThinToggle = () => {
@@ -2665,6 +2670,8 @@ const syncThinToggle = () => {
 }
 thinToggleEl.addEventListener('click', () => { thinningOn = !thinningOn; syncThinToggle() })
 syncThinToggle()
+bindDesignSlider('thinNearM', thinNearM, asMetres, (v) => { thinNearM = v })
+bindDesignSlider('thinFarM', thinFarM, asMetres, (v) => { thinFarM = v })
 bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacing`, (v) => {
   thinTargetScale = v
 })
@@ -3512,6 +3519,9 @@ function updateStreaming(now: number): StreamingStats | null {
     pxPerMetre: uniforms.sizePxPerMetre.value,
     ancestorKeep,
     minKeep: THINNING_MIN_KEEP,
+    nearM: thinNearM,
+    // Guarded so dragging the near slider past the far one cannot invert the ramp.
+    farM: Math.max(thinFarM, thinNearM + 50),
   } : null)
   lastStreamStats = stream.stats()
   return lastStreamStats
