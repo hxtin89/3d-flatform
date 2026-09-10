@@ -40,6 +40,10 @@ export interface BenchSample {
   drawCalls: number
   overdraw: number
   areaPerPoint: number
+  /** Which side of the dot-shape A/B produced this result. Recorded rather than
+   *  remembered, because the two differ by 27% of drawn area and a mislabelled run is
+   *  worse than no run. */
+  dots: string
 }
 
 export interface BenchResult extends BenchSample {

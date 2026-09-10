@@ -505,8 +505,59 @@ export function applyHighPrecisionAlways(material: any): void {
   material.needsUpdate = true
 }
 
-const effects = { groundFog: true, groundPatch: true, cloudShadows: true }
+/**
+ * Build-time switches. Each one decides whether a piece of the graph is *emitted*, not
+ * whether it is taken at runtime, so flipping any of them costs a shader rebuild across
+ * every live tile material — `refreshEffects()` in streaming.ts.
+ *
+ * `roundDots` and `debugIsolate` are here rather than behind a uniform for one reason:
+ * they can discard. A shader whose source contains a discard anywhere cannot be given
+ * the GPU's early depth path, because the hardware must assume the fragment might not
+ * survive to write depth. `if (uniform > 0.5) discard;` counts — the driver has no way to
+ * know at compile time that the uniform will be zero. So a discard gated by a uniform
+ * costs the fast path for the whole session in exchange for a feature nobody switched on.
+ */
+const effects = {
+  groundFog: true,
+  groundPatch: true,
+  cloudShadows: true,
+  /** Cut each square quad into a circle. Off is the A side of the early-Z comparison. */
+  roundDots: true,
+  /** The level inspector's "show only this layer" cut. Only emitted while it is in use. */
+  debugIsolate: false,
+}
 export type CloudEffect = keyof typeof effects
+
+/**
+ * 1 where the vignette keeps a point, 0 where it dissolves it.
+ *
+ * Evaluated in the vertex stage and multiplied into the drawn size, so a dissolved point
+ * collapses to a zero-area quad and produces no fragments at all. It used to be a discard
+ * in the colour node — a per-point decision expressed per fragment, which shaded the point
+ * first and threw it away second, and cost every material its early depth rejection for a
+ * feature that is off by default (`design.maskMode` is 0).
+ *
+ * Fringe rather than a clean circular cut: across the band each point holds a stable
+ * pseudo-random keep-threshold, so points thin out gradually and the edge reads as
+ * scattered stragglers instead of a scissor line. The seed comes from the ENU position so
+ * a point dissolves identically every frame and across tile reloads. Metre coordinates
+ * are wrapped into a small range on purpose: hash() truncates its seed to uint, and raw
+ * ENU metres reach ~1e8 after scaling, where float32 quantises to steps far larger than a
+ * point spacing — neighbours would collide and whole blocks would pop instead of
+ * individual points. A floor on the width keeps the smoothstep edges from collapsing onto
+ * each other at fringe 0.
+ */
+function maskDissolveKeep(u: CloudUniforms): any {
+  const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
+  const distance = length(enu.xy.sub(u.maskCenter))
+  const fringeInner = u.maskRadius.mul(float(1).sub(max(u.maskFringe, float(0.001))))
+  const keepChance = smoothstep(u.maskRadius, fringeInner, distance).pow(u.maskFringeCurve)
+  const seed = hash(abs(enu.x.mul(131).add(enu.y.mul(1367))).mod(1_048_576))
+  const dissolving = u.maskMode.greaterThan(1.5)
+    .and(u.vignetteStrength.greaterThan(0.95))
+    .and(seed.greaterThan(keepChance))
+  return dissolving.select(float(0), float(1))
+}
 
 /**
  * Flip an effect. Returns true when the value actually changed, so callers know
@@ -617,7 +668,10 @@ export function createCloudMaterial(
     .div(positionView.z.negate().max(float(0.001)))
   // Both paths always compiled, so the mode switch is a uniform write rather than a
   // shader rebuild across every live tile material.
+  // The vignette's keep test rides on the size: a dissolved point is drawn at zero
+  // width, which the rasteriser drops before it can cost a single fragment.
   material.sizeNode = mix(u.pointSize, spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx), u.sizeSpacingMix)
+    .mul(maskDissolveKeep(u))
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
@@ -645,38 +699,27 @@ export function createCloudMaterial(
   material.userData.debugTile = debugTile
 
   const buildColorNode = () => Fn(() => {
-    // Round dots instead of squares. The mask discard below already costs this
-    // material its early-z, so the extra rejection is effectively free.
-    If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
+    // Round dots instead of squares — and the reason this is a build flag rather than a
+    // uniform is that it discards. See the `effects` block: a discard anywhere in the
+    // source costs the whole material its early depth rejection, so with ~19 quads over
+    // every pixel this one statement decides whether the other eighteen are shaded in
+    // full before being thrown away.
+    if (effects.roundDots) {
+      If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
+    }
 
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
-    const distance = length(enu.xy.sub(u.maskCenter))
 
-    // Fringe rather than a clean circular cut: across the band each point holds a
-    // stable pseudo-random keep-threshold, so points thin out gradually and the
-    // edge reads as scattered stragglers instead of a scissor line. The seed comes
-    // from the ENU position so a point dissolves identically every frame and
-    // across tile reloads; metre-scale coordinates are scaled up because hash()
-    // truncates its seed to uint. A floor on the width keeps the smoothstep edges
-    // from collapsing onto each other at fringe 0.
-    const fringeInner = u.maskRadius.mul(float(1).sub(max(u.maskFringe, float(0.001))))
-    const keepChance = smoothstep(u.maskRadius, fringeInner, distance).pow(u.maskFringeCurve)
-    // Wrapped into a small range on purpose: hash() truncates its seed to uint,
-    // and raw ENU metres reach ~1e8 after scaling, where float32 quantises to
-    // steps far larger than a point spacing — neighbours would collide and whole
-    // blocks would pop instead of individual points.
-    const dissolveSeed = hash(abs(enu.x.mul(131).add(enu.y.mul(1367))).mod(1_048_576))
-    If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
-      .and(dissolveSeed.greaterThan(keepChance)), () => Discard())
-
-    // Isolate one layer, and only while a mode is on — at debugMode 0 this whole test
-    // collapses to false and every tile draws as before. Uniform branching, so the
-    // cost is one comparison for the whole draw rather than per point.
-    const notTerminal = u.debugIsolate.greaterThan(0.5).and(u.debugIsolate.lessThan(1.5))
-      .and(debugTile.w.lessThan(0.5))
-    const otherLevel = u.debugIsolate.greaterThan(1.5)
-      .and(abs(debugTile.x.sub(u.debugIsolateLevel)).greaterThan(0.5))
-    If(u.debugMode.greaterThan(0.5).and(notTerminal.or(otherLevel)), () => Discard())
+    // Isolate one layer. Only emitted while the inspector is actually in use, for the
+    // same reason as above — it used to sit here permanently, gated on a uniform that is
+    // zero in every normal session.
+    if (effects.debugIsolate) {
+      const notTerminal = u.debugIsolate.greaterThan(0.5).and(u.debugIsolate.lessThan(1.5))
+        .and(debugTile.w.lessThan(0.5))
+      const otherLevel = u.debugIsolate.greaterThan(1.5)
+        .and(abs(debugTile.x.sub(u.debugIsolateLevel)).greaterThan(0.5))
+      If(u.debugMode.greaterThan(0.5).and(notTerminal.or(otherLevel)), () => Discard())
+    }
 
     // Directional cues without normals: project each point up the sun ray onto
     // a virtual cloud deck and shade it by the drifting cloud density there.

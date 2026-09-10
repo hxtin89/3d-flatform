@@ -2624,6 +2624,29 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
 // question — the near ground at the bottom edge is already fully refined by
 // distance, while the expensive band under tilt runs across the middle — so the
 // position is measured first and only then turned into a function of pitch.
+/**
+ * A/B for the round-dot cut, so the early-depth question can be answered by switching
+ * rather than by rebuilding and reloading.
+ *
+ * Both sides cost a shader rebuild across every live tile material, which is the point:
+ * the cut has to be absent from the *source*, not merely skipped at runtime, or the
+ * graphics card keeps assuming a fragment might discard and the fast path never returns.
+ * Nothing else differs between the two — same geometry, same size, same colour.
+ */
+let roundDots = true
+const roundDotsToggleEl = $<HTMLButtonElement>('#roundDotsToggle')
+const syncRoundDotsToggle = () => {
+  roundDotsToggleEl.classList.toggle('on', roundDots)
+  roundDotsToggleEl.setAttribute('aria-pressed', String(roundDots))
+  roundDotsToggleEl.textContent = roundDots ? '● Round · A' : '■ Square · B'
+}
+roundDotsToggleEl.addEventListener('click', () => {
+  roundDots = !roundDots
+  if (setCloudEffectEnabled('roundDots', roundDots)) stream?.refreshEffects()
+  syncRoundDotsToggle()
+})
+syncRoundDotsToggle()
+
 const foveationToggleEl = $<HTMLButtonElement>('#foveationToggle')
 const syncFoveationToggle = () => {
   const on = foveationSettings.enabled
@@ -2833,16 +2856,28 @@ const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
+/**
+ * The isolate cut has to be emitted or not emitted, never merely skipped: it discards,
+ * and a discard in the source denies the whole material the early depth test even at
+ * debugMode 0. So the inspector now pays a rebuild when it is switched on, and every
+ * ordinary session gets the fast path back.
+ */
+const syncDebugIsolateEffect = () => {
+  const wanted = uniforms.debugMode.value > 0 && uniforms.debugIsolate.value > 0
+  if (setCloudEffectEnabled('debugIsolate', wanted)) stream?.refreshEffects()
+}
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
   debugViewRowsEl.hidden = mode === 0
   // The band key is static markup, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
+  syncDebugIsolateEffect()
 })
 bindSeg('debugIsolateSeg', 'debugIsolate', (isolate) => {
   uniforms.debugIsolate.value = isolate
   debugLevelRowEl.hidden = isolate !== 2
+  syncDebugIsolateEffect()
 })
 bindDesignSlider('debugIsolateLevel', 0, (v) => `d${Math.round(v)}`, (v) => {
   uniforms.debugIsolateLevel.value = Math.round(v)
@@ -3487,6 +3522,24 @@ function drawnDiameterCssPx(spacingM: number, viewDepthM: number): number {
 }
 
 /**
+ * Colour a panel value by where it sits against its healthy range.
+ *
+ * Green, amber and red mean exactly one thing across the whole panel — in range,
+ * approaching a limit, past it — and the four group hues deliberately avoid all three, so
+ * a coloured value is always a state and never a category. Rows with no meaningful good
+ * or bad (a point count, a level mix, the depth refinement stopped at) are left neutral
+ * rather than coloured for decoration.
+ */
+type ValueState = 'ok' | 'warn' | 'bad' | ''
+function setState(el: Element, state: ValueState): void {
+  el.className = state ? `v ${state}` : 'v'
+}
+/** Lower is better: green under `warn`, amber up to `bad`, red at or above it. */
+function gradeLower(el: Element, value: number, warn: number, bad: number): void {
+  setState(el, value >= bad ? 'bad' : value >= warn ? 'warn' : 'ok')
+}
+
+/**
  * The error target, as the panel has to state it to be read correctly.
  *
  * Three things the bare number left out. It is quoted against a `geometricError` the
@@ -3560,13 +3613,22 @@ function updateOverdrawReadout(points: number): void {
   lastOverdraw = shadedPx / bufferPixels
   lastAreaPerPoint = coveredPoints ? shadedPx / coveredPoints : 0
   overdrawEl.textContent = `${lastOverdraw.toFixed(1)}×`
+  // 1 is the ideal and unreachable; up to 3 is ordinary canopy depth. Past 8 the frame is
+  // mostly repainting ground it has already covered, which is the whole subject of the
+  // optimisation work this panel was built to measure.
+  gradeLower(overdrawEl, lastOverdraw, 3, 8)
   // Points per backbuffer pixel, on its own. It used to carry a ratio against "one clean
   // layer at the error target", which could not be read the way its label promised:
   // refinement subdivides as soon as projected error *exceeds* the target, so a genuine
   // single clean layer lands anywhere between that spacing and half it — 1x to 4x —
   // before any tile stacking or canopy depth. A number whose good value is a range is
   // not a number to put on a panel; the range lives in the tooltip instead.
-  stackingEl.textContent = `${(points / bufferPixels).toFixed(2)} pt/px`
+  const perPixel = points / bufferPixels
+  stackingEl.textContent = `${perPixel.toFixed(2)} pt/px`
+  // A band, not a ceiling: one clean sheet at the current target lands between 0.25 and
+  // 1.00, so both ends are worth flagging. Below it the ground is sampled thinner than
+  // asked for and holes open; well above it, levels are stacking.
+  setState(stackingEl, perPixel >= 3 ? 'bad' : perPixel > 1.2 || perPixel < 0.25 ? 'warn' : 'ok')
 }
 
 /**
@@ -3595,9 +3657,11 @@ function updateCacheFloorReadout(stats: StreamingStats | null): void {
   // at its *ceiling*, which is the opposite state and the one that leaves holes in the
   // ground. A cache far above a floor is being held there by tiles still in use; that
   // floor is not the limit deciding anything, so nothing is highlighted.
+  // Amber, not red: resting on a floor is not a fault, it is the cache being squeezed to
+  // its drain target and therefore re-downloading on every camera turn.
   const resting = (fill: number) => fill >= 0.95 && fill <= 1.2
-  cacheTilesEl.className = `v g-stream${resting(tilesFill) ? ' hold' : ''}`
-  cacheBytesEl.className = `v g-stream${resting(bytesFill) ? ' hold' : ''}`
+  setState(cacheTilesEl, resting(tilesFill) ? 'warn' : '')
+  setState(cacheBytesEl, resting(bytesFill) ? 'warn' : '')
 }
 
 /**
@@ -3649,6 +3713,9 @@ function updateHud(stats: StreamingStats | null): void {
   const dash = '—'
 
   lodEl.textContent = !cloudDrawn ? dash : errorTargetLabel()
+  // Amber whenever the target is not the one that was set — a brake or a per-tile
+  // modifier — so a coarse picture is never read as the setting's own doing.
+  setState(lodEl, !cloudDrawn ? '' : (foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
   visibleEl.textContent = cloudDrawn ? fmtInt(stats!.points) : dash
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
@@ -3668,7 +3735,10 @@ function updateHud(stats: StreamingStats | null): void {
   cacheEl.textContent = cacheCeiling
     ? `${fmtMiB(cacheBytes)} / ${fmtMiB(cacheCeiling)}`
     : fmtMiB(cacheBytes)
-  cacheEl.className = cacheCeiling && cacheBytes >= cacheCeiling * 0.98 ? 'v g-stream hold' : 'v g-stream'
+  // At the ceiling the loader stops fetching and the ground keeps its holes, so that end
+  // is red rather than merely noted.
+  if (cacheCeiling) gradeLower(cacheEl, cacheBytes / cacheCeiling, 0.8, 0.98)
+  else setState(cacheEl, '')
   updateCacheFloorReadout(stats)
 
   // Always on now: between them these two say whether the frame is uniform and whether
@@ -3696,6 +3766,10 @@ function updateHud(stats: StreamingStats | null): void {
       // ellipsis. The tooltip says how to read it.
       ? `${gpuMs.toFixed(2)} ms`
       : '…'
+  // Graded against the 8.3 ms a 120 Hz frame gets, which the card shares with everything
+  // else on the page. Left neutral when there is no measurement to grade.
+  if (gpuTiming && gpuMsResolved && gpuMs > 0) gradeLower(gpuMsEl, gpuMs, 4, 8)
+  else setState(gpuMsEl, '')
 
   // One row for both: they are reciprocals, and the chip carries the frame rate
   // permanently anyway, so two rows spent one of them saying the same thing twice.
@@ -3703,10 +3777,13 @@ function updateHud(stats: StreamingStats | null): void {
   frameTimeEl.textContent = fps.frameMs
     ? `${fps.frameMs.toFixed(1)} ms · ${value ? value.toFixed(0) : '—'} fps`
     : '—'
-  const className = value >= 58 ? 'good' : value >= 40 ? 'warn' : 'bad'
-  frameTimeEl.className = `v ${className}`
+  // 58 rather than 60: a 60 Hz display that is holding its rate reports 59-point-something
+  // all day, and a row that blinks amber on a perfectly smooth frame trains you to ignore
+  // it. Below 40 the drop is visible rather than measurable, so that end is red.
+  const state: ValueState = value >= 58 ? 'ok' : value >= 40 ? 'warn' : 'bad'
+  setState(frameTimeEl, state)
   chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
-  chipFpsEl.className = className
+  chipFpsEl.className = state
 
   updateFoveationReadout()
   // The outlines follow the camera, so they need refreshing beyond slider changes.
@@ -3719,7 +3796,9 @@ function updateHud(stats: StreamingStats | null): void {
   }
 
   if (!showDiagnostics) return
-  diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+  const missing = stats?.missingTiles ?? 0
+  diagMissingEl.textContent = String(missing)
+  setState(diagMissingEl, missing ? 'bad' : 'ok')
   // Height and the stop that bounds it, on one line — the stop is a boot-time constant,
   // which is a reference value for the height and not a per-frame measurement of its own.
   // Fly to the height that looks right, read it off here, put it into
@@ -4365,6 +4444,7 @@ async function main(): Promise<void> {
       drawCalls: lastDrawCalls,
       overdraw: Number(lastOverdraw.toFixed(2)),
       areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
+      dots: roundDots ? 'A round' : 'B square',
     }),
     // The boot and flight brakes hold the error target far above the working band, so a
     // measurement taken under them describes the brake and not the setting being tested.

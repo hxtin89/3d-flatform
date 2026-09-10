@@ -231,7 +231,8 @@
       #designChip { top: calc(10px + var(--safe-t)); right: 56px; }
       body.design-open #designChip { background: #1f6feb; border-color: #1f6feb; }
       #chipFps { font-variant-numeric: tabular-nums; }
-      #chipFps.good { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
+      /* Same three state colours as the panel values, same meaning. */
+      #chipFps.ok { color: #6ee787; } #chipFps.warn { color: #f0c674; } #chipFps.bad { color: #ff7b72; }
 
       .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
                  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
@@ -348,17 +349,26 @@
       .stats .h { grid-column: 1 / -1; margin-top: 9px; font-size: 10px; text-transform: uppercase;
                   letter-spacing: .7px; opacity: .75; }
       .stats .h:first-child { margin-top: 0; }
-      /* Colour marks WHAT KIND of measurement a row is, so a glance finds the group
-         before it finds the row. It used to mark who had written the row, which told a
-         reader of the panel nothing. Keys carry the hue faintly, values plainly. */
-      .stats .g-frame  { color: #f0c674; }  /* what the frame costs */
-      .stats .g-pixels { color: #66e0ff; }  /* what it spends the cost on */
-      .stats .g-refine { color: #a6e3a1; }  /* why the cloud is this dense */
-      .stats .g-stream { color: #c3a6ff; }  /* whether the data is arriving */
-      .stats .k.g-frame, .stats .k.g-pixels, .stats .k.g-refine, .stats .k.g-stream { opacity: .62; }
-      /* Out of range, in any group — after the group colours so it wins. */
-      .stats .v.hold { color: #ff9d6b; }
-      #frameTime.good { color: #6ee787; } #frameTime.warn { color: #f0c674; } #frameTime.bad { color: #ff7b72; }
+      /* Two colour jobs, kept strictly apart so neither can be misread as the other.
+         GROUPING is carried by the labels, in four hues that deliberately exclude green,
+         amber and red. STATE is carried by the values, in exactly those three: green is
+         in range, amber is approaching a limit, red is past it. A value with no
+         meaningful good or bad — a point count, a level mix — stays neutral rather than
+         being coloured for decoration. */
+      .stats .k.g-frame  { color: #66e0ff; }  /* what the frame costs */
+      .stats .k.g-pixels { color: #c3a6ff; }  /* what it spends the cost on */
+      .stats .k.g-refine { color: #e5a8dc; }  /* why the cloud is this dense */
+      .stats .k.g-stream { color: #8fa6b4; }  /* whether the data is arriving */
+      .stats .h.g-frame  { color: #66e0ff; }
+      .stats .h.g-pixels { color: #c3a6ff; }
+      .stats .h.g-refine { color: #e5a8dc; }
+      .stats .h.g-stream { color: #8fa6b4; }
+      .stats .k.g-frame, .stats .k.g-pixels, .stats .k.g-refine, .stats .k.g-stream { opacity: .68; }
+      /* Values: neutral unless they carry a state. */
+      .stats .v { color: #e8eef1; }
+      .stats .v.ok   { color: #6ee787; }
+      .stats .v.warn { color: #f0c674; }
+      .stats .v.bad  { color: #ff7b72; }
 
       /* control panel */
       /* The max-height reserves --corner-stack rather than a bare margin: the panel and
@@ -757,32 +767,32 @@
            the data getting here. Colour marks the group, not who wrote the row. -->
       <div class="stats">
         <span class="h g-frame">Frame</span>
-        <span class="k g-frame" title="Milliseconds the graphics card itself spent on the last frame, read from its own clock. This is the only number that can compare rendering cost: the frame time below is capped by the display's refresh rate, so it goes on reading 8.3 ms whether the frame was nearly free or nearly late. Needs ?gputime in the address bar, because keeping the clock open costs a little every frame. A steady 0.00 does not mean the frame was free — it means the browser is refusing to hand out timestamps, either because the canvas has no area or because Chrome is rounding them off.">GPU</span><span class="v g-frame" id="gpuMs">—</span>
-        <span class="k g-frame" title="Wall-clock time for one whole frame, and the frame rate it implies. Includes everything — waiting for the display, JavaScript, streaming — so it is the number that says whether the app feels smooth, and a poor one for saying why. On a 120 Hz display anything faster than 8.3 ms reads as 8.3 ms.">Frame</span><span class="v g-frame" id="frameTime">—</span>
-        <span class="k g-frame" title="Separate commands sent to the graphics card last frame, for the whole scene: two per visible point tile (the tile's quads, plus the empty container they hang under), one per basemap tile, plus the sky, clouds, rain and models. Thinning points does not reduce it — only drawing fewer, larger tiles does.">Draw calls</span><span class="v g-frame" id="drawCalls">—</span>
-        <span class="k g-frame" title="The pixel grid the frame is actually drawn on, and how many of those pixels there are per CSS pixel. The ratio is chosen once by the loader benchmark, so it should hold steady while you resize the window and the pixel counts should follow. Every pixel figure in this panel is per one of these, not per CSS pixel.">Render scale</span><span class="v g-frame" id="renderScale">—</span>
+        <span class="k g-frame" title="Milliseconds the graphics card itself spent on the last frame, read from its own clock. This is the only number that can compare rendering cost: the frame time below is capped by the display's refresh rate, so it goes on reading 8.3 ms whether the frame was nearly free or nearly late. Needs ?gputime in the address bar, because keeping the clock open costs a little every frame. A steady 0.00 does not mean the frame was free — it means the browser is refusing to hand out timestamps, either because the canvas has no area or because Chrome is rounding them off.">GPU</span><span class="v" id="gpuMs">—</span>
+        <span class="k g-frame" title="Wall-clock time for one whole frame, and the frame rate it implies. Includes everything — waiting for the display, JavaScript, streaming — so it is the number that says whether the app feels smooth, and a poor one for saying why. On a 120 Hz display anything faster than 8.3 ms reads as 8.3 ms.">Frame</span><span class="v" id="frameTime">—</span>
+        <span class="k g-frame" title="Separate commands sent to the graphics card last frame, for the whole scene: two per visible point tile (the tile's quads, plus the empty container they hang under), one per basemap tile, plus the sky, clouds, rain and models. Thinning points does not reduce it — only drawing fewer, larger tiles does.">Draw calls</span><span class="v" id="drawCalls">—</span>
+        <span class="k g-frame" title="The pixel grid the frame is actually drawn on, and how many of those pixels there are per CSS pixel. The ratio is chosen once by the loader benchmark, so it should hold steady while you resize the window and the pixel counts should follow. Every pixel figure in this panel is per one of these, not per CSS pixel.">Render scale</span><span class="v" id="renderScale">—</span>
 
         <span class="h g-pixels">Pixels</span>
-        <span class="k g-pixels" title="Points handed to the graphics card this frame. Counted per tile, so it includes points that fall outside the frame or behind the camera whenever any part of their tile is in view — it is the work submitted, not what you can see.">Points drawn</span><span class="v g-pixels" id="visible">0</span>
-        <span class="k g-pixels" title="How many times an average pixel gets painted. 1 would mean every point lands on fresh ground; 18 means eighteen points are painted on top of each other and seventeen of them are wasted. Measured per tile at that tile's own dot size and summed, because under tilt the near and far halves of the frame draw very different sizes. The area counted is the square the card actually shades, not the round dot you see — the circle is cut afterwards, so its corners are paid for and thrown away.">Overdraw</span><span class="v g-pixels" id="overdraw">—</span>
-        <span class="k g-pixels" title="Points landing on each pixel of the frame. Related to Overdraw but independent of dot size: this counts points, Overdraw counts the paint they spread. One clean sheet of points at the current error target would read somewhere between 0.25 and 1.00 — refinement splits a tile as soon as its points would spread wider than the target, so a correct frame lands anywhere in that band. Well above it means levels are stacking, or the canopy is deep enough that many heights share one pixel.">Point density</span><span class="v g-pixels" id="stacking">—</span>
+        <span class="k g-pixels" title="Points handed to the graphics card this frame. Counted per tile, so it includes points that fall outside the frame or behind the camera whenever any part of their tile is in view — it is the work submitted, not what you can see.">Points drawn</span><span class="v" id="visible">0</span>
+        <span class="k g-pixels" title="How many times an average pixel gets painted. 1 would mean every point lands on fresh ground; 18 means eighteen points are painted on top of each other and seventeen of them are wasted. Measured per tile at that tile's own dot size and summed, because under tilt the near and far halves of the frame draw very different sizes. The area counted is the square the card actually shades, not the round dot you see — the circle is cut afterwards, so its corners are paid for and thrown away.">Overdraw</span><span class="v" id="overdraw">—</span>
+        <span class="k g-pixels" title="Points landing on each pixel of the frame. Related to Overdraw but independent of dot size: this counts points, Overdraw counts the paint they spread. One clean sheet of points at the current error target would read somewhere between 0.25 and 1.00 — refinement splits a tile as soon as its points would spread wider than the target, so a correct frame lands anywhere in that band. Well above it means levels are stacking, or the canopy is deep enough that many heights share one pixel.">Point density</span><span class="v" id="stacking">—</span>
 
         <span class="h g-refine">Refinement</span>
-        <span class="k g-refine" title="How far apart the drawn points are allowed to sit on screen before a tile splits into finer ones. Shown as the raw error target and what it means in pixels — the two differ by a factor of two, because the data files quote error at twice the real point spacing. A smaller number means more detail and more points. While the app is booting or flying in it is deliberately held coarse; that is marked when it happens, so a braked value is never mistaken for a setting.">Error target</span><span class="v g-refine" id="displayed">—</span>
-        <span class="k g-refine" title="The depths at which refinement came to a stop, coarsest first, with how many tiles stopped at each. One entry means the frame is uniform. Two or more means the cut-off falls inside the view, which is what a visible seam between coarse and fine ground looks like. Ancestors are not counted: this tree draws a tile together with its children, so counting everything on screen would report a jumble even in a perfectly even frame.">Stops at</span><span class="v g-refine" id="diagLevelMix">—</span>
-        <span class="k g-refine" title="Of the places refinement stopped, how many stopped because the data simply ends there rather than because the error target was satisfied. A high share means the picture is as sharp as the survey allows and asking for more detail will not change it. A low share means the target is what is holding detail back, and lowering it will buy more.">Data-limited</span><span class="v g-refine" id="diagLeaves">—</span>
+        <span class="k g-refine" title="How far apart the drawn points are allowed to sit on screen before a tile splits into finer ones. Shown as the raw error target and what it means in pixels — the two differ by a factor of two, because the data files quote error at twice the real point spacing. A smaller number means more detail and more points. While the app is booting or flying in it is deliberately held coarse; that is marked when it happens, so a braked value is never mistaken for a setting.">Error target</span><span class="v" id="displayed">—</span>
+        <span class="k g-refine" title="The depths at which refinement came to a stop, coarsest first, with how many tiles stopped at each. One entry means the frame is uniform. Two or more means the cut-off falls inside the view, which is what a visible seam between coarse and fine ground looks like. Ancestors are not counted: this tree draws a tile together with its children, so counting everything on screen would report a jumble even in a perfectly even frame.">Stops at</span><span class="v" id="diagLevelMix">—</span>
+        <span class="k g-refine" title="Of the places refinement stopped, how many stopped because the data simply ends there rather than because the error target was satisfied. A high share means the picture is as sharp as the survey allows and asking for more detail will not change it. A low share means the target is what is holding detail back, and lowering it will buy more.">Data-limited</span><span class="v" id="diagLeaves">—</span>
 
         <span class="h g-stream">Streaming</span>
-        <span class="k g-stream" title="Tiles being drawn right now: point-cloud tiles first, then basemap tiles. A tile counts as soon as any part of it is in view.">Tiles</span><span class="v g-stream" id="blocks">—</span>
-        <span class="k g-stream" title="Memory held by downloaded tiles, against the ceiling at which the loader stops fetching new ones. Sitting at the ceiling is the state that leaves holes in the ground and sky showing through the map, because further requests are silently dropped.">Cache</span><span class="v g-stream" id="cache">—</span>
+        <span class="k g-stream" title="Tiles being drawn right now: point-cloud tiles, then basemap tiles. A tile counts as soon as any part of it is in view. The basemap count reads 0 when its layer is switched off, rather than holding its last value.">Tiles · point / map</span><span class="v" id="blocks">—</span>
+        <span class="k g-stream" title="Memory held by downloaded tiles, against the ceiling at which the loader stops fetching new ones. Sitting at the ceiling is the state that leaves holes in the ground and sky showing through the map, because further requests are silently dropped.">Cache</span><span class="v" id="cache">—</span>
       </div>
       <!-- Deeper diagnostics: shown with ?diag or ?freeorbit, and in dev. -->
       <div class="stats" id="diagStats" hidden>
         <span class="h g-stream">Diagnostics</span>
-        <span class="k g-stream" title="Tiles held in memory against the count the cache drains down to when it evicts. Counts every entry the cache is tracking, including tiles still downloading and the small index files that link the levels together, so it runs above the number of tiles carrying points. It can also sit below its own floor, because eviction by bytes has no count guard.">Cache tiles</span><span class="v g-stream" id="cacheTiles">—</span>
-        <span class="k g-stream" title="Point-tile bytes held in memory against the byte count the cache drains down to when it evicts. Highlighted when the cache is actually resting on a floor rather than being held above it by tiles still in use.">Cache bytes</span><span class="v g-stream" id="cacheBytes">—</span>
-        <span class="k g-stream" title="Distinct tile files the server never returned, counted for the whole session and never cleared. A file that failed once and succeeded on retry is still counted, as is one that failed far away from the current view — so this is a session-wide fault log, not a count of gaps in front of you.">Failed downloads</span><span class="v g-stream" id="diagMissing">0</span>
-        <span class="k g-refine" title="Camera height above the survey's flat floor level, and the height at which zooming stops. Not height above the terrain under you: the reference is one fixed level taken from the survey bounds at startup, so over a slope it is off by the whole local relief.">Height · stop</span><span class="v g-refine" id="diagAltitude">—</span>
+        <span class="k g-stream" title="Tiles held in memory against the count the cache drains down to when it evicts. Counts every entry the cache is tracking, including tiles still downloading and the small index files that link the levels together, so it runs above the number of tiles carrying points. It can also sit below its own floor, because eviction by bytes has no count guard.">Cache tiles</span><span class="v" id="cacheTiles">—</span>
+        <span class="k g-stream" title="Point-tile bytes held in memory against the byte count the cache drains down to when it evicts. Highlighted when the cache is actually resting on a floor rather than being held above it by tiles still in use.">Cache bytes</span><span class="v" id="cacheBytes">—</span>
+        <span class="k g-stream" title="Distinct tile files the server never returned, counted for the whole session and never cleared. A file that failed once and succeeded on retry is still counted, as is one that failed far away from the current view — so this is a session-wide fault log, not a count of gaps in front of you.">Failed downloads</span><span class="v" id="diagMissing">0</span>
+        <span class="k g-refine" title="Camera height above the survey's flat floor level, and the height at which zooming stops. Not height above the terrain under you: the reference is one fixed level taken from the survey bounds at startup, so over a slope it is off by the whole local relief.">Height · stop</span><span class="v" id="diagAltitude">—</span>
       </div>
     </div>
 
@@ -807,6 +817,11 @@
       </div>
       <details class="design-section" open>
         <summary>Point spacing &amp; size</summary>
+        <div class="row">
+          <label class="h" for="roundDotsToggle">Dot shape · A/B</label>
+          <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● Round · A</button>
+          <span class="weather-note" id="roundDotsNote"><b>A · Round</b> cuts each square into a circle in the shader. That cut is a discard, and a shader that can discard is denied the graphics card's early depth test — so every one of the ~19 points stacked on a pixel is shaded in full before all but one is thrown away. <b>B · Square</b> removes the cut. Dots become squares, covering 27% more area, but hidden points can be rejected before they are shaded. Watch GPU ms, not Overdraw: Overdraw counts area and is <em>expected</em> to rise</span>
+        </div>
         <div class="row">
           <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>
           <input type="range" id="sseTarget" min="0.5" max="32" step="0.5" />
