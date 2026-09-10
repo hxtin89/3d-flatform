@@ -2645,12 +2645,14 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * where the savings are, below 1 keeps more than asked.
  */
 /**
- * Off by default — switching it on is a look decision, and off is byte-identical to the
- * feature not existing. The values below are the preset it starts from: measured on a
- * tilted canopy view at 7.5 M points, they draw 56–66% of them for 1.5–1.8x less GPU time
- * with no difference I could see against the unthinned frame.
+ * On by default, with the preset below: measured on a tilted canopy view at 7.5 M points
+ * it draws 56% of them for about 1.8x less GPU time, and screenshots against the unthinned
+ * frame showed no difference.
+ *
+ * Switching it off is byte-identical to the feature not existing, so it stays the first
+ * thing to try when the cloud looks wrong.
  */
-let thinningOn = false
+let thinningOn = true
 let thinTargetScale = 1
 /** 0%: a tile whose own children are also drawn is duplicated detail, and this is where
  *  nearly all the saving comes from. Harmless because the ramp below keeps it away from
