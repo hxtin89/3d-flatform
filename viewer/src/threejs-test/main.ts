@@ -2644,14 +2644,23 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * "thin anything finer than the target", above 1 asks for coarser than the target and is
  * where the savings are, below 1 keeps more than asked.
  */
+/**
+ * Off by default — switching it on is a look decision, and off is byte-identical to the
+ * feature not existing. The values below are the preset it starts from: measured on a
+ * tilted canopy view at 7.5 M points, they draw 56–66% of them for 1.5–1.8x less GPU time
+ * with no difference I could see against the unthinned frame.
+ */
 let thinningOn = false
 let thinTargetScale = 1
-let ancestorKeep = 1
+/** 0%: a tile whose own children are also drawn is duplicated detail, and this is where
+ *  nearly all the saving comes from. Harmless because the ramp below keeps it away from
+ *  the near field, which is the only place ancestors still carry the picture. */
+let ancestorKeep = 0
 /** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
- *  points in a normal view sit beyond it — and 1200 m is far enough from 100 that the
+ *  points in a normal view sit beyond it — and 800 m is far enough from 100 that the
  *  per-tile steps in between cannot read as a ring. */
 let thinNearM = 100
-let thinFarM = 1200
+let thinFarM = 800
 const THINNING_MIN_KEEP = 0.02
 /** How far a survivor may be widened to stand in for what was dropped. 2 doubles the
  *  drawn diameter at most — measured, the uncapped figure reaches 7 and turns the horizon
