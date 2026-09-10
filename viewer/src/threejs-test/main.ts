@@ -3444,8 +3444,7 @@ function updateStreaming(now: number): StreamingStats | null {
   return lastStreamStats
 }
 
-const fpsEl = $('#fpsv')
-const msEl = $('#msv')
+const frameTimeEl = $('#frameTime')
 const gpuMsEl = $('#gpuMs')
 const visibleEl = $('#visible')
 const pointTilesEl = $('#blocks')
@@ -3453,8 +3452,6 @@ const drawCallsEl = $('#drawCalls')
 const renderScaleEl = $('#renderScale')
 const overdrawEl = $('#overdraw')
 const stackingEl = $('#stacking')
-const mapTilesEl = $('#mapTiles')
-const densityEl = $('#loaded')
 const lodEl = $('#displayed')
 const cacheEl = $('#cache')
 const cacheTilesEl = $('#cacheTiles')
@@ -3462,8 +3459,6 @@ const cacheBytesEl = $('#cacheBytes')
 const chipFpsEl = $('#chipFps')
 const diagStatsEl = $<HTMLDivElement>('#diagStats')
 const diagAltitudeEl = $('#diagAltitude')
-const diagRangeEl = $('#diagRange')
-const diagStopEl = $('#diagStop')
 const diagMissingEl = $('#diagMissing')
 const diagLevelMixEl = $('#diagLevelMix')
 const diagLeavesEl = $('#diagLeaves')
@@ -3492,6 +3487,26 @@ function drawnDiameterCssPx(spacingM: number, viewDepthM: number): number {
 }
 
 /**
+ * The error target, as the panel has to state it to be read correctly.
+ *
+ * Three things the bare number left out. It is quoted against a `geometricError` the
+ * pipeline writes at twice the real point spacing, so "SSE 4" means points 2 px apart —
+ * the slider says so, the panel did not. It is held deliberately coarse during boot and
+ * the entrance flight, where a reader has no way to tell a brake from a setting. And
+ * foveation rescales it per tile, so while that is on there is no single target at all.
+ */
+function errorTargetLabel(): string {
+  // The -1 hysteresis sentinel: parked by the render-option toggles to force the next
+  // comparison, and printable if the cloud happens to be parked at the same moment.
+  if (!(sseAuto > 0)) return '—'
+  const px = `${spacingPxAtTarget(sseAuto).toFixed(1)} px`
+  if (foveationSettings.enabled) return `${sseAuto.toFixed(0)} · foveated`
+  // Coarser than asked means something upstream is holding it there.
+  if (sseAuto > sseTarget + 0.5) return `${sseAuto.toFixed(0)} · braked from ${sseTarget}`
+  return `SSE ${sseAuto.toFixed(0)} · ${px}`
+}
+
+/**
  * Two numbers that the point count alone hides.
  *
  * `Overdraw` is fragments shaded per screen pixel: the quad areas of every drawn point,
@@ -3516,39 +3531,42 @@ function drawnDiameterCssPx(spacingM: number, viewDepthM: number): number {
 function updateOverdrawReadout(points: number): void {
   const canvas = renderer.domElement as HTMLCanvasElement
   const bufferPixels = canvas.width * canvas.height
-  const target = stream?.tiles.errorTarget ?? 0
-  if (!points || !bufferPixels || !(target > 0)) {
-    overdrawEl.textContent = '—'
-    stackingEl.textContent = '—'
-    return
-  }
   // Read the ratio off the canvas rather than from the renderer or devicePixelRatio:
   // the startup resolution cap can put the backbuffer well below the device ratio, and
   // the backbuffer is what actually gets shaded.
   const ratio = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
-  // The ratio is a device property (devicePixelRatio capped by the bench preset), so it
-  // is expected to hold while the pixel counts follow the window. Shown because the two
-  // are easy to confuse and the cap is invisible otherwise.
-  renderScaleEl.textContent = `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
+  // Written before the guard below, because it describes the canvas and not the cloud.
+  // Behind it, the row went blank through boot and any time the stream was null — the
+  // one moment the backbuffer size is worth reading.
+  renderScaleEl.textContent = bufferPixels
+    ? `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
+    : '—'
+
+  const target = stream?.tiles.errorTarget ?? 0
+  if (!points || !bufferPixels || !(target > 0)) {
+    overdrawEl.textContent = '—'
+    stackingEl.textContent = '—'
+    lastOverdraw = 0
+    lastAreaPerPoint = 0
+    return
+  }
   // Measured per tile and summed. The mirror works in CSS pixels, so one ratio² at the
-  // end converts the whole area to backbuffer pixels rather than every diameter.
-  const shadedPx = (stream?.shadedPixelArea(drawnDiameterCssPx) ?? 0) * ratio * ratio
-  const dotArea = shadedPx / points
-  const spacingPx = spacingPxAtTarget(target)
-  const perPixel = points / bufferPixels
-  // One clean layer at the live target: points spaced `spacingPx` CSS pixels apart in
-  // both screen directions. Not `target` pixels — that is the tile's geometricError,
-  // which is a fixed multiple of the spacing, so using it here understated the baseline
-  // by the square of that factor and inflated the stacking figure fourfold.
-  const idealPerPixel = 1 / ((spacingPx * ratio) ** 2)
+  // end converts the whole area to backbuffer pixels rather than every diameter. The
+  // point count comes back with it: tiles wholly behind the camera are in neither, and
+  // dividing this area by the full count would report dots that had shrunk.
+  const covered = stream?.shadedPixelArea(drawnDiameterCssPx)
+  const shadedPx = (covered?.areaPx ?? 0) * ratio * ratio
+  const coveredPoints = covered?.points ?? 0
   lastOverdraw = shadedPx / bufferPixels
-  lastAreaPerPoint = dotArea
-  overdrawEl.textContent = `${lastOverdraw.toFixed(0)}× · ${dotArea.toFixed(0)} px²/pt`
-  // Above the working band the ideal layer is so sparse that the ratio runs to six
-  // digits and reads as a fault. The boot and flight brakes live up there.
-  stackingEl.textContent = target > 32
-    ? `— · ${perPixel.toFixed(2)} pt/px`
-    : `${(perPixel / idealPerPixel).toFixed(0)}× · ${perPixel.toFixed(2)} pt/px`
+  lastAreaPerPoint = coveredPoints ? shadedPx / coveredPoints : 0
+  overdrawEl.textContent = `${lastOverdraw.toFixed(1)}×`
+  // Points per backbuffer pixel, on its own. It used to carry a ratio against "one clean
+  // layer at the error target", which could not be read the way its label promised:
+  // refinement subdivides as soon as projected error *exceeds* the target, so a genuine
+  // single clean layer lands anywhere between that spacing and half it — 1x to 4x —
+  // before any tile stacking or canopy depth. A number whose good value is a range is
+  // not a number to put on a panel; the range lives in the tooltip instead.
+  stackingEl.textContent = `${(points / bufferPixels).toFixed(2)} pt/px`
 }
 
 /**
@@ -3564,19 +3582,22 @@ function updateCacheFloorReadout(stats: StreamingStats | null): void {
   if (!stats) {
     cacheTilesEl.textContent = '—'
     cacheBytesEl.textContent = '—'
-    cacheTilesEl.className = 'v sbb'
-    cacheBytesEl.className = 'v sbb'
+    cacheTilesEl.className = 'v g-stream'
+    cacheBytesEl.className = 'v g-stream'
     return
   }
   const tilesFill = stats.cacheTilesFloor > 0 ? stats.cacheTiles / stats.cacheTilesFloor : 0
   const bytesFill = stats.cacheBytesFloor > 0 ? stats.cacheBytes / stats.cacheBytesFloor : 0
   cacheTilesEl.textContent = `${fmtInt(stats.cacheTiles)} / ${fmtInt(stats.cacheTilesFloor)}`
   cacheBytesEl.textContent = `${fmtMiB(stats.cacheBytes)} / ${fmtMiB(stats.cacheBytesFloor)}`
-  // While the cache is still filling neither floor is in force, so highlight nothing
-  // rather than pick a winner between two part-full readouts.
-  const holding = Math.max(tilesFill, bytesFill) >= 0.95
-  cacheTilesEl.className = `v sbb${holding && tilesFill >= bytesFill ? ' hold' : ''}`
-  cacheBytesEl.className = `v sbb${holding && bytesFill > tilesFill ? ' hold' : ''}`
+  // "Resting on the floor" is a band, not a threshold. The old test was one-sided —
+  // `max(fill) >= 0.95` with no upper bound — so it also lit up when the cache was pinned
+  // at its *ceiling*, which is the opposite state and the one that leaves holes in the
+  // ground. A cache far above a floor is being held there by tiles still in use; that
+  // floor is not the limit deciding anything, so nothing is highlighted.
+  const resting = (fill: number) => fill >= 0.95 && fill <= 1.2
+  cacheTilesEl.className = `v g-stream${resting(tilesFill) ? ' hold' : ''}`
+  cacheBytesEl.className = `v g-stream${resting(bytesFill) ? ' hold' : ''}`
 }
 
 /**
@@ -3591,6 +3612,10 @@ function updateCacheFloorReadout(stats: StreamingStats | null): void {
  */
 let gpuMs = 0
 let gpuResolveInFlight = false
+/** Whether any resolve has come back yet. Without it a resolved 0.00 — the browser
+ *  withholding timestamps — is indistinguishable from "the first one has not landed",
+ *  and 0.00 is the very state the row's tooltip tells you how to read. */
+let gpuMsResolved = false
 /** Draw calls of the frame just drawn — see the end of the render loop for why it
  *  cannot be read from `renderer.info` at HUD time. */
 let lastDrawCalls = 0
@@ -3606,33 +3631,80 @@ function pollGpuMs(): void {
   if (!resolving?.then) return
   gpuResolveInFlight = true
   resolving
-    .then(() => { gpuMs = (renderer.info as any).render?.timestamp ?? 0 })
+    .then(() => {
+      gpuMs = (renderer.info as any).render?.timestamp ?? 0
+      gpuMsResolved = true
+    })
     .catch(() => { gpuMs = 0 })
     .finally(() => { gpuResolveInFlight = false })
 }
 
 function updateHud(stats: StreamingStats | null): void {
-  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0 }
-  densityEl.textContent = stats?.density ?? '—'
-  lodEl.textContent = `SSE ${sseAuto.toFixed(0)}`
-  visibleEl.textContent = stats ? fmtInt(stats.points) : '0'
-  pointTilesEl.textContent = String(stats?.visible ?? 0)
-  updateOverdrawReadout(stats?.points ?? 0)
-  mapTilesEl.textContent = String(globeStats.visible)
-  cacheEl.textContent = `${fmtMiB((stats?.cacheBytes ?? 0) + globeStats.cacheBytes)} · ${fmtMiB((stats?.gpuBytes ?? 0) + globeStats.gpuBytes)}`
+  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0, cacheBytesCeiling: 0 }
+  // While the cloud is parked for the entrance flight, updateStreaming returns the last
+  // pre-flight snapshot and the group is hidden — so these rows described a selection
+  // that was not being drawn. Blanked instead: nothing is a truer answer than a stale
+  // number sitting next to a Map tiles count that is still live.
+  const cloudDrawn = Boolean(stats) && pointCloudRevealed
+  const dash = '—'
+
+  lodEl.textContent = !cloudDrawn ? dash : errorTargetLabel()
+  visibleEl.textContent = cloudDrawn ? fmtInt(stats!.points) : dash
+  // The basemap keeps its last traversed count when imagery is switched off — the group
+  // is hidden and the traversal skipped, but visibleTiles is never cleared.
+  const mapVisible = renderOptions.effective().basemapImagery ? globeStats.visible : 0
+  pointTilesEl.textContent = cloudDrawn
+    ? `${stats!.visible} pt · ${mapVisible} map`
+    : `— · ${mapVisible} map`
+  updateOverdrawReadout(cloudDrawn ? stats!.points : 0)
+  // Against the ceiling, not a floor: the ceiling is the limit that silently stops
+  // downloads and leaves holes in the ground. The floors are a drain target the cache
+  // legitimately sits far above, and they live in the diagnostics block.
+  // Both tilesets on both sides of the slash. Summing the two caches against only the
+  // point cloud's ceiling would put a subset's limit under a superset's total — the same
+  // fault the old "Cache CPU · GPU" row had.
+  const cacheBytes = (stats?.cacheBytes ?? 0) + globeStats.cacheBytes
+  const cacheCeiling = (stats?.cacheBytesCeiling ?? 0) + globeStats.cacheBytesCeiling
+  cacheEl.textContent = cacheCeiling
+    ? `${fmtMiB(cacheBytes)} / ${fmtMiB(cacheCeiling)}`
+    : fmtMiB(cacheBytes)
+  cacheEl.className = cacheCeiling && cacheBytes >= cacheCeiling * 0.98 ? 'v g-stream hold' : 'v g-stream'
   updateCacheFloorReadout(stats)
+
+  // Always on now: between them these two say whether the frame is uniform and whether
+  // asking for more detail could even deliver any — the two questions the density rows
+  // above cannot answer. They used to be behind ?diag.
+  const mix = stats?.terminalLevels ?? []
+  diagLevelMixEl.textContent = cloudDrawn && mix.length
+    ? mix.map((entry) => `${shortBandLabel(entry.band)}:${entry.tiles}`).join(' ')
+    : dash
+  const terminal = mix.reduce((sum, entry) => sum + entry.tiles, 0)
+  diagLeavesEl.textContent = cloudDrawn && terminal
+    ? `${stats!.leafTiles} of ${terminal}`
+    : dash
+  updateDebugLegend(mix)
 
   // Both belong to the previous frame: this runs ahead of the draw, and the GPU
   // timestamps need a round trip before they resolve.
   drawCallsEl.textContent = String(lastDrawCalls)
   pollGpuMs()
-  gpuMsEl.textContent = !gpuTiming ? '— · ?gputime' : gpuMs ? gpuMs.toFixed(2) : '…'
+  gpuMsEl.textContent = !gpuTiming
+    ? '?gputime'
+    : gpuMsResolved
+      // 0.00 is a real, documented answer here — the browser declining to hand out
+      // timestamps — so it has to be printable rather than collapsed onto the waiting
+      // ellipsis. The tooltip says how to read it.
+      ? `${gpuMs.toFixed(2)} ms`
+      : '…'
 
+  // One row for both: they are reciprocals, and the chip carries the frame rate
+  // permanently anyway, so two rows spent one of them saying the same thing twice.
   const value = fps.fps
-  fpsEl.textContent = value ? value.toFixed(0) : '—'
-  msEl.textContent = fps.frameMs ? fps.frameMs.toFixed(1) : '—'
+  frameTimeEl.textContent = fps.frameMs
+    ? `${fps.frameMs.toFixed(1)} ms · ${value ? value.toFixed(0) : '—'} fps`
+    : '—'
   const className = value >= 58 ? 'good' : value >= 40 ? 'warn' : 'bad'
-  fpsEl.className = `v ${className}`
+  frameTimeEl.className = `v ${className}`
   chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
   chipFpsEl.className = className
 
@@ -3646,23 +3718,15 @@ function updateHud(stats: StreamingStats | null): void {
     foveation?.updateBoxes()
   }
 
+  if (!showDiagnostics) return
+  diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
+  // Height and the stop that bounds it, on one line — the stop is a boot-time constant,
+  // which is a reference value for the height and not a per-frame measurement of its own.
   // Fly to the height that looks right, read it off here, put it into
   // navigation.zoomStopHeightM.
-  if (!showDiagnostics) return
-  diagAltitudeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.altitude)} m` : '—'
-  diagRangeEl.textContent = rangeDebug ? `${Math.round(rangeDebug.range)} m` : '—'
-  diagStopEl.textContent = `${Math.round(navigationClearance)} m`
-  diagMissingEl.textContent = String(stats?.missingTiles ?? 0)
-  // Where refinement stopped, and how many of those stops can never move. One level
-  // means the frame is uniform; two or more means the refine threshold falls inside it;
-  // one level plus leaves means the step is in the data, not the metric.
-  const mix = stats?.terminalLevels ?? []
-  diagLevelMixEl.textContent = mix.length
-    ? mix.map((entry) => `${shortBandLabel(entry.band)}:${entry.tiles}`).join(' ')
+  diagAltitudeEl.textContent = rangeDebug
+    ? `${Math.round(rangeDebug.altitude)} / ${Math.round(navigationClearance)} m`
     : '—'
-  const terminal = mix.reduce((sum, entry) => sum + entry.tiles, 0)
-  diagLeavesEl.textContent = stats ? `${stats.leafTiles} of ${terminal} stops` : '—'
-  updateDebugLegend(mix)
 }
 
 /**

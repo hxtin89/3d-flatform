@@ -72,7 +72,10 @@ export interface Globe {
    * `design.basemapErrorTarget` for the measured trade-off.
    */
   setErrorTarget(pixels: number): void
-  stats(): { visible: number; cacheBytes: number; gpuBytes: number }
+  /** `cacheBytesCeiling` is the limit at which this tileset stops queueing downloads —
+   *  reported so the HUD can put the basemap's share of memory against the basemap's own
+   *  ceiling rather than against the point cloud's. */
+  stats(): { visible: number; cacheBytes: number; gpuBytes: number; cacheBytesCeiling: number }
   dispose(): void
 }
 
@@ -534,6 +537,7 @@ export function createGlobe(opts: {
         visible: tiles.visibleTiles.size,
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
+        cacheBytesCeiling: (tiles.lruCache as any).maxBytesSize ?? 0,
       }
     },
     dispose() {

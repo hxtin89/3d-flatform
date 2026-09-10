@@ -28,6 +28,13 @@ export interface StreamingStats {
    * one is slack. Reported so that is readable off the HUD instead of the console. */
   cacheTilesFloor: number
   cacheBytesFloor: number
+  /**
+   * The ceilings, which are the limits with a *visible* failure mode: once the cache is
+   * full the renderer stops queueing downloads, and the ground keeps its holes. The
+   * floors above only decide how much of the off-screen working set survives a turn.
+   */
+  cacheTilesCeiling: number
+  cacheBytesCeiling: number
   /** Distinct tiles the server never returned — gaps in the published data. */
   missingTiles: number
   /**
@@ -96,20 +103,27 @@ export interface StreamingCloud {
   sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4): GroundSample | null
   stats(): StreamingStats
   /**
-   * Backbuffer pixels the drawn quads cover this frame, summed over every visible tile.
+   * Pixels the drawn quads cover this frame, summed over every visible tile, with the
+   * point count those pixels belong to.
    *
    * `diameterPx` is handed one tile's own point spacing and the view depth to its
-   * centre, and returns the diameter that tile draws at in device pixels. The caller
-   * owns that formula because it is the CPU mirror of the `sizeNode` expression in
-   * point-cloud.ts — the two have to move together or the readout quietly measures a
-   * size the shader is not using, which is exactly the state this replaced.
+   * centre, and returns the diameter that tile draws at. The caller owns that formula
+   * because it is the CPU mirror of the `sizeNode` expression in point-cloud.ts — the two
+   * have to move together or the readout quietly measures a size the shader is not using,
+   * which is exactly the state this replaced.
    *
    * The area counted is the **quad**, not the round dot inside it. Every fragment of
    * the quad is rasterised and shaded; the circle is a Discard in the colour node, which
    * runs afterwards. So this is fragments shaded — what it costs — rather than pixels
    * lit, which is what shows.
+   *
+   * `points` is returned rather than taken from `stats()` because the two sets differ:
+   * tiles wholly behind the camera are excluded here, and dividing a partial area by a
+   * total point count would report dots that had shrunk.
    */
-  shadedPixelArea(diameterPx: (spacingM: number, viewDepthM: number) => number): number
+  shadedPixelArea(
+    diameterPx: (spacingM: number, viewDepthM: number) => number,
+  ): { areaPx: number; points: number }
   dispose(): void
 }
 
@@ -680,6 +694,8 @@ export function createStreamingCloud(opts: {
         cacheTiles: (tiles.lruCache as any).itemSet?.size ?? 0,
         cacheTilesFloor: tiles.lruCache.minSize,
         cacheBytesFloor: tiles.lruCache.minBytesSize,
+        cacheTilesCeiling: tiles.lruCache.maxSize,
+        cacheBytesCeiling: tiles.lruCache.maxBytesSize,
       }
     },
     shadedPixelArea(diameterPx) {
@@ -688,7 +704,8 @@ export function createStreamingCloud(opts: {
       // projected onto it. Radial distance would over-report depth toward the corners
       // of a wide frame and quietly shrink the dots the readout thinks are drawn there.
       camera.getWorldDirection(coverForward)
-      let area = 0
+      let areaPx = 0
+      let points = 0
       for (const tile of tiles.visibleTiles) {
         const stats = tileStats.get(tile)
         if (!stats) continue
@@ -700,21 +717,33 @@ export function createStreamingCloud(opts: {
           // The carrier this mesh hangs under still holds the tile's real point bounds;
           // the quad geometry's own sphere describes the four corner offsets and says
           // nothing about where the tile is (see sampleGroundZ for the same trap).
-          const carrier = mesh.parent
-          const bounds = carrier ? (carrier as any).geometry?.boundingSphere : null
+          const carrier = mesh.parent as THREE.Object3D | null
+          const geometry = carrier ? (carrier as any).geometry : null
+          if (!geometry) continue
+          // Computed here rather than skipped when absent. three only builds the sphere
+          // when something asks for it, and the carrier is parked with an empty draw
+          // range, so nothing ever does — skipping meant these tiles were left out of the
+          // area for the whole session while their points stayed in the point count.
+          if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+          const bounds = geometry.boundingSphere
           if (!bounds) continue
-          coverCentre.copy(bounds.center).applyMatrix4((carrier as THREE.Object3D).matrixWorld)
+          coverCentre.copy(bounds.center).applyMatrix4(carrier!.matrixWorld)
           const depth = coverCentre.sub(camera.position).dot(coverForward)
-          // A tile straddling the camera plane has a centre behind it and so a negative
-          // depth. Handed on as-is rather than skipped: the shader has no notion of
-          // behind, it floors the depth and lets the max-pixel clamp catch the result,
-          // and `diameterPx` mirrors that. Skipping instead would drop the tile's area
-          // while its points still counted, which reads as the dots having shrunk.
-          const diameter = diameterPx(spacingM, depth)
-          area += instances * diameter * diameter
+          // Wholly behind the eye: every one of its points is clipped and shades nothing,
+          // so it is left out of both the area and the point count it would be averaged
+          // over. Counting it was worse than skipping it — flooring the depth made the
+          // derived size explode into the max-pixel clamp and billed the entire tile at
+          // the fattest dot the cloud can draw.
+          if (depth + bounds.radius <= camera.near) continue
+          // Straddling the near plane: part of it really is drawn, and drawn large. Billed
+          // at the near plane rather than at a centre that sits behind the camera, which
+          // is an over-estimate bounded by the size clamp instead of an unbounded one.
+          const diameter = diameterPx(spacingM, Math.max(depth, camera.near))
+          areaPx += instances * diameter * diameter
+          points += instances
         }
       }
-      return area
+      return { areaPx, points }
     },
     dispose() {
       scene.remove(tiles.group)
