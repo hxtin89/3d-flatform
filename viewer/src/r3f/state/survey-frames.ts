@@ -12,6 +12,19 @@ import { APP_PARAMS } from '../params'
 import { frame } from './frame'
 import { stopNavigationInertia } from '../controls/navigation-gestures'
 
+export interface SurveyFrame {
+  enuFrame: THREE.Matrix4
+  enuInverse: THREE.Matrix4
+  enuUp: THREE.Vector3
+  cloudCenterEnu: THREE.Vector3
+  zOffset: number
+  areaMinZ: number
+  navigationClearance: number
+  navigationFloorZ: number
+  navigationBoundsRadius: number
+  canopyHeightM: number
+}
+
 export const geo = {
   /** ENU -> ECEF, absolute, straight from the manifest. */
   enuFrame: new THREE.Matrix4(),
@@ -60,45 +73,69 @@ export function refreshOriginDerived(): void {
 
 let rebaseSubscribed = false
 
-/** Manifest -> frames, floor, bounds, shader heights; seeds the origin at the
- * survey centre. Idempotent enough to survive a React double mount. */
-export function initSurveyFrames(manifest: GlobeManifest): void {
-  const { uniforms } = frame
-  geo.enuFrame.fromArray(manifest.rootTransform)
-  geo.enuInverse.copy(geo.enuFrame).invert()
-  uniforms.enuInverse.value.copy(geo.enuInverse)
-  geo.enuUp.setFromMatrixColumn(geo.enuFrame, 2).normalize()
+/** Build immutable local placement/navigation data for one survey. */
+export function createSurveyFrame(manifest: GlobeManifest): SurveyFrame {
+  const enuFrame = new THREE.Matrix4().fromArray(manifest.rootTransform)
+  const enuInverse = enuFrame.clone().invert()
+  const enuUp = new THREE.Vector3().setFromMatrixColumn(enuFrame, 2).normalize()
+  let zOffset = 0
+  let areaMinZ = 0
+  let navigationClearance = EXPERIENCE_CONFIG.navigation.zoomStopHeightM as number
+  let navigationFloorZ = navigationClearance
+  let canopyHeightM = EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM as number
 
   if (manifest.areaBbox) {
     const [, , minZ] = manifest.areaBbox
     // Imagery is draped on the bare ellipsoid, so ground level is ellipsoidal
     // height 0; the ENU origin itself sits enuOriginLonLat[2] above that.
     const originHeight = manifest.enuOriginLonLat?.[2] ?? 0
-    geo.zOffset = APP_PARAMS.groundSnap
+    zOffset = APP_PARAMS.groundSnap
       ? -(minZ + originHeight) + EXPERIENCE_CONFIG.navigation.pointCloudLiftM
       : 0
-    geo.areaMinZ = minZ
+    areaMinZ = minZ
     const configuredStop = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
     const canopyHeight = manifest.areaVerticalSpan ?? EXPERIENCE_CONFIG.navigation.fallbackCloudHeightM
-    geo.canopyHeightM = canopyHeight
-    geo.navigationClearance = Math.max(configuredStop, canopyHeight)
-    if (geo.navigationClearance > configuredStop) {
-      console.info(`[navigation] zoom stop raised from ${Math.round(configuredStop)} m to ${Math.round(geo.navigationClearance)} m — the canopy is that tall here.`)
-    }
-    geo.navigationFloorZ = minZ + geo.navigationClearance
-    uniforms.canopyBaseZ.value = minZ + geo.zOffset + 8
-    uniforms.canopyTopZ.value = minZ + geo.zOffset + canopyHeight
-    uniforms.cloudDeckHeight.value = minZ + geo.zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+    canopyHeightM = canopyHeight
+    navigationClearance = Math.max(configuredStop, canopyHeight)
+    navigationFloorZ = minZ + navigationClearance
   }
 
   const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
+  const cloudCenterEnu = new THREE.Vector3()
+  let navigationBoundsRadius = 2500
   if (surveyBbox) {
     const [minX, minY, , maxX, maxY] = surveyBbox
-    geo.cloudCenterEnu.set((minX + maxX) / 2, (minY + maxY) / 2, geo.areaMinZ + 40)
-    geo.navigationBoundsRadius = Math.max(
+    cloudCenterEnu.set((minX + maxX) / 2, (minY + maxY) / 2, areaMinZ + 40)
+    navigationBoundsRadius = Math.max(
       EXPERIENCE_CONFIG.navigation.minimumBoundsRadiusM,
       Math.hypot(maxX - minX, maxY - minY) * EXPERIENCE_CONFIG.navigation.surveyBoundsScale,
     )
+  }
+  return {
+    enuFrame, enuInverse, enuUp, cloudCenterEnu, zOffset, areaMinZ,
+    navigationClearance, navigationFloorZ, navigationBoundsRadius, canopyHeightM,
+  }
+}
+
+/** Activate one survey's frame and move the floating origin to its centre. */
+export function activateSurveyFrame(site: SurveyFrame): void {
+  const { uniforms } = frame
+  geo.enuFrame.copy(site.enuFrame)
+  geo.enuInverse.copy(site.enuInverse)
+  geo.enuUp.copy(site.enuUp)
+  geo.cloudCenterEnu.copy(site.cloudCenterEnu)
+  geo.zOffset = site.zOffset
+  geo.areaMinZ = site.areaMinZ
+  geo.navigationClearance = site.navigationClearance
+  geo.navigationFloorZ = site.navigationFloorZ
+  geo.navigationBoundsRadius = site.navigationBoundsRadius
+  geo.canopyHeightM = site.canopyHeightM
+  uniforms.enuInverse.value.copy(geo.enuInverse)
+  uniforms.canopyBaseZ.value = geo.areaMinZ + geo.zOffset + 8
+  uniforms.canopyTopZ.value = geo.areaMinZ + geo.zOffset + geo.canopyHeightM
+  uniforms.cloudDeckHeight.value = geo.areaMinZ + geo.zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+  if (geo.navigationClearance > EXPERIENCE_CONFIG.navigation.zoomStopHeightM) {
+    console.info(`[navigation] zoom stop raised to ${Math.round(geo.navigationClearance)} m for the active site.`)
   }
   geo.groundPlanePointEnu.set(geo.cloudCenterEnu.x, geo.cloudCenterEnu.y, geo.cloudCenterEnu.z - 40)
   geo.ready = true
@@ -112,6 +149,13 @@ export function initSurveyFrames(manifest: GlobeManifest): void {
   rebaseTo(originAnchorEcef)
   refreshOriginDerived()
   uniforms.maskCenter.value.set(geo.cloudCenterEnu.x, geo.cloudCenterEnu.y)
+}
+
+/** Backwards-compatible single-site helper. */
+export function initSurveyFrames(manifest: GlobeManifest): SurveyFrame {
+  const frame = createSurveyFrame(manifest)
+  activateSurveyFrame(frame)
+  return frame
 }
 
 /** Rebase distance scales with viewing range (pan/zoom speed do too). */

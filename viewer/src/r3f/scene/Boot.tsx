@@ -8,15 +8,15 @@ import { EXPERIENCE_CONFIG } from '../../threejs-test/config'
 import { createCloudNoiseTexture } from '../../threejs-test/cloud-noise'
 import { classifyTier } from '../../threejs-test/environment-layer'
 import { fetchGlobeManifest } from '../../threejs-test/manifest'
-import { setCloudShadowTexture } from '../../threejs-test/point-cloud'
+import { createUniforms, setCloudShadowTexture } from '../../threejs-test/point-cloud'
 import { createPointSource } from '../../threejs-test/point-source'
 import { APP_PARAMS, donationShapePromise } from '../params'
 import { isWebGPUBackend } from '../canvas/createRenderer'
 import { DAYLIGHT_SKY } from '../state/frame'
 import { setLoadProgress, useBootStore } from '../state/boot-store'
-import { useSceneStore } from '../state/scene-store'
+import { useSceneStore, type DatasetRuntime } from '../state/scene-store'
 import { useUiStore } from '../state/ui-store'
-import { initSurveyFrames } from '../state/survey-frames'
+import { activateSurveyFrame, createSurveyFrame } from '../state/survey-frames'
 import { installDebugHandles } from '../dev/debug-handles'
 
 function describeCoordinates(polygons: { outer: Array<readonly [number, number]> }[]): string | null {
@@ -91,24 +91,84 @@ export function Boot() {
     ;(async () => {
       setLoadProgress(0.22, 'Lade Fluggebiet und Koordinaten …')
       useBootStore.setState({ phase: 'manifest' })
-      const manifest = await fetchGlobeManifest(APP_PARAMS.baseUrl, APP_PARAMS.dataset)
+      const definitions = APP_PARAMS.worldDatasets
+      const loading = Object.fromEntries(definitions.map((definition) => [definition.id, {
+        definition,
+        status: 'loading',
+        error: null,
+        manifest: null,
+        frame: null,
+        uniforms: null,
+        pointSource: null,
+        activeSource: null,
+        stream: null,
+        stats: null,
+        appliedHighPrecision: null,
+      } satisfies DatasetRuntime]))
+      useSceneStore.setState({ datasets: loading, activeDatasetId: APP_PARAMS.initialDatasetId })
+      const loadRuntime = async (definition: typeof definitions[number]) => {
+        const manifest = await fetchGlobeManifest(APP_PARAMS.baseUrl, definition.logicalDataset)
+        const pointSource = createPointSource({
+          baseUrl: APP_PARAMS.baseUrl,
+          manifest,
+          basePack: APP_PARAMS.pointTree,
+          onChange: () => useUiStore.setState((s) => ({ packsVersion: s.packsVersion + 1 })),
+        })
+        for (const [band, packId] of APP_PARAMS.zoomAssignments) pointSource.setAssignment(band, packId)
+        return {
+          definition,
+          status: 'ready' as const,
+          error: null,
+          manifest,
+          frame: createSurveyFrame(manifest),
+          uniforms: createUniforms(0),
+          pointSource,
+          activeSource: pointSource.base(),
+          stream: null,
+          stats: null,
+          appliedHighPrecision: null,
+        } satisfies DatasetRuntime
+      }
+      const promises = definitions.map((definition) => loadRuntime(definition))
+      const initial = await promises[0]
       if (cancelled) return
       setLoadProgress(0.28, 'Fluggebiet lokalisiert. Baue Szene …')
-      initSurveyFrames(manifest)
+      activateSurveyFrame(initial.frame!)
+      useSceneStore.setState((state) => ({
+        datasets: { ...state.datasets, [initial.definition.id]: initial },
+        pointSource: initial.pointSource,
+        activeSource: initial.activeSource,
+        stream: null,
+        swapReason: 'boot',
+      }))
 
-      const pointSource = createPointSource({
-        baseUrl: APP_PARAMS.baseUrl,
-        manifest,
-        basePack: APP_PARAMS.pointTree,
-        onChange: () => useUiStore.setState((s) => ({ packsVersion: s.packsVersion + 1 })),
+      // Other sites start concurrently but are deliberately not part of the
+      // loader's critical path; a failed remote site remains selectable only
+      // after its manifest succeeds.
+      promises.slice(1).forEach((promise, index) => {
+        const definition = definitions[index + 1]
+        void promise.then((runtime) => {
+          if (cancelled) return
+          useSceneStore.setState((state) => ({
+            datasets: { ...state.datasets, [runtime.definition.id]: runtime },
+          }))
+        }).catch((reason) => {
+          if (cancelled) return
+          const error = reason instanceof Error ? reason.message : String(reason)
+          console.warn(`[world] ${definition.label} unavailable: ${error}`)
+          useSceneStore.setState((state) => ({
+            datasets: {
+              ...state.datasets,
+              [definition.id]: { ...state.datasets[definition.id]!, status: 'failed', error },
+            },
+          }))
+        })
       })
-      for (const [band, packId] of APP_PARAMS.zoomAssignments) pointSource.setAssignment(band, packId)
-      useSceneStore.setState({ pointSource, activeSource: pointSource.base(), swapReason: 'boot' })
 
       const donationSource = await donationShapePromise
       if (cancelled) return
       useBootStore.setState({
-        manifest,
+        manifest: initial.manifest,
         framesReady: true,
         donationSource,
         donationCoordinates: donationSource ? describeCoordinates(donationSource.polygons) : null,

@@ -1,6 +1,6 @@
 // Development / comparison panel (?panel=1). Every row changes render
 // behaviour; the product surface never shows it.
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { EXPERIENCE_CONFIG } from '../../threejs-test/config'
 import { AUTO, ZOOM_BAND_ROWS } from '../../threejs-test/point-source'
 import { RENDER_OPTION_ROWS } from '../../threejs-test/render-options'
@@ -12,6 +12,7 @@ import { useUiStore } from '../state/ui-store'
 import { setMaskMode, setPointSizeScale } from '../state/actions'
 import { setCompareMode, setOption } from '../state/render-options-bridge'
 import { setRainCycleEnabled } from '../scene/Rain'
+import type { WorldDatasetId } from '../world-datasets'
 
 const fmtInt = (value: number) => Math.round(value).toLocaleString('en-US')
 const STYLES: DonationShapeStyle[] = ['column', 'xray', 'canopy', 'wall']
@@ -53,6 +54,9 @@ function ZoomRows() {
 }
 
 export function SettingsPanel() {
+  const datasets = useSceneStore((s) => s.datasets)
+  const activeDatasetId = useSceneStore((s) => s.activeDatasetId)
+  const [selectedDatasetId, setSelectedDatasetId] = useState<WorldDatasetId>(activeDatasetId)
   const zoom = useUiStore((s) => s.zoom)
   const pointSizeScale = useUiStore((s) => s.pointSizeScale)
   const pointSizePx = useUiStore((s) => s.pointSizePx)
@@ -70,6 +74,11 @@ export function SettingsPanel() {
   const cloudState = useUiStore((s) => s.cloudState)
   const compareMode = useUiStore((s) => s.compareMode)
   const requested = useUiStore((s) => s.requested)
+  const selectedRuntime = datasets[selectedDatasetId]
+  const activeRuntime = datasets[activeDatasetId]
+  const donationControlsEnabled = Boolean(activeRuntime?.definition.hasDonationShape)
+
+  useEffect(() => { setSelectedDatasetId(activeDatasetId) }, [activeDatasetId])
 
   const rainLabel = !rainCycleEnabled ? '☂ Rain cycle · Off' : !rainRequested ? '☂ Rain cycle · Dry' : rainVisualActive ? '☂ Rain · Active' : '☂ Rain · Near view'
   const cloudActive = cloudState ? cloudState.mode !== 'off' : false
@@ -78,6 +87,24 @@ export function SettingsPanel() {
   return (
     <div id="panel" className={`card ${compareMode ? 'compare-mode' : ''} ${splatSolo ? 'splat-solo' : ''}`.trim()}>
       <button className="close" data-close="panel" onClick={() => useUiStore.setState({ panelOpen: false })}>×</button>
+      <p className="opt-head">Location</p>
+      <div className="row" id="locationRow">
+        <label className="h" htmlFor="worldLocation">Point-cloud site</label>
+        <select id="worldLocation" value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value as WorldDatasetId)}>
+          {Object.values(datasets).map((runtime) => runtime && (
+            <option key={runtime.definition.id} value={runtime.definition.id} disabled={runtime.status !== 'ready'}>
+              {runtime.definition.label}{runtime.status === 'ready' ? '' : ` — ${runtime.status}`}
+            </option>
+          ))}
+        </select>
+        <button
+          className="act primary"
+          id="flyToLocation"
+          disabled={selectedRuntime?.status !== 'ready' || selectedDatasetId === activeDatasetId}
+          onClick={() => useSceneStore.setState({ activeDatasetId: selectedDatasetId })}
+        >✈ Fly</button>
+        <span className="weather-note" id="locationStatus">{activeRuntime ? `Active · ${activeRuntime.definition.label}` : 'Loading locations…'}</span>
+      </div>
       <p className="opt-head">Zoom levels · point source</p>
       <div className="row zoom-row" id="zoomStatusRow">
         <label className="h">Current zoom level</label>
@@ -127,7 +154,7 @@ export function SettingsPanel() {
         <label className="h">Shape style</label>
         <div className="seg" id="shapeStyleSeg">
           {STYLES.map((style) => (
-            <button key={style} data-shape-style={style} className={donationStyle === style ? 'on' : ''} onClick={() => useUiStore.setState({ donationStyle: style })}>{STYLE_LABEL[style]}</button>
+            <button key={style} data-shape-style={style} disabled={!donationControlsEnabled} className={donationStyle === style ? 'on' : ''} onClick={() => useUiStore.setState({ donationStyle: style })}>{STYLE_LABEL[style]}</button>
           ))}
         </div>
         <span className="weather-note" id="shapeStyleNote">Protected parcel from GeoJSON. Column = light column through the canopy, X-ray = footprint shines through the trees, Canopy = plate on the crowns, Wall = low glowing wall. Switching re-frames the camera</span>
@@ -136,14 +163,14 @@ export function SettingsPanel() {
         <label className="h">Shape form</label>
         <div className="seg" id="shapeFormSeg">
           {FORMS.map((form) => (
-            <button key={form} data-shape-form={form} className={donationForm === form ? 'on' : ''} onClick={() => useUiStore.setState({ donationForm: form })}>{form === 'exact' ? 'Exact' : 'Organic'}</button>
+            <button key={form} data-shape-form={form} disabled={!donationControlsEnabled} className={donationForm === form ? 'on' : ''} onClick={() => useUiStore.setState({ donationForm: form })}>{form === 'exact' ? 'Exact' : 'Organic'}</button>
           ))}
         </div>
         <span className="weather-note">Exact = the surveyed staircase with every 1 m² cell line — the authoritative boundary. Organic = rounded, area-preserving, a stylised reading of the same parcel</span>
       </div>
       <div className="row" id="shapeSmoothRow" hidden={donationForm !== 'organic'}>
         <label className="h" htmlFor="shapeSmooth">Rounding · <span className="val" id="shapeSmoothv">{donationSmoothness.toFixed(2)}</span></label>
-        <input type="range" id="shapeSmooth" min={0} max={1} step={0.05} value={donationSmoothness} onChange={(event) => useUiStore.setState({ donationSmoothness: Number(event.target.value) })} />
+        <input type="range" id="shapeSmooth" min={0} max={1} step={0.05} disabled={!donationControlsEnabled} value={donationSmoothness} onChange={(event) => useUiStore.setState({ donationSmoothness: Number(event.target.value) })} />
         <span className="weather-note">Radius of the disc the outline is opened and closed with, 0 = untouched staircase</span>
       </div>
       <div className="row">

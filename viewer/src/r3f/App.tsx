@@ -13,7 +13,6 @@ import { VideoModal } from './ui/VideoModal'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { SplatOverlay } from './ui/SplatOverlay'
 import { CompareBoot } from './ui/CompareBoot'
-import { APP_PARAMS } from './params'
 import { useUiStore } from './state/ui-store'
 import './state/render-options-bridge'
 import {
@@ -40,7 +39,7 @@ export function App() {
       <Chips />
       <KeyboardGuide />
       <Hud />
-      {APP_PARAMS.panelEnabled && <SettingsPanel />}
+      <SettingsPanel />
       <TimeDock />
       <Attribution />
       <ResumeTourButton />

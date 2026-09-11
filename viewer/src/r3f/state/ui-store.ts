@@ -84,7 +84,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>(() => ({
   hudOpen: !APP_PARAMS.compactViewport,
-  panelOpen: APP_PARAMS.panelEnabled && !APP_PARAMS.compactViewport,
+  panelOpen: APP_PARAMS.panelInitiallyOpen,
   timeDockOpen: false,
   backendLabel: '…',
   statusLine: 'Initializing…',

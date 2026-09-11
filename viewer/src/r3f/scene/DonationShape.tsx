@@ -21,11 +21,13 @@ export function DonationShape() {
   const framesReady = useBootStore((s) => s.framesReady)
   const source = useBootStore((s) => s.donationSource)
   const globe = useSceneStore((s) => s.globe)
+  const activeDatasetId = useSceneStore((s) => s.activeDatasetId)
   const style = useUiStore((s) => s.donationStyle)
   const form = useUiStore((s) => s.donationForm)
   const smoothness = useUiStore((s) => s.donationSmoothness)
   const visible = useUiStore((s) => s.effective.donationShape)
   const smoothTimer = useRef(0)
+  const activeHasDonationShape = Boolean(useSceneStore.getState().datasets[activeDatasetId]?.definition.hasDonationShape)
 
   useEffect(() => {
     const manifest = useBootStore.getState().manifest
@@ -63,7 +65,7 @@ export function DonationShape() {
     layer.setStyle(ui.donationStyle)
     layer.setForm(ui.donationForm)
     layer.setSmoothness(ui.donationSmoothness)
-    layer.setVisible(ui.effective.donationShape)
+    layer.setVisible(ui.effective.donationShape && activeHasDonationShape)
     const info = layer.info()
     console.info(
       `[donation-shape] ${info.areaM2.toFixed(2)} m² · ${info.cellCount} cells of ${info.cellAreaM2.toFixed(3)} m² · `
@@ -82,7 +84,7 @@ export function DonationShape() {
     layer.setStyle(style)
     // Re-frame for the new style: a flat footprint framed at the column's
     // distance is a smudge.
-    if (!isBootLoading()) sceneState().rig?.refit()
+    if (activeHasDonationShape && !isBootLoading()) sceneState().rig?.refit()
   }, [style])
 
   useEffect(() => { sceneState().donation?.setForm(form) }, [form])
@@ -94,11 +96,11 @@ export function DonationShape() {
     return () => window.clearTimeout(smoothTimer.current)
   }, [smoothness])
 
-  useEffect(() => { sceneState().donation?.setVisible(visible) }, [visible])
+  useEffect(() => { sceneState().donation?.setVisible(visible && activeHasDonationShape) }, [visible, activeHasDonationShape])
 
   useFrame(() => {
     const layer = sceneState().donation
-    if (!layer || !uiState().effective.donationShape) return
+    if (!layer || !uiState().effective.donationShape || !sceneState().datasets[sceneState().activeDatasetId]?.definition.hasDonationShape) return
     layer.update(frame.now, camera)
   }, PHASE.LAYERS)
 

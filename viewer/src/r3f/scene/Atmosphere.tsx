@@ -93,7 +93,9 @@ export function updateDistanceCutoff(camera: THREE.PerspectiveCamera, dt: number
     frame.cameraAltitude * lod.distanceDetailHeightFactor * detailPitch,
     lod.distanceDetailMinM * detailPitch,
   )
-  sceneState().stream?.setDistanceCutoff(frame.distanceCutoff, detailRange)
+  for (const runtime of Object.values(sceneState().datasets)) {
+    runtime?.stream?.setDistanceCutoff(frame.distanceCutoff, detailRange)
+  }
 }
 
 export function Atmosphere() {

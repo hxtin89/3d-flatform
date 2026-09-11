@@ -9,6 +9,7 @@ import { frame } from './frame'
 import { sceneState, useSceneStore } from './scene-store'
 import { useUiStore, uiState } from './ui-store'
 import { isBootLoading, useBootStore } from './boot-store'
+import { allocateWorldMemoryBudget } from './world-memory-budget'
 
 const MIB = 1024 * 1024
 /** Fixed high budgets while presetBudgets is off (compare mode). */
@@ -57,14 +58,19 @@ export function applyPixelRatio(): void {
 /** Single place the stream budget comes from, so a rebuilt streamer never
  * falls back to its construction defaults. */
 export function applyStreamMemoryBudget(): void {
-  const stream = sceneState().stream
-  if (!stream) return
-  if (!effectiveOptions().presetBudgets) {
-    stream.setMemoryBudget(COMPARE_STREAM_BUDGET.cacheBytes, COMPARE_STREAM_BUDGET.gpuBytes)
-    return
+  const scene = sceneState()
+  const runtimes = Object.values(scene.datasets).filter((runtime) => runtime?.stream)
+  if (!runtimes.length) return
+  const total = effectiveOptions().presetBudgets
+    ? STREAM_BUDGET_BY_PRESET[useBootStore.getState().benchPreset]
+    : COMPARE_STREAM_BUDGET
+  const ids = runtimes.map((runtime) => runtime!.definition.id)
+  const activeId = ids.includes(scene.activeDatasetId) ? scene.activeDatasetId : ids[0]
+  const allocations = allocateWorldMemoryBudget(total, ids, activeId)
+  for (const runtime of runtimes) {
+    const allocation = allocations[runtime!.definition.id]
+    runtime!.stream!.setMemoryBudget(allocation.cacheBytes, allocation.gpuBytes)
   }
-  const budget = STREAM_BUDGET_BY_PRESET[useBootStore.getState().benchPreset]
-  stream.setMemoryBudget(budget.cacheBytes, budget.gpuBytes)
 }
 
 export function applyGlobeMemoryBudget(): void {
@@ -116,8 +122,7 @@ export function setPointSizeScale(scale: number): void {
 
 export function setPointCloudRevealed(revealed: boolean): void {
   frame.pointCloudRevealed = revealed
-  const stream = sceneState().stream
-  if (stream) stream.group.visible = revealed
+  for (const runtime of Object.values(sceneState().datasets)) runtime?.stream && (runtime.stream.group.visible = revealed)
 }
 
 /** Turn the loader benchmark into start settings. Port of applyBenchPreset. */

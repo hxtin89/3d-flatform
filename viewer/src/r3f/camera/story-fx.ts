@@ -41,6 +41,13 @@ export function updateStoryFx(descent: number, arrivalMs: number | null): void {
   const fx = EXPERIENCE_CONFIG.story.fx
   frame.cinematicFlightProgress = descent
   const scene = sceneState()
+  // The donor narrative is authored for Peru B2 only. A location teleport
+  // takes the rig into user mode, but the last caption otherwise remains in
+  // the overlay indefinitely.
+  if (!scene.datasets[scene.activeDatasetId]?.definition.hasDonationShape) {
+    scene.captions?.hide()
+    return
+  }
   if (fx.descent.cloudOpacity.length) {
     scene.environment?.setCloudOpacity(evaluateTrack(fx.descent.cloudOpacity, (1 - descent) * 1000))
   }

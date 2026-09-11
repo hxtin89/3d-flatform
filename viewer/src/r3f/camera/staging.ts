@@ -30,14 +30,18 @@ export function frameDistanceM(camera: THREE.PerspectiveCamera): number {
 
 /** Parcel ground centroid in ENU, or the survey centre. */
 export function anchorEnu(target = new THREE.Vector3()): THREE.Vector3 {
-  const donation = sceneState().donation
+  const scene = sceneState()
+  const donation = scene.datasets[scene.activeDatasetId]?.definition.hasDonationShape ? scene.donation : null
   if (donation) return donation.groundCentreEnu(target)
   return target.copy(geo.cloudCenterEnu)
 }
 
 /** Height of the parcel volume in the active style (0 without a parcel). */
 export function parcelHeightM(): number {
-  return sceneState().donation?.frameExtent().heightM ?? 0
+  const scene = sceneState()
+  return scene.datasets[scene.activeDatasetId]?.definition.hasDonationShape
+    ? scene.donation?.frameExtent().heightM ?? 0
+    : 0
 }
 
 /** Orbit range that keeps the camera above the navigation floor at the
