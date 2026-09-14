@@ -1,1 +1,8 @@
 *.MOV
+
+# Browser-pane dev-server config. The port in it is a local choice, so it differs per
+# machine and per session.
+viewer/.claude/
+
+# Personal drafts and scratch notes, not project files.
+Claude outputs/
