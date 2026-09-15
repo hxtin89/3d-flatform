@@ -4,6 +4,7 @@
 import * as THREE from 'three'
 import { TilesRenderer } from '3d-tiles-renderer'
 import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
+import { recordArrival } from './arrival-cost'
 import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
   POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
@@ -474,6 +475,10 @@ export function createStreamingCloud(opts: {
   // UnloadTilesPlugin because hiding one tile disposes its material and would
   // invalidate every other tile that shared the same instance.
   tiles.addEventListener('load-model', ({ scene: model, tile, url }: any) => {
+    // Timed because this handler is the one piece of tile cost that lands in a rAF turn
+    // with no budget above it: the shuffle, the quad build and the per-tile material all
+    // run here, synchronously, in whatever frame the parse promise happens to resolve.
+    const arrivalStartedAt = performance.now()
     let points = 0
     const sources: THREE.Points[] = []
     model.traverse((object: any) => {
@@ -511,10 +516,27 @@ export function createStreamingCloud(opts: {
       // the tile transform for free. The carrier itself draws nothing.
       source.add(mesh)
       source.geometry.setDrawRange(0, 0)
+      // An empty draw range stops the carrier *drawing*; it does not stop it being
+      // rendered. Renderer._renderObjectDirect uploads a render object's attributes
+      // (`_geometries.updateForRender`) before it ever asks `getDrawParameters` whether
+      // there is anything to draw — so a parked carrier still minted a second GPU buffer
+      // for the very same position and colour arrays the quad mesh below wraps. Double
+      // the VRAM per tile, and twice three's vec3→vec4 colour repack, which is a
+      // per-point JS loop and the single most expensive thing in bringing a tile online.
+      //
+      // The layers test is the right lever rather than `visible = false`: _projectObject
+      // returns early on invisible objects and would take the quad child with it, while
+      // a failed layers test skips only this object — the children loop sits outside that
+      // branch. Nothing else in the viewer uses layers.
+      //
+      // The geometry stays readable, which it has to: sampleGroundZ, shadedPixelArea and
+      // applyThinning all reach through `mesh.parent` for the tile's real point bounds.
+      source.layers.disableAll()
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
     }
     tileStats.set(tile, { points, density, debugTiles, quads })
+    recordArrival(performance.now() - arrivalStartedAt, points)
   })
   tiles.addEventListener('dispose-model', ({ tile }: any) => tileStats.delete(tile))
   // A missing tile is a gap in the published data, not a crash, and the

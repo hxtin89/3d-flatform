@@ -23,6 +23,7 @@ import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
+import { recordFrame, costReport, resetCost } from './arrival-cost'
 import { EXPERIENCE_CONFIG } from './config'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -3979,6 +3980,7 @@ function recoverCameraPose(): void {
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
+  recordFrame(now)
   // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
   // WebGPU-Punktwolke, Wolken-Raymarch, Streaming). Eigener WebGL-Renderer.
   if (gaussianSplatLayer?.isEnabled()) { gaussianSplatLayer.update(); return }
@@ -4537,6 +4539,13 @@ async function main(): Promise<void> {
     // has to clear that state or the camera slides back out of the pose.
     afterJump: () => globe?.forceResetState?.(),
   })
+  // Tile-arrival cost, read from the console as __cost.report(). Separate from __poses
+  // because that one measures a parked, fully-streamed view by construction — the exact
+  // condition in which an arrival cost is zero. See arrival-cost.ts.
+  ;(window as any).__cost = {
+    report: () => costReport(renderer),
+    reset: () => resetCost(),
+  }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
     for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
