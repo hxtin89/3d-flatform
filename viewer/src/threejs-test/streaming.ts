@@ -197,6 +197,11 @@ export interface StreamingLimits {
 
 const MIB = 1024 * 1024
 
+/** How long a tile takes to ease most of the way to a new keep fraction. Long enough that
+ *  a covered/uncovered flip reads as a dissolve rather than a step, short enough that the
+ *  saving still arrives while the camera is still moving. */
+const THINNING_RAMP_MS = 260
+
 // Reused by the ground probe so a per-frame sample allocates nothing.
 const scratchMatrix = new THREE.Matrix4()
 const scratchVector = new THREE.Vector3()
@@ -364,6 +369,8 @@ export function createStreamingCloud(opts: {
     quads: THREE.Mesh[]
   }>()
   const failedTiles = new Set<string>()
+  /** Timestamp of the previous thinning pass, for the ramp's elapsed time. */
+  let lastThinningAt = 0
 
   /**
    * Put a tile's points into a random order, once, in place.
@@ -393,7 +400,9 @@ export function createStreamingCloud(opts: {
   let pointsPreOrdered = false
   function tilesArePreOrdered(): boolean {
     if (pointOrderChecked) return pointsPreOrdered
-    const root = (tiles as any).rootTileset ?? (tiles as any).rootTileSet
+    // `rootTileset` only — the `rootTileSet` spelling is deprecated and logs a warning
+    // on every read, which this would do once per tile until the root resolves.
+    const root = (tiles as any).rootTileset
     if (!root) return false
     pointOrderChecked = true
     pointsPreOrdered = root?.asset?.extras?.pointOrder === 'progressive'
@@ -911,11 +920,21 @@ export function createStreamingCloud(opts: {
             ;(mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = full
             const scale = (mesh.material as any)?.userData?.thinScale
             if (scale) scale.value = 1
+            // Forget the ramp state too, or switching thinning back on would fade down
+            // from wherever it happened to be rather than from the full tile.
+            if ((mesh.geometry as any).userData) (mesh.geometry as any).userData.keepNow = undefined
             drawn += full
           }
         }
         return { drawn, loaded }
       }
+
+      // Real elapsed time, so the ramp below is frame-rate independent. Clamped because a
+      // backgrounded tab returns a gap that would otherwise snap every tile straight to
+      // its target and undo the point of damping it.
+      const nowMs = performance.now()
+      const dtMs = lastThinningAt === 0 ? 0 : Math.min(100, nowMs - lastThinningAt)
+      lastThinningAt = nowMs
 
       camera.getWorldDirection(coverForward)
       for (const tile of tiles.visibleTiles) {
@@ -968,6 +987,29 @@ export function createStreamingCloud(opts: {
           // A floor, because a tile that draws nothing at all pops back in as a block the
           // moment the camera moves, and one point in a hundred still reads as texture.
           keep = Math.max(settings.minKeep, Math.min(1, keep))
+          // Ease toward the target instead of jumping to it.
+          //
+          // `covered` is a boolean recomputed every frame — a tile counts as covered the
+          // instant the *first* of its children finishes downloading, and stops counting
+          // the instant that child leaves the frustum. Undamped that is a step change in
+          // both the drawn count and the dot width, firing continuously while the camera
+          // moves and while tiles stream, which is what reads as the cloud "stuttering"
+          // even at a perfectly steady frame rate.
+          //
+          // Exponential and driven by real elapsed time rather than a per-frame factor,
+          // so the fade takes the same wall-clock time at 60 and at 165 Hz. A tile seen
+          // for the first time starts *at* its target: fading in from full would draw
+          // more points than asked for in exactly the frames a new tile already costs
+          // the most.
+          //
+          // The prefix draw is what makes this a clean dissolve rather than a shimmer —
+          // a ramp only ever adds or removes points at the tail, and never changes which
+          // of the surviving points are on screen.
+          const previousKeep = anyGeometry.userData.keepNow
+          if (previousKeep !== undefined && dtMs > 0) {
+            keep = previousKeep + (keep - previousKeep) * (1 - Math.exp(-dtMs / THINNING_RAMP_MS))
+          }
+          anyGeometry.userData.keepNow = keep
           const count = Math.max(1, Math.round(full * keep))
           geometry.instanceCount = count
           // Survivors stand in for the ones that went, so they are drawn as wide as the

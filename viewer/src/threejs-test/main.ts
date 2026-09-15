@@ -2655,10 +2655,15 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  */
 let thinningOn = true
 let thinTargetScale = 1
-/** 0%: a tile whose own children are also drawn is duplicated detail, and this is where
- *  nearly all the saving comes from. Harmless because the ramp below keeps it away from
- *  the near field, which is the only place ancestors still carry the picture. */
-let ancestorKeep = 0
+/** A tile whose own children are also drawn is duplicated detail, and this is where
+ *  nearly all the saving comes from — but 0 made the step far too violent to hide.
+ *
+ *  `covered` is a boolean that flips the instant the *first* child finishes downloading,
+ *  so at 0 a tile swung between 100% and the 2% floor — a factor of fifty, in one frame,
+ *  repeatedly, while the camera moves. At 0.3 the worst swing is a factor of three, which
+ *  the temporal ramp in applyThinning can actually dissolve. The far field still loses
+ *  most of its duplicated ancestors; it just stops announcing it. */
+let ancestorKeep = 0.3
 /** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
  *  points in a normal view sit beyond it — and 800 m is far enough from 100 that the
  *  per-tile steps in between cannot read as a ring. */
