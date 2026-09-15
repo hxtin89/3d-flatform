@@ -6,3 +6,7 @@ viewer/.claude/
 
 # Personal drafts and scratch notes, not project files.
 Claude outputs/
+
+# Python bytecode from running pipeline modules locally.
+__pycache__/
+*.pyc
