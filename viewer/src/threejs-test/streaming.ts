@@ -427,6 +427,59 @@ export function createStreamingCloud(opts: {
   const QUAD_UVS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
   const QUAD_INDICES = [0, 1, 2, 0, 2, 3]
 
+  /**
+   * Widen a 3-byte colour to 4 bytes here, so three does not do it inside the render pass.
+   *
+   * WebGPU requires a vertex `arrayStride` that is a multiple of 4, and PNTS colours
+   * arrive as uint8 RGB — three bytes. three handles that in WebGPUAttributeUtils by
+   * padding to vec4 the first time the attribute is drawn, with a loop that allocates a
+   * fresh `subarray` view for every single point. Measured against this tree's tile
+   * sizes that loop runs 3.3 ms at 40k points and 5.8 ms at 150k, it runs on the main
+   * thread *between beginRender and finishRender*, and it is thrown away and redone
+   * whenever the buffer is recreated.
+   *
+   * The same work written as a flat indexed copy is 0.2-0.3 ms — some eighteen times
+   * cheaper — and doing it here moves it out of the render pass into the parse handler,
+   * where it is at least visible to the arrival timer.
+   *
+   * The cost is 4 bytes per point of extra CPU memory: the original colours are a view
+   * into the tile's own PNTS ArrayBuffer, which also holds the positions, so they cannot
+   * be released. Writing RGBA straight out of the pipeline would avoid both the copy and
+   * the extra bytes — this is the version that needs no rebuild of the published tiles.
+   */
+  function padColourForGpu(
+    color: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  ): THREE.InstancedBufferAttribute {
+    const array = color.array as ArrayLike<number> & { BYTES_PER_ELEMENT: number }
+    const itemSize = color.itemSize
+    const stride = itemSize * array.BYTES_PER_ELEMENT
+    // Already aligned — float32 vec3 is 12 bytes, uint8 RGBA is 4 — so three's padding
+    // branch never fires and there is nothing to do. An interleaved attribute is left
+    // alone too: its stride is the buffer's, not this attribute's, so the reasoning here
+    // does not apply. The PNTS loader never hands one over, but the type allows it.
+    if (itemSize <= 1 || stride % 4 === 0 || (color as any).isInterleavedBufferAttribute) {
+      return new THREE.InstancedBufferAttribute(color.array as any, itemSize, color.normalized)
+    }
+    // Only the uint8 RGB case, written out longhand. A general loop over `itemSize` with
+    // a `source.constructor` allocation measured 15x slower than this in the browser —
+    // the dynamic constructor and the variable inner trip count stop V8 specialising it,
+    // and the whole value of doing the padding here rather than letting three do it is
+    // that this version is tight. Anything else falls through to three's own path, which
+    // is slow but correct.
+    if (itemSize !== 3 || array.BYTES_PER_ELEMENT !== 1) {
+      return new THREE.InstancedBufferAttribute(color.array as any, itemSize, color.normalized)
+    }
+    const source = color.array as Uint8Array
+    const count = color.count
+    const out = new Uint8Array(count * 4)
+    for (let i = 0, from = 0, to = 0; i < count; i++, from += 3, to += 4) {
+      out[to] = source[from]
+      out[to + 1] = source[from + 1]
+      out[to + 2] = source[from + 2]
+    }
+    return new THREE.InstancedBufferAttribute(out, 4, color.normalized)
+  }
+
   /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
    * the tile carries no usable position buffer. */
   function buildPointQuads(source: THREE.Points, tile: any, density: DensityBand): THREE.Mesh | null {
@@ -445,15 +498,12 @@ export function createStreamingCloud(opts: {
     geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(
       position.array, position.itemSize, position.normalized,
     ))
-    if (color) {
-      geometry.setAttribute(POINT_COLOR_ATTRIBUTE, new THREE.InstancedBufferAttribute(
-        color.array, color.itemSize, color.normalized,
-      ))
-    }
+    const colorAttribute = color ? padColourForGpu(color) : null
+    if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
     geometry.instanceCount = position.count
 
     const spacing = tileSpacingMetres(tile, position.count)
-    const material = createCloudMaterial(uniforms, color?.itemSize ?? 3, spacing, {
+    const material = createCloudMaterial(uniforms, colorAttribute?.itemSize ?? 3, spacing, {
       level: densityLevel(density),
       tint: densityLevelColor(density),
       // The pipeline's way of saying "this cannot refine further" — written both for
