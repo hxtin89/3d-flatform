@@ -6,7 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
-  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos,
+  cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, renderGroup,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -155,8 +155,29 @@ export function setCloudShadowTexture(texture: THREE.Data3DTexture): void {
   cloudShadowTextureNode = texture3D(texture, null, 0)
 }
 
+/**
+ * One uniform buffer for the whole cloud, instead of a private copy inside every tile.
+ *
+ * `uniform()` defaults to `objectGroup`, and NodeBuilderState.createBindings clones a
+ * non-shared group per render object. Every value below is genuinely global — the mask,
+ * the fog, the daylight, the size settings — yet each of the ~150 live tile materials
+ * carried its own copy, so a single slider move dirtied ~150 small buffers instead of
+ * one, and every frame walked ~150 x 53 values looking for changes.
+ *
+ * `renderGroup` is the right scope: these change at most once per render, never per
+ * object. The per-tile uniforms — thinScale, spacingMetres, debugTile, debugTint — stay
+ * on objectGroup, because those really do differ per tile.
+ */
+function shareAcrossTiles<T extends Record<string, any>>(uniforms: T): T {
+  for (const key of Object.keys(uniforms)) {
+    const node = uniforms[key]
+    if (node && typeof node.setGroup === 'function') node.setGroup(renderGroup)
+  }
+  return uniforms
+}
+
 export function createUniforms(): CloudUniforms {
-  return {
+  return shareAcrossTiles({
     maskCenter: uniform(new THREE.Vector2(0, 0)),
     maskRadius: uniform(120),
     maskMode: uniform(EXPERIENCE_CONFIG.design.maskMode),
@@ -210,7 +231,7 @@ export function createUniforms(): CloudUniforms {
     debugStrength: uniform(0.85),
     debugIsolate: uniform(1),
     debugIsolateLevel: uniform(0),
-  }
+  })
 }
 
 /** Vignette coverage in the survey's ENU frame: 1 in the core, 0 outside the
