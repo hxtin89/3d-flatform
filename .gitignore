@@ -10,3 +10,15 @@ Claude outputs/
 # Python bytecode from running pipeline modules locally.
 __pycache__/
 *.pyc
+
+# Scratch WebGPU bench pages written during investigations; served by vite in dev,
+# must never reach a build.
+viewer/public/*bench*.html
+viewer/public/refute*.html
+viewer/public/quad-refute*.html
+viewer/public/ak-shuffle-vs-upload.html
+viewer/public/node-build-refute*.html
+viewer/public/ak-*.html
+viewer/public/decode-bench.html
+viewer/public/quant-bench.html
+viewer/public/upload-isolate*.html
