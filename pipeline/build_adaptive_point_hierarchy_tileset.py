@@ -125,6 +125,11 @@ def entry_asset_extras(state: dict[str, Any], variant: str, **extra: Any) -> dic
     return {
         "generator": "SBB APH Task 3",
         "adaptivePointHierarchy": True,
+        # Tells the viewer the points in every PNTS are already in a progressive order,
+        # so any prefix is an evenly spread sample and it can skip the load-time shuffle
+        # that used to cost 4-11 ms of main-thread time per tile. Absent on packs built
+        # before that change, which is exactly when the viewer must still shuffle.
+        "pointOrder": "progressive",
         "coordinateMode": "globe",
         "local_only": False,
         "vrv": variant,

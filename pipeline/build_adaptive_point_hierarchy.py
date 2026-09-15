@@ -903,6 +903,64 @@ def read_pnts_header(path: Path) -> dict[str, Any]:
     }
 
 
+PROGRESSIVE_GRID_CELLS = 64
+
+
+def progressive_order(records: np.ndarray, seed: int = 0x5BB1) -> np.ndarray:
+    """Reorder a node's points so that *any prefix is a fair, evenly spread sample*.
+
+    The viewer draws fewer points by lowering `instanceCount`, which draws a prefix of
+    the buffer. A prefix is only a fair sample of the node if the order carries no
+    spatial structure, and the natural COPC order is strongly clustered — so the viewer
+    used to shuffle every tile at load, which costs 4-11 ms of main-thread time per tile
+    and, being random, still leaves the prefix clumpy.
+
+    Baking the order here removes that cost entirely and does better than random while it
+    is at it. Points are bucketed into a coarse grid and emitted round-robin: every
+    cell's first point, then every cell's second, and so on. A prefix of length k then
+    holds at most one more point from any cell than from any other, which is a
+    stratified sample rather than a random one — no clumps, no holes, at every k.
+
+    The cell visiting order inside a round is hashed rather than raster, because a prefix
+    that ends mid-round would otherwise stop partway across the node and bias the sample
+    toward one side of it.
+
+    Returns a reordered copy. The caller must apply the same order to the ordinal
+    sidecar, which happens for free when the whole `records` array is permuted.
+    """
+    n = int(records.shape[0])
+    if n < 2:
+        return records
+
+    def bucket(values: np.ndarray) -> np.ndarray:
+        lo = float(values.min())
+        hi = float(values.max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return np.zeros(n, dtype=np.int64)
+        scaled = (values.astype(np.float64) - lo) * (PROGRESSIVE_GRID_CELLS / (hi - lo))
+        return np.clip(scaled.astype(np.int64), 0, PROGRESSIVE_GRID_CELLS - 1)
+
+    # x and y only: a canopy is a surface draped over a plan, so a 2D lattice already
+    # separates the points that would overlap on screen, and a third axis would just
+    # split each column into near-empty cells.
+    cell = bucket(records["x"]) * PROGRESSIVE_GRID_CELLS + bucket(records["y"])
+    # Cheap integer hash (splitmix-style finaliser), so round k visits the cells in a
+    # fixed but unstructured order instead of sweeping across the node.
+    mixed = (cell.astype(np.uint64) + np.uint64(seed)) * np.uint64(0x9E3779B97F4A7C15)
+    mixed ^= mixed >> np.uint64(29)
+    mixed = (mixed * np.uint64(0xBF58476D1CE4E5B9)) & np.uint64(0xFFFFFFFFFFFFFFFF)
+    mixed ^= mixed >> np.uint64(32)
+
+    by_cell = np.argsort(mixed, kind="stable")
+    runs = mixed[by_cell]
+    starts = np.flatnonzero(np.concatenate(([True], runs[1:] != runs[:-1])))
+    lengths = np.diff(np.concatenate((starts, [n])))
+    # Rank of each point within its own cell: 0, 1, 2 … per cell.
+    within = np.arange(n, dtype=np.int64) - np.repeat(starts, lengths)
+    # Round-robin: all rank-0 points (in hashed cell order), then all rank-1, and so on.
+    return records[by_cell[np.lexsort((runs, within))]]
+
+
 def write_pnts_from_records(path: Path, records: np.ndarray, has_rgb: bool, rtc_center: np.ndarray) -> int:
     xyz = np.column_stack((records["x"], records["y"], records["z"])).astype(np.float64)
     rel = xyz - np.asarray(rtc_center, dtype=np.float64)
@@ -1240,6 +1298,8 @@ def build_z0_adaptive_tree(
             records = np.concatenate(list(iter_fragment_batches(frag_path, has_rgb)))
             content6 = content_bounds_from_records(records)
             rtc = content_center(content6)
+            # Before both writes, so the PNTS and its ordinal sidecar stay in step.
+            records = progressive_order(records)
             write_pnts_from_records(pnts_path, records, has_rgb, rtc)
             write_ordinal_sidecar_atomic(ordinal_sidecar_path(pnts_path), records["ordinal"])
             entry = _manifest_entry(
@@ -1285,6 +1345,8 @@ def build_z0_adaptive_tree(
 
         content6 = content_bounds_from_records(own_records)
         rtc = content_center(content6)
+        # Before both writes, so the PNTS and its ordinal sidecar stay in step.
+        own_records = progressive_order(own_records)
         write_pnts_from_records(pnts_path, own_records, has_rgb, rtc)
         write_ordinal_sidecar_atomic(ordinal_sidecar_path(pnts_path), own_records["ordinal"])
 

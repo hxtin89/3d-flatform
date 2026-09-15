@@ -381,8 +381,35 @@ export function createStreamingCloud(opts: {
    * order (`sampleGroundZ` and the mask builder both stride over them as a sample, which
    * a shuffle only makes more representative), and copying would double tile memory.
    */
+  /**
+   * True once the tileset says its points are already in a progressive order.
+   *
+   * Read from the root tileset's `asset.extras.pointOrder` rather than assumed, because
+   * the ordering is a property of the published pack: anything built before the pipeline
+   * started baking it still needs the runtime shuffle. Cached after the first successful
+   * read — the root document does not change under a running viewer.
+   */
+  let pointOrderChecked = false
+  let pointsPreOrdered = false
+  function tilesArePreOrdered(): boolean {
+    if (pointOrderChecked) return pointsPreOrdered
+    const root = (tiles as any).rootTileset ?? (tiles as any).rootTileSet
+    if (!root) return false
+    pointOrderChecked = true
+    pointsPreOrdered = root?.asset?.extras?.pointOrder === 'progressive'
+    return pointsPreOrdered
+  }
+
   function shufflePoints(geometry: any, position: any, color: any): void {
     if (geometry.userData?.pointsShuffled) return
+    // The pipeline already emitted a stratified order, so a prefix is a fair sample
+    // without doing anything — and this is the single most expensive thing in bringing a
+    // tile online, at 4-11 ms of main-thread time depending on tile size.
+    if (tilesArePreOrdered()) {
+      geometry.userData = geometry.userData ?? {}
+      geometry.userData.pointsShuffled = true
+      return
+    }
     const count = position.count
     if (!(count > 2)) return
     const pos = position.array as Float32Array
