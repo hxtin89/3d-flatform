@@ -3577,11 +3577,17 @@ if (showDiagnostics) diagStatsEl.hidden = false
  * the readout measuring a size the shader was not using is precisely the fault this
  * replaced.
  */
-function drawnDiameterCssPx(spacingM: number, viewDepthM: number): number {
-  const spacingPx = spacingM * uniforms.sizeCoverage.value * uniforms.sizePxPerMetre.value
+function drawnDiameterCssPx(spacingM: number, viewDepthM: number, thinScale = 1): number {
+  // `thinScale` has to appear in BOTH branches and in the same places the shader puts it
+  // (point-cloud.ts: inside `spacingPx` before the clamp, and on `pointSize` in the fixed
+  // branch, which is deliberately left unclamped). Without it this mirror billed the
+  // thinned instance count at the unwidened diameter, so Overdraw reported a saving the
+  // widening had already given back: at the shipped preset it claimed a 44% drop in
+  // painted area where the true figure is 0%.
+  const spacingPx = spacingM * thinScale * uniforms.sizeCoverage.value * uniforms.sizePxPerMetre.value
     / Math.max(viewDepthM, 0.001)
   return THREE.MathUtils.lerp(
-    uniforms.pointSize.value,
+    uniforms.pointSize.value * thinScale,
     THREE.MathUtils.clamp(spacingPx, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value),
     uniforms.sizeSpacingMix.value,
   )

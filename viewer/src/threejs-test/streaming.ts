@@ -135,7 +135,7 @@ export interface StreamingCloud {
    */
   applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
   shadedPixelArea(
-    diameterPx: (spacingM: number, viewDepthM: number) => number,
+    diameterPx: (spacingM: number, viewDepthM: number, thinScale: number) => number,
   ): { areaPx: number; points: number }
   dispose(): void
 }
@@ -1002,7 +1002,9 @@ export function createStreamingCloud(opts: {
           // Straddling the near plane: part of it really is drawn, and drawn large. Billed
           // at the near plane rather than at a centre that sits behind the camera, which
           // is an over-estimate bounded by the size clamp instead of an unbounded one.
-          const diameter = diameterPx(spacingM, Math.max(depth, camera.near))
+          // The widening is part of the drawn size, so it is part of the painted area.
+          const thinScale = (mesh.material as any)?.userData?.thinScale?.value ?? 1
+          const diameter = diameterPx(spacingM, Math.max(depth, camera.near), thinScale)
           areaPx += instances * diameter * diameter
           points += instances
         }
