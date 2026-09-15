@@ -4527,24 +4527,68 @@ async function main(): Promise<void> {
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask,
   }
-  // Where the drawn point size comes from, per visible tile: the band it belongs to,
-  // the spacing read off it, and what that spacing resolves to at the current target.
-  // The one place the derivation can be checked against the depth it came from — a
-  // d9 leaf should land near half a metre, a d0 node in the tens of metres.
+  /**
+   * Where the drawn point size comes from, per band: the spacing read off the tiles, the
+   * diameter that spacing actually resolves to on screen, and how much of the band is
+   * pinned against `Largest dot`.
+   *
+   * `drawnPx` goes through `drawnDiameterCssPx`, the same mirror the Overdraw readout
+   * uses, at the tile's own centre depth and with its own `thinScale` — so it moves with
+   * the mode switch, both sliders and the thinning, exactly as the shader does.
+   *
+   * It replaces a `pxAtTarget` column that could not say anything per band. That figure
+   * was `errorTarget / errorScale` put through the clamp, and a tile's own metres never
+   * entered it: a tile sitting exactly on the target projects to the same spacing
+   * whatever level it is, so the column printed one number eight times and, by sitting
+   * in a per-band table, implied it was eight measurements.
+   *
+   * `atCeiling` is the number the size work is aimed at. A band reading 100% is drawing
+   * every one of its points at `Largest dot` — the per-tile derivation has been clamped
+   * away there and the level is contributing nothing but paint.
+   */
   ;(window as any).__spacing = () => {
-    const byBand = new Map<string, { tiles: number; min: number; max: number }>()
+    type BandStat = {
+      tiles: number; min: number; max: number
+      drawnMin: number; drawnMax: number; points: number; ceiling: number
+    }
+    const byBand = new Map<string, BandStat>()
+    const forward = new THREE.Vector3()
+    const centre = new THREE.Vector3()
+    camera.getWorldDirection(forward)
+    const ceilingPx = Math.max(uniforms.sizeMaxPx.value, uniforms.sizeMinPx.value)
     for (const tile of (stream?.tiles.visibleTiles ?? []) as Set<any>) {
       let spacing = NaN
+      let drawn = NaN
+      let points = 0
       tile?.engineData?.scene?.traverse((object: any) => {
         const value = object?.material?.userData?.pointSpacingM
-        if (typeof value === 'number') spacing = value
+        if (typeof value !== 'number') return
+        spacing = value
+        points += (object.geometry as THREE.InstancedBufferGeometry).instanceCount ?? 0
+        // The carrier still holds the tile's real point bounds; the quad geometry's own
+        // sphere describes the four corner offsets — see shadedPixelArea for the same trap.
+        const carrier = object.parent as THREE.Object3D | null
+        const geometry = carrier ? (carrier as any).geometry : null
+        if (!geometry) return
+        if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+        if (!geometry.boundingSphere) return
+        centre.copy(geometry.boundingSphere.center).applyMatrix4(carrier!.matrixWorld)
+        const depth = Math.max(centre.sub(camera.position).dot(forward), camera.near)
+        drawn = drawnDiameterCssPx(value, depth, object.material?.userData?.thinScale?.value ?? 1)
       })
-      if (!Number.isFinite(spacing)) continue
+      if (!Number.isFinite(spacing) || !Number.isFinite(drawn)) continue
       const band = densityBandForUri(String(tile?.content?.uri ?? ''))
-      const entry = byBand.get(band) ?? { tiles: 0, min: Infinity, max: -Infinity }
+      const entry = byBand.get(band) ?? {
+        tiles: 0, min: Infinity, max: -Infinity,
+        drawnMin: Infinity, drawnMax: -Infinity, points: 0, ceiling: 0,
+      }
       entry.tiles++
+      entry.points += points
       entry.min = Math.min(entry.min, spacing)
       entry.max = Math.max(entry.max, spacing)
+      entry.drawnMin = Math.min(entry.drawnMin, drawn)
+      entry.drawnMax = Math.max(entry.drawnMax, drawn)
+      if (drawn >= ceilingPx - 1e-6) entry.ceiling += points
       byBand.set(band, entry)
     }
     return [...byBand.entries()]
@@ -4552,10 +4596,10 @@ async function main(): Promise<void> {
       .map(([band, entry]) => ({
         band,
         tiles: entry.tiles,
+        points: entry.points,
         spacingM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
-        pxAtTarget: Number(THREE.MathUtils.clamp(
-          sizeCoverage * pointSizeScale * spacingPxAtTarget(sseAuto), sizeMinPx, sizeMaxPx,
-        ).toFixed(2)),
+        drawnPx: `${entry.drawnMin.toFixed(2)} – ${entry.drawnMax.toFixed(2)}`,
+        atCeiling: `${Math.round(100 * entry.ceiling / Math.max(entry.points, 1))}%`,
       }))
   }
   // Named camera poses, so a change can be measured at the view it was tuned against
