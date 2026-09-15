@@ -489,8 +489,25 @@ export function createStreamingCloud(opts: {
     return pointsPreOrdered
   }
 
+  /**
+   * Whether anything currently needs a fair point order. Mirrors the thinning toggle,
+   * refreshed from `applyThinning` each frame, and true initially because thinning ships on
+   * — tiles loaded during the entrance flight run before the first `applyThinning` call.
+   */
+  let fairOrderWanted = true
+
   function shufflePoints(geometry: any, position: any, color: any): void {
     if (geometry.userData?.pointsShuffled) return
+    // Nothing draws a prefix while thinning is off, so the permutation buys nothing and the
+    // tile can skip 4-12 ms of main-thread work. Deliberately does NOT set `pointsShuffled`:
+    // the order is not fair, it is merely unneeded, and `applyThinning` below relies on
+    // knowing the difference if thinning is switched on later.
+    //
+    // Skipping is safe where *deferring* would not be. `padColourForGpu` copies the colours
+    // straight after this call, so shuffling later would move the positions and leave that
+    // copy behind — points would take their neighbours' colours. Not shuffling at all keeps
+    // both arrays in the order they arrived, which is consistent.
+    if (!fairOrderWanted) return
     // The pipeline already emitted a stratified order, so a prefix is a fair sample
     // without doing anything — and this is the single most expensive thing in bringing a
     // tile online, at 4-11 ms of main-thread time depending on tile size.
@@ -617,6 +634,8 @@ export function createStreamingCloud(opts: {
     const colorAttribute = color ? padColourForGpu(color) : null
     if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
     geometry.instanceCount = position.count
+    // Carried onto the quad geometry because applyThinning has the mesh, not the carrier.
+    geometry.userData.orderIsFair = source.geometry.userData?.pointsShuffled === true
 
     const spacing = tileSpacingMetres(tile, position.count)
     const material = createCloudMaterial(uniforms, colorAttribute?.itemSize ?? 3, spacing, {
@@ -1110,6 +1129,8 @@ export function createStreamingCloud(opts: {
       return { shrunk, tiles: spacingEntries.length }
     },
     applyThinning(settings) {
+      // Read every frame so a tile parsed after the toggle moves gets the right treatment.
+      fairOrderWanted = settings !== null
       let drawn = 0
       let loaded = 0
       if (!settings) {
@@ -1164,6 +1185,21 @@ export function createStreamingCloud(opts: {
           const spacingM = (mesh.material as any)?.userData?.pointSpacingM
           const scale = (mesh.material as any)?.userData?.thinScale
           if (!full || !(spacingM > 0) || !scale) { drawn += geometry.instanceCount; continue }
+          // A tile loaded while thinning was off skipped its shuffle, so its points are still
+          // in the tile's own spatially clustered order and a prefix of them is one lobe of
+          // the tile rather than a sample of it. Draw it whole instead: the alternative is a
+          // wedge of canopy with the rest of the tile missing.
+          //
+          // Left to heal itself rather than shuffled here — that would cost 4-12 ms in the
+          // frame the toggle was hit, across every resident tile (hundreds), and it would
+          // desynchronise the colours, which were copied at parse in the pre-shuffle order.
+          // Tiles churn, and each one that reloads comes back thinnable.
+          if (anyGeometry.userData.orderIsFair !== true) {
+            geometry.instanceCount = full
+            scale.value = 1
+            drawn += full
+            continue
+          }
 
           const carrier = mesh.parent as THREE.Object3D | null
           const carrierGeometry = carrier ? (carrier as any).geometry : null
