@@ -2687,6 +2687,8 @@ let thinRampOn = true
 let tileBudgetOn = false
 let tilesPerFrame = 2
 let lastThinning: { drawn: number; loaded: number } | null = null
+/** How many visible tiles the finest-layer rule shrank this frame — see applyEffectiveSpacing. */
+let lastEffectiveSpacing: { shrunk: number; tiles: number } | null = null
 
 let roundDots = true
 const roundDotsToggleEl = $<HTMLButtonElement>('#roundDotsToggle')
@@ -3570,6 +3572,11 @@ function updateStreaming(now: number): StreamingStats | null {
   // After the traversal, so the error and the stopped-here flag the inspector paints
   // come from the selection that is about to be drawn rather than the previous frame's.
   stream.updateDebugTiles(uniforms.debugMode.value > 0)
+  // Before the thinning, and unconditionally: the drawn size has to follow the finest
+  // layer present whether or not anything is being thinned away, and the widening the
+  // thinning applies is a multiplier on top of whatever this leaves. Inert while
+  // `Point size` is `Fixed`, since nothing then reads the spacing.
+  lastEffectiveSpacing = stream.applyEffectiveSpacing(thinRampOn ? THINNING_RAMP_MS : 0)
   // After the traversal too: the set of visible tiles, and which of them have visible
   // children, is exactly what decides how much of each one is worth drawing.
   lastThinning = stream.applyThinning(thinningOn ? {
@@ -4548,7 +4555,7 @@ async function main(): Promise<void> {
    */
   ;(window as any).__spacing = () => {
     type BandStat = {
-      tiles: number; min: number; max: number
+      tiles: number; min: number; max: number; ownMin: number; ownMax: number
       drawnMin: number; drawnMax: number; points: number; ceiling: number
     }
     const byBand = new Map<string, BandStat>()
@@ -4558,12 +4565,15 @@ async function main(): Promise<void> {
     const ceilingPx = Math.max(uniforms.sizeMaxPx.value, uniforms.sizeMinPx.value)
     for (const tile of (stream?.tiles.visibleTiles ?? []) as Set<any>) {
       let spacing = NaN
+      let own = NaN
       let drawn = NaN
       let points = 0
       tile?.engineData?.scene?.traverse((object: any) => {
-        const value = object?.material?.userData?.pointSpacingM
+        const value = object?.material?.userData?.effectiveSpacingM
+          ?? object?.material?.userData?.pointSpacingM
         if (typeof value !== 'number') return
         spacing = value
+        own = object.material.userData.pointSpacingM ?? value
         points += (object.geometry as THREE.InstancedBufferGeometry).instanceCount ?? 0
         // The carrier still holds the tile's real point bounds; the quad geometry's own
         // sphere describes the four corner offsets — see shadedPixelArea for the same trap.
@@ -4579,13 +4589,15 @@ async function main(): Promise<void> {
       if (!Number.isFinite(spacing) || !Number.isFinite(drawn)) continue
       const band = densityBandForUri(String(tile?.content?.uri ?? ''))
       const entry = byBand.get(band) ?? {
-        tiles: 0, min: Infinity, max: -Infinity,
+        tiles: 0, min: Infinity, max: -Infinity, ownMin: Infinity, ownMax: -Infinity,
         drawnMin: Infinity, drawnMax: -Infinity, points: 0, ceiling: 0,
       }
       entry.tiles++
       entry.points += points
       entry.min = Math.min(entry.min, spacing)
       entry.max = Math.max(entry.max, spacing)
+      entry.ownMin = Math.min(entry.ownMin, own)
+      entry.ownMax = Math.max(entry.ownMax, own)
       entry.drawnMin = Math.min(entry.drawnMin, drawn)
       entry.drawnMax = Math.max(entry.drawnMax, drawn)
       if (drawn >= ceilingPx - 1e-6) entry.ceiling += points
@@ -4597,7 +4609,8 @@ async function main(): Promise<void> {
         band,
         tiles: entry.tiles,
         points: entry.points,
-        spacingM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
+        ownM: `${entry.ownMin.toFixed(2)} – ${entry.ownMax.toFixed(2)}`,
+        effectiveM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
         drawnPx: `${entry.drawnMin.toFixed(2)} – ${entry.drawnMax.toFixed(2)}`,
         atCeiling: `${Math.round(100 * entry.ceiling / Math.max(entry.points, 1))}%`,
       }))

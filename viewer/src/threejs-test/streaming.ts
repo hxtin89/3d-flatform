@@ -142,6 +142,15 @@ export interface StreamingCloud {
    * rather than leaving it to be inferred.
    */
   applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
+  /**
+   * Point the drawn size at the density that is actually on screen at each spot, rather
+   * than at each tile's own.
+   *
+   * Only the spacing-derived size reads this, so it is inert while `Point size` is
+   * `Fixed` — see applyEffectiveSpacing for what it does and why the ancestors need it.
+   * `rampMs` is the thinning dissolve's, and 0 disables the easing.
+   */
+  applyEffectiveSpacing(rampMs: number): { shrunk: number; tiles: number }
   shadedPixelArea(
     diameterPx: (spacingM: number, viewDepthM: number, thinScale: number) => number,
   ): { areaPx: number; points: number }
@@ -398,6 +407,25 @@ export function createStreamingCloud(opts: {
   const failedTiles = new Set<string>()
   /** Timestamp of the previous thinning pass, for the ramp's elapsed time. */
   let lastThinningAt = 0
+  /** The same, for the effective-spacing pass, which runs whether thinning is on or not. */
+  let lastSpacingAt = 0
+  /**
+   * One visible tile as applyEffectiveSpacing sees it. Reused between frames so the pass
+   * allocates nothing: it runs every frame over every visible tile.
+   *
+   * `own` is the tile's measured spacing and never changes; `finest` starts there and is
+   * lowered by any drawn descendant; `covered` is the fraction of its direct children
+   * that are drawn.
+   */
+  interface SpacingEntry {
+    tile: any
+    quads: THREE.Mesh[]
+    own: number
+    finest: number
+    covered: number
+  }
+  const spacingEntries: SpacingEntry[] = []
+  const spacingByTile = new Map<object, SpacingEntry>()
   /**
    * Tiles built but not yet shown, oldest first, and how many may be released per frame.
    *
@@ -972,6 +1000,98 @@ export function createStreamingCloud(opts: {
         cacheBytesCeiling: tiles.lruCache.maxBytesSize,
       }
     },
+    applyEffectiveSpacing(rampMs) {
+      /**
+       * Refinement is ADD, so tiles do not replace their parents — they stack. At the
+       * arrival view, eight levels are drawn over the same ground with spacings from
+       * 7.30 m down to 0.13 m, a range of 57. Sizing each level from its *own* spacing
+       * therefore hands the fattest dots to the levels carrying the least information:
+       * measured there, 66.9% of the drawn points are ancestors under a finer layer, and
+       * in the spacing-derived mode they take 91% of the painted area, with every level
+       * from p001 to d3 pinned flat against the `Largest dot` ceiling.
+       *
+       * The spacing that matters at a spot is the finest one present, not each tile's
+       * own. Descendants sit strictly inside their ancestors in a quadtree, so
+       * propagating each tile's spacing up its parent chain gives every tile the finest
+       * spacing found over its own footprint — exactly, with no geometry test.
+       *
+       * Scaled by how much of the tile its visible children actually cover, because the
+       * finest spacing is only the right answer where the finer data is drawn. An
+       * ancestor with one of four children on screen is still the finest layer over the
+       * other three quarters, and shrinking it there would open holes rather than close
+       * them. Linear rather than logarithmic between the two: spacing halves per level,
+       * so a linear blend errs toward the coarser end, and the coarser end is the one
+       * that does not leave gaps.
+       */
+      const nowMs = performance.now()
+      const dtMs = lastSpacingAt === 0 ? 0 : Math.min(100, nowMs - lastSpacingAt)
+      lastSpacingAt = nowMs
+
+      spacingEntries.length = 0
+      spacingByTile.clear()
+      for (const tile of tiles.visibleTiles) {
+        const stats = tileStats.get(tile)
+        if (!stats?.quads.length) continue
+        const own = (stats.quads[0].material as any)?.userData?.pointSpacingM
+        if (!(own > 0)) continue
+        // Only the children the camera can actually see are counted, on both sides of the
+        // fraction. A d1 node spans a kilometre and the frame at canopy height spans a
+        // hundred metres, so three of its four children are routinely outside the frustum
+        // — ground that is not drawn at all and needs no size. Counting those as
+        // "uncovered" is what held the first version of this back: measured at the
+        // arrival view it put d1 at one quarter covered when the single child in view was
+        // drawn, i.e. fully covered, and the level stayed pinned at the ceiling.
+        const children = (tile as any)?.children as any[] | undefined
+        let inView = 0
+        let drawn = 0
+        if (Array.isArray(children)) {
+          for (const child of children) {
+            if (!child?.traversal?.inFrustum) continue
+            inView++
+            if (tiles.visibleTiles.has(child)) drawn++
+          }
+        }
+        const entry: SpacingEntry = {
+          tile, quads: stats.quads, own, finest: own, covered: inView ? drawn / inView : 0,
+        }
+        spacingEntries.push(entry)
+        spacingByTile.set(tile, entry)
+      }
+      // Every tile against every ancestor of it that is also drawn. The walk is up the
+      // parent chain rather than down the subtree, so a tile whose parent is off screen
+      // costs nothing and the whole pass is linear in visible tiles times tree depth.
+      for (const entry of spacingEntries) {
+        let node = (entry.tile as any)?.parent
+        while (node) {
+          const ancestor = spacingByTile.get(node)
+          if (ancestor && entry.own < ancestor.finest) ancestor.finest = entry.own
+          node = node.parent
+        }
+      }
+
+      let shrunk = 0
+      for (const entry of spacingEntries) {
+        const target = entry.own + (entry.finest - entry.own) * entry.covered
+        for (const mesh of entry.quads) {
+          const uniformNode = (mesh.material as any)?.userData?.spacingMetres
+          if (!uniformNode) continue
+          // Eased for the same reason the thinning keep fraction is, and through the same
+          // constant: `covered` is recomputed every frame and flips the instant a child
+          // finishes downloading or leaves the frustum. Undamped, that steps the dot
+          // width of a whole level between frames, continuously, while the camera moves —
+          // which is the stutter the dissolve was built to remove, arriving by a second
+          // route. A tile seen for the first time starts *at* its target.
+          const previous = (mesh.material as any).userData.effectiveSpacingM
+          const eased = previous !== undefined && dtMs > 0 && rampMs > 0
+            ? previous + (target - previous) * (1 - Math.exp(-dtMs / rampMs))
+            : target
+          ;(mesh.material as any).userData.effectiveSpacingM = eased
+          uniformNode.value = eased
+        }
+        if (target < entry.own * 0.999) shrunk++
+      }
+      return { shrunk, tiles: spacingEntries.length }
+    },
     applyThinning(settings) {
       let drawn = 0
       let loaded = 0
@@ -1112,7 +1232,12 @@ export function createStreamingCloud(opts: {
         for (const mesh of stats.quads) {
           const instances = (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
           if (!instances) continue
-          const spacingM = (mesh.material as any)?.userData?.pointSpacingM
+          // The effective spacing, not the tile's own: that is what the uniform holds and
+          // therefore what the shader draws. Billing `pointSpacingM` here would put this
+          // readout back where it was before the widening fix — reporting a diameter the
+          // frame is not using.
+          const spacingM = (mesh.material as any)?.userData?.effectiveSpacingM
+            ?? (mesh.material as any)?.userData?.pointSpacingM
           if (!(spacingM > 0)) continue
           // The carrier this mesh hangs under still holds the tile's real point bounds;
           // the quad geometry's own sphere describes the four corner offsets and says
