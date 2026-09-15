@@ -663,9 +663,8 @@ export function createCloudMaterial(
   u: CloudUniforms,
   colorItemSize = 3,
   /** This tile's own mean point spacing in metres — see tileSpacingMetres in
-   * streaming.ts. Baked into the material rather than shared, which tile-owned
-   * materials make free: they already have to be per tile because
-   * UnloadTilesPlugin disposes them independently. */
+   * streaming.ts. The initial value of a per-tile *uniform*, not a baked constant; the
+   * comment at `spacingMetres` below is the one that matters. */
   spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
   debug: TileDebugInfo = NO_TILE_DEBUG,
 ): PointsNodeMaterial {

@@ -229,21 +229,35 @@ const coverForward = new THREE.Vector3()
  * This tile's own mean point spacing in metres — what the drawn point size is
  * derived from (see createCloudMaterial).
  *
- * Internal APH nodes carry it, but scaled: the pipeline writes `geometricError =
- * errorScale * sqrt(footprint area / point count)`, and errorScale is 2 in every
- * published pack, so the factor has to come back out here. Leaves are written with
- * `geometricError: 0` so they can never refine further, so for those the footprint
- * is measured instead — and a leaf's bounding volume *is* its content bounds, since
- * it has no children to union in.
+ * Two independent estimates, and the smaller wins. Both are upper bounds on the true
+ * `sqrt(content area / points)`, so the minimum is always the closer of the two and can
+ * never fall below the truth:
  *
- * Both routes therefore return the same quantity. They used to disagree by exactly
- * `errorScale`: the branch below measures the true spacing while the branch above
- * returned twice it, so a leaf drew dots half the size of its own parent's for the
- * same real point spacing.
+ *  - **The published error.** `geometricError = errorScale * sqrt(content area / points)`,
+ *    so dividing the scale back out is exact — *when the pipeline published what it
+ *    measured*. It does not always: `corrected_error` in
+ *    build_adaptive_point_hierarchy_tileset.py forces every node's error above its
+ *    largest child's (`max(raw, largest * 1.05, ...)`) to keep the tileset's errors
+ *    strictly decreasing, and where that clamp bites, the number describes the subtree's
+ *    monotonicity rather than this node's density. Leaves are written `geometricError: 0`
+ *    so they can never refine, which is why this route cannot stand alone either.
+ *  - **The bounding volume.** `sqrt(OBB footprint / points)`, measured here. Exact
+ *    whenever the node's content fills its cell, and an over-estimate when it does not,
+ *    because the published box is the union of the node with its whole subtree.
+ *
+ * Measured against the deployed peru-b2-globe pack, 40 visible tiles at the arrival
+ * view: the two agree to three decimals on 39 of them, and disagree on exactly one — the
+ * `p001` overview root, published at 7.668 m against a measured 3.849 m. That is the
+ * clamp, and it is visible arithmetic: p001 holds 270k points where d0 below it holds
+ * 75k, so its real spacing is *finer* than its child's and the monotonicity rule
+ * overrides it by construction, every time, on the single largest tile in the frame.
+ * Before this, that tile drew every one of its points at twice the diameter it had
+ * earned.
  */
 export function tileSpacingMetres(tile: any, points: number): number {
+  let spacing = Infinity
   const error = typeof tile?.geometricError === 'number' ? tile.geometricError : 0
-  if (error > 0) return error / EXPERIENCE_CONFIG.lod.pointSize.geometricErrorScale
+  if (error > 0) spacing = error / EXPERIENCE_CONFIG.lod.pointSize.geometricErrorScale
 
   const volume = tile?.engineData?.boundingVolume
   if (volume && points > 0) {
@@ -252,9 +266,11 @@ export function tileSpacingMetres(tile: any, points: number): number {
     // x and y are the horizontal extents: the pipeline builds the box from ENU
     // content bounds with z up, and no stage rescales the axes.
     const area = spacingSize.x * spacingSize.y
-    if (area > 1e-6) return Math.sqrt(area / points)
+    // Costs one getOBB per tile at load and never touches the position buffer, so it is
+    // affordable on every tile rather than only on the leaves it used to be reserved for.
+    if (area > 1e-6) spacing = Math.min(spacing, Math.sqrt(area / points))
   }
-  return EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM
+  return Number.isFinite(spacing) ? spacing : EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM
 }
 
 // The two cache floors — `cacheMinTiles` and `cacheMinBytes` — are the same rule
