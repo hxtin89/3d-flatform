@@ -104,6 +104,14 @@ export interface StreamingCloud {
    * picture you get with the feature absent rather than a queue frozen mid-flight.
    */
   setArrivalBudget(perFrame: number): void
+  /**
+   * How many tile parses may be in flight, which is what really decides how many tiles can
+   * land in one frame — measured, the arrivals-per-frame histogram never exceeds this.
+   *
+   * Lowering it is the cheapest upload-bandwidth limiter there is: fewer, smaller bursts of
+   * `createAttribute` in one frame, at the cost of the cloud filling in more slowly.
+   */
+  setParseBudget(maxJobs: number): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
@@ -440,6 +448,9 @@ export function createStreamingCloud(opts: {
    */
   const pendingReveal: THREE.Mesh[] = []
   let arrivalBudget = 0
+  /** The wanted parse concurrency, kept separately so leaf loading can borrow the queue and
+   *  hand it back without clobbering the setting. */
+  let parseBudget = limits.maxParses
 
   /**
    * Put a tile's points into a random order, once, in place.
@@ -744,6 +755,11 @@ export function createStreamingCloud(opts: {
         pendingReveal.length = 0
       }
     },
+    setParseBudget(maxJobs: number) {
+      parseBudget = Math.max(1, Math.floor(maxJobs))
+      // Leaf loading deliberately runs the queue wide open; it restores this value on exit.
+      if (!leafLoading) tiles.parseQueue.maxJobs = parseBudget
+    },
     setErrorTarget(value: number) {
       tiles.errorTarget = value
     },
@@ -781,7 +797,8 @@ export function createStreamingCloud(opts: {
         tiles.lruCache.minBytesSize = snapshot.minBytesSize
         tiles.lruCache.maxBytesSize = snapshot.maxBytesSize
         tiles.downloadQueue.maxJobs = snapshot.maxDownloads
-        tiles.parseQueue.maxJobs = snapshot.maxParses
+        // The live setting rather than the snapshot: the slider may have moved meanwhile.
+        tiles.parseQueue.maxJobs = parseBudget
         tiles.processNodeQueue.maxJobs = snapshot.maxProcesses
         tiles.maxTilesProcessed = snapshot.maxTilesProcessed
         ;(unloadPlugin as any).bytesTarget = snapshot.gpuBytesTarget

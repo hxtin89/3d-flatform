@@ -45,6 +45,7 @@ let lastFrameAt = 0
  * vsync counts as late even if the JS inside it was quick.
  */
 export function recordFrame(now: number): void {
+  frameOrdinal++
   if (lastFrameAt !== 0) {
     const dt = now - lastFrameAt
     // A tab that was backgrounded returns a multi-second gap that is not a hitch. The
@@ -64,6 +65,75 @@ export function recordArrival(ms: number, points: number): void {
   arrivalPoints[arrivalCursor] = points
   arrivalCursor = (arrivalCursor + 1) % ARRIVAL_WINDOW
   arrivalCount++
+}
+
+/**
+ * What the GPU upload costs, split into first uploads and re-uploads.
+ *
+ * This is the one cost none of the other instruments can see. `recordArrival` times the
+ * `load-model` handler, but the upload does not happen there — three creates the GPU
+ * buffer lazily, on the first frame the tile is actually drawn, *inside the render pass*
+ * (Renderer._renderObjectDirect calls _geometries.updateForRender before it ever asks
+ * whether there is anything to draw). So it lands in the frame distribution as an
+ * unexplained spike and nowhere else.
+ *
+ * The split matters more than the total. A *first* upload is capped: `maxParses` lets at
+ * most two tiles arrive per frame. A *re-upload* is not capped by anything — UnloadTilesPlugin
+ * disposes the GPU buffers of a tile that has been out of view for its delay, while the CPU
+ * arrays survive, so when the camera swings back there is no re-download, no re-parse, and
+ * therefore no queue: every returning tile re-creates its buffers in the same frame. If
+ * `reuploads` is large next to `first`, that is the path to fix, and lowering maxParses
+ * would do nothing for it.
+ *
+ * Attributes.update is the single chokepoint every upload passes through, and it already
+ * distinguishes the two cases: `data.version === undefined` means the buffer does not exist
+ * yet. A WeakSet then separates "never uploaded" from "uploaded before and disposed since".
+ */
+let uploadProbeInstalled = false
+let firstMs = 0
+let firstBytes = 0
+let firstCount = 0
+let reMs = 0
+let reBytes = 0
+let reCount = 0
+let worstUploadFrameMs = 0
+let uploadFrameMs = 0
+let uploadFrameAt = -1
+let frameOrdinal = 0
+
+/**
+ * Wrap the renderer's attribute upload. Safe to call more than once, and a no-op if the
+ * backend does not expose `_attributes` — these are r185 internals, not public API, and a
+ * measurement must never be the thing that breaks the app.
+ */
+export function installUploadProbe(renderer: any): boolean {
+  if (uploadProbeInstalled) return true
+  const attributes = renderer?._attributes
+  if (!attributes || typeof attributes.update !== 'function') return false
+  const original = attributes.update.bind(attributes)
+  const seen = new WeakSet<object>()
+  attributes.update = (attribute: any, type: number) => {
+    let fresh = false
+    try { fresh = attributes.get(attribute)?.version === undefined } catch { fresh = false }
+    if (!fresh) return original(attribute, type)
+    const startedAt = performance.now()
+    original(attribute, type)
+    const ms = performance.now() - startedAt
+    const bytes = attribute?.array?.byteLength ?? 0
+    // Same rAF turn as the previous upload? Then they share a frame, and it is the sum
+    // that the viewer feels, not the individual call.
+    if (uploadFrameAt !== frameOrdinal) { uploadFrameAt = frameOrdinal; uploadFrameMs = 0 }
+    uploadFrameMs += ms
+    if (uploadFrameMs > worstUploadFrameMs) worstUploadFrameMs = uploadFrameMs
+    if (seen.has(attribute)) {
+      reMs += ms; reBytes += bytes; reCount++
+    } else {
+      seen.add(attribute)
+      firstMs += ms; firstBytes += bytes; firstCount++
+    }
+  }
+  uploadProbeInstalled = true
+  return true
 }
 
 function percentile(sorted: number[], fraction: number): number {
@@ -128,6 +198,20 @@ export interface CostReport {
     /** Nanoseconds of arrival work per point — comparable across tile sizes. */
     nsPerPoint: number
   }
+  /** GPU uploads, split by whether the attribute had ever been uploaded before. */
+  uploads: {
+    installed: boolean
+    /** Buffers created for an attribute never seen before — capped by maxParses. */
+    firstCount: number
+    firstMs: number
+    firstMB: number
+    /** Buffers re-created after UnloadTilesPlugin disposed them — capped by nothing. */
+    reCount: number
+    reMs: number
+    reMB: number
+    /** The worst single frame's total upload time, summed across attributes. */
+    worstFrameMs: number
+  }
   shaders: ReturnType<typeof programCounts>
 }
 
@@ -172,6 +256,16 @@ export function costReport(renderer?: any): CostReport {
       medianPoints: Math.round(percentile(points, 0.5)),
       nsPerPoint: round(pointTotal ? (arrivalTotal * 1e6) / pointTotal : 0, 1),
     },
+    uploads: {
+      installed: uploadProbeInstalled,
+      firstCount,
+      firstMs: round(firstMs),
+      firstMB: round(firstBytes / 1e6),
+      reCount,
+      reMs: round(reMs),
+      reMB: round(reBytes / 1e6),
+      worstFrameMs: round(worstUploadFrameMs),
+    },
     shaders: programCounts(renderer),
   }
 }
@@ -185,4 +279,8 @@ export function resetCost(): void {
   frameMs.fill(0)
   arrivalMs.fill(0)
   arrivalPoints.fill(0)
+  // The probe stays installed — only its counters reset. Re-wrapping would stack wrappers.
+  firstMs = 0; firstBytes = 0; firstCount = 0
+  reMs = 0; reBytes = 0; reCount = 0
+  worstUploadFrameMs = 0; uploadFrameMs = 0; uploadFrameAt = -1
 }

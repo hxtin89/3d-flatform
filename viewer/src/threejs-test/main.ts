@@ -23,7 +23,7 @@ import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
-import { recordFrame, costReport, resetCost } from './arrival-cost'
+import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
 import { EXPERIENCE_CONFIG } from './config'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -2686,6 +2686,10 @@ let thinRampOn = true
  */
 let tileBudgetOn = false
 let tilesPerFrame = 2
+/** Parse concurrency, which is what actually caps tiles-per-frame. 2 is the shipped default
+ *  from DEFAULT_LIMITS; the slider exists because lowering it is the cheapest way to bound
+ *  how much gets uploaded to the card in any one frame. */
+let maxParses = 2
 let lastThinning: { drawn: number; loaded: number } | null = null
 /** How many visible tiles the finest-layer rule shrank this frame — see applyEffectiveSpacing. */
 let lastEffectiveSpacing: { shrunk: number; tiles: number } | null = null
@@ -2728,6 +2732,10 @@ syncTileBudgetToggle()
 bindDesignSlider('tilesPerFrame', tilesPerFrame, (v) => `${v.toFixed(0)} per frame`, (v) => {
   tilesPerFrame = v
   applyArrivalBudget()
+})
+bindDesignSlider('maxParses', maxParses, (v) => `${v.toFixed(0)} at once`, (v) => {
+  maxParses = v
+  stream?.setParseBudget(maxParses)
 })
 bindDesignSlider('thinNearM', thinNearM, asMetres, (v) => { thinNearM = v })
 bindDesignSlider('thinFarM', thinFarM, asMetres, (v) => { thinFarM = v })
@@ -4272,6 +4280,9 @@ async function main(): Promise<void> {
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
   applyArrivalBudget()
+  stream.setParseBudget(maxParses)
+  // Internals, so it is allowed to fail: the row simply reads installed:false.
+  installUploadProbe(renderer)
   // Same reason the settings object lives outside: the panel is bound long before
   // this point, so foveation adopts the values already on the sliders.
   foveation = createFoveation(stream.tiles, camera, foveationSettings)

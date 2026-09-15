@@ -908,6 +908,11 @@
           <input type="range" id="tilesPerFrame" min="1" max="8" step="1" />
           <span class="weather-note">How many waiting tiles may become visible in one frame. Lower spreads the cost further but makes a fast turn show its holes for longer. Inert while the switch above is off</span>
         </div>
+        <div class="row">
+          <label class="h" for="maxParses">Tiles decoded at once · <span class="val" id="maxParsesVal">—</span></label>
+          <input type="range" id="maxParses" min="1" max="6" step="1" />
+          <span class="weather-note">The real limit on how many tiles can land in one frame — measured, arrivals never exceed this number. Each landing tile uploads its buffers to the card inside that frame, and the cost is worse than linear: one 270k tile is 0.8 ms, two are 3.5 ms, four are 14.5 ms. Lower it to bound the spike and accept slower filling in. This is the bandwidth limit, in the only unit the loader actually has</span>
+        </div>
       </details>
       <details class="design-section">
         <summary>Pivot</summary>
