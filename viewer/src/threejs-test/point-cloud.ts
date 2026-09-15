@@ -663,7 +663,27 @@ export function createCloudMaterial(
   // compensates for it has to be too. 1 while nothing is being thinned away.
   const thinScale = uniform(1)
   material.userData.thinScale = thinScale
-  const spacingPx = float(spacingM)
+  // A uniform, not `float(spacingM)`, and this is the single most expensive line in the
+  // file to get wrong.
+  //
+  // `float()` is a ConstNode, which NodeBuilder inlines into the generated WGSL as a
+  // literal. `tileSpacingMetres` returns a near-continuous per-tile number — for leaves
+  // it is `sqrt(area / points)` — so every tile produced a *different shader source*.
+  // Pipelines.getForRender keys its programmable stages on that source string, so a
+  // different literal meant a new shader module and a new GPURenderPipeline for every
+  // tile that streamed in, compiled synchronously on the frame it was first drawn.
+  // Measured on this machine: 26.1 ms per tile with a unique spacing against 18.0 ms
+  // with a shared one, and 1 new program + 1 new pipeline for every single tile.
+  //
+  // As a uniform the value leaves the source entirely, every tile generates byte-identical
+  // WGSL, and the program and pipeline caches hit. It also makes a GPU-only unload cheap:
+  // on re-show the tile re-uploads its buffers instead of rebuilding a whole pipeline.
+  //
+  // This is the same trade the debug uniforms below already make deliberately — it simply
+  // was never applied to the spacing.
+  const spacingMetres = uniform(spacingM)
+  material.userData.spacingMetres = spacingMetres
+  const spacingPx = spacingMetres
     .mul(thinScale)
     .mul(u.sizeCoverage)
     .mul(u.sizePxPerMetre)
