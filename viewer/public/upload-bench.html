@@ -1,0 +1,111 @@
+<meta charset="utf-8">
+<title>tile upload bench</title>
+<style>body{font:13px/1.5 ui-monospace,monospace;padding:12px;white-space:pre-wrap}</style>
+<div id="out">running…</div>
+<script type="module">
+const out = document.getElementById('out')
+const log = (s) => { out.textContent += '\n' + s; console.log(s) }
+out.textContent = ''
+
+const adapter = await navigator.gpu?.requestAdapter()
+if (!adapter) { log('NO WEBGPU'); throw new Error('no webgpu') }
+const device = await adapter.requestDevice()
+const info = adapter.info || {}
+log(`adapter: ${info.vendor ?? '?'} / ${info.architecture ?? '?'} / ${info.device ?? '?'} / ${info.description ?? ''}`)
+
+const USAGE = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+
+// ---- verbatim transcription of three's WebGPUAttributeUtils.createAttribute hot part
+function createAttributeNoPad(array) {
+  const byteLength = array.byteLength
+  const size = byteLength + ((4 - (byteLength % 4)) % 4)
+  const buffer = device.createBuffer({ size, usage: USAGE, mappedAtCreation: true })
+  new array.constructor(buffer.getMappedRange()).set(array)
+  buffer.unmap()
+  return buffer
+}
+function padArray(array, count, itemSize, paddedItemSize) {
+  const paddedArray = new array.constructor(count * paddedItemSize)
+  for (let i = 0; i < count; i++) {
+    paddedArray.set(array.subarray(i * itemSize, i * itemSize + itemSize), i * paddedItemSize)
+  }
+  return paddedArray
+}
+function createAttributePadded(array, count, itemSize, paddedItemSize) {
+  const padded = padArray(array, count, itemSize, paddedItemSize)
+  return createAttributeNoPad(padded)
+}
+
+// ---- verbatim transcription of streaming.ts shufflePoints
+function shufflePoints(pos, ps, col, cs, count) {
+  let seed = (count * 2654435761 + Math.round(pos[0] * 1000)) >>> 0 || 1
+  const next = () => {
+    seed ^= seed << 13; seed >>>= 0
+    seed ^= seed >>> 17
+    seed ^= seed << 5; seed >>>= 0
+    return seed / 4294967296
+  }
+  for (let i = count - 1; i > 0; i--) {
+    const j = (next() * (i + 1)) | 0
+    if (j === i) continue
+    for (let k = 0; k < ps; k++) {
+      const a = i * ps + k, b = j * ps + k
+      const t = pos[a]; pos[a] = pos[b]; pos[b] = t
+    }
+    if (col) {
+      for (let k = 0; k < cs; k++) {
+        const a = i * cs + k, b = j * cs + k
+        const t = col[a]; col[a] = col[b]; col[b] = t
+      }
+    }
+  }
+}
+
+const stat = (a) => {
+  const s = [...a].sort((x, y) => x - y)
+  return `min ${s[0].toFixed(3)}  med ${s[Math.floor(s.length/2)].toFixed(3)}  max ${s[s.length-1].toFixed(3)} ms`
+}
+function bench(label, fn, n = 15) {
+  fn(); // warm
+  const t = []
+  for (let i = 0; i < n; i++) { const t0 = performance.now(); fn(); t.push(performance.now() - t0) }
+  log(`  ${label.padEnd(46)} ${stat(t)}`)
+  const s = [...t].sort((x,y)=>x-y)
+  return s[Math.floor(s.length/2)]
+}
+
+function makeTile(count) {
+  const pos = new Float32Array(count * 3)
+  for (let i = 0; i < pos.length; i++) pos[i] = Math.random() * 1000
+  const col = new Uint8Array(count * 3)
+  for (let i = 0; i < col.length; i++) col[i] = (Math.random() * 255) | 0
+  return { pos, col, count }
+}
+
+for (const count of [75000, 110000, 150000]) {
+  log(`\n=== one tile, ${count.toLocaleString()} points (pos ${(count*12/1048576).toFixed(2)} MiB, rgb ${(count*3/1048576).toFixed(2)} MiB) ===`)
+  const t = makeTile(count)
+  const posMed = bench('GPU upload POSITION (f32x3, no padding)', () => createAttributeNoPad(t.pos))
+  const padMed = bench('  colour padding loop alone (rgb->rgba, JS)', () => padArray(t.col, count, 3, 4))
+  const colMed = bench('GPU upload COLOR  (u8x3 -> padded u8x4)', () => createAttributePadded(t.col, count, 3, 4))
+  log(`  ---> GPU-upload total per tile (claim's mechanism):  ${(posMed + colMed).toFixed(3)} ms`)
+  const shufMed = bench('shufflePoints (streaming.ts, load-model cb)', () => {
+    const p = t.pos.slice(), c = t.col.slice()
+    shufflePoints(p, 3, c, 3, count)
+  }, 7)
+  // measure the slice() overhead we added to keep the shuffle honest
+  const sliceMed = bench('  (slice overhead subtracted from above)', () => { t.pos.slice(); t.col.slice() }, 7)
+  log(`  ---> shufflePoints net:                              ${(shufMed - sliceMed).toFixed(3)} ms`)
+}
+
+// how many tiles land at once? bracket it.
+log('\n=== burst: N tiles becoming visible in the same frame (75k pts each) ===')
+for (const n of [1, 4, 10, 20]) {
+  const tiles = []
+  for (let i = 0; i < n; i++) tiles.push(makeTile(75000))
+  const t0 = performance.now()
+  for (const t of tiles) { createAttributeNoPad(t.pos); createAttributePadded(t.col, t.count, 3, 4) }
+  log(`  ${String(n).padStart(2)} tiles  GPU upload total: ${(performance.now() - t0).toFixed(2)} ms`)
+}
+log('\nDONE')
+</script>

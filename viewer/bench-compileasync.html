@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>compileAsync magnitude bench</title>
+<style>body{font:12px/1.5 monospace;background:#111;color:#eee;margin:0;padding:12px}
+canvas{position:fixed;right:8px;bottom:8px;width:320px;height:200px;border:1px solid #444}
+pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="out">starting…</pre>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three'
+import { WebGPURenderer } from 'three/webgpu'
+import { createUniforms, createCloudMaterial, POINT_POSITION_ATTRIBUTE, POINT_COLOR_ATTRIBUTE } from '/src/threejs-test/point-cloud.ts'
+
+const out = document.getElementById('out')
+const log = (s) => { out.textContent += '\n' + s; console.log(s) }
+
+const POINTS = 70000
+const canvas = document.getElementById('c')
+const renderer = new WebGPURenderer({ canvas, antialias: false })
+renderer.setPixelRatio(1)
+renderer.setSize(320, 200, false)
+await renderer.init()
+log('backend: ' + renderer.backend.constructor.name + '  three ' + THREE.REVISION)
+try { const a = await navigator.gpu.requestAdapter(); log('adapter: ' + JSON.stringify(a.info||{})) } catch(e){}
+
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(60, 320/200, 0.1, 10000)
+camera.position.set(0, -160, 90); camera.lookAt(0,0,0)
+const uniforms = createUniforms()
+
+const QUAD_CORNERS = new Float32Array([-0.5,-0.5,0, 0.5,-0.5,0, 0.5,0.5,0, -0.5,0.5,0])
+const QUAD_UVS = new Float32Array([0,0, 1,0, 1,1, 0,1])
+function makeGeometry() {
+  const pos = new Float32Array(POINTS*3), col = new Uint8Array(POINTS*3)
+  for (let i=0;i<POINTS;i++){ pos[i*3]=(Math.random()-.5)*100; pos[i*3+1]=(Math.random()-.5)*100; pos[i*3+2]=(Math.random()-.5)*30
+    col[i*3]=Math.random()*255; col[i*3+1]=Math.random()*255; col[i*3+2]=Math.random()*255 }
+  const g = new THREE.InstancedBufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS,3))
+  g.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS,2))
+  g.setIndex([0,1,2,0,2,3])
+  g.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(pos,3,false))
+  g.setAttribute(POINT_COLOR_ATTRIBUTE, new THREE.InstancedBufferAttribute(col,3,true))
+  g.instanceCount = POINTS
+  return g
+}
+
+// ---- instrumentation: separate JS TSL codegen from GPU pipeline creation ----
+const nodes = renderer._nodes, pipes = renderer._pipelines
+const P = { nodeBuildMs: [], pipeMs: [], nodeMiss: 0, pipeMiss: 0 }
+const nbCache = nodes.nodeBuilderCache
+const origNodes = nodes.getForRender.bind(nodes)
+nodes.getForRender = function(ro, useAsync=false){
+  const before = nbCache.size, t0 = performance.now()
+  const res = origNodes(ro, useAsync)
+  const dt = performance.now()-t0
+  if (nbCache.size > before) { P.nodeMiss++; P.nodeBuildMs.push(+dt.toFixed(3)) }
+  return res
+}
+const pipeCache = pipes.caches
+const origPipes = pipes.getForRender.bind(pipes)
+pipes.getForRender = function(ro, promises=null){
+  const before = pipeCache.size, t0 = performance.now()
+  const res = origPipes(ro, promises)
+  const dt = performance.now()-t0
+  if (pipeCache.size > before) { P.pipeMiss++; P.pipeMs.push(+dt.toFixed(3)) }
+  return res
+}
+const counts = () => ({ vprog: pipes.programs.vertex.size, fprog: pipes.programs.fragment.size, pipes: pipeCache.size, nbs: nbCache.size })
+const resetP = () => { P.nodeBuildMs=[]; P.pipeMs=[]; P.nodeMiss=0; P.pipeMiss=0 }
+
+const tick = () => new Promise(r => { let done=false
+  requestAnimationFrame(()=>{ if(!done){done=true;r()} }); setTimeout(()=>{ if(!done){done=true;r()} }, 40) })
+async function frame(){ await tick(); const t0=performance.now(); renderer.render(scene,camera); return performance.now()-t0 }
+
+const warm = new THREE.Mesh(makeGeometry(), createCloudMaterial(uniforms,3,0.37))
+warm.frustumCulled=false; scene.add(warm)
+for(let i=0;i<40;i++) await frame()
+
+const results = {}
+const med = a => { const s=[...a].sort((x,y)=>x-y); return s.length? +s[Math.floor(s.length/2)].toFixed(2) : null }
+
+async function variant(name, materialFor, n=10){
+  resetP()
+  const before = counts(); const deltas=[]
+  for(let t=0;t<n;t++){
+    const mesh = new THREE.Mesh(makeGeometry(), materialFor(t))
+    mesh.frustumCulled=false; mesh.position.set(0,0,-200-t*5)
+    const base=[]; for(let i=0;i<6;i++) base.push(await frame())
+    const baseline = med(base)
+    scene.add(mesh)
+    const first = await frame()
+    deltas.push(first-baseline)
+    scene.remove(mesh); mesh.geometry.dispose()
+  }
+  const after = counts()
+  results[name] = {
+    median_first_frame_delta_ms: med(deltas),
+    max_delta_ms: +Math.max(...deltas).toFixed(2),
+    all_deltas: deltas.map(d=>+d.toFixed(2)),
+    programs_created: (after.vprog-before.vprog)+(after.fprog-before.fprog),
+    pipelines_created: after.pipes-before.pipes,
+    nodeBuilderStates_created: after.nbs-before.nbs,
+    tsl_codegen_ms_each: P.nodeBuildMs,
+    tsl_codegen_median_ms: med(P.nodeBuildMs),
+    pipeline_create_ms_each: P.pipeMs,
+    pipeline_create_median_ms: med(P.pipeMs),
+  }
+  log(name+': '+JSON.stringify(results[name]))
+}
+
+// A) production shape: per-tile material, per-tile spacing literal
+await variant('A_perTile_uniqueSpacing', t => createCloudMaterial(uniforms,3,0.31+t*0.017))
+// B) per-tile material instance, identical spacing (identical generated WGSL)
+await variant('B_perTile_sameSpacing', () => createCloudMaterial(uniforms,3,0.37))
+// C) one shared material -> geometry upload only
+const shared = createCloudMaterial(uniforms,3,0.37)
+{ const m=new THREE.Mesh(makeGeometry(),shared); m.frustumCulled=false; scene.add(m); await frame(); await frame(); scene.remove(m); m.geometry.dispose() }
+await variant('C_shared_uploadOnly', () => shared)
+
+// D) frame noise control
+{ const noise=[]; for(let i=0;i<20;i++) noise.push(await frame())
+  results.D_frame_noise_ms = { median: med(noise), min:+Math.min(...noise).toFixed(2), max:+Math.max(...noise).toFixed(2) }
+  log('D_frame_noise: '+JSON.stringify(results.D_frame_noise_ms)) }
+
+// E) how long does compileAsync itself take (wall clock) for one fresh tile,
+//    and does it actually remove the first-frame cost afterwards?
+{
+  const walls=[], afterDeltas=[], blocking=[]
+  for(let t=0;t<6;t++){
+    const mesh = new THREE.Mesh(makeGeometry(), createCloudMaterial(uniforms,3,0.6+t*0.019))
+    mesh.frustumCulled=false; mesh.position.set(0,0,-400-t*5)
+    const base=[]; for(let i=0;i<6;i++) base.push(await frame())
+    const baseline = med(base)
+    // measure longest main-thread block during compileAsync using a 1ms watchdog
+    let worst=0, lastTick=performance.now()
+    const id=setInterval(()=>{ const now=performance.now(); worst=Math.max(worst, now-lastTick); lastTick=now },1)
+    const t0=performance.now()
+    await renderer.compileAsync(mesh, camera, scene)
+    const wall=performance.now()-t0
+    clearInterval(id)
+    walls.push(wall); blocking.push(worst)
+    scene.add(mesh)
+    const first = await frame()
+    afterDeltas.push(first-baseline)
+    scene.remove(mesh); mesh.geometry.dispose()
+  }
+  results.E_compileAsync = {
+    wall_ms_each: walls.map(w=>+w.toFixed(2)), wall_median_ms: med(walls),
+    worst_mainthread_block_during_compile_ms: blocking.map(b=>+b.toFixed(2)),
+    first_frame_delta_after_prewarm_ms: afterDeltas.map(d=>+d.toFixed(2)),
+    first_frame_delta_median_ms: med(afterDeltas),
+  }
+  log('E_compileAsync: '+JSON.stringify(results.E_compileAsync))
+}
+
+// F) geometry upload slope: shared material, varying point counts
+{
+  const slope={}
+  for (const n of [17500, 70000, 280000]) {
+    const pos=new Float32Array(n*3), col=new Uint8Array(n*3)
+    const mk=()=>{ const g=new THREE.InstancedBufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS,3))
+      g.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS,2)); g.setIndex([0,1,2,0,2,3])
+      g.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(new Float32Array(pos),3,false))
+      g.setAttribute(POINT_COLOR_ATTRIBUTE, new THREE.InstancedBufferAttribute(new Uint8Array(col),3,true))
+      g.instanceCount=n; return g }
+    const ds=[]
+    for(let t=0;t<6;t++){
+      const mesh=new THREE.Mesh(mk(), shared); mesh.frustumCulled=false; mesh.position.set(0,0,-600-t*5)
+      const base=[]; for(let i=0;i<6;i++) base.push(await frame())
+      const baseline=med(base); scene.add(mesh)
+      ds.push((await frame())-baseline)
+      scene.remove(mesh); mesh.geometry.dispose()
+    }
+    slope[n+'_points_'+((n*15)/1e6).toFixed(2)+'MB'] = { median_delta_ms: med(ds), all: ds.map(d=>+d.toFixed(2)) }
+  }
+  results.F_upload_slope = slope
+  log('F_upload_slope: '+JSON.stringify(slope))
+}
+
+log('\nRESULT_JSON '+JSON.stringify(results))
+window.__bench = results
+document.title='done'
+</script>
+</body>
+</html>

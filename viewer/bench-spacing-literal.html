@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>spacing literal bench</title>
+<style>body{font:12px/1.5 monospace;background:#111;color:#eee;margin:0;padding:12px}
+canvas{position:fixed;right:8px;bottom:8px;width:320px;height:200px;border:1px solid #444}
+pre{white-space:pre-wrap}</style></head>
+<body><pre id="out">starting…</pre><canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three'
+import { WebGPURenderer } from 'three/webgpu'
+import { createUniforms, createCloudMaterial, POINT_POSITION_ATTRIBUTE, POINT_COLOR_ATTRIBUTE } from '/src/threejs-test/point-cloud.ts'
+const out = document.getElementById('out'); out.textContent=''
+const log = s => { out.textContent += s + '\n'; console.log(s) }
+const params = new URLSearchParams(location.search)
+const N = Number(params.get('n') ?? 236124)
+const REPS = Number(params.get('reps') ?? 8)
+const canvas = document.getElementById('c')
+const renderer = new WebGPURenderer({ canvas, antialias:false })
+renderer.setPixelRatio(1); renderer.setSize(320,200,false)
+await renderer.init()
+log(`backend ${renderer.backend.isWebGPUBackend?'WebGPU':'WebGL'} three ${THREE.REVISION} N=${N} reps=${REPS}`)
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(60,320/200,0.1,100000)
+camera.position.set(0,-300,200); camera.lookAt(0,0,0)
+const uniforms = createUniforms()
+const QC=new Float32Array([-0.5,-0.5,0,0.5,-0.5,0,0.5,0.5,0,-0.5,0.5,0])
+const QU=new Float32Array([0,0,1,0,1,1,0,1]); const QI=[0,1,2,0,2,3]
+const posArr=new Float32Array(N*3), colArr=new Uint8Array(N*3)
+for(let i=0;i<N;i++){posArr[i*3]=(Math.random()-.5)*200;posArr[i*3+1]=(Math.random()-.5)*200;posArr[i*3+2]=Math.random()*40
+  colArr[i*3]=(Math.random()*255)|0;colArr[i*3+1]=(Math.random()*255)|0;colArr[i*3+2]=(Math.random()*255)|0}
+function geom(){ const g=new THREE.InstancedBufferGeometry()
+  g.setAttribute('position',new THREE.BufferAttribute(QC,3)); g.setAttribute('uv',new THREE.BufferAttribute(QU,2)); g.setIndex(QI)
+  g.setAttribute(POINT_POSITION_ATTRIBUTE,new THREE.InstancedBufferAttribute(posArr.slice(),3,false))
+  g.setAttribute(POINT_COLOR_ATTRIBUTE,new THREE.InstancedBufferAttribute(colArr.slice(),3,true))
+  g.instanceCount=N; return g }
+function tile(spacing){ const m=new THREE.Mesh(geom(),createCloudMaterial(uniforms,3,spacing,{level:6,tint:0xffffff,isLeaf:false})); m.frustumCulled=false; return m }
+const pipes=renderer._pipelines
+const counts=()=>({p:pipes.programs.vertex.size+pipes.programs.fragment.size, pl:pipes.caches.size, nb:renderer._nodes.nodeBuilderCache.size})
+const dc=(a,b)=>({programs:b.p-a.p, pipelines:b.pl-a.pl, nodeBuilds:b.nb-a.nb})
+const med=a=>{const s=[...a].sort((x,y)=>x-y);return s.length?+s[Math.floor(s.length/2)].toFixed(2):null}
+const tick=()=>new Promise(r=>requestAnimationFrame(()=>r()))
+async function baseline(){ const a=[]; for(let i=0;i<9;i++){ await tick(); const t=performance.now(); renderer.render(scene,camera); a.push(performance.now()-t)} return med(a) }
+const results={}
+// warm
+const w=tile(0.37); scene.add(w); for(let i=0;i<10;i++){await tick(); renderer.render(scene,camera)}
+log('warm cache: '+JSON.stringify(counts()))
+
+async function variant(name, spacingFor){
+  const deltas=[], created=[]
+  for(let t=0;t<REPS;t++){
+    const base=await baseline()
+    const m=tile(spacingFor(t)); m.position.set(0,0,-200-t*3)
+    const c0=counts(); scene.add(m)
+    await tick(); const t0=performance.now(); renderer.render(scene,camera); const first=performance.now()-t0
+    created.push(dc(c0,counts())); deltas.push(+(first-base).toFixed(2))
+    scene.remove(m); m.geometry.dispose(); m.material.dispose()
+  }
+  results[name]={deltas, median:med(deltas), created}
+  log(name+': '+JSON.stringify(results[name]))
+}
+let seed=1.0
+await variant('A_uniqueSpacing_literalForks', ()=>{ seed+=0.0137; return seed })
+await variant('B_sameSpacing_noFork', ()=>0.37)
+
+// C: real ping-pong — GPU-only unload of a live tile, then re-show
+{ const deltas=[], created=[], uploadOnly=[]
+  const m=tile(0.913); m.position.set(0,0,-260); scene.add(m)
+  for(let i=0;i<10;i++){await tick(); renderer.render(scene,camera)}
+  for(let t=0;t<REPS;t++){
+    const base=await baseline()
+    // exactly what UnloadTilesPlugin.unloadTileFromGPU does
+    m.material.dispose(); m.geometry.dispose()
+    const c0=counts()
+    await tick(); const t0=performance.now(); renderer.render(scene,camera); const first=performance.now()-t0
+    created.push(dc(c0,counts())); deltas.push(+(first-base).toFixed(2))
+    for(let i=0;i<3;i++){await tick(); renderer.render(scene,camera)}
+  }
+  results.C_gpuUnload_reshow={deltas, median:med(deltas), created}
+  log('C_gpuUnload_reshow: '+JSON.stringify(results.C_gpuUnload_reshow))
+  scene.remove(m)
+}
+// D: WGSL source comparison — are two same-spacing materials byte-identical?
+{ const a=tile(0.37), b=tile(0.37), c=tile(0.41)
+  a.position.set(0,0,-300); b.position.set(0,0,-303); c.position.set(0,0,-306)
+  scene.add(a); scene.add(b); scene.add(c)
+  for(let i=0;i<4;i++){await tick(); renderer.render(scene,camera)}
+  const src=o=>{ const ro=renderer._renderObjects; let s=null
+    try{ s=renderer._pipelines.get(renderer._renderObjects.get(o,o.material,scene,camera,null,'',null)) }catch(e){}
+    return s }
+  const key=o=>{ const nb=renderer._nodes; return null }
+  results.D_programCount={ programs:pipes.programs.vertex.size+pipes.programs.fragment.size, pipelines:pipes.caches.size, nodeBuilds:renderer._nodes.nodeBuilderCache.size }
+  log('D: '+JSON.stringify(results.D_programCount))
+  scene.remove(a);scene.remove(b);scene.remove(c)
+}
+log('\nRESULT_JSON '+JSON.stringify(results))
+window.__bench=results; document.title='done'
+</script></body></html>

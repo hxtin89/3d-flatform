@@ -2674,6 +2674,18 @@ const THINNING_MIN_KEEP = 0.02
  *  drawn diameter at most — measured, the uncapped figure reaches 7 and turns the horizon
  *  into blobs, which reads worse than the gaps the widening exists to fill. */
 let thinMaxWiden = 2
+/** How long a tile takes to ease most of the way to a new keep fraction. Long enough that
+ *  a covered/uncovered flip reads as a dissolve rather than a step, short enough that the
+ *  saving still arrives while the camera is still moving. */
+const THINNING_RAMP_MS = 260
+/** A/B switch for that dissolve: off restores the bare per-frame decision. */
+let thinRampOn = true
+/**
+ * Tiles released per frame once `tileBudgetOn` is set. 0 means the feature is absent —
+ * nothing is queued and nothing is delayed.
+ */
+let tileBudgetOn = false
+let tilesPerFrame = 2
 let lastThinning: { drawn: number; loaded: number } | null = null
 
 let roundDots = true
@@ -2691,6 +2703,30 @@ const syncThinToggle = () => {
 }
 thinToggleEl.addEventListener('click', () => { thinningOn = !thinningOn; syncThinToggle() })
 syncThinToggle()
+
+const thinRampToggleEl = $<HTMLButtonElement>('#thinRampToggle')
+const syncThinRampToggle = () => {
+  thinRampToggleEl.classList.toggle('on', thinRampOn)
+  thinRampToggleEl.setAttribute('aria-pressed', String(thinRampOn))
+  thinRampToggleEl.textContent = thinRampOn ? '◐ Ramp' : '✕ Step'
+}
+thinRampToggleEl.addEventListener('click', () => { thinRampOn = !thinRampOn; syncThinRampToggle() })
+syncThinRampToggle()
+
+const tileBudgetToggleEl = $<HTMLButtonElement>('#tileBudgetToggle')
+const applyArrivalBudget = () => stream?.setArrivalBudget(tileBudgetOn ? tilesPerFrame : 0)
+const syncTileBudgetToggle = () => {
+  tileBudgetToggleEl.classList.toggle('on', tileBudgetOn)
+  tileBudgetToggleEl.setAttribute('aria-pressed', String(tileBudgetOn))
+  tileBudgetToggleEl.textContent = tileBudgetOn ? '◐ On' : '✕ Off'
+  applyArrivalBudget()
+}
+tileBudgetToggleEl.addEventListener('click', () => { tileBudgetOn = !tileBudgetOn; syncTileBudgetToggle() })
+syncTileBudgetToggle()
+bindDesignSlider('tilesPerFrame', tilesPerFrame, (v) => `${v.toFixed(0)} per frame`, (v) => {
+  tilesPerFrame = v
+  applyArrivalBudget()
+})
 bindDesignSlider('thinNearM', thinNearM, asMetres, (v) => { thinNearM = v })
 bindDesignSlider('thinFarM', thinFarM, asMetres, (v) => { thinFarM = v })
 bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacing`, (v) => {
@@ -3542,6 +3578,7 @@ function updateStreaming(now: number): StreamingStats | null {
     ancestorKeep,
     minKeep: THINNING_MIN_KEEP,
     maxWiden: thinMaxWiden,
+    rampMs: thinRampOn ? THINNING_RAMP_MS : 0,
     nearM: thinNearM,
     // Guarded so dragging the near slider past the far one cannot invert the ramp.
     farM: Math.max(thinFarM, thinNearM + 50),
@@ -4227,6 +4264,7 @@ async function main(): Promise<void> {
   })
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
+  applyArrivalBudget()
   // Same reason the settings object lives outside: the panel is bound long before
   // this point, so foveation adopts the values already on the sliders.
   foveation = createFoveation(stream.tiles, camera, foveationSettings)

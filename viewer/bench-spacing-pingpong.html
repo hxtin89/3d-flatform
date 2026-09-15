@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>pingpong bench</title>
+<style>body{font:12px/1.5 monospace;background:#111;color:#eee;margin:0;padding:12px}
+canvas{position:fixed;right:8px;bottom:8px;width:320px;height:200px;border:1px solid #444}
+pre{white-space:pre-wrap}</style></head>
+<body><pre id="out"></pre><canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three'
+import { WebGPURenderer } from 'three/webgpu'
+import { createUniforms, createCloudMaterial, POINT_POSITION_ATTRIBUTE, POINT_COLOR_ATTRIBUTE } from '/src/threejs-test/point-cloud.ts'
+const out=document.getElementById('out'); const log=s=>{out.textContent+=s+'\n';console.log(s)}
+const p=new URLSearchParams(location.search); const N=Number(p.get('n')??236124); const REPS=Number(p.get('reps')??10)
+const renderer=new WebGPURenderer({canvas:document.getElementById('c'),antialias:false})
+renderer.setPixelRatio(1); renderer.setSize(320,200,false); await renderer.init()
+log(`WebGPU three ${THREE.REVISION} N=${N}`)
+const scene=new THREE.Scene(); const camera=new THREE.PerspectiveCamera(60,1.6,0.1,100000)
+camera.position.set(0,-300,200); camera.lookAt(0,0,0)
+const U=createUniforms()
+const QC=new Float32Array([-0.5,-0.5,0,0.5,-0.5,0,0.5,0.5,0,-0.5,0.5,0]),QU=new Float32Array([0,0,1,0,1,1,0,1]),QI=[0,1,2,0,2,3]
+const pos=new Float32Array(N*3),col=new Uint8Array(N*3)
+for(let i=0;i<N;i++){pos[i*3]=(Math.random()-.5)*200;pos[i*3+1]=(Math.random()-.5)*200;pos[i*3+2]=Math.random()*40;col[i*3]=(Math.random()*255)|0;col[i*3+1]=(Math.random()*255)|0;col[i*3+2]=(Math.random()*255)|0}
+function geom(){const g=new THREE.InstancedBufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(QC,3));g.setAttribute('uv',new THREE.BufferAttribute(QU,2));g.setIndex(QI)
+ g.setAttribute(POINT_POSITION_ATTRIBUTE,new THREE.InstancedBufferAttribute(pos.slice(),3,false));g.setAttribute(POINT_COLOR_ATTRIBUTE,new THREE.InstancedBufferAttribute(col.slice(),3,true));g.instanceCount=N;return g}
+const pipes=renderer._pipelines
+const cnt=()=>({p:pipes.programs.vertex.size+pipes.programs.fragment.size,pl:pipes.caches.size,nb:renderer._nodes.nodeBuilderCache.size})
+const dc=(a,b)=>({prog:b.p-a.p,pipe:b.pl-a.pl,nodeBuild:b.nb-a.nb})
+const med=a=>{const s=[...a].sort((x,y)=>x-y);return +s[Math.floor(s.length/2)].toFixed(2)}
+const tick=()=>new Promise(r=>requestAnimationFrame(()=>r()))
+const R=()=>{const t=performance.now();renderer.render(scene,camera);return performance.now()-t}
+async function base(){const a=[];for(let i=0;i<9;i++){await tick();a.push(R())}return med(a)}
+const results={}
+// neighbours: 3 other live tiles. In "shared" mode they use the SAME spacing as the
+// ping-pong tile, so its WGSL source stays in the programs Map (usedTimes>0) — exactly
+// what moving spacingM to a uniform would achieve. In "unique" mode they differ.
+async function run(name, neighbourSpacing, subjectSpacing){
+  const root=new THREE.Group(); scene.add(root)
+  for(let i=0;i<3;i++){const m=new THREE.Mesh(geom(),createCloudMaterial(U,3,neighbourSpacing(i),{level:6,tint:0xffffff,isLeaf:false}));m.frustumCulled=false;m.position.set(0,0,-200-i*4);root.add(m)}
+  const s=new THREE.Mesh(geom(),createCloudMaterial(U,3,subjectSpacing,{level:6,tint:0xffffff,isLeaf:false}));s.frustumCulled=false;s.position.set(0,0,-240);root.add(s)
+  for(let i=0;i<12;i++){await tick();R()}
+  const d=[],cr=[]
+  for(let t=0;t<REPS;t++){
+    const b=await base()
+    s.material.dispose(); s.geometry.dispose()       // UnloadTilesPlugin.unloadTileFromGPU
+    const c0=cnt(); await tick(); const f=R()
+    cr.push(dc(c0,cnt())); d.push(+(f-b).toFixed(2))
+    for(let i=0;i<4;i++){await tick();R()}
+  }
+  results[name]={deltas:d,median:med(d),created:cr[cr.length-1],allCreated:cr}
+  log(name+': median '+med(d)+'ms  '+JSON.stringify(cr))
+  scene.remove(root)
+}
+let k=5
+await run('P1_uniqueSpacing_perTileShader', ()=>{k+=0.017;return k}, 0.4137)
+await run('P2_sharedShader_asIfUniform', ()=>0.4137, 0.4137)
+log('\nRESULT_JSON '+JSON.stringify(results)); window.__b=results; document.title='done'
+</script></body></html>

@@ -890,6 +890,24 @@
           <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
           <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points land on ground finer data already covers — the cheapest ones to drop. This is where most of the saving comes from</span>
         </div>
+        <div class="row">
+          <label class="h" for="thinRampToggle">Dissolve the change · A/B</label>
+          <button class="act on" id="thinRampToggle" type="button" aria-pressed="true" aria-describedby="thinRampNote">◐ Ramp</button>
+          <span class="weather-note" id="thinRampNote">A tile counts as covered the moment its <em>first</em> child finishes downloading, which is a step change in both the point count and the dot width. On, each tile eases to its new density over about a quarter second; off is the bare per-frame decision, which is what the feature did before. Watch the far field while turning the camera</span>
+        </div>
+      </details>
+      <details class="design-section">
+        <summary>Tile arrival (test)</summary>
+        <div class="row">
+          <label class="h" for="tileBudgetToggle">Spread arrivals</label>
+          <button class="act" id="tileBudgetToggle" type="button" aria-pressed="false" aria-describedby="tileBudgetNote">✕ Off</button>
+          <span class="weather-note" id="tileBudgetNote">A tile's buffers are uploaded to the card the first frame it is drawn, all of it, inside the render pass. When several land together that is one long frame. On, freshly built tiles are held back and released a few per frame instead. Off is exactly the picture you get with the feature removed — nothing is queued and nothing is delayed</span>
+        </div>
+        <div class="row">
+          <label class="h" for="tilesPerFrame">Release per frame · <span class="val" id="tilesPerFrameVal">—</span></label>
+          <input type="range" id="tilesPerFrame" min="1" max="8" step="1" />
+          <span class="weather-note">How many waiting tiles may become visible in one frame. Lower spreads the cost further but makes a fast turn show its holes for longer. Inert while the switch above is off</span>
+        </div>
       </details>
       <details class="design-section">
         <summary>Pivot</summary>

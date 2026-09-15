@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>DoF prewarm magnitude</title>
+<style>body{font:12px/1.5 monospace;background:#111;color:#eee;margin:0;padding:12px}
+canvas{position:fixed;right:8px;bottom:8px;width:320px;height:200px;border:1px solid #444}
+pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="out">starting…</pre>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three'
+import { WebGPURenderer, PostProcessing } from 'three/webgpu'
+import { pass, uniform } from 'three/tsl'
+import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js'
+import { createUniforms, createCloudMaterial, POINT_POSITION_ATTRIBUTE, POINT_COLOR_ATTRIBUTE } from '/src/threejs-test/point-cloud.ts'
+const out=document.getElementById('out'), log=s=>{out.textContent+='\n'+s;console.log(s)}
+const POINTS=70000, canvas=document.getElementById('c')
+const renderer=new WebGPURenderer({canvas,antialias:false}); renderer.setPixelRatio(1); renderer.setSize(320,200,false); await renderer.init()
+const scene=new THREE.Scene(), camera=new THREE.PerspectiveCamera(60,320/200,0.1,10000)
+camera.position.set(0,-160,90); camera.lookAt(0,0,0)
+const uniforms=createUniforms()
+const QC=new Float32Array([-0.5,-0.5,0,0.5,-0.5,0,0.5,0.5,0,-0.5,0.5,0]), QU=new Float32Array([0,0,1,0,1,1,0,1])
+function mkGeo(){const pos=new Float32Array(POINTS*3),col=new Uint8Array(POINTS*3)
+ for(let i=0;i<POINTS;i++){pos[i*3]=(Math.random()-.5)*100;pos[i*3+1]=(Math.random()-.5)*100;pos[i*3+2]=(Math.random()-.5)*30
+  col[i*3]=Math.random()*255;col[i*3+1]=Math.random()*255;col[i*3+2]=Math.random()*255}
+ const g=new THREE.InstancedBufferGeometry()
+ g.setAttribute('position',new THREE.BufferAttribute(QC,3)); g.setAttribute('uv',new THREE.BufferAttribute(QU,2)); g.setIndex([0,1,2,0,2,3])
+ g.setAttribute(POINT_POSITION_ATTRIBUTE,new THREE.InstancedBufferAttribute(pos,3,false))
+ g.setAttribute(POINT_COLOR_ATTRIBUTE,new THREE.InstancedBufferAttribute(col,3,true))
+ g.instanceCount=POINTS; return g}
+const scenePass=pass(scene,camera), post=new PostProcessing(renderer)
+post.outputNode=dof(scenePass.getTextureNode(),scenePass.getViewZNode(),uniform(900),uniform(1075),uniform(2.5))
+const pipes=renderer._pipelines
+const cnt=()=>({v:pipes.programs.vertex.size,f:pipes.programs.fragment.size,p:pipes.caches.size})
+const tick=()=>new Promise(r=>{let d=false;requestAnimationFrame(()=>{if(!d){d=true;r()}});setTimeout(()=>{if(!d){d=true;r()}},60)})
+let dofOn=true
+async function frame(){await tick();const t0=performance.now();if(dofOn)post.render();else renderer.render(scene,camera);return performance.now()-t0}
+const med=a=>{const s=[...a].sort((x,y)=>x-y);return s.length?+s[Math.floor(s.length/2)].toFixed(2):null}
+const warm=new THREE.Mesh(mkGeo(),createCloudMaterial(uniforms,3,0.37)); warm.frustumCulled=false; scene.add(warm)
+dofOn=false; for(let i=0;i<20;i++) await frame()
+dofOn=true; for(let i=0;i<25;i++) await frame()
+const R={}; let seed=3.0
+async function run(label,{dofMode,prewarm,n=5}){
+ dofOn=dofMode
+ const d=[],walls=[],blocks=[],pw=[],ff=[]
+ for(let t=0;t<n;t++){
+  seed+=0.019
+  const mesh=new THREE.Mesh(mkGeo(),createCloudMaterial(uniforms,3,seed))
+  mesh.frustumCulled=false; mesh.position.set(0,0,-150-t*4)
+  const b=[]; for(let i=0;i<8;i++) b.push(await frame()); const base=med(b)
+  if(prewarm){const c0=cnt();let worst=0,last=performance.now()
+   const id=setInterval(()=>{const now=performance.now();worst=Math.max(worst,now-last);last=now},1)
+   const t0=performance.now(); await renderer.compileAsync(mesh,camera,scene)
+   walls.push(+(performance.now()-t0).toFixed(1)); clearInterval(id); blocks.push(+worst.toFixed(1))
+   const c1=cnt(); pw.push((c1.v-c0.v)+'v+'+(c1.f-c0.f)+'f/'+(c1.p-c0.p)+'p')}
+  const c2=cnt(); scene.add(mesh)
+  const first=await frame(); const c3=cnt()
+  ff.push((c3.v-c2.v)+'v+'+(c3.f-c2.f)+'f/'+(c3.p-c2.p)+'p')
+  d.push(+(first-base).toFixed(2))
+  scene.remove(mesh); mesh.geometry.dispose()
+ }
+ R[label]={first_frame_delta_ms:d,median:med(d),prewarm_wall_ms:walls,prewarm_worst_block_ms:blocks,created_in_prewarm:pw,created_in_first_frame:ff}
+ log(label+': '+JSON.stringify(R[label]))
+}
+await run('DOF_noPrewarm',{dofMode:true,prewarm:false})
+await run('DOF_prewarm',{dofMode:true,prewarm:true})
+await run('NODOF_noPrewarm',{dofMode:false,prewarm:false})
+await run('NODOF_prewarm',{dofMode:false,prewarm:true})
+log('\nRESULT_JSON '+JSON.stringify(R)); window.__r=R; document.title='done'
+</script>
+</body>
+</html>

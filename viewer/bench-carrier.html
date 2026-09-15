@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>carrier bench</title>
+<style>body{font:12px/1.5 monospace;background:#111;color:#eee;margin:0;padding:12px}
+canvas{position:fixed;right:8px;bottom:8px;width:320px;height:200px;border:1px solid #444}
+pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<pre id="out">starting…</pre>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three'
+import { WebGPURenderer } from 'three/webgpu'
+import { createUniforms, createCloudMaterial, POINT_POSITION_ATTRIBUTE, POINT_COLOR_ATTRIBUTE } from '/src/threejs-test/point-cloud.ts'
+
+const out = document.getElementById('out')
+const log = (s) => { out.textContent += '\n' + s; console.log(s) }
+out.textContent = ''
+
+const params = new URLSearchParams(location.search)
+const N = Number(params.get('n') ?? 236124)   // points per tile (a real Detail tile)
+const TILES = Number(params.get('tiles') ?? 12)
+
+const canvas = document.getElementById('c')
+const renderer = new WebGPURenderer({ canvas, antialias: false })
+renderer.setPixelRatio(1)
+renderer.setSize(320, 200, false)
+await renderer.init()
+log(`backend ${renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL'}  three ${THREE.REVISION}  sortObjects=${renderer.sortObjects}`)
+log(`N=${N} points/tile, ${TILES} tiles per mode`)
+
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(60, 320 / 200, 0.1, 100000)
+camera.position.set(0, -300, 200)
+camera.lookAt(0, 0, 0)
+
+const uniforms = createUniforms()
+
+const QUAD_CORNERS = new Float32Array([-0.5,-0.5,0, 0.5,-0.5,0, 0.5,0.5,0, -0.5,0.5,0])
+const QUAD_UVS = new Float32Array([0,0, 1,0, 1,1, 0,1])
+const QUAD_INDICES = [0,1,2, 0,2,3]
+
+// A tile exactly as PNTSLoader hands it over: Float32 xyz, normalised Uint8 rgb.
+function makeCarrier() {
+  const pos = new Float32Array(N * 3)
+  const col = new Uint8Array(N * 3)
+  for (let i = 0; i < N; i++) {
+    pos[i*3+0] = (Math.random() - 0.5) * 200
+    pos[i*3+1] = (Math.random() - 0.5) * 200
+    pos[i*3+2] = Math.random() * 40
+    col[i*3+0] = (Math.random()*255)|0
+    col[i*3+1] = (Math.random()*255)|0
+    col[i*3+2] = (Math.random()*255)|0
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3, false))
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3, true))
+  const m = new THREE.PointsMaterial({ vertexColors: true })
+  const p = new THREE.Points(g, m)
+  // TilesRenderer.autoDisableRendererCulling does this to every tile object.
+  p.frustumCulled = false
+  return p
+}
+
+// streaming.ts buildPointQuads + the load-model parking, verbatim in shape.
+function buildTile(spacing) {
+  const source = makeCarrier()
+  const position = source.geometry.getAttribute('position')
+  const color = source.geometry.getAttribute('color')
+
+  const geometry = new THREE.InstancedBufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS, 2))
+  geometry.setIndex(QUAD_INDICES)
+  geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(position.array, position.itemSize, position.normalized))
+  geometry.setAttribute(POINT_COLOR_ATTRIBUTE, new THREE.InstancedBufferAttribute(color.array, color.itemSize, color.normalized))
+  geometry.instanceCount = position.count
+
+  const material = createCloudMaterial(uniforms, color.itemSize, spacing, { level: 6, tint: 0xffffff, isLeaf: false })
+  const mesh = new THREE.Mesh(geometry, material)
+  mesh.frustumCulled = false
+
+  source.add(mesh)
+  source.geometry.setDrawRange(0, 0)
+  source.material.dispose()
+  return source
+}
+
+function mem() {
+  const m = renderer.info.memory
+  return { attributes: m.attributes, attributesSize: m.attributesSize }
+}
+
+async function runMode(label, parkCarrier, preSphere = false) {
+  const root = new THREE.Group()
+  scene.add(root)
+  // Two warm-up tiles so pipeline compilation is out of the numbers.
+  for (let i = 0; i < 2; i++) {
+    const tile = buildTile(0.5)
+    if (parkCarrier) tile.layers.disableAll()
+    if (preSphere) tile.geometry.computeBoundingSphere()
+    root.add(tile)
+    await renderer.renderAsync(scene, camera)
+    await renderer.renderAsync(scene, camera)
+  }
+  const before = mem()
+  const samples = []
+  for (let i = 0; i < TILES; i++) {
+    const tile = buildTile(0.5)
+    if (parkCarrier) tile.layers.disableAll()
+    if (preSphere) tile.geometry.computeBoundingSphere()
+    root.add(tile)
+    // Settle: the tile is in the graph but not yet rendered.
+    await new Promise(r => setTimeout(r, 0))
+    const t0 = performance.now()
+    renderer.render(scene, camera)          // synchronous CPU half — what stutters
+    const t1 = performance.now()
+    samples.push(+(t1 - t0).toFixed(2))
+    await renderer.renderAsync(scene, camera)
+  }
+  const after = mem()
+  const steady = []
+  for (let i = 0; i < 5; i++) { const t0 = performance.now(); renderer.render(scene, camera); steady.push(+(performance.now()-t0).toFixed(2)) }
+  scene.remove(root)
+  root.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose?.() })
+  const sorted = [...samples].sort((a,b)=>a-b)
+  log(`\n${label}`)
+  log(`  first-frame ms per new tile: ${samples.join(' ')}`)
+  log(`  median ${sorted[sorted.length>>1]}  mean ${(samples.reduce((a,b)=>a+b,0)/samples.length).toFixed(2)}`)
+  log(`  steady-state frames (no new tile): ${steady.join(' ')}`)
+  log(`  last frame drawCalls=${renderer.info.render.drawCalls} triangles=${renderer.info.render.triangles} points=${renderer.info.render.points}`)
+  log(`  info.memory.attributes ${before.attributes} -> ${after.attributes}  (+${((after.attributes-before.attributes)/TILES).toFixed(1)} per tile)`)
+  log(`  info.memory.attributesSize ${(before.attributesSize/1e6).toFixed(2)}MB -> ${(after.attributesSize/1e6).toFixed(2)}MB  (+${((after.attributesSize-before.attributesSize)/TILES/1e6).toFixed(2)}MB per tile)`)
+  return { median: sorted[sorted.length>>1], mean: samples.reduce((a,b)=>a+b,0)/samples.length,
+           perTileAttrs: (after.attributes-before.attributes)/TILES,
+           perTileBytes: (after.attributesSize-before.attributesSize)/TILES }
+}
+
+const a = await runMode('A — carrier left in the render list (current code)', false)
+const c = await runMode('C — carrier in the list, bounding sphere precomputed', false, true)
+const b = await runMode('B — carrier parked with layers.disableAll()', true)
+
+// Isolate the two O(N) passes the carrier adds.
+{
+  const tile = buildTile(0.5)
+  const t0 = performance.now(); tile.geometry.computeBoundingSphere(); const t1 = performance.now()
+  // The uint8 -> padded-uint8 rewrite WebGPUAttributeUtils.createAttribute does.
+  const src = tile.geometry.getAttribute('color').array
+  const t2 = performance.now()
+  const padded = new Uint8Array(N * 4)
+  for (let i = 0; i < N; i++) padded.set(src.subarray(i*3, i*3+3), i*4)
+  const t3 = performance.now()
+  log(`\nisolated O(N) passes at N=${N}`)
+  log(`  computeBoundingSphere: ${(t1-t0).toFixed(2)} ms`)
+  log(`  uint8 rgb -> rgbx padding loop: ${(t3-t2).toFixed(2)} ms  (padded ${padded.length} bytes)`)
+}
+
+log(`\n==== delta ====`)
+log(`  median first-frame cost per tile: A ${a.median.toFixed(2)} / C ${c.median.toFixed(2)} / B ${b.median.toFixed(2)} ms`)
+log(`  mean:                             A ${a.mean.toFixed(2)} / C ${c.mean.toFixed(2)} / B ${b.mean.toFixed(2)} ms`)
+log(`  saved by parking the carrier (A->B): ${(a.mean-b.mean).toFixed(2)} ms/tile`)
+log(`  of which bounding sphere (A->C):     ${(a.mean-c.mean).toFixed(2)} ms/tile`)
+log(`  of which duplicate buffers (C->B):   ${(c.mean-b.mean).toFixed(2)} ms/tile`)
+log(`  GPU attributes per tile: ${a.perTileAttrs} -> ${b.perTileAttrs}`)
+log(`  GPU attribute bytes per tile: ${(a.perTileBytes/1e6).toFixed(2)}MB -> ${(b.perTileBytes/1e6).toFixed(2)}MB`)
+window.__done = { a, b, c }
+</script>
+</body>
+</html>

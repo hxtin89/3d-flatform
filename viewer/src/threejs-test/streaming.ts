@@ -96,6 +96,14 @@ export interface StreamingCloud {
   setHighPrecision(enabled: boolean): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
+  /**
+   * Hold freshly built tiles back and release a few per frame, instead of letting every
+   * tile that arrived in one frame upload and compile in that same frame.
+   *
+   * `perFrame` of 0 switches it off *and drains whatever is waiting*, so off is the
+   * picture you get with the feature absent rather than a queue frozen mid-flight.
+   */
+  setArrivalBudget(perFrame: number): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
@@ -152,6 +160,14 @@ export interface ThinningSettings {
   /** Never draw less than this fraction of a tile, so nothing vanishes outright. */
   minKeep: number
   /**
+   * How long a tile takes to ease most of the way to a new keep fraction, in ms.
+   *
+   * 0 turns the damping off entirely and restores the bare per-frame decision the feature
+   * had before — kept switchable because the step it removes is a look judgement, and a
+   * look judgement needs an A/B.
+   */
+  rampMs: number
+  /**
    * Ceiling on how far a survivor may be widened to stand in for the points that went.
    *
    * Not the same limit as `design` point size: in fixed-size mode `sizeMinPx`/`sizeMaxPx`
@@ -196,11 +212,6 @@ export interface StreamingLimits {
 }
 
 const MIB = 1024 * 1024
-
-/** How long a tile takes to ease most of the way to a new keep fraction. Long enough that
- *  a covered/uncovered flip reads as a dissolve rather than a step, short enough that the
- *  saving still arrives while the camera is still moving. */
-const THINNING_RAMP_MS = 260
 
 // Reused by the ground probe so a per-frame sample allocates nothing.
 const scratchMatrix = new THREE.Matrix4()
@@ -371,6 +382,20 @@ export function createStreamingCloud(opts: {
   const failedTiles = new Set<string>()
   /** Timestamp of the previous thinning pass, for the ramp's elapsed time. */
   let lastThinningAt = 0
+  /**
+   * Tiles built but not yet shown, oldest first, and how many may be released per frame.
+   *
+   * A mesh that is not visible never reaches the render list, so three never uploads its
+   * attributes and never builds its pipeline — `_projectObject` returns before any of
+   * that. That makes `visible` the one honest budget point in three r185: there is no
+   * hook that says "upload this attribute later".
+   *
+   * Holding the mesh rather than delaying `source.add(mesh)` is deliberate. The tile's
+   * scene graph is what UnloadTilesPlugin traverses to dispose it, so a mesh queued
+   * outside that graph would leak its geometry if the tile were evicted while waiting.
+   */
+  const pendingReveal: THREE.Mesh[] = []
+  let arrivalBudget = 0
 
   /**
    * Put a tile's points into a random order, once, in place.
@@ -586,6 +611,10 @@ export function createStreamingCloud(opts: {
       const mesh = buildPointQuads(source, tile, density)
       if (!mesh) continue
       quads.push(mesh)
+      if (arrivalBudget > 0) {
+        mesh.visible = false
+        pendingReveal.push(mesh)
+      }
       const debugTile = (mesh.material as any)?.userData?.debugTile
       if (debugTile) debugTiles.push(debugTile)
 
@@ -648,6 +677,28 @@ export function createStreamingCloud(opts: {
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
       tiles.update()
+      // Released after the traversal, so a tile that became invisible again while it was
+      // waiting is simply dropped from the queue rather than shown for one frame.
+      if (arrivalBudget > 0 && pendingReveal.length > 0) {
+        let released = 0
+        while (released < arrivalBudget && pendingReveal.length > 0) {
+          const mesh = pendingReveal.shift()!
+          // Still parented means the tile is still alive; a disposed tile's mesh has been
+          // detached and there is nothing to show.
+          if (!mesh.parent) continue
+          mesh.visible = true
+          released++
+        }
+      }
+    },
+    setArrivalBudget(perFrame: number) {
+      arrivalBudget = Math.max(0, Math.floor(perFrame))
+      if (arrivalBudget === 0) {
+        // Off has to mean *absent*, not "queue frozen": anything already waiting is shown
+        // at once, so switching it off cannot leave holes on screen.
+        for (const mesh of pendingReveal) mesh.visible = true
+        pendingReveal.length = 0
+      }
     },
     setErrorTarget(value: number) {
       tiles.errorTarget = value
@@ -1006,8 +1057,8 @@ export function createStreamingCloud(opts: {
           // a ramp only ever adds or removes points at the tail, and never changes which
           // of the surviving points are on screen.
           const previousKeep = anyGeometry.userData.keepNow
-          if (previousKeep !== undefined && dtMs > 0) {
-            keep = previousKeep + (keep - previousKeep) * (1 - Math.exp(-dtMs / THINNING_RAMP_MS))
+          if (previousKeep !== undefined && dtMs > 0 && settings.rampMs > 0) {
+            keep = previousKeep + (keep - previousKeep) * (1 - Math.exp(-dtMs / settings.rampMs))
           }
           anyGeometry.userData.keepNow = keep
           const count = Math.max(1, Math.round(full * keep))
