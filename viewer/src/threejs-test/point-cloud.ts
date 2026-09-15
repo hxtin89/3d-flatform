@@ -584,9 +584,70 @@ function maskDissolveKeep(u: CloudUniforms): any {
  * Flip an effect. Returns true when the value actually changed, so callers know
  * whether they need to pay for a material rebuild.
  */
+/**
+ * The four values that differ per tile, as FOUR SHARED NODES rather than four per tile.
+ *
+ * This is what lets every tile reuse one compiled shader *and* one built node graph.
+ *
+ * three keys its node-builder cache on `renderObject.initialCacheKey`, which walks the
+ * material's node graph and folds in each node's `getCacheKey()`. That bottoms out at
+ * `Node.customCacheKey()`, whose default implementation returns `this.id` — a per-instance
+ * counter. So two materials built from *structurally identical but separately constructed*
+ * graphs get different keys, always miss, and each run a full TSL build. Measured on this
+ * tree: 5.4 ms median and 16.2 ms worst per tile, synchronously inside the render pass, to
+ * produce WGSL that was byte-identical 50 times out of 50.
+ *
+ * `onObjectUpdate` is three's own answer, used by `modelNormalMatrix` and the material
+ * property nodes: one node instance, whose value is refreshed per render object from a
+ * callback. The node identity is shared, so the cache key collapses; the value is not.
+ *
+ * Each reads through a `{ value }` holder on `material.userData` so that everything in
+ * streaming.ts that writes `…userData.thinScale.value = x` keeps working untouched — the
+ * holder is a plain object now instead of a uniform node, and nothing outside this file
+ * needs to know.
+ */
+const SHARED_FALLBACK_SPACING_M = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM
+
+const tileThinScale = uniform(1).onObjectUpdate(
+  ({ material }: any) => material?.userData?.thinScale?.value ?? 1,
+)
+const tileSpacingMetres = uniform(SHARED_FALLBACK_SPACING_M).onObjectUpdate(
+  ({ material }: any) => material?.userData?.spacingMetres?.value ?? SHARED_FALLBACK_SPACING_M,
+)
+// Vector and colour uniforms mutate `self.value` rather than returning a new object, which
+// is the pattern three uses for modelNormalMatrix — returning a fresh instance every frame
+// would allocate once per tile per frame.
+const tileDebugInfo = uniform(new THREE.Vector4(0, 0, 1, 1)).onObjectUpdate(
+  ({ material }: any, self: any) => {
+    const held = material?.userData?.debugTile?.value
+    if (held) self.value.copy(held)
+    return self.value
+  },
+)
+const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
+  ({ material }: any, self: any) => {
+    const held = material?.userData?.debugTint
+    if (held) self.value.copy(held)
+    return self.value
+  },
+)
+
+/**
+ * The built graph, keyed by the only two things that can still change its shape: the colour
+ * attribute's component count, and which effects are compiled in.
+ *
+ * `effectsVersion` rather than an explicit invalidation call, so a flag flip cannot leave a
+ * stale graph behind: `setCloudEffectEnabled` bumps it, the next lookup misses, and every
+ * material that asks to rebuild gets the new graph — the first one pays the build, the rest
+ * hit the cache.
+ */
+let effectsVersion = 0
+const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any }>()
+
 export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): boolean {
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
+  effectsVersion++
   return true
 }
 
@@ -649,60 +710,26 @@ export interface TileDebugInfo {
 
 const NO_TILE_DEBUG: TileDebugInfo = { level: 0, tint: 0xffffff, isLeaf: false }
 
-/** Create a material for exactly one streamed tile. Never share it across tiles:
- * UnloadTilesPlugin disposes hidden tile materials independently.
+/**
+ * The node graph, built once per (colour component count, effect flag set) and shared by
+ * every tile material that matches.
  *
- * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
- * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
- * backends pin a real point primitive to one pixel (WebGPU has no point-size
- * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at
- * a >1 device pixel ratio is smaller than a CSS pixel, which is what tore holes
- * into the canopy. `colorItemSize` is 4 for RGBA tiles and 3 for RGB.
+ * Building it per tile was the point: the nodes were structurally identical but freshly
+ * constructed, and three keys its node-builder cache on node *identity*, so every tile
+ * missed and re-ran a full TSL build inside the render pass. Handing out the same node
+ * objects collapses the key, and the build happens once.
+ *
+ * Safe to share because nothing in here is per tile any more: the four values that are
+ * (thinning scale, spacing, and the two inspector inputs) travel through the shared
+ * `onObjectUpdate` nodes above, which read them off the material being drawn.
  */
-export function createCloudMaterial(
-  u: CloudUniforms,
-  colorItemSize = 3,
-  /** This tile's own mean point spacing in metres — see tileSpacingMetres in
-   * streaming.ts. The initial value of a per-tile *uniform*, not a baked constant; the
-   * comment at `spacingMetres` below is the one that matters. */
-  spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
-  debug: TileDebugInfo = NO_TILE_DEBUG,
-): PointsNodeMaterial {
-  const material = new PointsNodeMaterial()
-  if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
-  material.transparent = false
-  material.depthWrite = true
-  // Three's own attenuation cannot serve this tree: `refine: ADD` draws every level
-  // in one pass, so there is no single world size to attenuate. The size is built
-  // below instead, from this tile's spacing and each point's own view depth.
-  material.sizeAttenuation = false
-  // sizeNode is a diameter in CSS pixels (PointsNodeMaterial multiplies by screenDPR
-  // afterwards), which is the same unit the screen-space error target is in — so at
-  // coverage 1 a point is exactly as wide as the gap to its neighbour.
-  // Per material, not shared: thinning is decided per tile, so the widening that
-  // compensates for it has to be too. 1 while nothing is being thinned away.
-  const thinScale = uniform(1)
-  material.userData.thinScale = thinScale
-  // A uniform, not `float(spacingM)`, and this is the single most expensive line in the
-  // file to get wrong.
-  //
-  // `float()` is a ConstNode, which NodeBuilder inlines into the generated WGSL as a
-  // literal. `tileSpacingMetres` returns a near-continuous per-tile number — for leaves
-  // it is `sqrt(area / points)` — so every tile produced a *different shader source*.
-  // Pipelines.getForRender keys its programmable stages on that source string, so a
-  // different literal meant a new shader module and a new GPURenderPipeline for every
-  // tile that streamed in, compiled synchronously on the frame it was first drawn.
-  // Measured on this machine: 26.1 ms per tile with a unique spacing against 18.0 ms
-  // with a shared one, and 1 new program + 1 new pipeline for every single tile.
-  //
-  // As a uniform the value leaves the source entirely, every tile generates byte-identical
-  // WGSL, and the program and pipeline caches hit. It also makes a GPU-only unload cheap:
-  // on re-show the tile re-uploads its buffers instead of rebuilding a whole pipeline.
-  //
-  // This is the same trade the debug uniforms below already make deliberately — it simply
-  // was never applied to the spacing.
-  const spacingMetres = uniform(spacingM)
-  material.userData.spacingMetres = spacingMetres
+function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
+  const key = `${colorItemSize}|${effectsVersion}|${highPrecisionMatrices ? 1 : 0}`
+  const cached = cloudGraphCache.get(key)
+  if (cached) return cached
+
+  const thinScale = tileThinScale
+  const spacingMetres = tileSpacingMetres
   const spacingPx = spacingMetres
     .mul(thinScale)
     .mul(u.sizeCoverage)
@@ -727,14 +754,14 @@ export function createCloudMaterial(
   //
   // The vignette's keep test rides on the same size: a dissolved point is drawn at zero
   // width, which the rasteriser drops before it can cost a single fragment.
-  material.sizeNode = mix(
+  const sizeNode = mix(
     u.pointSize.mul(thinScale),
     spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx),
     u.sizeSpacingMix,
   ).mul(maskDissolveKeep(u))
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
-  material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+  const positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
 
   const pointColor = colorItemSize === 4
     ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
@@ -753,10 +780,8 @@ export function createCloudMaterial(
   // z and w start neutral — on target, and drawing — so a tile that has not been
   // walked yet (the first frame after a mode is switched on) looks ordinary instead of
   // vanishing under the isolate test or reading as wildly over-refined.
-  const debugTile = uniform(new THREE.Vector4(debug.level, debug.isLeaf ? 1 : 0, 1, 1))
-  const debugTint: any = uniform(new THREE.Color(debug.tint))
-  // Read back per frame by updateDebugTiles, which has the tile but not the mesh.
-  material.userData.debugTile = debugTile
+  const debugTile = tileDebugInfo
+  const debugTint: any = tileDebugTint
 
   const buildColorNode = () => Fn(() => {
     // Round dots instead of squares — and the reason this is a build flag rather than a
@@ -857,10 +882,66 @@ export function createCloudMaterial(
     // render has.
     return mix(finished, debugColor, u.debugStrength.mul(step(0.5, u.debugMode)))
   })()
-  material.colorNode = buildColorNode()
-  // Recorded so an effect toggle can rebuild this graph later without the caller
-  // having to remember the tile's colour item size.
-  material.userData.rebuildColorNode = () => { material.colorNode = buildColorNode() }
+
+  const graph = { sizeNode, positionNode, colorNode: buildColorNode() }
+  cloudGraphCache.set(key, graph)
+  return graph
+}
+
+/** Create a material for exactly one streamed tile. Never share it across tiles:
+ * UnloadTilesPlugin disposes hidden tile materials independently.
+ *
+ * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
+ * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
+ * backends pin a real point primitive to one pixel (WebGPU has no point-size
+ * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at
+ * a >1 device pixel ratio is smaller than a CSS pixel, which is what tore holes
+ * into the canopy. `colorItemSize` is 4 for RGBA tiles and 3 for RGB.
+ */
+export function createCloudMaterial(
+  u: CloudUniforms,
+  colorItemSize = 3,
+  /** This tile's own mean point spacing in metres — see tileSpacingMetres in streaming.ts.
+   * The initial value of a per-tile holder read by the shared `tileSpacingMetres` node, not
+   * a baked constant: a literal here would fork the shader for every tile. */
+  spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
+  debug: TileDebugInfo = NO_TILE_DEBUG,
+): PointsNodeMaterial {
+  const material = new PointsNodeMaterial()
+  if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
+  material.transparent = false
+  material.depthWrite = true
+  // Three's own attenuation cannot serve this tree: `refine: ADD` draws every level
+  // in one pass, so there is no single world size to attenuate. The size is built
+  // below instead, from this tile's spacing and each point's own view depth.
+  material.sizeAttenuation = false
+  /**
+   * The four values that are genuinely per tile, as plain `{ value }` holders.
+   *
+   * They used to be uniform *nodes* built here, which is precisely what forced a fresh
+   * node graph — and therefore a fresh TSL build — for every tile. The shared nodes at the
+   * top of this file now read these through `onObjectUpdate`, so the values stay per tile
+   * while the graph is one object shared by all of them.
+   *
+   * The `{ value }` shape is deliberate: streaming.ts writes `userData.thinScale.value`,
+   * `userData.spacingMetres.value` and `userData.debugTile.value.z` directly, and none of
+   * those call sites had to change.
+   *
+   * debugTile: x = level, y = 1 for a leaf, z = this tile's error over the live target,
+   * w = 1 where refinement stopped. z and w start neutral so a tile the traversal has not
+   * walked yet looks ordinary rather than vanishing under the isolate test.
+   */
+  material.userData.thinScale = { value: 1 }
+  material.userData.spacingMetres = { value: spacingM }
+  material.userData.debugTile = { value: new THREE.Vector4(debug.level, debug.isLeaf ? 1 : 0, 1, 1) }
+  material.userData.debugTint = new THREE.Color(debug.tint)
+
+  // One graph for every tile that shares these two facts; see cloudGraphFor.
+  const graph = cloudGraphFor(u, colorItemSize)
+  material.sizeNode = graph.sizeNode
+  material.positionNode = graph.positionNode
+  material.colorNode = graph.colorNode
+  material.userData.rebuildColorNode = () => { material.colorNode = cloudGraphFor(u, colorItemSize).colorNode }
 
   return material
 }
