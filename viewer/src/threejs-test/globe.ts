@@ -6,12 +6,12 @@
 // No Cesium, no Ion. Uses the same satellite-v4 raster endpoint as the Cesium viewer.
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { texture, mix } from 'three/tsl'
+import { materialReference, mix } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial,
+  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -77,6 +77,46 @@ export interface Globe {
    *  ceiling rather than against the point cloud's. */
   stats(): { visible: number; cacheBytes: number; gpuBytes: number; cacheBytesCeiling: number }
   dispose(): void
+}
+
+/**
+ * The imagery colour graph, built once and shared by every basemap tile.
+ *
+ * It used to be built per tile inside the `load-model` handler, and that cost more than
+ * anything else in bringing a map tile online: three keys its node-builder cache on node
+ * *identity*, so two structurally identical graphs built separately always miss and each
+ * re-runs a full TSL build inside the render pass. Measured by material type on a high
+ * tilted view, after the same fix landed for the point cloud: 27 builds at 9.1 ms each,
+ * 246 ms in a single drag, and by then it was the largest remaining item.
+ *
+ * The one genuinely per-tile input is the texture, and `materialReference` is three's own
+ * answer for that — with no material passed it resolves against the material of the object
+ * currently being drawn, so one node reads each tile's own `map`. That is why `mat.map`
+ * has to keep being set; it was previously kept only for the disposal path.
+ *
+ * Keyed on the cloud's effect version because the effect switches compile their code out
+ * entirely rather than turning it down, so a flag flip has to produce a different graph.
+ */
+const imageryGraphCache = new Map<number, any>()
+
+function imageryColorNode(uniforms: CloudUniforms): any {
+  const key = cloudEffectsVersion()
+  const cached = imageryGraphCache.get(key)
+  if (cached) return cached
+
+  const raw = (materialReference('map', 'texture') as any).rgb
+  const graded = gradeImageryNode(uniforms, raw)
+    .mul(uniforms.daylightColor)
+    .mul(uniforms.daylightIntensity)
+  const fog = groundFogNode(uniforms)
+  const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
+  const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)
+  // Last, on purpose: fog and the vignette are atmosphere for the map, and under the point
+  // cloud there is no map to give atmosphere to. Applying the patch after them is what
+  // makes the chosen colour or brightness the thing you actually see — see applyGroundPatch.
+  const node = applyGroundPatch(uniforms, atmospheric, raw)
+  imageryGraphCache.set(key, node)
+  return node
 }
 
 export function createGlobe(opts: {
@@ -178,22 +218,8 @@ export function createGlobe(opts: {
       // .rgb, not the raw vec4: gradeImageryNode mixes against a vec3 luma.
       // Rebuilt rather than parameterised, because the effect switches compile their
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
-      const buildColorNode = () => {
-        const raw = texture(map).rgb
-        const graded = gradeImageryNode(uniforms, raw)
-          .mul(uniforms.daylightColor)
-          .mul(uniforms.daylightIntensity)
-        const fog = groundFogNode(uniforms)
-        const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
-        const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)
-        // Last, on purpose: fog and the vignette are atmosphere for the map, and under
-        // the point cloud there is no map to give atmosphere to. Applying the patch
-        // after them is what makes the chosen colour or brightness the thing you
-        // actually see — see applyGroundPatch.
-        return applyGroundPatch(uniforms, atmospheric, raw)
-      }
-      mat.colorNode = buildColorNode()
-      mat.userData.rebuildColorNode = () => { mat.colorNode = buildColorNode() }
+      mat.colorNode = imageryColorNode(uniforms)
+      mat.userData.rebuildColorNode = () => { mat.colorNode = imageryColorNode(uniforms) }
       o.material.dispose()
       o.material = mat
     })

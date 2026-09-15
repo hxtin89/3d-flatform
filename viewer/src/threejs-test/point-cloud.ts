@@ -644,6 +644,12 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
 let effectsVersion = 0
 const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any }>()
 
+/** The basemap builds its own graph from the same effect flags and needs the same cache
+ *  invalidation — see globe.ts. */
+export function cloudEffectsVersion(): number {
+  return effectsVersion
+}
+
 export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): boolean {
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
