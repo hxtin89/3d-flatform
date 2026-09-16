@@ -13,6 +13,12 @@ import { createFoveation, type Foveation, type FoveationSettings } from './fovea
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import { createViewDepthCorrection, type ViewDepthCorrection } from './view-depth'
 import {
+  createPointBudget,
+  type PointBudget,
+  type PointBudgetSettings,
+  type PointBudgetStats,
+} from './point-budget'
+import {
   attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, onRebase, originStats,
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
@@ -332,6 +338,47 @@ syncLoaderSoundOpt()
  * density is not part of that bargain — it is fixed by camera distance — so the
  * budget is spent on the vignette mask, pixel ratio, view distance, cloud and
  * parrot detail instead. */
+/**
+ * The point cloud's cache and GPU budgets, as the device tier asked for them.
+ *
+ * Kept so the point-budget slider can re-apply its own cap without waiting for the next
+ * preset change — the two decide the same two numbers, and the slider moves far more
+ * often than the tier does.
+ */
+let presetStreamBudget = { cacheBytes: 384 * 1024 * 1024, gpuBytes: 256 * 1024 * 1024 }
+
+function applyStreamMemoryBudget(cacheBytes: number, gpuBytes: number): void {
+  presetStreamBudget = { cacheBytes, gpuBytes }
+  refreshStreamMemoryBudget()
+}
+
+/**
+ * Pull the memory budgets down with the point cap.
+ *
+ * A cap on the drawn points is also a cap on the working set: at 16 bytes a point a
+ * 1M-point frame needs a fraction of the 384 MB the strong tier hands out, and leaving
+ * the cache that large means paying to hold tiles the frontier has stopped selecting.
+ * The tier value stays the ceiling — this only ever lowers it.
+ *
+ * Floors underneath, because a cache too small to survive a camera turn re-downloads on
+ * every turn, which is the failure the tile-count floor used to cause. And only while
+ * `presetBudgets` is on: with that switch off the app deliberately runs fixed high
+ * budgets, and the cap has no business overriding a diagnostic.
+ */
+function refreshStreamMemoryBudget(): void {
+  if (!stream || !renderOptions.effective().presetBudgets) return
+  const { cacheBytes, gpuBytes } = presetStreamBudget
+  if (!budgetSettings.enabled) {
+    stream.setMemoryBudget(cacheBytes, gpuBytes)
+    return
+  }
+  const bytes = budgetSettings.maxPoints * BUDGET.bytesPerPoint
+  stream.setMemoryBudget(
+    Math.max(BUDGET.minCacheBytes, Math.min(cacheBytes, Math.round(bytes * BUDGET.cacheSlack))),
+    Math.max(BUDGET.minGpuBytes, Math.min(gpuBytes, Math.round(bytes * BUDGET.gpuSlack))),
+  )
+}
+
 function applyBenchPreset(): void {
   const measured = eagleBench?.result() ?? null
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
@@ -362,7 +409,7 @@ function applyBenchPreset(): void {
     // A settled Detail p100 view measures ~220 MB. Budgets below that evict
     // tiles the very next frame needs, producing continuous refetching.
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
+      applyStreamMemoryBudget(384 * 1024 * 1024, 256 * 1024 * 1024)
       // Every tier's imagery ceiling has to clear the working set — a settled view
       // at errorTarget 1 measured 94 tiles of ~1.02 MB. Under that, the cache fills
       // with tiles it may not evict and stops requesting the ones still missing,
@@ -375,7 +422,7 @@ function applyBenchPreset(): void {
     environmentLayer?.applyMeasuredTier('balanced')
     atmosphereFarScale = EXPERIENCE_CONFIG.atmosphere.farScaleByPreset.medium
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
+      applyStreamMemoryBudget(256 * 1024 * 1024, 176 * 1024 * 1024)
       // The imagery working set at errorTarget 1 measures ~96 MB, so a ceiling at
       // that value leaves the cache exactly full and unable to complete the map.
       globe?.setMemoryBudget(192 * 1024 * 1024, 128 * 1024 * 1024)
@@ -388,7 +435,7 @@ function applyBenchPreset(): void {
     // Previously left at the library default of 96 MB, which thrashes for the
     // same reason, with less headroom to recover.
     if (options.presetBudgets) {
-      stream?.setMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
+      applyStreamMemoryBudget(160 * 1024 * 1024, 112 * 1024 * 1024)
       // Still the smallest imagery budget of the three, but above the measured
       // working set: below it the map does not merely get blurry, it gets holes.
       globe?.setMemoryBudget(128 * 1024 * 1024, 96 * 1024 * 1024)
@@ -592,6 +639,22 @@ let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
 let foveation: Foveation | null = null
+// Same reason as the foveation settings above: the panel binds these long before the
+// stream exists, so the module adopts whatever is already on the controls.
+const BUDGET = EXPERIENCE_CONFIG.lod.budget
+const budgetSettings: PointBudgetSettings = {
+  enabled: BUDGET.enabled,
+  maxPoints: BUDGET.defaultPoints,
+  mode: 'ceiling',
+  farFirst: BUDGET.farFirst,
+  nearM: BUDGET.nearM,
+  farM: BUDGET.farM,
+  nearShare: BUDGET.nearShare,
+}
+let pointBudget: PointBudget | null = null
+let lastBudget: PointBudgetStats | null = null
+/** Wall clock of the previous budget solve, for the ease's real elapsed time. */
+let lastBudgetAt = 0
 let viewAngle: ViewAngleCorrection | null = null
 let viewDepth: ViewDepthCorrection | null = null
 let markerLayer: MarkerLayer | null = null
@@ -2745,6 +2808,47 @@ bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacin
 bindDesignSlider('thinMaxWiden', thinMaxWiden, (v) => `${v.toFixed(1)}×`, (v) => { thinMaxWiden = v })
 bindDesignSlider('ancestorKeep', ancestorKeep, asPercent, (v) => { ancestorKeep = v })
 
+// ---- point budget. Unlike the thinning above, this one is a *traversal* lever: it
+// coarsens tiles rather than drawing fewer of their points, so what falls outside the
+// cap is never fetched, parsed or uploaded either. See point-budget.ts.
+const asPointCap = (value: number): string => `${(value / 1_000_000).toFixed(1)} M points`
+const budgetToggleEl = $<HTMLButtonElement>('#budgetToggle')
+const budgetModeToggleEl = $<HTMLButtonElement>('#budgetModeToggle')
+const budgetFarFirstToggleEl = $<HTMLButtonElement>('#budgetFarFirstToggle')
+const syncBudgetToggles = (): void => {
+  const on = budgetSettings.enabled
+  budgetToggleEl.classList.toggle('on', on)
+  budgetToggleEl.setAttribute('aria-pressed', String(on))
+  budgetToggleEl.textContent = on ? '◔ On' : '✕ Off'
+  const fill = budgetSettings.mode === 'fill'
+  budgetModeToggleEl.classList.toggle('on', !fill)
+  budgetModeToggleEl.setAttribute('aria-pressed', String(!fill))
+  budgetModeToggleEl.textContent = fill ? '⤢ Fill' : '⌃ Ceiling'
+  const far = budgetSettings.farFirst
+  budgetFarFirstToggleEl.classList.toggle('on', far)
+  budgetFarFirstToggleEl.setAttribute('aria-pressed', String(far))
+  budgetFarFirstToggleEl.textContent = far ? '⇥ Far first' : '≡ Even'
+}
+budgetToggleEl.addEventListener('click', () => {
+  budgetSettings.enabled = !budgetSettings.enabled
+  syncBudgetToggles()
+  refreshStreamMemoryBudget()
+})
+budgetModeToggleEl.addEventListener('click', () => {
+  budgetSettings.mode = budgetSettings.mode === 'fill' ? 'ceiling' : 'fill'
+  syncBudgetToggles()
+})
+budgetFarFirstToggleEl.addEventListener('click', () => {
+  budgetSettings.farFirst = !budgetSettings.farFirst
+  syncBudgetToggles()
+})
+syncBudgetToggles()
+bindDesignSlider('budgetMaxPoints', BUDGET.defaultPoints, asPointCap, (v) => {
+  budgetSettings.maxPoints = v
+  // The working set is capped by the same number — see refreshStreamMemoryBudget.
+  refreshStreamMemoryBudget()
+})
+
 roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
   if (setCloudEffectEnabled('roundDots', roundDots)) stream?.refreshEffects()
@@ -3577,6 +3681,15 @@ function updateStreaming(now: number): StreamingStats | null {
   stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   foveation?.beginFrame()
   stream.update()
+  // Straight after the traversal it reads: the budget solves against the decisions that
+  // traversal just offered, and the pressure it settles on is applied by the next one.
+  // One frame of lag, and no way to avoid it — what a refinement costs is only known
+  // once the traversal has reached the tile that would pay for it.
+  if (pointBudget) {
+    const dtMs = lastBudgetAt === 0 ? 0 : Math.min(100, now - lastBudgetAt)
+    lastBudgetAt = now
+    lastBudget = pointBudget.update(dtMs, sseAuto)
+  }
   // After the traversal, so the error and the stopped-here flag the inspector paints
   // come from the selection that is about to be drawn rather than the previous frame's.
   stream.updateDebugTiles(uniforms.debugMode.value > 0)
@@ -3617,6 +3730,7 @@ const cacheBytesEl = $('#cacheBytes')
 const chipFpsEl = $('#chipFps')
 const diagStatsEl = $<HTMLDivElement>('#diagStats')
 const diagAltitudeEl = $('#diagAltitude')
+const diagBudgetEl = $('#diagBudget')
 const diagMissingEl = $('#diagMissing')
 const diagLevelMixEl = $('#diagLevelMix')
 const diagLeavesEl = $('#diagLeaves')
@@ -3682,6 +3796,14 @@ function errorTargetLabel(): string {
   // comparison, and printable if the cloud happens to be parked at the same moment.
   if (!(sseAuto > 0)) return '—'
   const px = `${spacingPxAtTarget(sseAuto).toFixed(1)} px`
+  // Named before foveation because it is the louder reason: the budget moves the
+  // effective target on its own, while the camera and every slider stand still. What is
+  // printed is the far end of its ramp, which is where the coarsening actually lands.
+  const pressure = lastBudget?.applied ?? 0
+  if (Math.abs(pressure) > 0.01 && lastBudget) {
+    const verb = pressure > 0 ? 'capped' : 'filled'
+    return `SSE ${sseAuto.toFixed(0)} → ${lastBudget.farSse.toFixed(1)} · ${verb}`
+  }
   if (foveationSettings.enabled) return `${sseAuto.toFixed(0)} · foveated`
   // Coarser than asked means something upstream is holding it there.
   if (sseAuto > sseTarget + 0.5) return `${sseAuto.toFixed(0)} · braked from ${sseTarget}`
@@ -3844,15 +3966,20 @@ function updateHud(stats: StreamingStats | null): void {
   lodEl.textContent = !cloudDrawn ? dash : errorTargetLabel()
   // Amber whenever the target is not the one that was set — a brake or a per-tile
   // modifier — so a coarse picture is never read as the setting's own doing.
-  setState(lodEl, !cloudDrawn ? '' : (foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
+  const budgetActive = Math.abs(lastBudget?.applied ?? 0) > 0.01
+  setState(lodEl, !cloudDrawn ? ''
+    : (budgetActive || foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
   // What is actually submitted, which is not what is loaded once thinning is on. The
   // share is shown beside it rather than left to be worked out from two rows.
   const drawnPoints = lastThinning ? lastThinning.drawn : (stats?.points ?? 0)
   const thinned = Boolean(lastThinning) && lastThinning!.drawn < lastThinning!.loaded
+  const drawnLabel = thinned
+    ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
+    : fmtInt(drawnPoints)
+  // The cap sits on this row rather than in the diagnostics: a count with a limit beside
+  // it is the one reading the slider exists to produce.
   visibleEl.textContent = !cloudDrawn ? dash
-    : thinned
-      ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
-      : fmtInt(drawnPoints)
+    : budgetSettings.enabled ? `${drawnLabel} / ${asPointCap(budgetSettings.maxPoints)}` : drawnLabel
   setState(visibleEl, thinned ? 'ok' : '')
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
@@ -3933,6 +4060,14 @@ function updateHud(stats: StreamingStats | null): void {
   }
 
   if (!showDiagnostics) return
+  // Predicted, not measured: the sum runs over the point counts the tileset publishes
+  // for every node, tiles still unfetched included. That is the whole reason the cap can
+  // stop a download rather than regret one — see point-budget.ts.
+  diagBudgetEl.textContent = !budgetSettings.enabled || !lastBudget ? 'off'
+    : `${fmtInt(lastBudget.predicted)} @ ${lastBudget.applied.toFixed(2)}`
+      + ` · floor ${fmtInt(lastBudget.fixed)}${lastBudget.reachable ? '' : ' · unreachable'}`
+  setState(diagBudgetEl, !budgetSettings.enabled || !lastBudget ? ''
+    : !lastBudget.reachable ? 'bad' : lastBudget.applied > 0.01 ? 'warn' : 'ok')
   const missing = stats?.missingTiles ?? 0
   diagMissingEl.textContent = String(missing)
   setState(diagMissingEl, missing ? 'bad' : 'ok')
@@ -4293,6 +4428,13 @@ async function main(): Promise<void> {
   // Last of the three error wrappers, and the only one on by default. Also a plain
   // multiplier, so it composes with the two above in any order.
   viewDepth = createViewDepthCorrection(stream.tiles, camera)
+  // Installed last of the four wrappers, deliberately: the errors it collects have to be
+  // the ones refinement finally judges the tiles by, foveation and both corrections
+  // included, or the budget would solve against a number nothing tests.
+  pointBudget = createPointBudget(stream.tiles, budgetSettings)
+  // The cap also decides how much memory is worth holding; the tier was applied before
+  // the stream existed, so re-apply it now that both are known.
+  refreshStreamMemoryBudget()
   applyHeightOffset()
   // The rectangle is settled exactly once, off the critical path: the survey never
   // moves. Coverage then accumulates from the point tiles the renderer loads anyway
@@ -4544,6 +4686,10 @@ async function main(): Promise<void> {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask,
+    // Exposed because the budget is the one lever whose effect is a *count*, not a
+    // picture: `__three.pointBudget.update(16, sse)` after a `stream.tiles.update()`
+    // reports what the next traversal would select, with no frame having to run.
+    pointBudget, budgetSettings,
   }
   /**
    * Where the drawn point size comes from, per band: the spacing read off the tiles, the

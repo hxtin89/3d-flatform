@@ -160,6 +160,79 @@ export const EXPERIENCE_CONFIG = {
       followAmount: 1,
     },
     /**
+     * A ceiling on the points one frame may select.
+     *
+     * Held by coarsening tiles, never by hiding loaded ones: see point-budget.ts for why
+     * a per-tile error multiplier is the same thing as filling the frame outward from
+     * the camera until the budget runs out, and why it stops the download as well as the
+     * draw.
+     *
+     * Off by default. The cap changes the picture, and which picture is wanted is a look
+     * decision — the switch and the slider are in the panel under Point budget.
+     */
+    budget: {
+      enabled: false,
+      /** Slider ends, in points. */
+      minPoints: 1_000_000,
+      maxPoints: 6_000_000,
+      /** Where the slider starts. The top of its range, so switching the cap on alone
+       *  changes as little as possible until it is moved. */
+      defaultPoints: 6_000_000,
+      /** Spend the shortfall on the far field first; off spreads it over the frame. */
+      farFirst: true,
+      /**
+       * The ramp, in metres from the camera to a tile's content centre.
+       *
+       * Sized to the camera envelope this app actually has, not to a map viewer's. The
+       * navigation zoom stop pins the camera at 80 m over the canopy and there is no way
+       * up, so a frame's tiles sit between 40 m and 460 m away — measured at the arrival
+       * view, 20 selected tiles, bulk between 40 and 110 m. The first guess at these
+       * (200 m and 3 km) put every tile in the frame on the near share, which turned
+       * far-first into "uniform, four times slower" and made the A/B meaningless.
+       */
+      nearM: 60,
+      farM: 400,
+      /** The near field's share while far-first is on. Not 0 — see PointBudgetSettings. */
+      nearShare: 0.25,
+      /**
+       * How far `fill` may refine *past* the SSE slider: -0.8 divides the error target
+       * by five, which is between two and three levels deeper.
+       */
+      minPressure: -0.8,
+      /**
+       * Ceiling on the coarsening.
+       *
+       * Generous, because the pressure is divided by each tile's own weight: with far-first
+       * on, a tile under the camera carries a quarter share, and one measured at 2670 px
+       * of error needs a pressure near 2600 before it lets go. At 64 the near field was
+       * simply immovable and a low cap could not be met at all. The ceiling is here to
+       * bound the arithmetic, not to protect the near field — `nearShare` does that, by
+       * making it move four times slower rather than not at all.
+       */
+      maxPressure: 4_096,
+      /** Time constants of the ease. Tighten quickly, release slowly — the asymmetry is
+       *  what keeps a view sitting on the cap from breathing. */
+      riseMs: 120,
+      fallMs: 600,
+      /** Release only once the solver asks for this fraction of the live pressure or less. */
+      releaseDeadband: 0.92,
+      /** Assumed for a tile whose tileset publishes no count (the one-lod route). */
+      fallbackTilePoints: 75_000,
+      /**
+       * What one point costs in memory: 12 bytes of position plus a padded 4-byte colour.
+       * Used to pull the cache and GPU budgets down with the slider, so a small cap does
+       * not keep paying to hold tiles the frontier no longer selects.
+       */
+      bytesPerPoint: 16,
+      /** Multiples of the budget the caches may hold, for the off-screen working set a
+       *  camera turn needs. Floors below them, because a cache too small to survive a
+       *  pan re-downloads on every turn — the failure the tile-count floor once had. */
+      cacheSlack: 2.5,
+      gpuSlack: 2,
+      minCacheBytes: 96 * 1024 * 1024,
+      minGpuBytes: 64 * 1024 * 1024,
+    },
+    /**
      * Drawn point size, derived per tile from that tile's own point spacing.
      *
      * `sse` above is a point spacing in CSS pixels, and three's `sizeNode` is a

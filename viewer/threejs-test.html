@@ -801,6 +801,7 @@
         <span class="k g-stream" title="Point-tile bytes held in memory against the byte count the cache drains down to when it evicts. Highlighted when the cache is actually resting on a floor rather than being held above it by tiles still in use.">Cache bytes</span><span class="v" id="cacheBytes">—</span>
         <span class="k g-stream" title="Distinct tile files the server never returned, counted for the whole session and never cleared. A file that failed once and succeeded on retry is still counted, as is one that failed far away from the current view — so this is a session-wide fault log, not a count of gaps in front of you.">Failed downloads</span><span class="v" id="diagMissing">0</span>
         <span class="k g-refine" title="Camera height above the survey's flat floor level, and the height at which zooming stops. Not height above the terrain under you: the reference is one fixed level taken from the survey bounds at startup, so over a slope it is off by the whole local relief.">Height · stop</span><span class="v" id="diagAltitude">—</span>
+        <span class="k g-refine" title="What the point budget expects the next traversal to select, and the pressure it is holding to get there. The count is predicted rather than measured: it is summed from the point counts the tileset publishes for every node, including tiles not yet downloaded, which is exactly why the cap can stop a fetch instead of regretting it afterwards. 'floor' is the part of the frame no coarsening can remove — the overview roots, and any tile whose parent refines unconditionally. 'unreachable' means even the coarsest frame this view can produce is still over the cap.">Budget</span><span class="v" id="diagBudget">—</span>
       </div>
     </div>
 
@@ -894,6 +895,29 @@
           <label class="h" for="thinRampToggle">Dissolve the change · A/B</label>
           <button class="act on" id="thinRampToggle" type="button" aria-pressed="true" aria-describedby="thinRampNote">◐ Ramp</button>
           <span class="weather-note" id="thinRampNote">A tile counts as covered the moment its <em>first</em> child finishes downloading, which is a step change in both the point count and the dot width. On, each tile eases to its new density over about a quarter second; off is the bare per-frame decision, which is what the feature did before. Watch the far field while turning the camera</span>
+        </div>
+      </details>
+      <details class="design-section" open>
+        <summary>Point budget (test)</summary>
+        <div class="row">
+          <label class="h" for="budgetToggle">Cap the point count</label>
+          <button class="act" id="budgetToggle" type="button" aria-pressed="false" aria-describedby="budgetNote">✕ Off</button>
+          <span class="weather-note" id="budgetNote">A limit on how many points one frame may select. It is held by coarsening tiles rather than by hiding loaded ones, so whatever falls outside the cap is never fetched, parsed or uploaded either &mdash; the saving is in the whole pipeline, not only the draw. Off is the feature absent</span>
+        </div>
+        <div class="row">
+          <label class="h" for="budgetMaxPoints">Most points · <span class="val" id="budgetMaxPointsVal">—</span></label>
+          <input type="range" id="budgetMaxPoints" min="1000000" max="6000000" step="100000" />
+          <span class="weather-note">The cap itself. The frame is filled outward from the camera until it is reached: nearer tiles win, because the error each tile is judged by is its point spacing divided by its distance, so the cheapest detail to drop is always the furthest. Watch it against the point count on the HUD row above</span>
+        </div>
+        <div class="row">
+          <label class="h" for="budgetModeToggle">Ceiling or fill · A/B</label>
+          <button class="act on" id="budgetModeToggle" type="button" aria-pressed="true" aria-describedby="budgetModeNote">⌃ Ceiling</button>
+          <span class="weather-note" id="budgetModeNote">Ceiling only ever coarsens: a view that comes in under the cap is left exactly at the point spacing set above, and the headroom goes unspent. Fill treats the cap as a level to reach, refining <em>past</em> that spacing until the count is met &mdash; every point spent, but the near field drawn finer than the dot size was tuned for. Fill also fetches more, and reaches one level deeper per frame rather than all at once</span>
+        </div>
+        <div class="row">
+          <label class="h" for="budgetFarFirstToggle">Where it is taken from · A/B</label>
+          <button class="act on" id="budgetFarFirstToggle" type="button" aria-pressed="true" aria-describedby="budgetFarFirstNote">⇥ Far first</button>
+          <span class="weather-note" id="budgetFarFirstNote">Far first spends the shortfall on the distance before the ground under you: past 400 m a tile takes the full coarsening, within 60 m only a quarter of it, easing between. Those distances are small because the camera is pinned at 80 m over the canopy &mdash; measured, a frame's tiles sit between 40 m and 460 m away. Even spreads it across the frame instead, which is what one error target does by itself. Both are inert while the frame fits: this decides where a shortfall lands, not how good a view is</span>
         </div>
       </details>
       <details class="design-section">
