@@ -418,22 +418,39 @@ export function createStreamingCloud(opts: {
   /** The same, for the effective-spacing pass, which runs whether thinning is on or not. */
   let lastSpacingAt = 0
   /**
-   * One visible tile as applyEffectiveSpacing sees it. Reused between frames so the pass
-   * allocates nothing: it runs every frame over every visible tile.
+   * One visible tile as applyEffectiveSpacing sees it. Pooled and reused between frames:
+   * the pass runs every frame over every visible tile and must not allocate.
    *
-   * `own` is the tile's measured spacing and never changes; `finest` starts there and is
-   * lowered by any drawn descendant; `covered` is the fraction of its direct children
-   * that are drawn.
+   * `own` is the tile's measured spacing and never changes. `densityAbove` is the density
+   * the drawn ancestors add over this tile — they always cover it in full, so it always
+   * counts. `below` holds, per drawn level underneath, the finest spacing found there;
+   * that only counts over the `covered` fraction.
    */
   interface SpacingEntry {
     tile: any
     quads: THREE.Mesh[]
     own: number
-    finest: number
     covered: number
+    densityAbove: number
+    below: Float64Array
   }
+  /** The tree is 11 deep plus p001 and the structural roots; 16 is slack over that. */
+  const SPACING_LEVELS = 16
+  const spacingPool: SpacingEntry[] = []
   const spacingEntries: SpacingEntry[] = []
   const spacingByTile = new Map<object, SpacingEntry>()
+  function takeSpacingEntry(index: number): SpacingEntry {
+    let entry = spacingPool[index]
+    if (!entry) {
+      entry = spacingPool[index] = {
+        tile: null, quads: [], own: 0, covered: 0,
+        densityAbove: 0, below: new Float64Array(SPACING_LEVELS),
+      }
+    }
+    entry.densityAbove = 0
+    entry.below.fill(0)
+    return entry
+  }
   /**
    * Tiles built but not yet shown, oldest first, and how many may be released per frame.
    *
@@ -1038,26 +1055,40 @@ export function createStreamingCloud(opts: {
     },
     applyEffectiveSpacing(rampMs) {
       /**
-       * Refinement is ADD, so tiles do not replace their parents — they stack. At the
-       * arrival view, eight levels are drawn over the same ground with spacings from
-       * 7.30 m down to 0.13 m, a range of 57. Sizing each level from its *own* spacing
-       * therefore hands the fattest dots to the levels carrying the least information:
-       * measured there, 66.9% of the drawn points are ancestors under a finer layer, and
-       * in the spacing-derived mode they take 91% of the painted area, with every level
-       * from p001 to d3 pinned flat against the `Largest dot` ceiling.
+       * Size every point from the density of the whole stack at its spot.
        *
-       * The spacing that matters at a spot is the finest one present, not each tile's
-       * own. Descendants sit strictly inside their ancestors in a quadtree, so
-       * propagating each tile's spacing up its parent chain gives every tile the finest
-       * spacing found over its own footprint — exactly, with no geometry test.
+       * Refinement is ADD and the levels are a strict *partition*, not a pyramid of
+       * copies: an internal node emits a representative sample and routes the remainder
+       * to its children, and build_adaptive_point_hierarchy.py fails the build unless
+       * `count == emitted + residualRouted`. p001 is carved out the same way, by
+       * `ordinal % 1000 == 0`, with the adaptive tree taking everything else. So no point
+       * is ever drawn twice, and every level genuinely adds detail.
        *
-       * Scaled by how much of the tile its visible children actually cover, because the
-       * finest spacing is only the right answer where the finer data is drawn. An
-       * ancestor with one of four children on screen is still the finest layer over the
-       * other three quarters, and shrinking it there would open holes rather than close
-       * them. Linear rather than logarithmic between the two: spacing halves per level,
-       * so a linear blend errs toward the coarser end, and the coarser end is the one
-       * that does not leave gaps.
+       * That fixes the arithmetic. Each node holds about the same point count and each
+       * level quarters the footprint, so over ground refined k levels deep the stack
+       * holds `1 + 4 + 16 + … + 4^k` node-loads against `4^k` for the finest level alone
+       * — a ratio converging on **4/3**. In spacing terms the whole stack sits
+       * `sqrt(3)/2 = 0.866` of the finest level's spacing apart. Densities add;
+       * spacings do not.
+       *
+       * Hence the sum below rather than a minimum. An earlier version took the finest
+       * spacing over the footprint, which ignored the other 25% of the points and drew
+       * every dot 15% too wide.
+       *
+       * The two directions are not symmetric, and that is the whole shape of this pass:
+       *
+       *  - **Above.** The drawn ancestors cover this tile completely — they are its own
+       *    root-to-leaf chain — so their density always counts. This is the term that
+       *    reaches the leaves, which have nothing below them and carry 75% of the points.
+       *  - **Below.** Descendants cover only the part of the tile that is actually
+       *    refined, so their density counts in proportion to `covered`. Crediting it in
+       *    full would shrink an ancestor's dots over ground nothing finer is drawing, and
+       *    that opens holes rather than closing them.
+       *
+       * One slot per drawn level underneath, not one per descendant: four drawn children
+       * do not make the ground under any one of them four times denser. The slot index is
+       * the number of *drawn* levels crossed on the way up, so structural nodes in the
+       * tileset cannot shift it.
        */
       const nowMs = performance.now()
       const dtMs = lastSpacingAt === 0 ? 0 : Math.min(100, nowMs - lastSpacingAt)
@@ -1087,27 +1118,49 @@ export function createStreamingCloud(opts: {
             if (tiles.visibleTiles.has(child)) drawn++
           }
         }
-        const entry: SpacingEntry = {
-          tile, quads: stats.quads, own, finest: own, covered: inView ? drawn / inView : 0,
-        }
+        const entry = takeSpacingEntry(spacingEntries.length)
+        entry.tile = tile
+        entry.quads = stats.quads
+        entry.own = own
+        entry.covered = inView ? drawn / inView : 0
         spacingEntries.push(entry)
         spacingByTile.set(tile, entry)
       }
-      // Every tile against every ancestor of it that is also drawn. The walk is up the
-      // parent chain rather than down the subtree, so a tile whose parent is off screen
-      // costs nothing and the whole pass is linear in visible tiles times tree depth.
+      // One walk up the parent chain feeds both directions at once: the ancestor's
+      // density lands on this tile, and this tile's spacing lands in the ancestor's slot
+      // for its level. Linear in visible tiles times tree depth, and a tile whose parent
+      // is off screen costs nothing.
       for (const entry of spacingEntries) {
         let node = (entry.tile as any)?.parent
+        let level = 1
         while (node) {
           const ancestor = spacingByTile.get(node)
-          if (ancestor && entry.own < ancestor.finest) ancestor.finest = entry.own
+          if (ancestor) {
+            entry.densityAbove += 1 / (ancestor.own * ancestor.own)
+            if (level < SPACING_LEVELS) {
+              const held = ancestor.below[level]
+              if (held === 0 || entry.own < held) ancestor.below[level] = entry.own
+            }
+            level++
+          }
           node = node.parent
         }
       }
 
       let shrunk = 0
       for (const entry of spacingEntries) {
-        const target = entry.own + (entry.finest - entry.own) * entry.covered
+        // Bare: this tile plus everything above it, which is true everywhere on it.
+        // Full: the same plus every drawn level below, which is true only where refined.
+        const bare = 1 / (entry.own * entry.own) + entry.densityAbove
+        let below = 0
+        for (let i = 1; i < SPACING_LEVELS; i++) {
+          const spacing = entry.below[i]
+          if (spacing > 0) below += 1 / (spacing * spacing)
+        }
+        const spacingBare = 1 / Math.sqrt(bare)
+        const target = below > 0
+          ? spacingBare + (1 / Math.sqrt(bare + below) - spacingBare) * entry.covered
+          : spacingBare
         for (const mesh of entry.quads) {
           const uniformNode = (mesh.material as any)?.userData?.spacingMetres
           if (!uniformNode) continue
@@ -1187,9 +1240,13 @@ export function createStreamingCloud(opts: {
         if (!stats) continue
         loaded += stats.points
         // A tile with any of its children also on screen is an ancestor under a finer
-        // layer. Under ADD refinement it keeps drawing anyway, and its points land on
-        // ground the children are already covering — so it is the cheapest place to take
-        // points away from.
+        // layer, and the cheapest place to take points away from — but not because they
+        // are duplicates. The levels are a strict partition (see applyEffectiveSpacing):
+        // an ancestor's points land *between* its children's, never on top of them, so
+        // this is discarding real measurements. It is cheap because over fully refined
+        // ground the whole stack is only 4/3 the density of its deepest level, so the
+        // ancestors are a quarter of the points and dropping them all coarsens the local
+        // spacing by about 15%. A quality trade with a good exchange rate, not free.
         const children = (tile as any)?.children as any[] | undefined
         const covered = Array.isArray(children)
           && children.some((child) => tiles.visibleTiles.has(child))
