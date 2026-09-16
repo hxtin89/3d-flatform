@@ -1117,8 +1117,28 @@ export function createStreamingCloud(opts: {
           // width of a whole level between frames, continuously, while the camera moves —
           // which is the stutter the dissolve was built to remove, arriving by a second
           // route. A tile seen for the first time starts *at* its target.
+          //
+          // Asymmetric, and the asymmetry is the whole point: the ease applies only while
+          // the dots are getting *smaller*. Growing takes effect on the frame it is asked
+          // for.
+          //
+          // Both directions were eased at first, and a drive test caught what that costs.
+          // Coverage falls the moment a child leaves the frustum, so the tile becomes the
+          // finest layer over that ground again and must go back to its own size at once;
+          // easing held it small for the length of the ramp instead. Measured over 16k
+          // frames of hard orbiting, 153 of them drew a tile smaller than its coverage
+          // earns — worst case a d1 node 50% covered but still drawn 94% of the way to
+          // the finest spacing, dots roughly fourteen times too small over ground nothing
+          // else was covering. Thin patches during a fast turn, which is the one artifact
+          // this whole stage exists to remove.
+          //
+          // The direction that needed damping is the other one. A tile becoming covered is
+          // the density pulse the dissolve was built for, and it is safe to defer: a dot
+          // that is briefly too wide costs a little fill, a dot that is briefly too narrow
+          // costs a hole.
           const previous = (mesh.material as any).userData.effectiveSpacingM
-          const eased = previous !== undefined && dtMs > 0 && rampMs > 0
+          const shrinking = previous !== undefined && target < previous
+          const eased = shrinking && dtMs > 0 && rampMs > 0
             ? previous + (target - previous) * (1 - Math.exp(-dtMs / rampMs))
             : target
           ;(mesh.material as any).userData.effectiveSpacingM = eased
