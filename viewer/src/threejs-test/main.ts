@@ -595,8 +595,22 @@ function applyPointSize(): void {
     foveationSettings.height,
     foveationSettings.falloff,
   )
-  sizeMinPx = sizeFloorFactor * targetPx * pointSizeScale
-  sizeMaxPx = Math.max(sizeCeilFactor * targetPx * pointSizeScale, sizeMinPx)
+  // The clamp follows the fidelity *setting*, never the live value.
+  //
+  // `sseAuto` is also where the brakes live — 256 during boot, 64 during a camera flight —
+  // and a brake is not a decision about how big a dot should be. Measured on a drive with
+  // the flight brake firing: the target went 2 to 32 px in one frame, which took the floor
+  // with it to 22.4 px and forced every point in the frame to that width. Total drawn area
+  // jumped 114x between two frames, the whole cloud ballooning at the start of every
+  // flight. The brake is meant to make the frame cheaper.
+  //
+  // The shortfall's denominator above is a different question and does follow `sseAuto`:
+  // during a brake the tree really is being asked for coarser data, so the shortfall stays
+  // near 1, the dots stay at their base size, and the frame goes blurrier rather than
+  // heavier — which is the whole point of braking.
+  const settingPx = spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse)
+  sizeMinPx = sizeFloorFactor * settingPx * pointSizeScale
+  sizeMaxPx = Math.max(sizeCeilFactor * settingPx * pointSizeScale, sizeMinPx)
   uniforms.sizeMinPx.value = sizeMinPx
   uniforms.sizeMaxPx.value = sizeMaxPx
   uniforms.pointSize.value = EXPERIENCE_CONFIG.lod.fixedPointSizePx * pointSizeScale
@@ -2950,11 +2964,11 @@ bindDesignSlider(
   (v) => `${spacingPxAtTarget(v).toFixed(1)} px apart · SSE ${v}`,
   (v) => { sseTarget = v },
 )
-bindDesignSlider('sizeMinPx', POINT_SIZE.floorFactor, (v) => `${v.toFixed(2)}× · ${(v * spacingPxAtTarget(sseAuto > 0 ? sseAuto : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+bindDesignSlider('sizeMinPx', POINT_SIZE.floorFactor, (v) => `${v.toFixed(2)}× · ${(v * spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
   sizeFloorFactor = v
   applyPointSize()
 })
-bindDesignSlider('sizeMaxPx', POINT_SIZE.ceilFactor, (v) => `${v.toFixed(1)}× · ${(v * spacingPxAtTarget(sseAuto > 0 ? sseAuto : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+bindDesignSlider('sizeMaxPx', POINT_SIZE.ceilFactor, (v) => `${v.toFixed(1)}× · ${(v * spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
   sizeCeilFactor = v
   applyPointSize()
 })
