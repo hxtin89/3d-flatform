@@ -863,7 +863,7 @@
         <div class="row">
           <label class="h">Thinning</label>
           <span class="val on" id="thinState" aria-describedby="thinNote">◐ On</span>
-          <span class="weather-note" id="thinNote"><b>On by default. Load <code>?thinning=off</code> to turn it off.</b> It draws fewer of each tile's points and widens the survivors to cover the gap; nothing below has any effect while it is off, and off is the whole feature removed &mdash; those tiles also skip the reorder that only a thinned draw needs. There is deliberately no button: the cost sits in bringing a tile online, and the cache never evicts, so flipping a switch mid&#8209;session re&#8209;parses nothing, moves none of that cost and leaves the scene half thinned. Two URLs, each loaded from cold, is the only honest comparison &mdash; measured that way, 1.6&nbsp;ms per arriving tile against 0.5&nbsp;ms</span>
+          <span class="weather-note" id="thinNote"><b>On by default &mdash; load <code>?thinning=off</code> to turn it off.</b> Draws fewer points per tile, widening the survivors to cover the gap. No button: the cost is paid at load</span>
         </div>
         <div class="row">
           <label class="h" for="thinNearM">Full detail within · <span class="val" id="thinNearMVal">—</span></label>
