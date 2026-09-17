@@ -2653,15 +2653,24 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * Switching it off is byte-identical to the feature not existing, so it stays the first
  * thing to try when the cloud looks wrong.
  *
- * `?thinning=off` and a reload, rather than a button, because a runtime toggle cannot
- * answer the question it looks like it answers. The arrival cost — the reorder that makes
- * a prefix a fair sample — is paid once per tile as it loads, and `cacheMinTiles: 900`
- * means nothing is evicted, so flipping a switch mid-session re-parses no tile and moves
- * none of that cost. Worse, tiles already resident keep the order they arrived with, so
- * the scene ends up half thinned. Two URLs, each loaded from cold, is the honest A/B —
- * and measured that way it is 1.6 ms per arriving tile against 0.5 ms.
+ * Switchable two ways, because there are two different questions.
+ *
+ * `?thinning=off` picks the state the page boots in, which is what the *arrival* cost
+ * needs: the reorder that makes a prefix a fair sample is paid once per tile as it loads,
+ * so only a cold load with the switch already set measures it. That comparison is 1.6 ms
+ * per arriving tile against 0.5 ms.
+ *
+ * The button then flips it at runtime, which is what the *render* cost needs: one session,
+ * one camera pose and one identical set of resident tiles, with only the draw changing.
+ * Two cold loads cannot give that — they arrive at the pose by different routes and end up
+ * holding different tiles, which is exactly what muddied the first measurement.
+ *
+ * Flipping it drops every resident tile (`stream.reloadTiles`) so they come back parsed
+ * under the new setting. Without that the scene would be half thinned — tiles already in
+ * memory keep whatever order they arrived with, and `cacheMinTiles` means they never age
+ * out on their own.
  */
-const thinningOn = params.get('thinning') !== 'off'
+let thinningOn = params.get('thinning') !== 'off'
 let thinTargetScale = 1
 /** A tile whose own children are also drawn is duplicated detail, and this is where
  *  nearly all the saving comes from — but 0 made the step far too violent to hide.
@@ -2709,10 +2718,25 @@ const syncRoundDotsToggle = () => {
   roundDotsToggleEl.setAttribute('aria-pressed', String(roundDots))
   roundDotsToggleEl.textContent = roundDots ? '● Round' : '■ Square'
 }
-// Reports the state the page was loaded in; there is nothing to click. See `thinningOn`.
-const thinStateEl = $<HTMLSpanElement>('#thinState')
-thinStateEl.textContent = thinningOn ? '◐ On' : '✕ Off'
-thinStateEl.classList.toggle('on', thinningOn)
+const thinToggleEl = $<HTMLButtonElement>('#thinToggle')
+const syncThinToggle = () => {
+  thinToggleEl.classList.toggle('on', thinningOn)
+  thinToggleEl.setAttribute('aria-pressed', String(thinningOn))
+  thinToggleEl.textContent = thinningOn ? '◐ On' : '✕ Off'
+}
+thinToggleEl.addEventListener('click', () => {
+  thinningOn = !thinningOn
+  syncThinToggle()
+  // The tiles have to come back for the switch to mean anything — whether their points are
+  // reordered is settled as each one arrives. See `reloadTiles`.
+  // Optional because the panel is wired up before streaming starts; a click that early
+  // needs no reload anyway, since no tile has arrived yet to be in the wrong state.
+  const dropped = stream?.reloadTiles() ?? 0
+  thinToggleEl.setAttribute(
+    'title', `${thinningOn ? 'On' : 'Off'} — dropped ${dropped} tiles, reloading under the new setting`,
+  )
+})
+syncThinToggle()
 
 const thinRampToggleEl = $<HTMLButtonElement>('#thinRampToggle')
 const syncThinRampToggle = () => {

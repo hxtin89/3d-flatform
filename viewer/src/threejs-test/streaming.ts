@@ -151,6 +151,23 @@ export interface StreamingCloud {
    */
   applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
   /**
+   * Drop every resident tile so the next traversal fetches and parses them again.
+   *
+   * Exists for the thinning A/B. Whether a tile's points get reordered is decided once, as
+   * it arrives, so flipping the thinning toggle changes nothing about the tiles already in
+   * memory — and because `cacheMinTiles` holds hundreds of them and the cache only evicts
+   * above its floor, nothing would age out on its own either. Without this, switching
+   * thinning on leaves a scene where the tiles that happened to arrive earlier are drawn
+   * whole and the rest are thinned, which is neither state and measures neither.
+   *
+   * Cheaper than reloading the page: the camera, the basemap, the mask and the loaded
+   * scene all stay, and only the point tiles come back. They re-download, so the cost is
+   * a few hundred milliseconds of streaming rather than the entrance flight.
+   *
+   * Returns how many tiles were dropped.
+   */
+  reloadTiles(): number
+  /**
    * Point the drawn size at the density that is actually on screen at each spot, rather
    * than at each tile's own.
    *
@@ -1307,6 +1324,22 @@ export function createStreamingCloud(opts: {
         if (target < entry.own * 0.999) shrunk++
       }
       return { shrunk, tiles: spacingEntries.length }
+    },
+    reloadTiles() {
+      const cache = (tiles as any).lruCache
+      const itemList: any[] = cache?.itemList
+      if (!Array.isArray(itemList)) return 0
+      // A copy, because `remove` splices the very list this iterates. `remove` is the
+      // unconditional path: `unloadUnusedContent` respects `minSize`, and with a floor of
+      // 900 tiles against a few dozen resident it would decline to unload anything at all.
+      const doomed = itemList.slice()
+      let dropped = 0
+      for (const item of doomed) if (cache.remove(item)) dropped++
+      // `tileStats` needs no clearing — it is a WeakMap keyed on the tile objects, and
+      // `dispose-model` deletes each entry as the removals fire. `pendingReveal` does:
+      // it holds strong references to meshes whose tiles have just been disposed.
+      pendingReveal.length = 0
+      return dropped
     },
     applyThinning(settings) {
       // Read every frame so a tile parsed after the toggle moves gets the right treatment.

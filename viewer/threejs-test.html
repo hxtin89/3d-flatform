@@ -861,9 +861,9 @@
       <details class="design-section" open>
         <summary>Distance thinning (test)</summary>
         <div class="row">
-          <label class="h">Thinning</label>
-          <span class="val on" id="thinState" aria-describedby="thinNote">◐ On</span>
-          <span class="weather-note" id="thinNote"><b>On by default &mdash; load <code>?thinning=off</code> to turn it off.</b> Draws fewer points per tile, widening the survivors to cover the gap. No button: the cost is paid at load</span>
+          <label class="h" for="thinToggle">Thinning</label>
+          <button class="act on" id="thinToggle" type="button" aria-pressed="true" aria-describedby="thinNote">◐ On</button>
+          <span class="weather-note" id="thinNote">Draws fewer points per tile, widening the survivors to cover the gap. Switching reloads the tiles, so give it a moment. <code>?thinning=off</code> boots in the off state, which is the one the load cost has to be measured from</span>
         </div>
         <div class="row">
           <label class="h" for="thinNearM">Full detail within · <span class="val" id="thinNearMVal">—</span></label>
