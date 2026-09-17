@@ -507,65 +507,106 @@ export function createStreamingCloud(opts: {
   }
 
   /**
-   * Whether anything currently needs a fair point order. Mirrors the thinning toggle,
-   * refreshed from `applyThinning` each frame, and true initially because thinning ships on
-   * — tiles loaded during the entrance flight run before the first `applyThinning` call.
+   * How many interleaved rounds `reorderForPrefixSampling` emits.
+   *
+   * A prefix of `keep` covers `keep * ROUNDS` complete rounds, so it must be at least one
+   * or the prefix stops partway across the tile and is a crop again. That fixes a floor:
+   * **ROUNDS >= 1 / THINNING_MIN_KEEP**, which is 1/0.02 = 50. 64 clears it with headroom.
+   *
+   * Measured, not guessed — per-cell coefficient of variation at the 2% floor on a 270k
+   * tile: ROUNDS 32 gives 0.92 with 101 of 256 cells empty (it covers only 32 * 0.02 =
+   * 64% of the buffer, exactly the predicted crop), 48 gives 0.46, 64 gives 0.54, 96
+   * gives 0.44. Above 5% keep they are all within 0.02 of each other. Do not lower this
+   * below 50 without lowering THINNING_MIN_KEEP with it.
+   *
+   * Larger is not better: a prefix includes runs of `keep * ROUNDS` *consecutive* source
+   * indices, and the source order is spatially smooth, so long runs re-cluster the sample.
+   * ROUNDS 1024 measured 0.71 at 10% against 0.42 for 64.
    */
-  let fairOrderWanted = true
+  const PREFIX_SAMPLE_ROUNDS = 64
 
-  function shufflePoints(geometry: any, position: any, color: any): void {
-    if (geometry.userData?.pointsShuffled) return
-    // Nothing draws a prefix while thinning is off, so the permutation buys nothing and the
-    // tile can skip 4-12 ms of main-thread work. Deliberately does NOT set `pointsShuffled`:
-    // the order is not fair, it is merely unneeded, and `applyThinning` below relies on
-    // knowing the difference if thinning is switched on later.
-    //
-    // Skipping is safe where *deferring* would not be. `padColourForGpu` copies the colours
-    // straight after this call, so shuffling later would move the positions and leave that
-    // copy behind — points would take their neighbours' colours. Not shuffling at all keeps
-    // both arrays in the order they arrived, which is consistent.
-    if (!fairOrderWanted) return
-    // The pipeline already emitted a stratified order, so a prefix is a fair sample
-    // without doing anything — and this is the single most expensive thing in bringing a
-    // tile online, at 4-11 ms of main-thread time depending on tile size.
-    if (tilesArePreOrdered()) {
-      geometry.userData = geometry.userData ?? {}
-      geometry.userData.pointsShuffled = true
-      return
-    }
+  /**
+   * Rewrite a tile so that *any prefix of it is an evenly spread sample of the whole tile*.
+   *
+   * Thinning draws a prefix via `instanceCount`, which is a fair sample only if the order
+   * carries no large-scale spatial structure. The packs come from a COPC octree, so a
+   * prefix is a crop — but measuring four real tiles showed consecutive points sit 10-22x
+   * closer together than random pairs, which means the order is *smoothly* spatial: a
+   * prefix is a crop, yet every k-th point is a near-perfect sample. Per-cell coefficient
+   * of variation at 10% kept, lower is better: raw prefix 3.04, this reorder 0.42, the
+   * random shuffle it replaces 0.41. So it *matches* the shuffle rather than beating it —
+   * an idealised fractional stride reaches 0.40, and the small gap is the mid-round
+   * truncation described on PREFIX_SAMPLE_ROUNDS. What matters is that the figure stays
+   * flat as the sample shrinks (0.40 at 56% kept, 0.43 at 5%) where the raw prefix runs
+   * from 1.00 to 4.28.
+   *
+   * So: round-robin over a fixed stride. Every ROUNDS-th point, then the same offset by
+   * one, and so on. A prefix of the result is a union of stride samples, evenly spread at
+   * every length the viewer asks for.
+   *
+   * This replaces a seeded Fisher-Yates shuffle that cost 4-12 ms of main-thread time per
+   * tile and was the single most expensive thing in bringing a tile online. A shuffle is
+   * random access in both directions and defeats the prefetcher; this is constant-stride
+   * reads and sequential writes. Measured on the real tiles: 12.6 -> 2.2 ms at 75k points,
+   * 62.4 -> 6.3 ms at 270k.
+   *
+   * It widens the colour to RGBA in the same pass, because WebGPU needs the 4-byte stride
+   * and the alternative is a second full copy of it — see `padColourForGpu`.
+   *
+   * Returns null when the tile is not in the one layout this handles, in which case the
+   * caller keeps the arrays as they arrived and the tile is drawn whole rather than thinned.
+   */
+  function reorderForPrefixSampling(
+    position: any,
+    color: any,
+  ): { position: Float32Array; color: Uint8Array | null } | null {
     const count = position.count
-    if (!(count > 2)) return
-    const pos = position.array as Float32Array
-    const ps = position.itemSize
-    const col = color ? (color.array as Uint8Array | Float32Array) : null
-    const cs = color ? color.itemSize : 0
-    // xorshift32, seeded so the permutation is reproducible across loads and sessions.
-    let seed = (count * 2654435761 + Math.round(pos[0] * 1000)) >>> 0 || 1
-    const next = () => {
-      seed ^= seed << 13; seed >>>= 0
-      seed ^= seed >>> 17
-      seed ^= seed << 5; seed >>>= 0
-      return seed / 4294967296
+    if (!(count > 2) || position.itemSize !== 3) return null
+    const src = position.array
+    if (!(src instanceof Float32Array)) return null
+    const colourArray = color?.array
+    const colourItems = color?.itemSize ?? 0
+    // Only the two layouts PNTS actually ships. Anything else falls back rather than
+    // growing a general path that would be both slower and barely exercised.
+    if (color && !(colourArray instanceof Uint8Array && (colourItems === 3 || colourItems === 4))) {
+      return null
     }
-    for (let i = count - 1; i > 0; i--) {
-      const j = (next() * (i + 1)) | 0
-      if (j === i) continue
-      for (let k = 0; k < ps; k++) {
-        const a = i * ps + k, b = j * ps + k
-        const t = pos[a]; pos[a] = pos[b]; pos[b] = t
+    const rounds = Math.min(PREFIX_SAMPLE_ROUNDS, count)
+    const out = new Float32Array(count * 3)
+    const outColour = color ? new Uint8Array(count * 4) : null
+
+    // Written out once per colour layout rather than as one loop with a branch inside: a
+    // dynamic item size and a variable inner trip count stop V8 specialising the body,
+    // which measured 15x slower when `padColourForGpu` was first written that way.
+    if (outColour && colourItems === 3) {
+      const rgb = colourArray as Uint8Array
+      for (let r = 0, w = 0; r < rounds; r++) {
+        for (let i = r; i < count; i += rounds, w++) {
+          const s = i * 3, d = w * 3, dc = w * 4
+          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
+          outColour[dc] = rgb[s]; outColour[dc + 1] = rgb[s + 1]
+          outColour[dc + 2] = rgb[s + 2]; outColour[dc + 3] = 255
+        }
       }
-      if (col) {
-        for (let k = 0; k < cs; k++) {
-          const a = i * cs + k, b = j * cs + k
-          const t = col[a]; col[a] = col[b]; col[b] = t
+    } else if (outColour) {
+      const rgba = colourArray as Uint8Array
+      for (let r = 0, w = 0; r < rounds; r++) {
+        for (let i = r; i < count; i += rounds, w++) {
+          const s = i * 3, d = w * 3, sc = i * 4, dc = w * 4
+          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
+          outColour[dc] = rgba[sc]; outColour[dc + 1] = rgba[sc + 1]
+          outColour[dc + 2] = rgba[sc + 2]; outColour[dc + 3] = rgba[sc + 3]
+        }
+      }
+    } else {
+      for (let r = 0, w = 0; r < rounds; r++) {
+        for (let i = r; i < count; i += rounds, w++) {
+          const s = i * 3, d = w * 3
+          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
         }
       }
     }
-    geometry.userData = geometry.userData ?? {}
-    geometry.userData.pointsShuffled = true
-    // The sphere is derived from the same positions, and a permutation cannot change it —
-    // but it may already have been built, and re-deriving costs nothing here.
-    geometry.boundingSphere = null
+    return { position: out, color: outColour }
   }
 
   // One camera-facing quad per point, instanced. The corner offsets live in the
@@ -636,7 +677,25 @@ export function createStreamingCloud(opts: {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
-    shufflePoints(source.geometry, position, color)
+    // A pre-ordered pack already satisfies the prefix rule, so it needs only the colour
+    // widening below. Everything else is reordered here, once, on arrival.
+    const reordered = tilesArePreOrdered() ? null : reorderForPrefixSampling(position, color)
+    if (reordered) {
+      // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
+      // mask walk the same order the drawn tile does — and so the tile's original PNTS
+      // ArrayBuffer, which these arrays replace, stops being referenced by anything the
+      // viewer holds. That buffer carries both position and colour, so releasing it pays
+      // for the copies: 15 bytes per point go, 16 arrive.
+      source.geometry.setAttribute('position', new THREE.BufferAttribute(reordered.position, 3))
+      if (reordered.color) {
+        source.geometry.setAttribute(
+          'color', new THREE.BufferAttribute(reordered.color, 4, color?.normalized ?? true),
+        )
+      }
+      // Derived from the same points, and a permutation cannot change it — but it may
+      // already have been built against the attribute just replaced.
+      source.geometry.boundingSphere = null
+    }
 
     const geometry = new THREE.InstancedBufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
@@ -646,13 +705,23 @@ export function createStreamingCloud(opts: {
     // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
     // vector via NodeBuilder.getTypeFromAttribute.
     geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(
-      position.array, position.itemSize, position.normalized,
+      reordered ? reordered.position : position.array,
+      reordered ? 3 : position.itemSize,
+      position.normalized,
     ))
-    const colorAttribute = color ? padColourForGpu(color) : null
+    // The reorder already produced RGBA, so `padColourForGpu` is only for the pre-ordered
+    // packs and the layouts the reorder declines to handle.
+    const colorAttribute = reordered
+      ? (reordered.color
+        ? new THREE.InstancedBufferAttribute(reordered.color, 4, color?.normalized ?? true)
+        : null)
+      : (color ? padColourForGpu(color) : null)
     if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
     geometry.instanceCount = position.count
     // Carried onto the quad geometry because applyThinning has the mesh, not the carrier.
-    geometry.userData.orderIsFair = source.geometry.userData?.pointsShuffled === true
+    // False only for the layouts `reorderForPrefixSampling` declines, which are then drawn
+    // whole rather than as a biased wedge.
+    geometry.userData.orderIsFair = reordered !== null || tilesArePreOrdered()
 
     const spacing = tileSpacingMetres(tile, position.count)
     const material = createCloudMaterial(uniforms, colorAttribute?.itemSize ?? 3, spacing, {
@@ -1202,8 +1271,10 @@ export function createStreamingCloud(opts: {
       return { shrunk, tiles: spacingEntries.length }
     },
     applyThinning(settings) {
-      // Read every frame so a tile parsed after the toggle moves gets the right treatment.
-      fairOrderWanted = settings !== null
+      // No longer mirrors the toggle onto the arrival path. The reorder is cheap enough
+      // (and does the colour widening a tile needs anyway) that every tile now arrives
+      // thinnable, which removes the old wart where a tile loaded while thinning was off
+      // stayed un-thinned until it happened to reload.
       let drawn = 0
       let loaded = 0
       if (!settings) {
