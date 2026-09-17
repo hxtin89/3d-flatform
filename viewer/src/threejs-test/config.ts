@@ -179,10 +179,46 @@ export const EXPERIENCE_CONFIG = {
     pointSize: {
       /** Dot diameter as a multiple of that tile's on-screen point spacing. */
       coverage: 1,
-      /** Below roughly 1.2 device pixels the canopy holes come back. */
-      minPx: 1.4,
-      /** Ceiling, so a tile seen from arm's length does not paint the screen. */
-      maxPx: 6,
+      /**
+       * Floor and ceiling on the drawn diameter, as multiples of the spacing a tile
+       * sitting exactly on the error target projects to (`sse / geometricErrorScale`,
+       * 2.0 px at the shipped SSE 4). Relative rather than absolute so the window moves
+       * with the fidelity setting instead of fighting it — at SSE 8 every drawn point is
+       * twice as far apart and a fixed pixel clamp would bite twice as hard.
+       *
+       * The `Point size` slider multiplies both, so turning dots up widens the window
+       * with them. It used to scale only the derived size against a fixed ceiling, which
+       * meant that at 3x the slider 76% of all points were pinned flat.
+       */
+      floorFactor: 0.7,
+      /**
+       * 3x the target spacing — 6.3 px at SSE 4, which is where the absolute 6 px this
+       * replaces already sat. The value barely moves; what changes is that it now scales
+       * with the error target instead of being a fixed pixel count.
+       *
+       * It was set to 8x first, on the theory that the ceiling only ever existed to stop a
+       * coarse ancestor painting the screen and that applyEffectiveSpacing had removed the
+       * need. Measured at the arrival view, that is wrong. Sweeping the factor over the
+       * same 2.76 M points:
+       *
+       *   factor   1     1.5    2     3     4     6     8     12
+       *   ceiling  2.1   3.1    4.2   6.3   8.3   12.5  16.7  25.0  px
+       *   overdraw 6.1   9.2    12.0  17.8  24.9  43.3  67.7  134.1 x
+       *   clamped  38.8  22.9   16.5  12.8  11.7  10.7  10.3  9.8   % of points
+       *
+       * The clamped share stops falling. Past 4x the paint triples while barely 2% more
+       * points come free, because the size goes as 1/depth and a tenth of the cloud sits
+       * close enough to the camera that no finite ceiling releases it. The ceiling is not
+       * a vestige of the ancestor problem, it is the bound on a divergent term.
+       *
+       * There is a second reason to keep it tight, and it is the more interesting one: the
+       * spacing is a *horizontal* ground quantity, `sqrt(area / points)`, while a canopy is
+       * a volume tens of metres deep. Looking into it, far more points share a pixel than
+       * the ground spacing implies — the panel reads about 1 pt/px — so the rule over-asks
+       * in the near field and the clamp is quietly correcting for it. Fixing that properly
+       * means deriving the size from projected rather than horizontal density.
+       */
+      ceilFactor: 3,
       /** Used when a tile reports neither a geometric error nor a usable footprint. */
       fallbackSpacingM: 0.5,
       /**

@@ -848,12 +848,12 @@
         <div id="perTileSizeRows">
           <div class="row">
             <label class="h" for="sizeMinPx">Smallest dot · <span class="val" id="sizeMinPxVal">—</span></label>
-            <input type="range" id="sizeMinPx" min="0.8" max="3" step="0.1" />
+            <input type="range" id="sizeMinPx" min="0.2" max="2" step="0.05" />
             <span class="weather-note">Floor in CSS pixels. Below roughly one device pixel the canopy opens up into holes</span>
           </div>
           <div class="row">
             <label class="h" for="sizeMaxPx">Largest dot · <span class="val" id="sizeMaxPxVal">—</span></label>
-            <input type="range" id="sizeMaxPx" min="2" max="16" step="0.5" />
+            <input type="range" id="sizeMaxPx" min="1" max="20" step="0.5" />
             <span class="weather-note">Ceiling in CSS pixels, so a coarse tile seen from arm's length cannot paint the screen. Set at or near its floor and the derived size collapses back to one constant</span>
           </div>
         </div>
@@ -888,7 +888,7 @@
         <div class="row">
           <label class="h" for="ancestorKeep">Covered tiles · <span class="val" id="ancestorKeepVal">—</span></label>
           <input type="range" id="ancestorKeep" min="0" max="1" step="0.05" />
-          <span class="weather-note">How much of a tile to keep when its own children are also on screen. This tree draws a tile together with its children, so those points land on ground finer data already covers — the cheapest ones to drop. This is where most of the saving comes from</span>
+          <span class="weather-note">How much of a tile to keep when its own children are also on screen. Not duplicates: the levels split the survey between them, so an ancestor's points fall <em>between</em> its children's and dropping them loses real detail. It is still the cheapest place to save, because over fully refined ground the whole stack is only 4/3 as dense as its deepest level — the ancestors are a quarter of the points, and losing all of them spreads the rest about 15% further apart. This is where most of the saving comes from</span>
         </div>
         <div class="row">
           <label class="h" for="thinRampToggle">Dissolve the change · A/B</label>

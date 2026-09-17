@@ -189,8 +189,10 @@ export function createUniforms(): CloudUniforms {
     pointSize: uniform(2),
     sizeSpacingMix: uniform(1),
     sizeCoverage: uniform(EXPERIENCE_CONFIG.lod.pointSize.coverage),
-    sizeMinPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.minPx),
-    sizeMaxPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.maxPx),
+    // Placeholders: applyPointSize resolves both from lod.pointSize.floorFactor /
+    // ceilFactor against the live error target on the first frame and every frame after.
+    sizeMinPx: uniform(1),
+    sizeMaxPx: uniform(16),
     sizePxPerMetre: uniform(1),
     groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
       ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),

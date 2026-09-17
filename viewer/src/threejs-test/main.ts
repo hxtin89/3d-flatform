@@ -538,8 +538,16 @@ const scratchViewportSize = new THREE.Vector2()
  * base it always was.
  */
 const sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
-let sizeMinPx: number = EXPERIENCE_CONFIG.lod.pointSize.minPx
-let sizeMaxPx: number = EXPERIENCE_CONFIG.lod.pointSize.maxPx
+/**
+ * Floor and ceiling as multiples of the spacing a tile on the error target projects to,
+ * not as pixel counts — see lod.pointSize.floorFactor. Resolved to pixels once per frame
+ * in applyPointSize, where the live target and the size slider are both known.
+ */
+let sizeFloorFactor: number = EXPERIENCE_CONFIG.lod.pointSize.floorFactor
+let sizeCeilFactor: number = EXPERIENCE_CONFIG.lod.pointSize.ceilFactor
+/** What those factors resolved to this frame, for the readouts that quote pixels. */
+let sizeMinPx = 0
+let sizeMaxPx = 0
 
 /**
  * How far apart, in CSS pixels, a tile sitting exactly on the error target draws
@@ -574,8 +582,14 @@ function applyPointSize(): void {
   uniforms.sizePxPerMetre.value = 0.5 * height * camera.projectionMatrix.elements[5]
   uniforms.sizeSpacingMix.value = spacingMode ? 1 : 0
   uniforms.sizeCoverage.value = sizeCoverage * pointSizeScale
+  // The window rides the error target and the size slider together, so neither can put
+  // the derived size outside it. `sseAuto` is -1 for one frame after a render-option
+  // toggle parks the hysteresis, and a negative target would invert the clamp.
+  const targetPx = sseAuto > 0 ? spacingPxAtTarget(sseAuto) : spacingPxAtTarget(EXPERIENCE_CONFIG.lod.sse)
+  sizeMinPx = sizeFloorFactor * targetPx * pointSizeScale
+  sizeMaxPx = Math.max(sizeCeilFactor * targetPx * pointSizeScale, sizeMinPx)
   uniforms.sizeMinPx.value = sizeMinPx
-  uniforms.sizeMaxPx.value = Math.max(sizeMaxPx, sizeMinPx)
+  uniforms.sizeMaxPx.value = sizeMaxPx
   uniforms.pointSize.value = EXPERIENCE_CONFIG.lod.fixedPointSizePx * pointSizeScale
 
   // What a point at the error target resolves to — the size the cloud is tuned
@@ -2931,12 +2945,12 @@ bindDesignSlider(
   (v) => `${spacingPxAtTarget(v).toFixed(1)} px apart · SSE ${v}`,
   (v) => { sseTarget = v },
 )
-bindDesignSlider('sizeMinPx', POINT_SIZE.minPx, (v) => `${v.toFixed(1)} px`, (v) => {
-  sizeMinPx = v
+bindDesignSlider('sizeMinPx', POINT_SIZE.floorFactor, (v) => `${v.toFixed(2)}× · ${(v * spacingPxAtTarget(sseAuto > 0 ? sseAuto : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+  sizeFloorFactor = v
   applyPointSize()
 })
-bindDesignSlider('sizeMaxPx', POINT_SIZE.maxPx, (v) => `${v.toFixed(1)} px`, (v) => {
-  sizeMaxPx = v
+bindDesignSlider('sizeMaxPx', POINT_SIZE.ceilFactor, (v) => `${v.toFixed(1)}× · ${(v * spacingPxAtTarget(sseAuto > 0 ? sseAuto : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+  sizeCeilFactor = v
   applyPointSize()
 })
 
