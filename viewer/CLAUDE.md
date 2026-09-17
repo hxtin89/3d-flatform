@@ -30,7 +30,7 @@ Tiles are served separately by the root pipeline (`cd ..; npm run pipeline:serve
 - `VITE_AWS_MEDIA_CLOUDFRONT_DISTRIBUTION_DOMAIN` + `VITE_POINTCLOUD_TILES_FOLDER` → tileset base URL.
 - `VITE_MAPTILER_API_KEY` → optional MapTiler satellite basemap.
 
-URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-globe`), `?webgl` (force WebGL instead of WebGPU), `?nosnap` (disable ground-snapping), `?modelEditor=1` (enable the in-page model transform editor).
+URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-globe`), `?webgl` (force WebGL instead of WebGPU), `?nosnap` (disable ground-snapping), `?modelEditor=1` (enable the in-page model transform editor), `?thinning=off` (ship without distance thinning — a load-time switch, not a button, because the per-tile cost is paid on arrival and the cache never evicts).
 
 ## Architecture — Three.js/WebGPU app (`src/threejs-test/`)
 

@@ -2652,8 +2652,16 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  *
  * Switching it off is byte-identical to the feature not existing, so it stays the first
  * thing to try when the cloud looks wrong.
+ *
+ * `?thinning=off` and a reload, rather than a button, because a runtime toggle cannot
+ * answer the question it looks like it answers. The arrival cost — the reorder that makes
+ * a prefix a fair sample — is paid once per tile as it loads, and `cacheMinTiles: 900`
+ * means nothing is evicted, so flipping a switch mid-session re-parses no tile and moves
+ * none of that cost. Worse, tiles already resident keep the order they arrived with, so
+ * the scene ends up half thinned. Two URLs, each loaded from cold, is the honest A/B —
+ * and measured that way it is 1.6 ms per arriving tile against 0.5 ms.
  */
-let thinningOn = true
+const thinningOn = params.get('thinning') !== 'off'
 let thinTargetScale = 1
 /** A tile whose own children are also drawn is duplicated detail, and this is where
  *  nearly all the saving comes from — but 0 made the step far too violent to hide.
@@ -2701,14 +2709,10 @@ const syncRoundDotsToggle = () => {
   roundDotsToggleEl.setAttribute('aria-pressed', String(roundDots))
   roundDotsToggleEl.textContent = roundDots ? '● Round' : '■ Square'
 }
-const thinToggleEl = $<HTMLButtonElement>('#thinToggle')
-const syncThinToggle = () => {
-  thinToggleEl.classList.toggle('on', thinningOn)
-  thinToggleEl.setAttribute('aria-pressed', String(thinningOn))
-  thinToggleEl.textContent = thinningOn ? '◐ On' : '✕ Off'
-}
-thinToggleEl.addEventListener('click', () => { thinningOn = !thinningOn; syncThinToggle() })
-syncThinToggle()
+// Reports the state the page was loaded in; there is nothing to click. See `thinningOn`.
+const thinStateEl = $<HTMLSpanElement>('#thinState')
+thinStateEl.textContent = thinningOn ? '◐ On' : '✕ Off'
+thinStateEl.classList.toggle('on', thinningOn)
 
 const thinRampToggleEl = $<HTMLButtonElement>('#thinRampToggle')
 const syncThinRampToggle = () => {
