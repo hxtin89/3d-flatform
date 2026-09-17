@@ -530,15 +530,6 @@ let pointSizeScale = 1
 const scratchViewportSize = new THREE.Vector2()
 /** Design-panel state for the size derivation — see EXPERIENCE_CONFIG.lod.pointSize. */
 /**
- * Base dot width as a multiple of a tile's own on-screen spacing.
- *
- * No longer a slider. It and the Point size slider multiplied into the same uniform, so
- * two controls were competing over one number; Point size is the one that survives,
- * because it means the same thing in both size modes. This stays as the config-level
- * base it always was.
- */
-const sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
-/**
  * Floor and ceiling as multiples of the spacing a tile on the error target projects to,
  * not as pixel counts — see lod.pointSize.floorFactor. Resolved to pixels once per frame
  * in applyPointSize, where the live target and the size slider are both known.
@@ -581,24 +572,21 @@ function applyPointSize(): void {
   const height = renderer.getSize(scratchViewportSize).y
   uniforms.sizePxPerMetre.value = 0.5 * height * camera.projectionMatrix.elements[5]
   uniforms.sizeSpacingMix.value = spacingMode ? 1 : 0
-  uniforms.sizeCoverage.value = sizeCoverage * pointSizeScale
   // The window rides the error target and the size slider together, so neither can put
   // the derived size outside it. `sseAuto` is -1 for one frame after a render-option
   // toggle parks the hysteresis, and a negative target would invert the clamp.
   const targetPx = sseAuto > 0 ? spacingPxAtTarget(sseAuto) : spacingPxAtTarget(EXPERIENCE_CONFIG.lod.sse)
+  // The denominator of the shortfall — see createCloudMaterial.
+  uniforms.sizeRequestedPx.value = targetPx
   sizeMinPx = sizeFloorFactor * targetPx * pointSizeScale
   sizeMaxPx = Math.max(sizeCeilFactor * targetPx * pointSizeScale, sizeMinPx)
   uniforms.sizeMinPx.value = sizeMinPx
   uniforms.sizeMaxPx.value = sizeMaxPx
   uniforms.pointSize.value = EXPERIENCE_CONFIG.lod.fixedPointSizePx * pointSizeScale
 
-  // What a point at the error target resolves to — the size the cloud is tuned
-  // around, with the per-tile sizes scattered about it by construction.
-  const nominal = spacingMode
-    ? THREE.MathUtils.clamp(
-      sizeCoverage * pointSizeScale * spacingPxAtTarget(sseAuto), sizeMinPx, sizeMaxPx,
-    )
-    : uniforms.pointSize.value
+  // A point on the error target has a shortfall of exactly 1, so both modes resolve to
+  // the same base size there and only the shortfall above it separates them.
+  const nominal = uniforms.pointSize.value
   $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${nominal.toFixed(1)}px${spacingMode ? ' at target' : ''}`
 }
 
@@ -3641,7 +3629,7 @@ if (showDiagnostics) diagStatsEl.hidden = false
  * expression in point-cloud.ts.
  *
  * Read off the uniforms rather than off config, so the two cannot disagree: the size
- * the shader uses *is* these values. `sizeCoverage` already carries the size slider,
+ * the shader uses *is* these values. `pointSize` already carries the size slider,
  * applied in applyPointSize().
  *
  * Kept in step with createCloudMaterial() by hand. Change one and change the other —
@@ -3655,11 +3643,14 @@ function drawnDiameterCssPx(spacingM: number, viewDepthM: number, thinScale = 1)
   // thinned instance count at the unwidened diameter, so Overdraw reported a saving the
   // widening had already given back: at the shipped preset it claimed a 44% drop in
   // painted area where the true figure is 0%.
-  const spacingPx = spacingM * thinScale * uniforms.sizeCoverage.value * uniforms.sizePxPerMetre.value
+  const deliveredPx = spacingM * thinScale * uniforms.sizePxPerMetre.value
     / Math.max(viewDepthM, 0.001)
+  const shortfall = Math.max(1, deliveredPx / Math.max(uniforms.sizeRequestedPx.value, 0.001))
   return THREE.MathUtils.lerp(
     uniforms.pointSize.value * thinScale,
-    THREE.MathUtils.clamp(spacingPx, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value),
+    THREE.MathUtils.clamp(
+      uniforms.pointSize.value * shortfall, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value,
+    ),
     uniforms.sizeSpacingMix.value,
   )
 }

@@ -177,8 +177,6 @@ export const EXPERIENCE_CONFIG = {
      * near and far edges of the frame were given the same pixel size.
      */
     pointSize: {
-      /** Dot diameter as a multiple of that tile's on-screen point spacing. */
-      coverage: 1,
       /**
        * Floor and ceiling on the drawn diameter, as multiples of the spacing a tile
        * sitting exactly on the error target projects to (`sse / geometricErrorScale`,
