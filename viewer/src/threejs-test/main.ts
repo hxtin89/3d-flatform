@@ -576,8 +576,25 @@ function applyPointSize(): void {
   // the derived size outside it. `sseAuto` is -1 for one frame after a render-option
   // toggle parks the hysteresis, and a negative target would invert the clamp.
   const targetPx = sseAuto > 0 ? spacingPxAtTarget(sseAuto) : spacingPxAtTarget(EXPERIENCE_CONFIG.lod.sse)
-  // The denominator of the shortfall — see createCloudMaterial.
+  // The denominator of the shortfall — see createCloudMaterial. The flat part here, and
+  // the screen-space bend below: anything that varies how much detail is asked for across
+  // the image has to land in this pair, or the size rule reads its coarsening as a
+  // shortfall and tries to compensate for a decision that was deliberate.
   uniforms.sizeRequestedPx.value = targetPx
+  uniforms.sizeHalfHeightPx.value = Math.max(height / 2, 1)
+  // Equal factors collapse the ramp to a constant, so an unfoveated frame pays a few ALU
+  // ops and changes nothing. The centre follows the same tilt the guides draw.
+  const fovea = foveationSettings.enabled
+  uniforms.foveaFactors.value.set(
+    fovea ? foveationSettings.centreFactor : 1,
+    fovea ? foveationSettings.edgeFactor : 1,
+  )
+  uniforms.foveaCore.value.set(
+    foveation?.coreCentreY() ?? foveationSettings.offsetY,
+    foveationSettings.width,
+    foveationSettings.height,
+    foveationSettings.falloff,
+  )
   sizeMinPx = sizeFloorFactor * targetPx * pointSizeScale
   sizeMaxPx = Math.max(sizeCeilFactor * targetPx * pointSizeScale, sizeMinPx)
   uniforms.sizeMinPx.value = sizeMinPx
