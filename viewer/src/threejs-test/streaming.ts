@@ -507,6 +507,23 @@ export function createStreamingCloud(opts: {
   }
 
   /**
+   * Whether anything currently needs a fair point order. Mirrors the thinning toggle,
+   * refreshed from `applyThinning` each frame, and true initially because tiles loaded
+   * during the entrance flight run before the first `applyThinning` call.
+   *
+   * This exists so the toggle is an honest A/B: with thinning off nothing draws a prefix,
+   * so the reorder buys nothing, and a shipped build with thinning off would not pay it.
+   * Leaving it on would charge the "off" side for work it would never do in production —
+   * about 1.4 ms per tile — and would also hand the ground-patch mask a different order
+   * than it sees today. Gated, "off" is byte-identical to the feature not existing.
+   *
+   * It is a measurement aid with a short life: once thinning is decided and the toggle is
+   * deleted, one of the two branches goes with it. If thinning ships on, delete this flag
+   * and reorder unconditionally; if it ships off, delete the reorder along with thinning.
+   */
+  let fairOrderWanted = true
+
+  /**
    * How many interleaved rounds `reorderForPrefixSampling` emits.
    *
    * A prefix of `keep` covers `keep * ROUNDS` complete rounds, so it must be at least one
@@ -522,8 +539,17 @@ export function createStreamingCloud(opts: {
    * Larger is not better: a prefix includes runs of `keep * ROUNDS` *consecutive* source
    * indices, and the source order is spatially smooth, so long runs re-cluster the sample.
    * ROUNDS 1024 measured 0.71 at 10% against 0.42 for 64.
+   *
+   * **Why 61 and not a round number.** `ground-patch-mask.ts` decides whether a tile adds
+   * any coverage by probing it at `count / 64` intervals — 64 samples spread across the
+   * buffer (`isRedundant`). If ROUNDS shares factors with that 64, the probe lands at the
+   * same offset inside every round and collapses onto a handful of source indices. Measured
+   * on a 270k tile, distinct lattice cells hit by those 64 probes: **58 unshuffled, 59 at
+   * ROUNDS 61, but only 8 at ROUNDS 64 and 16 at 96.** A probe that samples 8 spots instead
+   * of 58 will call tiles redundant that are not, and the mask drops them — coverage holes,
+   * not just a slower walk. 61 is prime, so it cannot alias with any probe count.
    */
-  const PREFIX_SAMPLE_ROUNDS = 64
+  const PREFIX_SAMPLE_ROUNDS = 61
 
   /**
    * Rewrite a tile so that *any prefix of it is an evenly spread sample of the whole tile*.
@@ -677,9 +703,13 @@ export function createStreamingCloud(opts: {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
-    // A pre-ordered pack already satisfies the prefix rule, so it needs only the colour
-    // widening below. Everything else is reordered here, once, on arrival.
-    const reordered = tilesArePreOrdered() ? null : reorderForPrefixSampling(position, color)
+    // Skipped entirely while thinning is off — nothing draws a prefix then, so the order
+    // is unneeded rather than unfair, and the tile keeps the arrays exactly as they
+    // arrived. A pre-ordered pack already satisfies the prefix rule and likewise needs
+    // only the colour widening below.
+    const reordered = (fairOrderWanted && !tilesArePreOrdered())
+      ? reorderForPrefixSampling(position, color)
+      : null
     if (reordered) {
       // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
       // mask walk the same order the drawn tile does — and so the tile's original PNTS
@@ -1279,10 +1309,11 @@ export function createStreamingCloud(opts: {
       return { shrunk, tiles: spacingEntries.length }
     },
     applyThinning(settings) {
-      // No longer mirrors the toggle onto the arrival path. The reorder is cheap enough
-      // (and does the colour widening a tile needs anyway) that every tile now arrives
-      // thinnable, which removes the old wart where a tile loaded while thinning was off
-      // stayed un-thinned until it happened to reload.
+      // Read every frame so a tile parsed after the toggle moves gets the right treatment.
+      // A tile that arrived while thinning was off keeps its original order and is drawn
+      // whole rather than as a biased wedge — see the `orderIsFair` guard below. It heals
+      // on reload, which is what the toggle is for.
+      fairOrderWanted = settings !== null
       let drawn = 0
       let loaded = 0
       if (!settings) {
