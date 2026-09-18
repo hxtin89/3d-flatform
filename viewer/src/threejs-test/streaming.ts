@@ -68,6 +68,11 @@ export interface StreamingStats {
   loadGateCut: number
   renderGateHidden: number
   renderGateTiles: number
+  /** Radius the point-of-view load was actually allowed this frame, after the point cap
+   *  shrank it — Infinity when the cap did not bite or the load is off. */
+  povRadius: number
+  /** Points the point-of-view selection is estimated to hold, from the published counts. */
+  povPoints: number
 }
 
 export interface MemoryBudgetSnapshot {
@@ -139,7 +144,7 @@ export interface StreamingCloud {
    * itself is still parked behind the loader or in the air. Null returns the mask to
    * its frustum-and-camera behaviour. Needs an active mask sphere to have any effect.
    */
-  setPovLoad(eyeWorld: THREE.Vector3 | null): void
+  setPovLoad(eyeWorld: THREE.Vector3 | null, maxPoints?: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
    * Null until enough points are loaded there. See sampleGroundZ() below for
    * why this is a statistic and not a raycast. */
@@ -418,6 +423,12 @@ export function createStreamingCloud(opts: {
    */
   const povEye = new THREE.Vector3()
   let povActive = false
+  /** Point cap on the point-of-view load, and what the solver made of it — see solvePovRadius. */
+  let povBudget = Infinity
+  let povRadius = Infinity
+  let povPoints = 0
+  /** The radius the caller asked for; the point-of-view solver may run the mask tighter. */
+  let maskRadiusRequested = 0
   class FrustumMaskRegion extends SphereRegion {
     intersectsTile(boundingVolume: any, _tile?: any, tilesRenderer?: any): boolean {
       if (!boundingVolume.intersectsSphere(this.sphere)) { loadGateCut++; return false }
@@ -953,6 +964,78 @@ export function createStreamingCloud(opts: {
 
   scene.add(tiles.group)
 
+  /** One candidate of the point-of-view selection: how far its box is from the eye, and
+   *  how many points it carries. Pooled, the solver runs every frame of the load. */
+  const povCandidates: { distance: number; points: number }[] = []
+  let povCandidateCount = 0
+
+  /**
+   * How large the point-of-view sphere may be before the selection inside it exceeds the
+   * point cap.
+   *
+   * The traversal cannot be told "stop at N points" — it decides tile by tile — but the
+   * pipeline publishes `extras.aph.emittedPointCount` on every node, so what the landing
+   * eye would select can be priced before a byte is fetched. This walks the tree the way
+   * the traversal will (refine while the eye's error exceeds the target, external tileset
+   * documents always), keeps every node whose box reaches the requested sphere, sorts them
+   * by distance from the eye and adds their counts up from the centre outward. The first
+   * node that would carry the total past the cap sets the radius: everything nearer is
+   * inside, everything from there out is left for the camera-driven traversal after
+   * landing.
+   *
+   * Only nodes already known are priced. The tree arrives as a chain of external
+   * documents, so early frames see a partial tree and price it low; as documents land the
+   * estimate grows and the radius tightens over a few frames. That is the right direction
+   * — a too-large radius fetches a few tiles it then stops refining, never the reverse —
+   * and the download order is nearest first, so the tiles it overshoots on are the far ones.
+   *
+   * Nodes the eye stands inside report distance 0 and are always in: they are the huge
+   * `refine: ADD` ancestors that every frame at the landing draws anyway.
+   */
+  function solvePovRadius(): number {
+    povCandidateCount = 0
+    povPoints = 0
+    const root = (tiles as any).root
+    const info = (tiles as any).cameraInfo?.[0]
+    if (!root || !info || !(info.sseDenominator > 0)) return Infinity
+    const target = tiles.errorTarget
+    const sphere = maskRegion.sphere
+    const visit = (tile: any): void => {
+      const volume = tile?.engineData?.boundingVolume
+      if (!volume || !volume.intersectsSphere(sphere)) return
+      const distance = volume.distanceToPoint(povEye)
+      const points = tile?.extras?.aph?.emittedPointCount
+      if (typeof points === 'number' && points > 0) {
+        let entry = povCandidates[povCandidateCount]
+        if (!entry) entry = povCandidates[povCandidateCount] = { distance: 0, points: 0 }
+        entry.distance = distance
+        entry.points = points
+        povCandidateCount++
+      }
+      const error = distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * info.sseDenominator)
+      if (!(error > target) && !tile?.internal?.hasUnrenderableContent) return
+      const children = tile.children
+      if (!Array.isArray(children)) return
+      for (let i = 0; i < children.length; i++) visit(children[i])
+    }
+    visit(root)
+    const list = povCandidates.slice(0, povCandidateCount).sort((a, b) => a.distance - b.distance)
+    // Console aid: the priced list and the eye it was priced from, for checking the cap.
+    ;(tiles as any).__pov = { eye: povEye, list }
+    let total = 0
+    for (const entry of list) {
+      if (total + entry.points > povBudget && entry.distance > 0) {
+        povPoints = total
+        // Just inside the first node that would break the cap, so that node's box misses
+        // the sphere and everything nearer still reaches it.
+        return Math.max(1, entry.distance * 0.999)
+      }
+      total += entry.points
+    }
+    povPoints = total
+    return Infinity
+  }
+
   /**
    * Take the selected tiles outside the inner sphere off the render list, and put the
    * ones inside back on it.
@@ -992,6 +1075,17 @@ export function createStreamingCloud(opts: {
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
       loadGateCut = 0
+      // The point-of-view load runs the mask at the largest radius the point cap allows;
+      // everything else runs it at the radius asked for.
+      if (maskActive) {
+        maskRegion.sphere.radius = maskRadiusRequested
+        if (povActive && Number.isFinite(povBudget)) {
+          povRadius = solvePovRadius()
+          maskRegion.sphere.radius = Math.min(maskRadiusRequested, povRadius)
+        } else {
+          povRadius = Infinity
+        }
+      }
       tiles.update()
       // Released after the traversal, so a tile that became invisible again while it was
       // waiting is simply dropped from the queue rather than shown for one frame.
@@ -1166,10 +1260,12 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.center.copy(centerWorld)
       tiles.group.worldToLocal(maskRegion.sphere.center)
       maskRegion.sphere.radius = radius
+      maskRadiusRequested = radius
     },
-    setPovLoad(eyeWorld) {
-      if (!eyeWorld) { povActive = false; return }
+    setPovLoad(eyeWorld, maxPoints = Infinity) {
+      if (!eyeWorld) { povActive = false; povRadius = Infinity; povPoints = 0; return }
       povActive = true
+      povBudget = maxPoints > 0 ? maxPoints : Infinity
       // Same frame as the mask sphere; the bounding volumes live in the group's space.
       tiles.group.updateWorldMatrix(true, false)
       povEye.copy(eyeWorld)
@@ -1304,6 +1400,8 @@ export function createStreamingCloud(opts: {
         loadGateCut,
         renderGateHidden,
         renderGateTiles,
+        povRadius,
+        povPoints,
       }
     },
     applyEffectiveSpacing(rampMs) {

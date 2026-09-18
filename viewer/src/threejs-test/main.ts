@@ -2927,8 +2927,9 @@ document.addEventListener('keydown', onNavigationKeyForDome)
 /**
  * The initial point-of-view load — `lod.sphereFade.loadInitialPov`. Active from boot until
  * the entrance flight has landed; see the config comment for what it does and
- * `stream.setPovLoad` for how. `initialPovEyeEnu` is the staged boot pose, which is the
- * flight's own landing pose by construction.
+ * `stream.setPovLoad` for how. `initialPovEyeEnu` is the camera's pose behind the
+ * loader — the flight's own landing pose by construction — sampled live until the
+ * flight starts and held from then on.
  */
 let initialPovDone = false
 let initialPovEyeKnown = false
@@ -3811,9 +3812,15 @@ function updateStreaming(now: number): StreamingStats | null {
   // in the air (a mid-air retarget moves it once), the staged boot pose before that —
   // the two are the same formula, so the set does not change when Start is pressed.
   if (pov && dome) {
-    const destination = cameraFlight.destination()
-    enuToWorld(destination ? destination.endEnu : initialPovEyeEnu, initialPovEyeWorld)
-    stream.setPovLoad(initialPovEyeWorld)
+    // The eye is the camera as it actually stands behind the loader, re-read every
+    // frame until the flight starts, and held from then on. Not the staged or the
+    // flight-end pose: both sit under the globe controls' 80 m clearance, which lifts
+    // the camera onto it every frame, and priced from the raw pose the eye stood inside
+    // the canopy boxes and the cap closed at 71 m. Staging and landing share one
+    // formula, so the held pose is the landing pose to within the controls' rounding.
+    if (!loaderFlightStarted) worldToEnu(camera.position, initialPovEyeEnu)
+    enuToWorld(initialPovEyeEnu, initialPovEyeWorld)
+    stream.setPovLoad(initialPovEyeWorld, EXPERIENCE_CONFIG.lod.sphereFade.initialPovMaxPoints)
   } else {
     stream.setPovLoad(null)
   }
@@ -4102,7 +4109,10 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
-      + (initialPovActive() ? ' · loading the landing view from its own eye' : '')
+      + (initialPovActive()
+        ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
+          ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
+        : '')
       + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
     : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
   // The basemap keeps its last traversed count when imagery is switched off — the group

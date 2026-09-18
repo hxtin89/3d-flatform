@@ -274,6 +274,14 @@ export const EXPERIENCE_CONFIG = {
        * behind the loader, the frustum-driven traversal from the first frame.
        */
       loadInitialPov: true,
+      /**
+       * Cap on that preload, in points. The whole dome at 1000 m measured 19 M points and
+       * 272 MB — far more than a landing needs. The preload sphere is shrunk from the
+       * outer radius until the tiles inside it, priced by the published per-node counts
+       * and taken nearest first, fit under this; the rest arrives after landing through
+       * the camera-driven traversal as usual.
+       */
+      initialPovMaxPoints: 3_000_000,
       // Grazing hits count as misses past this multiple of the camera height — the
       // same constant that bounds the refinement range, so the two agree.
       maxRangeFactor: 6,
