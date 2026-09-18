@@ -261,6 +261,19 @@ export const EXPERIENCE_CONFIG = {
       fadeOut: 0.5,
       debugOpacity: 0.05,
       showDebug: false,
+      /**
+       * Load the landing view first. While the loader is up, and then all through the
+       * entrance flight, the streamer ignores the camera and refines the whole dome
+       * around the flight's landing pose to the full error target — every tile whose
+       * box reaches the outer sphere, judged by its distance from that pose as if the
+       * camera already stood there looking in every direction. The Start button only
+       * appears once that set has finished loading, and the normal camera-driven
+       * traversal takes over the moment the camera arrives. The boot and flight brakes
+       * are skipped for that flight, since the burst they exist to spread has already
+       * been paid behind the loader. `false` restores the old boot: coarse SSE 256
+       * behind the loader, the frustum-driven traversal from the first frame.
+       */
+      loadInitialPov: true,
       // Grazing hits count as misses past this multiple of the camera height — the
       // same constant that bounds the refinement range, so the two agree.
       maxRangeFactor: 6,

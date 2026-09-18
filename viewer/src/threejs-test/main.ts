@@ -2919,6 +2919,21 @@ renderer.domElement.addEventListener('pointerdown', markMapInteracted, { passive
 renderer.domElement.addEventListener('wheel', markMapInteracted, { passive: true })
 document.addEventListener('keydown', onNavigationKeyForDome)
 
+/**
+ * The initial point-of-view load — `lod.sphereFade.loadInitialPov`. Active from boot until
+ * the entrance flight has landed; see the config comment for what it does and
+ * `stream.setPovLoad` for how. `initialPovEyeEnu` is the staged boot pose, which is the
+ * flight's own landing pose by construction.
+ */
+let initialPovDone = false
+let initialPovEyeKnown = false
+const initialPovEyeEnu = new THREE.Vector3()
+const initialPovEyeWorld = new THREE.Vector3()
+function initialPovActive(): boolean {
+  return EXPERIENCE_CONFIG.lod.sphereFade.loadInitialPov
+    && sphereFadeSettings.enabled && initialPovEyeKnown && !initialPovDone
+}
+
 const domeEyeWorld = new THREE.Vector3()
 const domeLookWorld = new THREE.Vector3()
 /**
@@ -3734,16 +3749,26 @@ function updateStreaming(now: number): StreamingStats | null {
   // the destination survive until the reveal.
   if (!pointCloudRevealed) return lastStreamStats
 
+  // The initial point-of-view load ends the frame the entrance flight lands. From then
+  // on the live camera decides, and without the landing ramp of the flight brake: the
+  // dome it would spread the refill of is already resident.
+  if (!initialPovDone && loaderFlightStarted && !cameraFlight.active) {
+    initialPovDone = true
+    flightEndedAt = -Infinity
+  }
+  const pov = initialPovActive()
+
   // One number decides fidelity: how far apart the drawn points may sit on screen.
   // It is not scaled by camera range — the renderer's own error quotient already
   // divides by distance, so a constant here means constant on-screen point spacing
   // at every range. The brakes below are the only things allowed to raise it, and
-  // both are about *time* rather than distance: frames nobody sees.
+  // both are about *time* rather than distance: frames nobody sees. The point-of-view
+  // load wants exactly those frames spent, so it takes the target unbraked.
   const targetSse = renderOptions.effective().leafLoading
     // Low SSE forces the selected APH branches through to their leaves. It is
     // deliberately scoped to the current camera frustum by TilesRenderer.
     ? 0.25
-    : renderOptions.effective().sseBrakes
+    : renderOptions.effective().sseBrakes && !pov
       ? Math.max(
         sseTarget,
         bootLoading
@@ -3777,6 +3802,16 @@ function updateStreaming(now: number): StreamingStats | null {
   else stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
   stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0)
   applySphereFadeUniforms(dome)
+  // The eye the point-of-view load refines from: the flight's landing pose while it is
+  // in the air (a mid-air retarget moves it once), the staged boot pose before that —
+  // the two are the same formula, so the set does not change when Start is pressed.
+  if (pov && dome) {
+    const destination = cameraFlight.destination()
+    enuToWorld(destination ? destination.endEnu : initialPovEyeEnu, initialPovEyeWorld)
+    stream.setPovLoad(initialPovEyeWorld)
+  } else {
+    stream.setPovLoad(null)
+  }
   foveation?.beginFrame()
   stream.update()
   // After the traversal, so the error and the stopped-here flag the inspector paints
@@ -4062,6 +4097,7 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
+      + (initialPovActive() ? ' · loading the landing view from its own eye' : '')
       + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
     : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
   // The basemap keeps its last traversed count when imagery is switched off — the group
@@ -4561,6 +4597,8 @@ async function main(): Promise<void> {
     /** The dome under the view centre — `.stats()` for where it sits and whether it is
      *  frozen, `.settings` to drive it from the console. */
     get sphereFade() { return sphereFade },
+    /** Whether the streamer is still refining the landing view from its own eye. */
+    get initialPov() { return initialPovActive() },
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },
@@ -4709,11 +4747,13 @@ async function main(): Promise<void> {
   // to the overview and begin the user-facing flight.
   const stagingTarget = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
   const stagingOffset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
-  camera.position.copy(enuToWorld(new THREE.Vector3(
+  initialPovEyeEnu.set(
     stagingTarget.x + stagingOffset[0],
     stagingTarget.y + stagingOffset[1],
     stagingTarget.z + stagingOffset[2],
-  )))
+  )
+  initialPovEyeKnown = true
+  camera.position.copy(enuToWorld(initialPovEyeEnu.clone()))
   camera.up.copy(enuUp)
   camera.lookAt(enuToWorld(stagingTarget.clone()))
   nanWatch('boot staging')

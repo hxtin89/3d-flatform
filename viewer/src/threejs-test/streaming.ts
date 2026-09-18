@@ -130,6 +130,16 @@ export interface StreamingCloud {
    * stops three uploading or compiling anything for it. Takes effect inside `update()`.
    */
   setRenderSphere(centerWorld: THREE.Vector3 | null, radius: number): void
+  /**
+   * Initial point-of-view load. While an eye is set, the mask sphere stops asking the
+   * camera frustum: every tile whose box reaches into the sphere is selected, and its
+   * refinement is judged by the distance from *this* eye rather than from the live
+   * camera — the landing pose of the entrance flight, so the whole dome around it
+   * refines as if the camera stood there looking in every direction, while the camera
+   * itself is still parked behind the loader or in the air. Null returns the mask to
+   * its frustum-and-camera behaviour. Needs an active mask sphere to have any effect.
+   */
+  setPovLoad(eyeWorld: THREE.Vector3 | null): void
   /** Ground and canopy height under a footprint, from the resident tiles.
    * Null until enough points are loaded there. See sampleGroundZ() below for
    * why this is a statistic and not a raycast. */
@@ -401,9 +411,18 @@ export function createStreamingCloud(opts: {
   // Real mask culling: outside tiles are not fetched, refined or rendered.
   /** Tile boxes the mask sphere rejected in this frame's traversal, for the readout. */
   let loadGateCut = 0
+  /**
+   * The initial point-of-view load — see setPovLoad. `povEye` is the landing pose in
+   * the tiles' own frame; while `povActive` the region also answers for tiles the
+   * camera cannot see, so the traversal refines the whole sphere from that eye.
+   */
+  const povEye = new THREE.Vector3()
+  let povActive = false
   class FrustumMaskRegion extends SphereRegion {
     intersectsTile(boundingVolume: any, _tile?: any, tilesRenderer?: any): boolean {
       if (!boundingVolume.intersectsSphere(this.sphere)) { loadGateCut++; return false }
+      // The point-of-view load wants the sphere whole, not the wedge the camera sees.
+      if (povActive) return true
       const info = tilesRenderer?.cameraInfo
       if (!info || info.length === 0) return true
       for (let i = 0; i < info.length; i++) {
@@ -415,7 +434,26 @@ export function createStreamingCloud(opts: {
 
   const regionPlugin = new LoadRegionPlugin()
   const maskRegion = new FrustumMaskRegion({ mask: true, errorTarget })
-  maskRegion.calculateError = () => 0
+  /**
+   * Off the point-of-view load the region adds no error of its own — the camera's
+   * quotient decides. On it, the same quotient the renderer uses (`geometricError /
+   * (distance * sseDenominator)`, TilesRenderer.calculateTileViewError) is taken from
+   * the landing eye instead, and the plugin merges it by max with the camera's, so a
+   * tile the live camera cannot see still refines exactly as far as it would once the
+   * camera has landed there. A zero distance is the eye inside the box: unbounded, as
+   * the renderer reports it too.
+   */
+  maskRegion.calculateError = (tile: any, tilesRenderer: any) => {
+    if (!povActive) return 0
+    const info = tilesRenderer?.cameraInfo?.[0]
+    if (!info || info.isOrthographic || !(info.sseDenominator > 0)) return 0
+    const distance = tile?.engineData?.boundingVolume?.distanceToPoint(povEye) ?? Infinity
+    return distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * info.sseDenominator)
+  }
+  // Download priority: nearest to the eye first, so the ground under the landing view
+  // fills in before the far rim of the sphere.
+  maskRegion.calculateDistance = (boundingVolume: any) =>
+    povActive ? boundingVolume.distanceToPoint(povEye) : Infinity
   let maskActive = false
   let leafLoading = false
   let leafLoadingSnapshot: {
@@ -1128,6 +1166,14 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.center.copy(centerWorld)
       tiles.group.worldToLocal(maskRegion.sphere.center)
       maskRegion.sphere.radius = radius
+    },
+    setPovLoad(eyeWorld) {
+      if (!eyeWorld) { povActive = false; return }
+      povActive = true
+      // Same frame as the mask sphere; the bounding volumes live in the group's space.
+      tiles.group.updateWorldMatrix(true, false)
+      povEye.copy(eyeWorld)
+      tiles.group.worldToLocal(povEye)
     },
     setRenderSphere(centerWorld, radius) {
       if (!centerWorld || !(radius > 0)) { renderGateActive = false; return }
