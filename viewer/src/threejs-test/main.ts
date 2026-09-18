@@ -421,8 +421,13 @@ const onLoaderStart = () => {
   // are already resident — pausing the streamer keeps them, because unloading
   // also only happens inside tiles.update(). With the SSE brakes toggled off
   // the reveal gating is off too — the cloud joins from the first metre.
+  // The park exists to spare a weak device the streaming cost of a cloud it cannot see
+  // yet. The point-of-view load has already paid that cost behind the loader, and the
+  // dome is the thing the flight is heading for — so with it resident the cloud is drawn
+  // from the first metre and the reveal gate is not armed at all.
   entranceFlightPending = renderOptions.effective().sseBrakes
     && EXPERIENCE_CONFIG.flight.cloudRevealProgress[benchPreset] > 0
+    && !initialPovActive()
   if (entranceFlightPending) setPointCloudRevealed(false)
   flyToCloud(
     reducedMotion
@@ -4599,6 +4604,9 @@ async function main(): Promise<void> {
     get sphereFade() { return sphereFade },
     /** Whether the streamer is still refining the landing view from its own eye. */
     get initialPov() { return initialPovActive() },
+    /** 0 while the cinematic flight runs, 1 once it has settled. */
+    get flightProgress() { return cinematicFlightProgress },
+    get flightStarted() { return loaderFlightStarted },
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },
