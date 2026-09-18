@@ -7,6 +7,7 @@ import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-rend
 import { recordArrival } from './arrival-cost'
 import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
+  effectMaterialStale,
   POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
@@ -1064,6 +1065,9 @@ export function createStreamingCloud(opts: {
         // An arrival still waiting its turn stays hidden whatever the gate says.
         const show = inside && mesh.userData.pendingReveal !== true
         if (mesh.visible !== show) mesh.visible = show
+        // Safety net under refreshEffects: whatever path let a tile keep a graph built
+        // under other effect flags, it is caught the frame it is drawn again.
+        if (show && effectMaterialStale(mesh.material)) rebuildEffectMaterial(mesh.material)
       }
     }
   }
@@ -1237,14 +1241,23 @@ export function createStreamingCloud(opts: {
     },
     setHighPrecision(enabled: boolean) {
       setHighPrecisionMatrices(enabled)
-      // The scene graph is the registry — every live tile material hangs under
-      // the tiles group, and UnloadTilesPlugin keeps disposing them itself.
-      tiles.group.traverse((object: any) => applyMatrixPrecision(object.material))
+      // Every loaded tile, not only the ones in the scene group. A tile that is out of
+      // view keeps its scene in the cache, detached from the group, and comes back with
+      // whatever material it left with — so walking the group alone left the cached
+      // tiles on the old setting until they happened to reload.
+      tiles.forEachLoadedModel((model: THREE.Object3D) => {
+        model.traverse((object: any) => applyMatrixPrecision(object.material))
+      })
     },
     refreshEffects() {
-      // Same registry as setHighPrecision: the scene graph holds every live tile
-      // material, and UnloadTilesPlugin keeps disposing them itself.
-      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+      // Same registry as setHighPrecision, for the same reason: switching the dome off
+      // and on used to leave every cached tile with the falloff compiled out, and those
+      // tiles then drew their points at full size outside the sphere when they returned.
+      // UnloadTilesPlugin still owns disposal; a rebuilt material just recompiles when
+      // it is next drawn.
+      tiles.forEachLoadedModel((model: THREE.Object3D) => {
+        model.traverse((object: any) => rebuildEffectMaterial(object.material))
+      })
     },
     setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number) {
       if (leafLoading) {

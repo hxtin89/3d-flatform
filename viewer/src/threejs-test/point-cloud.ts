@@ -753,7 +753,15 @@ export function rebuildEffectMaterial(material: any): void {
   const rebuild = material?.userData?.rebuildEffectGraph
   if (typeof rebuild !== 'function') return
   rebuild()
+  material.userData.effectsVersion = effectsVersion
   material.needsUpdate = true
+}
+
+/** True when this material's graph predates the current effect flags — a tile that was
+ *  parked in the cache while a switch was flipped and has come back with the old shader. */
+export function effectMaterialStale(material: any): boolean {
+  return material?.userData?.effectsVersion !== undefined
+    && material.userData.effectsVersion !== effectsVersion
 }
 
 /**
@@ -1120,6 +1128,9 @@ export function createCloudMaterial(
     material.positionNode = next.positionNode
     material.colorNode = next.colorNode
   }
+  // Stamped so a tile that sat hidden in the cache through a switch can be recognised
+  // and rebuilt when it is drawn again — see effectMaterialStale and applyRenderGate.
+  material.userData.effectsVersion = effectsVersion
 
   return material
 }
