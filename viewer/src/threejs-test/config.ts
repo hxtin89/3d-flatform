@@ -257,8 +257,8 @@ export const EXPERIENCE_CONFIG = {
       // plateau (above 1 holds full size a while longer before dropping), `fadeOut`
       // how it lands on zero at the rim (above 1 lingers small before vanishing).
       // 1 and 1 is a straight line.
-      fadeIn: 1,
-      fadeOut: 1.5,
+      fadeIn: 2,
+      fadeOut: 0.5,
       debugOpacity: 0.05,
       showDebug: false,
       // Grazing hits count as misses past this multiple of the camera height — the
