@@ -530,16 +530,15 @@ let pointSizeScale = 1
 const scratchViewportSize = new THREE.Vector2()
 /** Design-panel state for the size derivation — see EXPERIENCE_CONFIG.lod.pointSize. */
 /**
- * Base dot width as a multiple of a tile's own on-screen spacing.
- *
- * No longer a slider. It and the Point size slider multiplied into the same uniform, so
- * two controls were competing over one number; Point size is the one that survives,
- * because it means the same thing in both size modes. This stays as the config-level
- * base it always was.
+ * Floor and ceiling as multiples of the spacing a tile on the error target projects to,
+ * not as pixel counts — see lod.pointSize.floorFactor. Resolved to pixels once per frame
+ * in applyPointSize, where the live target and the size slider are both known.
  */
-const sizeCoverage: number = EXPERIENCE_CONFIG.lod.pointSize.coverage
-let sizeMinPx: number = EXPERIENCE_CONFIG.lod.pointSize.minPx
-let sizeMaxPx: number = EXPERIENCE_CONFIG.lod.pointSize.maxPx
+let sizeFloorFactor: number = EXPERIENCE_CONFIG.lod.pointSize.floorFactor
+let sizeCeilFactor: number = EXPERIENCE_CONFIG.lod.pointSize.ceilFactor
+/** What those factors resolved to this frame, for the readouts that quote pixels. */
+let sizeMinPx = 0
+let sizeMaxPx = 0
 
 /**
  * How far apart, in CSS pixels, a tile sitting exactly on the error target draws
@@ -573,18 +572,52 @@ function applyPointSize(): void {
   const height = renderer.getSize(scratchViewportSize).y
   uniforms.sizePxPerMetre.value = 0.5 * height * camera.projectionMatrix.elements[5]
   uniforms.sizeSpacingMix.value = spacingMode ? 1 : 0
-  uniforms.sizeCoverage.value = sizeCoverage * pointSizeScale
+  // The window rides the error target and the size slider together, so neither can put
+  // the derived size outside it. `sseAuto` is -1 for one frame after a render-option
+  // toggle parks the hysteresis, and a negative target would invert the clamp.
+  const targetPx = sseAuto > 0 ? spacingPxAtTarget(sseAuto) : spacingPxAtTarget(EXPERIENCE_CONFIG.lod.sse)
+  // The denominator of the shortfall — see createCloudMaterial. The flat part here, and
+  // the screen-space bend below: anything that varies how much detail is asked for across
+  // the image has to land in this pair, or the size rule reads its coarsening as a
+  // shortfall and tries to compensate for a decision that was deliberate.
+  uniforms.sizeRequestedPx.value = targetPx
+  uniforms.sizeHalfHeightPx.value = Math.max(height / 2, 1)
+  // Equal factors collapse the ramp to a constant, so an unfoveated frame pays a few ALU
+  // ops and changes nothing. The centre follows the same tilt the guides draw.
+  const fovea = foveationSettings.enabled
+  uniforms.foveaFactors.value.set(
+    fovea ? foveationSettings.centreFactor : 1,
+    fovea ? foveationSettings.edgeFactor : 1,
+  )
+  uniforms.foveaCore.value.set(
+    foveation?.coreCentreY() ?? foveationSettings.offsetY,
+    foveationSettings.width,
+    foveationSettings.height,
+    foveationSettings.falloff,
+  )
+  // The clamp follows the fidelity *setting*, never the live value.
+  //
+  // `sseAuto` is also where the brakes live — 256 during boot, 64 during a camera flight —
+  // and a brake is not a decision about how big a dot should be. Measured on a drive with
+  // the flight brake firing: the target went 2 to 32 px in one frame, which took the floor
+  // with it to 22.4 px and forced every point in the frame to that width. Total drawn area
+  // jumped 114x between two frames, the whole cloud ballooning at the start of every
+  // flight. The brake is meant to make the frame cheaper.
+  //
+  // The shortfall's denominator above is a different question and does follow `sseAuto`:
+  // during a brake the tree really is being asked for coarser data, so the shortfall stays
+  // near 1, the dots stay at their base size, and the frame goes blurrier rather than
+  // heavier — which is the whole point of braking.
+  const settingPx = spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse)
+  sizeMinPx = sizeFloorFactor * settingPx * pointSizeScale
+  sizeMaxPx = Math.max(sizeCeilFactor * settingPx * pointSizeScale, sizeMinPx)
   uniforms.sizeMinPx.value = sizeMinPx
-  uniforms.sizeMaxPx.value = Math.max(sizeMaxPx, sizeMinPx)
+  uniforms.sizeMaxPx.value = sizeMaxPx
   uniforms.pointSize.value = EXPERIENCE_CONFIG.lod.fixedPointSizePx * pointSizeScale
 
-  // What a point at the error target resolves to — the size the cloud is tuned
-  // around, with the per-tile sizes scattered about it by construction.
-  const nominal = spacingMode
-    ? THREE.MathUtils.clamp(
-      sizeCoverage * pointSizeScale * spacingPxAtTarget(sseAuto), sizeMinPx, sizeMaxPx,
-    )
-    : uniforms.pointSize.value
+  // A point on the error target has a shortfall of exactly 1, so both modes resolve to
+  // the same base size there and only the shortfall above it separates them.
+  const nominal = uniforms.pointSize.value
   $('#sizev').textContent = `${pointSizeScale.toFixed(1)}× · ${nominal.toFixed(1)}px${spacingMode ? ' at target' : ''}`
 }
 
@@ -2959,12 +2992,12 @@ bindDesignSlider(
   (v) => `${spacingPxAtTarget(v).toFixed(1)} px apart · SSE ${v}`,
   (v) => { sseTarget = v },
 )
-bindDesignSlider('sizeMinPx', POINT_SIZE.minPx, (v) => `${v.toFixed(1)} px`, (v) => {
-  sizeMinPx = v
+bindDesignSlider('sizeMinPx', POINT_SIZE.floorFactor, (v) => `${v.toFixed(2)}× · ${(v * spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+  sizeFloorFactor = v
   applyPointSize()
 })
-bindDesignSlider('sizeMaxPx', POINT_SIZE.maxPx, (v) => `${v.toFixed(1)} px`, (v) => {
-  sizeMaxPx = v
+bindDesignSlider('sizeMaxPx', POINT_SIZE.ceilFactor, (v) => `${v.toFixed(1)}× · ${(v * spacingPxAtTarget(sseTarget > 0 ? sseTarget : EXPERIENCE_CONFIG.lod.sse) * pointSizeScale).toFixed(1)} px`, (v) => {
+  sizeCeilFactor = v
   applyPointSize()
 })
 
@@ -3655,7 +3688,7 @@ if (showDiagnostics) diagStatsEl.hidden = false
  * expression in point-cloud.ts.
  *
  * Read off the uniforms rather than off config, so the two cannot disagree: the size
- * the shader uses *is* these values. `sizeCoverage` already carries the size slider,
+ * the shader uses *is* these values. `pointSize` already carries the size slider,
  * applied in applyPointSize().
  *
  * Kept in step with createCloudMaterial() by hand. Change one and change the other —
@@ -3669,11 +3702,14 @@ function drawnDiameterCssPx(spacingM: number, viewDepthM: number, thinScale = 1)
   // thinned instance count at the unwidened diameter, so Overdraw reported a saving the
   // widening had already given back: at the shipped preset it claimed a 44% drop in
   // painted area where the true figure is 0%.
-  const spacingPx = spacingM * thinScale * uniforms.sizeCoverage.value * uniforms.sizePxPerMetre.value
+  const deliveredPx = spacingM * thinScale * uniforms.sizePxPerMetre.value
     / Math.max(viewDepthM, 0.001)
+  const shortfall = Math.max(1, deliveredPx / Math.max(uniforms.sizeRequestedPx.value, 0.001))
   return THREE.MathUtils.lerp(
     uniforms.pointSize.value * thinScale,
-    THREE.MathUtils.clamp(spacingPx, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value),
+    THREE.MathUtils.clamp(
+      uniforms.pointSize.value * shortfall, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value,
+    ),
     uniforms.sizeSpacingMix.value,
   )
 }

@@ -33,8 +33,24 @@ export interface CloudUniforms {
    * live tile material. See createCloudMaterial for the expression.
    */
   sizeSpacingMix: any
-  /** Diameter as a multiple of that tile's on-screen spacing. 1 = touching dots. */
-  sizeCoverage: any
+  /**
+   * The on-screen point spacing being asked for, in CSS pixels — the denominator of the
+   * shortfall, and the one place any feature that varies detail across the image has to
+   * register itself. See `requestedPx` in createCloudMaterial.
+   *
+   * `sizeRequestedPx` is the flat part (`sse / geometricErrorScale`); `foveaCore` and
+   * `foveaFactors` bend it by screen position. Half screen heights from the image centre,
+   * x right and y up, the same frame foveation.ts measures tiles in:
+   *   foveaCore    = (core centre y, core half width, core half height, falloff)
+   *   foveaFactors = (factor inside the core, factor at the far corner)
+   * Both factors at 1 makes the whole term inert, which is what an unfoveated frame sets.
+   */
+  sizeRequestedPx: any
+  foveaCore: any
+  foveaFactors: any
+  /** Half the viewport height in CSS pixels — converts a pixel offset from the image
+   *  centre into the half-screen-height unit the fovea is defined in. */
+  sizeHalfHeightPx: any
   sizeMinPx: any
   sizeMaxPx: any
   /**
@@ -188,9 +204,14 @@ export function createUniforms(): CloudUniforms {
     maskSurroundAmount: uniform(EXPERIENCE_CONFIG.design.surroundTint),
     pointSize: uniform(2),
     sizeSpacingMix: uniform(1),
-    sizeCoverage: uniform(EXPERIENCE_CONFIG.lod.pointSize.coverage),
-    sizeMinPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.minPx),
-    sizeMaxPx: uniform(EXPERIENCE_CONFIG.lod.pointSize.maxPx),
+    sizeRequestedPx: uniform(2),
+    foveaCore: uniform(new THREE.Vector4(0, 0.35, 0.35, 1.25)),
+    foveaFactors: uniform(new THREE.Vector2(1, 1)),
+    sizeHalfHeightPx: uniform(360),
+    // Placeholders: applyPointSize resolves both from lod.pointSize.floorFactor /
+    // ceilFactor against the live error target on the first frame and every frame after.
+    sizeMinPx: uniform(1),
+    sizeMaxPx: uniform(16),
     sizePxPerMetre: uniform(1),
     groundPatchAmount: uniform(EXPERIENCE_CONFIG.design.groundPatch.enabled
       ? EXPERIENCE_CONFIG.design.groundPatch.amount : 0),
@@ -736,33 +757,88 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
 
   const thinScale = tileThinScale
   const spacingMetres = tileSpacingMetres
-  const spacingPx = spacingMetres
+  /**
+   * How far apart this point's neighbours actually land on screen, in CSS pixels.
+   *
+   * `spacingMetres` is the effective spacing — the whole drawn stack at this spot, not
+   * the tile's own; see applyEffectiveSpacing. `thinScale` belongs inside it because
+   * thinning genuinely widens the real spacing by dropping points, so it is part of what
+   * was delivered rather than a separate correction on top.
+   */
+  // The point centre, not a quad corner: setupPositionView derives positionView from
+  // positionNode, which is the instanced position below. Floored so a point sitting on
+  // the eye cannot divide by zero.
+  const viewDepth = positionView.z.negate().max(float(0.001))
+  const deliveredPx = spacingMetres
     .mul(thinScale)
-    .mul(u.sizeCoverage)
     .mul(u.sizePxPerMetre)
-    // The point centre, not a quad corner: setupPositionView derives positionView
-    // from positionNode, which is the instanced position below. Floored so a point
-    // sitting on the eye cannot divide by zero.
-    .div(positionView.z.negate().max(float(0.001)))
+    .div(viewDepth)
+  /**
+   * What is being asked for *here*, rather than one number for the frame.
+   *
+   * Foveation does not lower the detail everywhere — it tells the corner of the image to
+   * stop refining sooner, by dividing that tile's error by a factor. Against a flat
+   * denominator the size rule would read a deliberately coarsened periphery as a
+   * shortfall, try to widen those dots by the same factor, and hit the ceiling instead:
+   * fewer points and no extra width, which is a holey edge. Bending the denominator by
+   * the same ramp puts the periphery back at a shortfall of 1 — it was asked for coarser
+   * data and got it, so nothing is short — and anything that still falls short there
+   * widens by exactly the amount it fell short.
+   *
+   * Per point, not per tile. The CPU side applies one factor per tile, which is all a
+   * refine-or-not decision needs, but a per-tile dot size would step at tile rectangles
+   * and draw the ramp as visible boxes.
+   *
+   * Same geometry as foveation.ts `measure`, evaluated at a point instead of a rectangle:
+   * distance from the core rectangle, eased over `falloff`. Equal factors collapse it to
+   * a constant, which is what an unfoveated frame writes.
+   */
+  // Annotated `any` like the rest of this file's node plumbing — the untyped uniforms
+  // otherwise collapse TSL's overloads.
+  const halfHeights: any = u.sizePxPerMetre.div(viewDepth).div(u.sizeHalfHeightPx)
+  const view: any = positionView
+  const foveaX: any = view.x.mul(halfHeights).abs().sub(u.foveaCore.y).max(float(0))
+  const foveaY: any = view.y.mul(halfHeights).sub(u.foveaCore.x).abs().sub(u.foveaCore.z).max(float(0))
+  const foveaGap: any = foveaX.mul(foveaX).add(foveaY.mul(foveaY)).sqrt()
+  const foveaRamp: any = smoothstep(float(0), float(1), foveaGap.div(u.foveaCore.w.max(float(0.001))))
+  const foveaFactor: any = mix(u.foveaFactors.x, u.foveaFactors.y, foveaRamp)
+  const requestedPx: any = u.sizeRequestedPx.mul(foveaFactor).max(float(0.001))
+  /**
+   * The shortfall: how far short of the requested spacing the tree actually came.
+   *
+   * `requestedPx` is the spacing being asked for here, so this is **exactly 1
+   * wherever refinement delivered what was asked** — which is nearly everywhere, because
+   * that is what the target means. The size is then just the base size, identical to the
+   * fixed mode, and even by construction rather than by tuning.
+   *
+   * It rises above 1 only where the tree could not deliver, and those are the three
+   * places worth drawing bigger: a leaf bottomed out at `geometricError: 0` seen closer
+   * than its spacing supports, a tile held coarse by a brake or by foveation, and a tile
+   * thinned away from under itself. Below 1 is clamped off — a tile finer than asked is
+   * drawn at the base size and its dots overlap slightly, which costs a little fill and
+   * never leaves a gap.
+   *
+   * This is what replaces sizing from an absolute projected spacing. The absolute form
+   * had to be tuned against two pixel sliders and still produced a different size per
+   * level; a ratio against the target needs no tuning at all, because both sides are
+   * measured in the same units the renderer already refines by, so whatever the spacing
+   * convention gets wrong cancels wherever the ratio is 1.
+   */
+  const shortfall = deliveredPx.div(requestedPx).max(float(1))
   // Both paths always compiled, so the mode switch is a uniform write rather than a
-  // shader rebuild across every live tile material.
-  // `thinScale` has to widen BOTH branches, not just the spacing one.
+  // shader rebuild across every live tile material. They now share `pointSize` as their
+  // base, so at shortfall 1 the two modes draw the identical frame and the A/B shows only
+  // what the shortfall added.
   //
-  // It used to sit only inside `spacingPx`, and `sizeSpacingMix` is 0 in the fixed-size
-  // mode this runs in by default — so the whole compensation was multiplied away and
-  // thinned points were drawn at the same flat diameter as unthinned ones. Thinning
-  // opened holes with nothing filling them, and the size clamp that appeared to be the
-  // culprit was never consulted at all in that mode.
-  //
-  // The fixed branch is deliberately left unclamped: `sizeMinPx`/`sizeMaxPx` bound the
-  // spacing-derived size, and applying that ceiling here would reintroduce exactly the
-  // limit that made hard thinning lose coverage.
+  // The fixed branch stays unclamped and keeps `thinScale` as a plain multiplier: nothing
+  // there knows about spacing, so the widening has nowhere else to go, and applying the
+  // ceiling would reintroduce the limit that made hard thinning lose coverage.
   //
   // The vignette's keep test rides on the same size: a dissolved point is drawn at zero
   // width, which the rasteriser drops before it can cost a single fragment.
   const sizeNode = mix(
     u.pointSize.mul(thinScale),
-    spacingPx.clamp(u.sizeMinPx, u.sizeMaxPx),
+    u.pointSize.mul(shortfall).clamp(u.sizeMinPx, u.sizeMaxPx),
     u.sizeSpacingMix,
   ).mul(maskDissolveKeep(u))
   // Drives positionLocal, so positionWorld below stays the point centre rather
