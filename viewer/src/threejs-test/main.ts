@@ -2579,6 +2579,8 @@ function cloudOffsetEnu(offset: EnuOffset): THREE.Vector3 {
 
 function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false): void {
   setAimMode(false, false)
+  // Every flight but the entrance is something the visitor asked for.
+  if (!startFromOverview) markMapInteracted()
   cameraFlight.toCloud(duration, startFromOverview)
   // startFromOverview snaps the camera 130 km out in one step, far past any per-frame
   // threshold — rebase now rather than letting the loop catch up.
@@ -2587,6 +2589,7 @@ function flyToCloud(duration: number = EXPERIENCE_CONFIG.flight.manualDurationMs
 
 function flyToPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void {
   setAimMode(false, false)
+  markMapInteracted()
   cameraFlight.toPoint(targetEnu, endDistanceM, durationMs)
   updateOrigin(true)
 }
@@ -2839,6 +2842,97 @@ bindDesignSlider('sphereInnerM', sphereFadeSettings.innerRadiusM, (v) =>
 bindDesignSlider('sphereOpacity', sphereFadeSettings.debugOpacity, asPercent, (v) => {
   sphereFadeSettings.debugOpacity = v
 })
+const sphereFadeToggleEl = $<HTMLButtonElement>('#sphereFadeToggle')
+const syncSphereFadeToggle = () => {
+  const on = sphereFadeSettings.enabled
+  sphereFadeToggleEl.classList.toggle('on', on)
+  sphereFadeToggleEl.setAttribute('aria-pressed', String(on))
+  sphereFadeToggleEl.textContent = on ? '◐ Dome · On' : '✕ Dome · Off'
+}
+sphereFadeToggleEl.addEventListener('click', () => {
+  sphereFadeSettings.enabled = !sphereFadeSettings.enabled
+  syncSphereFadeToggle()
+  // The falloff is compiled into the tile shaders, so the switch is a rebuild across
+  // every live material — the same trade as the round-dot cut, for the same reason: a
+  // term that is off has to be absent from the source, not multiplied by one. The two
+  // gates follow on the next frame through updateStreaming.
+  if (setCloudEffectEnabled('sphereFade', sphereFadeSettings.enabled)) refreshEffectShaders()
+})
+syncSphereFadeToggle()
+// The plateau it leaves is what is seen on the ground, so the readout names it too.
+bindDesignSlider('sphereRampInset', sphereFadeSettings.rampInsetM, (v) => {
+  const inner = Math.min(sphereFadeSettings.innerRadiusM, sphereFadeSettings.outerRadiusM)
+  return `${Math.round(v)} m · whole to ${Math.max(0, Math.round(inner - v))} m`
+}, (v) => { sphereFadeSettings.rampInsetM = v })
+bindDesignSlider('sphereExponent', sphereFadeSettings.exponent, (v) => v.toFixed(1), (v) => {
+  sphereFadeSettings.exponent = v
+})
+const sphereGateReadoutEl = $('#sphereGateReadout')
+
+const sphereFadeCentreRawEnu = new THREE.Vector3()
+/**
+ * Hand the shader the dome. The centre goes through `enuInverseRender` directly — the
+ * shader's own frame — and not through worldToEnu, which subtracts the cloud lift and
+ * would put the melt floor a lift's height under the map. Without a dome the radius is
+ * parked at 1e9, which makes the compiled-in falloff a flat 1.
+ */
+function applySphereFadeUniforms(dome: SphereFade | null): void {
+  if (!dome) { uniforms.sphereFadeRadius.value = 1e9; return }
+  sphereFadeCentreRawEnu.copy(dome.centreWorld).applyMatrix4(enuInverseRender)
+  uniforms.sphereFadeCentre.value.copy(sphereFadeCentreRawEnu)
+  uniforms.sphereFadeRadius.value = dome.innerRadius()
+  uniforms.sphereFadeRampInset.value = Math.max(0, sphereFadeSettings.rampInsetM)
+  uniforms.sphereFadeExponent.value = Math.max(0.01, sphereFadeSettings.exponent)
+  uniforms.sphereFadeUpWorld.value.copy(enuUp)
+}
+
+/**
+ * Whether the visitor has touched the map yet. Until then the dome stays pinned to
+ * where the entrance flight lands — waiting there as the camera arrives, rather than
+ * sliding along the ground under a moving view centre — and the first pointer, wheel,
+ * navigation key or self-started flight releases it to follow the view for good.
+ */
+let mapInteracted = false
+const NAVIGATION_KEY_CODES = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'])
+function onNavigationKeyForDome(event: KeyboardEvent): void {
+  if (!NAVIGATION_KEY_CODES.has(event.code)) return
+  // Space on a focused panel button is that button's click, not a move.
+  const target = event.target
+  if (target instanceof HTMLInputElement || target instanceof HTMLButtonElement
+    || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
+  markMapInteracted()
+}
+function markMapInteracted(): void {
+  if (mapInteracted) return
+  mapInteracted = true
+  renderer.domElement.removeEventListener('pointerdown', markMapInteracted)
+  renderer.domElement.removeEventListener('wheel', markMapInteracted)
+  document.removeEventListener('keydown', onNavigationKeyForDome)
+}
+// The loader overlay covers the canvas until the flight starts, so its Start button
+// cannot count as touching the map.
+renderer.domElement.addEventListener('pointerdown', markMapInteracted, { passive: true })
+renderer.domElement.addEventListener('wheel', markMapInteracted, { passive: true })
+document.addEventListener('keydown', onNavigationKeyForDome)
+
+const domeEyeWorld = new THREE.Vector3()
+const domeLookWorld = new THREE.Vector3()
+/**
+ * Before the first interaction the dome waits where the entrance flight will land: the
+ * point the landed view's centre ray meets the map, computed from the flight's own end
+ * pose. Re-read every frame while the flight is in the air, so a mid-air retarget — the
+ * parcel GeoJSON landing late — moves it once. Once landed it stays pinned there until
+ * the visitor touches the map; after that it follows the live view centre.
+ */
+function updateDomePin(): void {
+  if (!sphereFade) return
+  if (mapInteracted) { sphereFade.unpin(); return }
+  const destination = cameraFlight.destination()
+  if (!destination) return
+  enuToWorld(destination.endEnu, domeEyeWorld)
+  enuToWorld(destination.lookEnu, domeLookWorld)
+  sphereFade.pinAlong(domeEyeWorld, domeLookWorld)
+}
 
 roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
@@ -3669,7 +3763,16 @@ function updateStreaming(now: number): StreamingStats | null {
   stream.setDensityCeiling(densityCeiling)
   applyPointSize()
 
-  stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
+  // The dome takes over the region mask while it stands, so a tile the error target
+  // asks for is only fetched if its box reaches into the outer sphere; the vignette's
+  // sphere stays the fallback, so switching the dome off returns exactly the old rule.
+  // The inner sphere gates the draw inside stream.update(), and the shader gets the
+  // same centre for the per-point falloff.
+  const dome = sphereFade && sphereFadeSettings.enabled && sphereFade.placed() ? sphereFade : null
+  if (dome) stream.setMaskSphere(dome.centreWorld, dome.outerRadius())
+  else stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
+  stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0)
+  applySphereFadeUniforms(dome)
   foveation?.beginFrame()
   stream.update()
   // After the traversal, so the error and the stopped-here flag the inspector paints
@@ -3952,6 +4055,11 @@ function updateHud(stats: StreamingStats | null): void {
       ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
       : fmtInt(drawnPoints)
   setState(visibleEl, thinned ? 'ok' : '')
+  // The dome's two gates, in the panel next to their sliders rather than on the HUD.
+  sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
+    ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
+      + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
+    : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
   const mapVisible = renderOptions.effective().basemapImagery ? globeStats.visible : 0
@@ -4178,7 +4286,8 @@ function loop(now: number): void {
   }
   updateMaskFollow()
   // After the controls have settled the camera and before the point-cloud traversal,
-  // which the gates of phase B will feed from this frame's centre.
+  // which the two gates feed from this frame's centre.
+  updateDomePin()
   sphereFade?.update()
   updateAtmosphere(now)
   const stats = updateStreaming(now)

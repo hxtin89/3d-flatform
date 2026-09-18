@@ -248,8 +248,13 @@ export const EXPERIENCE_CONFIG = {
       enabled: true,
       outerRadiusM: 400,
       innerRadiusM: 250,
+      // How far inside the inner radius the falloff begins, in metres. Inside that
+      // every point is drawn whole; over the last `rampInsetM` metres to the rim the
+      // size and height ramp to zero.
+      rampInsetM: 100,
+      // Shape of that ramp only — 1 linear, above 1 fades early, below 1 holds late.
       exponent: 1,
-      debugOpacity: 0.5,
+      debugOpacity: 0.05,
       showDebug: true,
       // Grazing hits count as misses past this multiple of the camera height — the
       // same constant that bounds the refinement range, so the two agree.

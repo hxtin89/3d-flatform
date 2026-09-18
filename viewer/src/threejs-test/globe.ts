@@ -219,7 +219,7 @@ export function createGlobe(opts: {
       // Rebuilt rather than parameterised, because the effect switches compile their
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
       mat.colorNode = imageryColorNode(uniforms)
-      mat.userData.rebuildColorNode = () => { mat.colorNode = imageryColorNode(uniforms) }
+      mat.userData.rebuildEffectGraph = () => { mat.colorNode = imageryColorNode(uniforms) }
       o.material.dispose()
       o.material = mat
     })

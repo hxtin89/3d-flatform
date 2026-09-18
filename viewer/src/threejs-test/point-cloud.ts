@@ -7,6 +7,7 @@ import {
   Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, renderGroup,
+  pow, clamp, modelWorldMatrix, modelWorldMatrixInverse, transformDirection,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -146,6 +147,20 @@ export interface CloudUniforms {
    */
   debugIsolate: any
   debugIsolateLevel: any
+  /**
+   * The dome — see sphere-fade.ts. `sphereFadeCentre` is the inner sphere's centre in
+   * the shader's raw ENU frame (what `enuInverse` produces — not the lifted frame main.ts
+   * measures in), `sphereFadeRadius` its radius in metres, parked at 1e9 while no centre
+   * exists so the compiled-in term is a flat 1. `sphereFadeUpWorld` is ENU up in render
+   * space, for carrying a point down toward the map inside its own tile frame.
+   */
+  sphereFadeCentre: any
+  sphereFadeRadius: any
+  /** Width of the ramp in metres, measured inward from the radius; inside it the
+   *  factor is a flat 1. */
+  sphereFadeRampInset: any
+  sphereFadeExponent: any
+  sphereFadeUpWorld: any
 }
 
 let cloudShadowTextureNode: any = null
@@ -252,6 +267,11 @@ export function createUniforms(): CloudUniforms {
     debugStrength: uniform(0.85),
     debugIsolate: uniform(1),
     debugIsolateLevel: uniform(0),
+    sphereFadeCentre: uniform(new THREE.Vector3()),
+    sphereFadeRadius: uniform(1e9),
+    sphereFadeRampInset: uniform(EXPERIENCE_CONFIG.lod.sphereFade.rampInsetM),
+    sphereFadeExponent: uniform(EXPERIENCE_CONFIG.lod.sphereFade.exponent),
+    sphereFadeUpWorld: uniform(new THREE.Vector3(0, 0, 1)),
   })
 }
 
@@ -473,9 +493,14 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   const blurred: any = sum.div(float(GROUND_PATCH_TAPS.length))
 
   const threshold: any = u.groundPatchThreshold
-  const coverage: any = smoothstep(
+  let coverage: any = smoothstep(
     threshold.sub(GROUND_PATCH_THRESHOLD_AA), threshold.add(GROUND_PATCH_THRESHOLD_AA), blurred,
   ).mul(u.groundPatchAmount)
+  // The patch follows the dome. Coverage is accumulated from every tile that ever loaded
+  // and never retreats, so without this the flat patch would lie bare between the inner
+  // and outer sphere — and everywhere the camera has been — with no points on it. The
+  // imagery sits on the ground, so its 3D distance to the centre is the horizontal one.
+  if (effects.sphereFade) coverage = coverage.mul(sphereFadeFactor(u, enu))
   // From the raw texture, not the graded result, so neither the global basemap
   // grading nor the daylight ramp leaks into the chosen appearance.
   //
@@ -567,6 +592,13 @@ const effects = {
   roundDots: true,
   /** The level inspector's "show only this layer" cut. Only emitted while it is in use. */
   debugIsolate: false,
+  /**
+   * The dome's per-point size and height falloff, and the matching cut on the ground
+   * patch. A flag rather than a uniform because it sits in the vertex stage of every
+   * point — two matrix multiplies and a pow per instance — and the frame cost here is
+   * per-point work, so off has to mean absent.
+   */
+  sphereFade: EXPERIENCE_CONFIG.lod.sphereFade.enabled as boolean,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -599,6 +631,25 @@ function maskDissolveKeep(u: CloudUniforms): any {
     .and(u.vignetteStrength.greaterThan(0.95))
     .and(seed.greaterThan(keepChance))
   return dissolving.select(float(0), float(1))
+}
+
+/**
+ * The dome's falloff by true 3D distance from the inner sphere's centre, in the shader's
+ * ENU frame: a flat 1 until `rampInset` metres before the rim, then a ramp to 0 at the rim
+ * whose shape the exponent sets — 1 is linear, above 1 fades early, below 1 holds and
+ * drops late. Only the ramp is bent; the plateau inside is untouched. The radius is
+ * parked at 1e9 while no centre exists, which makes this a flat 1, so the compiled-in
+ * effect is inert until the first ground hit. The point size, the point height and the
+ * ground patch all read it.
+ */
+function sphereFadeFactor(u: CloudUniforms, enu: any): any {
+  const radius: any = u.sphereFadeRadius.max(float(0.001))
+  // An inset wider than the radius ramps from the centre; one of zero is a hard cut at
+  // the rim — floored so it is a cut and not a divide by zero.
+  const start: any = radius.sub(u.sphereFadeRampInset).max(float(0))
+  const span: any = radius.sub(start).max(float(0.001))
+  const t: any = clamp(length(enu.sub(u.sphereFadeCentre)).sub(start).div(span), 0, 1)
+  return pow(float(1).sub(t), u.sphereFadeExponent.max(float(0.01)))
 }
 
 /**
@@ -679,12 +730,14 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
 }
 
 /**
- * Rebuild one material's colour graph under the current flags. Materials record how
- * to rebuild themselves at creation, because the graph is built from things only the
- * creator has — the tile's own texture, its colour item size.
+ * Rebuild one material's node graph under the current flags. Materials record how to
+ * rebuild themselves at creation, because the graph is built from things only the
+ * creator has — the tile's own texture, its colour item size. The point cloud swaps all
+ * three of its nodes, because the dome's falloff lives in the size and position graphs,
+ * not the colour one; the basemap only has a colour graph.
  */
 export function rebuildEffectMaterial(material: any): void {
-  const rebuild = material?.userData?.rebuildColorNode
+  const rebuild = material?.userData?.rebuildEffectGraph
   if (typeof rebuild !== 'function') return
   rebuild()
   material.needsUpdate = true
@@ -757,6 +810,29 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
 
   const thinScale = tileThinScale
   const spacingMetres = tileSpacingMetres
+
+  // Drives positionLocal, so positionWorld stays the point centre rather than a quad
+  // corner — the mask, cloud shadow and height grading keep working.
+  const pointLocal: any = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+  let positionNode: any = pointLocal
+  /** 1 outside the dome effect; the falloff factor inside it. Multiplied into the size. */
+  let sphereFade: any = null
+  if (effects.sphereFade) {
+    // The undisplaced point in the shader's ENU frame. positionWorld cannot serve here:
+    // three derives it from positionLocal, which is about to be assigned the displaced
+    // position below, so the world position is taken through the model matrix directly.
+    // float32 is enough — the floating origin keeps world coordinates small.
+    const world0: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
+    const enu0: any = u.enuInverse.mul(vec4(world0, 1)).xyz
+    sphereFade = sphereFadeFactor(u, enu0)
+    // The melt: carry the point down toward the map height at the dome's centre by the
+    // share of its height the fade has taken, so at the rim it sits on the map at zero
+    // size. Expressed in the tile's own frame because positionNode is local; the tile
+    // transform is rigid, so ENU up survives the inverse as a direction.
+    const localUp: any = transformDirection(u.sphereFadeUpWorld, modelWorldMatrixInverse)
+    const drop: any = u.sphereFadeCentre.z.sub(enu0.z).mul(float(1).sub(sphereFade))
+    positionNode = pointLocal.add(localUp.mul(drop))
+  }
   /**
    * How far apart this point's neighbours actually land on screen, in CSS pixels.
    *
@@ -836,14 +912,16 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
   //
   // The vignette's keep test rides on the same size: a dissolved point is drawn at zero
   // width, which the rasteriser drops before it can cost a single fragment.
+  //
+  // The dome's falloff rides on the same size for the same reason: a point at the rim is
+  // drawn at zero width and never costs a fragment. Applied after the clamp, so the
+  // floor cannot hold a fading point open.
+  const keep: any = sphereFade ? maskDissolveKeep(u).mul(sphereFade) : maskDissolveKeep(u)
   const sizeNode = mix(
     u.pointSize.mul(thinScale),
     u.pointSize.mul(shortfall).clamp(u.sizeMinPx, u.sizeMaxPx),
     u.sizeSpacingMix,
-  ).mul(maskDissolveKeep(u))
-  // Drives positionLocal, so positionWorld below stays the point centre rather
-  // than a quad corner — the mask, cloud shadow and height grading keep working.
-  const positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+  ).mul(keep)
 
   const pointColor = colorItemSize === 4
     ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
@@ -1023,7 +1101,12 @@ export function createCloudMaterial(
   material.sizeNode = graph.sizeNode
   material.positionNode = graph.positionNode
   material.colorNode = graph.colorNode
-  material.userData.rebuildColorNode = () => { material.colorNode = cloudGraphFor(u, colorItemSize).colorNode }
+  material.userData.rebuildEffectGraph = () => {
+    const next = cloudGraphFor(u, colorItemSize)
+    material.sizeNode = next.sizeNode
+    material.positionNode = next.positionNode
+    material.colorNode = next.colorNode
+  }
 
   return material
 }

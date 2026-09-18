@@ -59,6 +59,15 @@ export interface StreamingStats {
   terminalLevels: { band: DensityBand; tiles: number; points: number }[]
   /** Terminal tiles that are leaves, i.e. stops the error target can never move. */
   leafTiles: number
+  /**
+   * The dome's two gates this frame — see sphere-fade.ts. `loadGateCut` is how many tile
+   * boxes the region mask rejected during the traversal (the vignette's sphere counts
+   * here too, when that is the mask in force). `renderGateHidden` is how many of the
+   * `renderGateTiles` selected tiles were kept off the render list by the inner sphere.
+   */
+  loadGateCut: number
+  renderGateHidden: number
+  renderGateTiles: number
 }
 
 export interface MemoryBudgetSnapshot {
@@ -114,6 +123,13 @@ export interface StreamingCloud {
   setParseBudget(maxJobs: number): void
   /** Restrict loading/refinement/rendering to a world-space sphere (null = off). */
   setMaskSphere(centerWorld: THREE.Vector3 | null, radius: number): void
+  /**
+   * Draw only the selected tiles whose box reaches into this world-space sphere (null =
+   * draw every selected tile). A tile outside it is left exactly as selected — loaded,
+   * resident, counted — and only its quads are taken off the render list, which is what
+   * stops three uploading or compiling anything for it. Takes effect inside `update()`.
+   */
+  setRenderSphere(centerWorld: THREE.Vector3 | null, radius: number): void
   /** Ground and canopy height under a footprint, from the resident tiles.
    * Null until enough points are loaded there. See sampleGroundZ() below for
    * why this is a statistic and not a raycast. */
@@ -383,9 +399,11 @@ export function createStreamingCloud(opts: {
   if (requestVolumePlugin) tiles.registerPlugin(requestVolumePlugin as any)
 
   // Real mask culling: outside tiles are not fetched, refined or rendered.
+  /** Tile boxes the mask sphere rejected in this frame's traversal, for the readout. */
+  let loadGateCut = 0
   class FrustumMaskRegion extends SphereRegion {
     intersectsTile(boundingVolume: any, _tile?: any, tilesRenderer?: any): boolean {
-      if (!boundingVolume.intersectsSphere(this.sphere)) return false
+      if (!boundingVolume.intersectsSphere(this.sphere)) { loadGateCut++; return false }
       const info = tilesRenderer?.cameraInfo
       if (!info || info.length === 0) return true
       for (let i = 0; i < info.length; i++) {
@@ -482,6 +500,15 @@ export function createStreamingCloud(opts: {
    */
   const pendingReveal: THREE.Mesh[] = []
   let arrivalBudget = 0
+  /**
+   * The dome's inner sphere in the tiles' own frame, and whether it is in force. A tile
+   * whose box misses it stays selected, loaded and resident — only its quads leave the
+   * render list. See applyRenderGate.
+   */
+  const renderSphere = new THREE.Sphere()
+  let renderGateActive = false
+  let renderGateHidden = 0
+  let renderGateTiles = 0
   /** The wanted parse concurrency, kept separately so leaf loading can borrow the queue and
    *  hand it back without clobbering the setting. */
   let parseBudget = limits.maxParses
@@ -828,6 +855,9 @@ export function createStreamingCloud(opts: {
       quads.push(mesh)
       if (arrivalBudget > 0) {
         mesh.visible = false
+        // Read by the render gate, which otherwise could not tell a held arrival from a
+        // tile it hid itself.
+        mesh.userData.pendingReveal = true
         pendingReveal.push(mesh)
       }
       const debugTile = (mesh.material as any)?.userData?.debugTile
@@ -885,12 +915,45 @@ export function createStreamingCloud(opts: {
 
   scene.add(tiles.group)
 
+  /**
+   * Take the selected tiles outside the inner sphere off the render list, and put the
+   * ones inside back on it.
+   *
+   * Runs every frame in both states, not only while the gate is in force: a tile hidden
+   * here can leave the frustum before the gate is switched off, and it comes back with
+   * its quads still hidden — the flag lives on the mesh, not on the traversal. Walking
+   * the selected set each frame heals that for the price of a hundred visibility reads.
+   *
+   * Invisible quads are the whole mechanism. `_projectObject` returns before an invisible
+   * mesh reaches the render list, so three neither uploads its attributes nor builds its
+   * pipeline; and the tile itself is untouched — still in `visibleTiles`, so the unload
+   * plugin never fires and the cache keeps it, which is what "hidden but loaded" means.
+   */
+  function applyRenderGate(): void {
+    renderGateHidden = 0
+    renderGateTiles = 0
+    for (const tile of tiles.visibleTiles) {
+      const stats = tileStats.get(tile)
+      if (!stats) continue
+      renderGateTiles++
+      const inside = !renderGateActive
+        || Boolean((tile as any)?.engineData?.boundingVolume?.intersectsSphere(renderSphere))
+      if (!inside) renderGateHidden++
+      for (const mesh of stats.quads) {
+        // An arrival still waiting its turn stays hidden whatever the gate says.
+        const show = inside && mesh.userData.pendingReveal !== true
+        if (mesh.visible !== show) mesh.visible = show
+      }
+    }
+  }
+
   return {
     tiles,
     group: tiles.group,
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
+      loadGateCut = 0
       tiles.update()
       // Released after the traversal, so a tile that became invisible again while it was
       // waiting is simply dropped from the queue rather than shown for one frame.
@@ -898,6 +961,7 @@ export function createStreamingCloud(opts: {
         let released = 0
         while (released < arrivalBudget && pendingReveal.length > 0) {
           const mesh = pendingReveal.shift()!
+          mesh.userData.pendingReveal = false
           // Still parented means the tile is still alive; a disposed tile's mesh has been
           // detached and there is nothing to show.
           if (!mesh.parent) continue
@@ -905,13 +969,19 @@ export function createStreamingCloud(opts: {
           released++
         }
       }
+      // After the release, so a tile released this frame is gated in this frame too.
+      applyRenderGate()
     },
     setArrivalBudget(perFrame: number) {
       arrivalBudget = Math.max(0, Math.floor(perFrame))
       if (arrivalBudget === 0) {
         // Off has to mean *absent*, not "queue frozen": anything already waiting is shown
-        // at once, so switching it off cannot leave holes on screen.
-        for (const mesh of pendingReveal) mesh.visible = true
+        // at once, so switching it off cannot leave holes on screen. The render gate
+        // re-judges these in the next update(), before anything is drawn.
+        for (const mesh of pendingReveal) {
+          mesh.userData.pendingReveal = false
+          mesh.visible = true
+        }
         pendingReveal.length = 0
       }
     },
@@ -1059,6 +1129,16 @@ export function createStreamingCloud(opts: {
       tiles.group.worldToLocal(maskRegion.sphere.center)
       maskRegion.sphere.radius = radius
     },
+    setRenderSphere(centerWorld, radius) {
+      if (!centerWorld || !(radius > 0)) { renderGateActive = false; return }
+      renderGateActive = true
+      // Same frame as the mask sphere: the bounding volumes live in the tiles' own root
+      // frame, which is the group's local space — lift included.
+      tiles.group.updateWorldMatrix(true, false)
+      renderSphere.center.copy(centerWorld)
+      tiles.group.worldToLocal(renderSphere.center)
+      renderSphere.radius = radius
+    },
     sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
       // Deliberately not a raycast. The load-model handler above parks every
       // carrier Points at drawRange 0 and hangs instanced quads underneath, so
@@ -1175,6 +1255,9 @@ export function createStreamingCloud(opts: {
         cacheBytesFloor: tiles.lruCache.minBytesSize,
         cacheTilesCeiling: tiles.lruCache.maxSize,
         cacheBytesCeiling: tiles.lruCache.maxBytesSize,
+        loadGateCut,
+        renderGateHidden,
+        renderGateTiles,
       }
     },
     applyEffectiveSpacing(rampMs) {
@@ -1364,7 +1447,8 @@ export function createStreamingCloud(opts: {
             // Forget the ramp state too, or switching thinning back on would fade down
             // from wherever it happened to be rather than from the full tile.
             if ((mesh.geometry as any).userData) (mesh.geometry as any).userData.keepNow = undefined
-            drawn += full
+            // Loaded but off the render list by the dome's gate: not drawn, not counted.
+            if (mesh.visible) drawn += full
           }
         }
         return { drawn, loaded }
@@ -1404,6 +1488,9 @@ export function createStreamingCloud(opts: {
           const full: number = anyGeometry.userData.fullCount
           const spacingM = (mesh.material as any)?.userData?.pointSpacingM
           const scale = (mesh.material as any)?.userData?.thinScale
+          // Off the render list by the dome's gate. Its keep fraction is left where it
+          // was — nothing is drawn, so nothing needs deciding — and it is not counted.
+          if (!mesh.visible) continue
           if (!full || !(spacingM > 0) || !scale) { drawn += geometry.instanceCount; continue }
           // A tile loaded while thinning was off skipped its shuffle, so its points are still
           // in the tile's own spatially clustered order and a prefix of them is one lobe of
@@ -1503,6 +1590,8 @@ export function createStreamingCloud(opts: {
         const stats = tileStats.get(tile)
         if (!stats) continue
         for (const mesh of stats.quads) {
+          // Off the render list by the dome's gate: shades nothing, so it is not billed.
+          if (!mesh.visible) continue
           const instances = (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
           if (!instances) continue
           // The effective spacing, not the tile's own: that is what the uniform holds and

@@ -53,6 +53,12 @@ export interface CameraFlightController {
    * is no camera jump. */
   retargetCloud(target: THREE.Vector3): void
   toPoint(targetEnu: THREE.Vector3, endDistanceM: number, durationMs: number): void
+  /**
+   * The flight in the air: where it ends and what it looks at, in ENU. Null while
+   * nothing is flying. Live references — read, do not write. The dome pins itself to
+   * the landed view's ground point during the entrance flight, see main.ts.
+   */
+  destination(): { endEnu: THREE.Vector3; lookEnu: THREE.Vector3 } | null
   update(now: number): void
 }
 
@@ -108,6 +114,10 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
   return {
     get active() {
       return flight !== null
+    },
+
+    destination() {
+      return flight ? { endEnu: flight.end, lookEnu: flight.lookTarget } : null
     },
 
     toCloud(durationMs = EXPERIENCE_CONFIG.flight.manualDurationMs, startFromOverview = false) {

@@ -26,8 +26,14 @@ export interface SphereFadeSettings {
    *  every point inside fades to nothing at this distance from the centre. Clamped to
    *  the outer radius, so the inner sphere can never poke out of the outer one. */
   innerRadiusM: number
-  /** Exponent on the phase-B falloff: 1 linear, above 1 fades early, below 1 holds a
-   *  plateau and drops at the rim. Unused until then. */
+  /**
+   * How far inside the inner radius the falloff begins, in metres — the width of the
+   * ramp. Everything nearer the centre than `innerRadius - rampInsetM` is drawn whole;
+   * an inset at or above the radius ramps from the very centre.
+   */
+  rampInsetM: number
+  /** Exponent on the ramp over those last metres: 1 linear, above 1 fades early, below
+   *  1 holds and drops late. The plateau inside is not affected. */
   exponent: number
   /** Opacity of the two debug shells, 0..1. */
   debugOpacity: number
@@ -48,6 +54,9 @@ export interface SphereFadeStats {
   placed: boolean
   /** The ray missed or grazed this frame, so the centre is riding the camera. */
   frozen: boolean
+  /** Held at a point given from outside — the entrance flight's landing — rather than
+   *  following the view centre. */
+  pinned: boolean
   /** Camera to the view-centre hit, metres. NaN while frozen. */
   hitRangeM: number
   /** Camera to the sphere centre, metres. */
@@ -67,6 +76,15 @@ export interface SphereFade {
   outerRadius(): number
   /** The inner radius as applied — never above the outer. */
   innerRadius(): number
+  /**
+   * Hold the centre where the ray from `eyeWorld` through `lookWorld` meets the map,
+   * instead of under the live view centre — the landed pose of a flight still in the
+   * air, so the dome is already waiting there as the camera arrives. Stays in force,
+   * through rebases and after the flight has landed, until `unpin()`.
+   */
+  pinAlong(eyeWorld: THREE.Vector3, lookWorld: THREE.Vector3): void
+  /** Back to following the view centre. A no-op when not pinned. */
+  unpin(): void
   /** Re-place the centre and move the shells. Call once per frame, after the controls
    *  have moved the camera and before the point-cloud traversal. */
   update(): void
@@ -112,6 +130,13 @@ export function createSphereFade(opts: {
   let placed = false
   let frozen = false
   let hitRange = NaN
+  /**
+   * Pinned: the centre is kept in ENU (`centreEnu`) and re-expressed in render space
+   * every frame, because the entrance flight it exists for crosses 130 km and rebases
+   * the origin many times on the way — a render-space copy would be left behind.
+   */
+  let pinned = false
+  const pinRay = new THREE.Ray()
 
   // One unit sphere, scaled per shell per frame. Double-sided because the camera stands
   // inside the outer sphere most of the time — at 80 m over the canopy the ground under
@@ -184,9 +209,35 @@ export function createSphereFade(opts: {
     placed: () => placed,
     outerRadius,
     innerRadius,
+    pinAlong(eyeWorld, lookWorld) {
+      pinRay.origin.copy(eyeWorld)
+      pinRay.direction.copy(lookWorld).sub(eyeWorld).normalize()
+      getOrigin(origin)
+      pinRay.origin.add(origin)
+      const hit = ellipsoid.intersectRay(pinRay, hitEcef)
+      // A look point on the survey always hits the map behind it. Should it not, the
+      // look point itself is the best stand-in — it is on the parcel, a few metres up.
+      if (hit) centreWorld.copy(hitEcef.sub(origin))
+      else centreWorld.copy(lookWorld)
+      worldToEnu(centreWorld, centreEnu)
+      groundZ = centreEnu.z
+      placed = true
+      pinned = true
+      frozen = false
+      hitRange = NaN
+    },
+    unpin() {
+      if (!pinned) return
+      pinned = false
+      // The pinned centre becomes the last hit, so a miss on the very next frame holds
+      // it in place rather than reaching back to an offset from before the pin.
+      worldToEnu(camera.position, cameraEnu)
+      frozenOffsetEnu.set(centreEnu.x - cameraEnu.x, centreEnu.y - cameraEnu.y)
+    },
     update() {
       if (!settings.enabled) { hideShells(); return }
-      placeCentre()
+      if (pinned) enuToWorld(centreEnu, centreWorld)
+      else placeCentre()
       if (!placed || !settings.showDebug) { hideShells(); return }
       const outer = outerRadius()
       const inner = innerRadius()
@@ -203,6 +254,7 @@ export function createSphereFade(opts: {
       return {
         placed,
         frozen,
+        pinned,
         hitRangeM: hitRange,
         cameraDistanceM: placed ? camera.position.distanceTo(centreWorld) : NaN,
         centreEnu: { x: centreEnu.x, y: centreEnu.y, z: centreEnu.z },
