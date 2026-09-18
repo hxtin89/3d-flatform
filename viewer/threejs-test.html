@@ -872,13 +872,18 @@
           <span class="weather-note">How far inside the inner radius the falloff starts, in metres. Nearer the centre than that every point is drawn whole; over these last metres to the rim the size and the height ramp down to nothing. Wider than the radius ramps from the very centre</span>
         </div>
         <div class="row">
-          <label class="h" for="sphereExponent">Falloff exponent · <span class="val" id="sphereExponentVal">—</span></label>
-          <input type="range" id="sphereExponent" min="0.2" max="5" step="0.1" />
-          <span class="weather-note">Shape of the ramp beyond the plateau, for size and height alike. 1 is a straight line; above 1 the fade starts early and lingers at the rim; below 1 it holds and everything drops in the last stretch. The plateau itself is untouched</span>
+          <label class="h" for="sphereFadeIn">Fade-in exponent · <span class="val" id="sphereFadeInVal">—</span></label>
+          <input type="range" id="sphereFadeIn" min="0.2" max="5" step="0.1" />
+          <span class="weather-note">How the ramp leaves the plateau, for size and height alike. Above 1 the points hold full size a while longer before they start to drop; below 1 they drop the moment the ramp begins. 1 with a fade-out of 1 is a straight line</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereFadeOut">Fade-out exponent · <span class="val" id="sphereFadeOutVal">—</span></label>
+          <input type="range" id="sphereFadeOut" min="0.2" max="5" step="0.1" />
+          <span class="weather-note">How the ramp lands on nothing at the rim. Above 1 the points linger small and low before they vanish; below 1 they vanish abruptly. Each end is shaped by its own slider only</span>
         </div>
         <div class="row">
           <label class="h" for="sphereDebugToggle">Debug shells</label>
-          <button class="act on" id="sphereDebugToggle" type="button" aria-pressed="true" aria-describedby="sphereDebugNote">◯ Shells · On</button>
+          <button class="act" id="sphereDebugToggle" type="button" aria-pressed="false" aria-describedby="sphereDebugNote">◯ Shells · Off</button>
           <span class="weather-note" id="sphereDebugNote">Two translucent spheres standing on the basemap under the centre of the view: blue is the outer one, amber the inner. They keep their size in metres at every zoom, so they shrink on screen as the camera climbs. When the view centre misses the ground they hold their last offset from the camera and travel with it</span>
         </div>
         <div class="row">

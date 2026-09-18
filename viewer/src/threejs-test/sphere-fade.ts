@@ -32,9 +32,15 @@ export interface SphereFadeSettings {
    * an inset at or above the radius ramps from the very centre.
    */
   rampInsetM: number
-  /** Exponent on the ramp over those last metres: 1 linear, above 1 fades early, below
-   *  1 holds and drops late. The plateau inside is not affected. */
-  exponent: number
+  /**
+   * The ramp's shape, one exponent per end — see sphereFadeFactor in point-cloud.ts.
+   * `fadeIn` is how it leaves the plateau: above 1 holds full size a while longer before
+   * dropping, below 1 drops at once. `fadeOut` is how it lands on zero at the rim: above
+   * 1 lingers small before vanishing, below 1 vanishes abruptly. 1 and 1 is a straight
+   * line. The plateau inside is not affected by either.
+   */
+  fadeIn: number
+  fadeOut: number
   /** Opacity of the two debug shells, 0..1. */
   debugOpacity: number
   /** Whether the shells are drawn at all. */

@@ -159,7 +159,9 @@ export interface CloudUniforms {
   /** Width of the ramp in metres, measured inward from the radius; inside it the
    *  factor is a flat 1. */
   sphereFadeRampInset: any
-  sphereFadeExponent: any
+  /** The ramp's two exponents: how it leaves the plateau, how it lands at the rim. */
+  sphereFadeIn: any
+  sphereFadeOut: any
   sphereFadeUpWorld: any
 }
 
@@ -270,7 +272,8 @@ export function createUniforms(): CloudUniforms {
     sphereFadeCentre: uniform(new THREE.Vector3()),
     sphereFadeRadius: uniform(1e9),
     sphereFadeRampInset: uniform(EXPERIENCE_CONFIG.lod.sphereFade.rampInsetM),
-    sphereFadeExponent: uniform(EXPERIENCE_CONFIG.lod.sphereFade.exponent),
+    sphereFadeIn: uniform(EXPERIENCE_CONFIG.lod.sphereFade.fadeIn),
+    sphereFadeOut: uniform(EXPERIENCE_CONFIG.lod.sphereFade.fadeOut),
     sphereFadeUpWorld: uniform(new THREE.Vector3(0, 0, 1)),
   })
 }
@@ -635,12 +638,18 @@ function maskDissolveKeep(u: CloudUniforms): any {
 
 /**
  * The dome's falloff by true 3D distance from the inner sphere's centre, in the shader's
- * ENU frame: a flat 1 until `rampInset` metres before the rim, then a ramp to 0 at the rim
- * whose shape the exponent sets — 1 is linear, above 1 fades early, below 1 holds and
- * drops late. Only the ramp is bent; the plateau inside is untouched. The radius is
- * parked at 1e9 while no centre exists, which makes this a flat 1, so the compiled-in
- * effect is inert until the first ground hit. The point size, the point height and the
- * ground patch all read it.
+ * ENU frame: a flat 1 until `rampInset` metres before the rim, then a ramp to 0 at the rim.
+ * Only the ramp is bent; the plateau inside is untouched. The radius is parked at 1e9
+ * while no centre exists, which makes this a flat 1, so the compiled-in effect is inert
+ * until the first ground hit. The point size, the point height and the ground patch all
+ * read it.
+ *
+ * The ramp is `1 - t^a / (t^a + (1-t)^b)` over the ramp fraction `t`, a curve with one
+ * exponent per end: near the plateau it behaves as `1 - t^a`, so `a` (fade in) alone
+ * decides how long full size is held before the drop; near the rim it behaves as
+ * `(1-t)^b`, so `b` (fade out) alone decides how long the points linger small before
+ * they vanish. `a = b = 1` is exactly the straight line, and it is monotonic for any
+ * positive pair, so the two sliders cannot produce a bump.
  */
 function sphereFadeFactor(u: CloudUniforms, enu: any): any {
   const radius: any = u.sphereFadeRadius.max(float(0.001))
@@ -649,7 +658,11 @@ function sphereFadeFactor(u: CloudUniforms, enu: any): any {
   const start: any = radius.sub(u.sphereFadeRampInset).max(float(0))
   const span: any = radius.sub(start).max(float(0.001))
   const t: any = clamp(length(enu.sub(u.sphereFadeCentre)).sub(start).div(span), 0, 1)
-  return pow(float(1).sub(t), u.sphereFadeExponent.max(float(0.01)))
+  const rise: any = pow(t, u.sphereFadeIn.max(float(0.01)))
+  const fall: any = pow(float(1).sub(t), u.sphereFadeOut.max(float(0.01)))
+  // The denominator is 1 at both ends and never below the smaller of the two terms in
+  // between; the floor only guards the exact corner where both would round to zero.
+  return float(1).sub(rise.div(rise.add(fall).max(float(1e-6))))
 }
 
 /**

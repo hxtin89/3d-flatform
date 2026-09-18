@@ -246,16 +246,21 @@ export const EXPERIENCE_CONFIG = {
      */
     sphereFade: {
       enabled: true,
-      outerRadiusM: 400,
-      innerRadiusM: 250,
+      // Judged by eye on 2026-09-18 at the landing view.
+      outerRadiusM: 1000,
+      innerRadiusM: 450,
       // How far inside the inner radius the falloff begins, in metres. Inside that
       // every point is drawn whole; over the last `rampInsetM` metres to the rim the
       // size and height ramp to zero.
-      rampInsetM: 100,
-      // Shape of that ramp only — 1 linear, above 1 fades early, below 1 holds late.
-      exponent: 1,
+      rampInsetM: 140,
+      // Shape of that ramp only, one exponent per end: `fadeIn` is how it leaves the
+      // plateau (above 1 holds full size a while longer before dropping), `fadeOut`
+      // how it lands on zero at the rim (above 1 lingers small before vanishing).
+      // 1 and 1 is a straight line.
+      fadeIn: 1,
+      fadeOut: 1.5,
       debugOpacity: 0.05,
-      showDebug: true,
+      showDebug: false,
       // Grazing hits count as misses past this multiple of the camera height — the
       // same constant that bounds the refinement range, so the two agree.
       maxRangeFactor: 6,

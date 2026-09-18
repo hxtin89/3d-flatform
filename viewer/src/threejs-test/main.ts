@@ -2864,8 +2864,11 @@ bindDesignSlider('sphereRampInset', sphereFadeSettings.rampInsetM, (v) => {
   const inner = Math.min(sphereFadeSettings.innerRadiusM, sphereFadeSettings.outerRadiusM)
   return `${Math.round(v)} m · whole to ${Math.max(0, Math.round(inner - v))} m`
 }, (v) => { sphereFadeSettings.rampInsetM = v })
-bindDesignSlider('sphereExponent', sphereFadeSettings.exponent, (v) => v.toFixed(1), (v) => {
-  sphereFadeSettings.exponent = v
+bindDesignSlider('sphereFadeIn', sphereFadeSettings.fadeIn, (v) => v.toFixed(1), (v) => {
+  sphereFadeSettings.fadeIn = v
+})
+bindDesignSlider('sphereFadeOut', sphereFadeSettings.fadeOut, (v) => v.toFixed(1), (v) => {
+  sphereFadeSettings.fadeOut = v
 })
 const sphereGateReadoutEl = $('#sphereGateReadout')
 
@@ -2882,7 +2885,8 @@ function applySphereFadeUniforms(dome: SphereFade | null): void {
   uniforms.sphereFadeCentre.value.copy(sphereFadeCentreRawEnu)
   uniforms.sphereFadeRadius.value = dome.innerRadius()
   uniforms.sphereFadeRampInset.value = Math.max(0, sphereFadeSettings.rampInsetM)
-  uniforms.sphereFadeExponent.value = Math.max(0.01, sphereFadeSettings.exponent)
+  uniforms.sphereFadeIn.value = Math.max(0.01, sphereFadeSettings.fadeIn)
+  uniforms.sphereFadeOut.value = Math.max(0.01, sphereFadeSettings.fadeOut)
   uniforms.sphereFadeUpWorld.value.copy(enuUp)
 }
 
