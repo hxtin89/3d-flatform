@@ -236,6 +236,25 @@ export const EXPERIENCE_CONFIG = {
        */
       geometricErrorScale: 2,
     },
+    /**
+     * The dome: two spheres standing on the basemap under the view centre, in metres.
+     * The centre is the view-centre ray's hit on the ellipsoid, so it rides the ground
+     * with the camera and keeps its size in metres at every zoom. The outer sphere is
+     * to gate loading, the inner one rendering and a per-point size/height falloff
+     * measured as true 3D distance from the centre; tile boxes are tested at exactly
+     * these radii. See sphere-fade.ts. Radii, opacity and exponent are panel sliders.
+     */
+    sphereFade: {
+      enabled: true,
+      outerRadiusM: 400,
+      innerRadiusM: 250,
+      exponent: 1,
+      debugOpacity: 0.5,
+      showDebug: true,
+      // Grazing hits count as misses past this multiple of the camera height — the
+      // same constant that bounds the refinement range, so the two agree.
+      maxRangeFactor: 6,
+    },
     // Base size when the per-tile spacing above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).
     fixedPointSizePx: 2.5,

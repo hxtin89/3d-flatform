@@ -10,6 +10,7 @@ import {
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
+import { createSphereFade, type SphereFade, type SphereFadeSettings } from './sphere-fade'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import { createViewDepthCorrection, type ViewDepthCorrection } from './view-depth'
 import {
@@ -625,6 +626,9 @@ let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
 let foveation: Foveation | null = null
+/** Same arrangement as foveation: the panel writes these before the globe exists. */
+const sphereFadeSettings: SphereFadeSettings = { ...EXPERIENCE_CONFIG.lod.sphereFade }
+let sphereFade: SphereFade | null = null
 let viewAngle: ViewAngleCorrection | null = null
 let viewDepth: ViewDepthCorrection | null = null
 let markerLayer: MarkerLayer | null = null
@@ -2806,6 +2810,36 @@ bindDesignSlider('thinTarget', thinTargetScale, (v) => `${v.toFixed(1)}× spacin
 bindDesignSlider('thinMaxWiden', thinMaxWiden, (v) => `${v.toFixed(1)}×`, (v) => { thinMaxWiden = v })
 bindDesignSlider('ancestorKeep', ancestorKeep, asPercent, (v) => { ancestorKeep = v })
 
+// Sphere fade — the dome under the view centre. Phase A wires the placement and the
+// two debug shells only; the gates and the falloff follow once the shells are judged.
+// Every control writes the shared settings object, which createSphereFade adopts.
+const sphereDebugToggleEl = $<HTMLButtonElement>('#sphereDebugToggle')
+const syncSphereDebugToggle = () => {
+  const on = sphereFadeSettings.showDebug
+  sphereDebugToggleEl.classList.toggle('on', on)
+  sphereDebugToggleEl.setAttribute('aria-pressed', String(on))
+  sphereDebugToggleEl.textContent = on ? '◯ Shells · On' : '◯ Shells · Off'
+}
+sphereDebugToggleEl.addEventListener('click', () => {
+  sphereFadeSettings.showDebug = !sphereFadeSettings.showDebug
+  syncSphereDebugToggle()
+})
+syncSphereDebugToggle()
+bindDesignSlider('sphereOuterM', sphereFadeSettings.outerRadiusM, asMetres, (v) => {
+  sphereFadeSettings.outerRadiusM = v
+})
+// Applied as min(inner, outer) — see SphereFade.innerRadius — so the readout says so
+// when the slider is past the outer one rather than pretending the value is in use.
+bindDesignSlider('sphereInnerM', sphereFadeSettings.innerRadiusM, (v) =>
+  v > sphereFadeSettings.outerRadiusM
+    ? `${Math.round(v)} m · clamped to outer`
+    : asMetres(v), (v) => {
+  sphereFadeSettings.innerRadiusM = v
+})
+bindDesignSlider('sphereOpacity', sphereFadeSettings.debugOpacity, asPercent, (v) => {
+  sphereFadeSettings.debugOpacity = v
+})
+
 roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
   if (setCloudEffectEnabled('roundDots', roundDots)) stream?.refreshEffects()
@@ -4143,6 +4177,9 @@ function loop(now: number): void {
     updateHeightRuler()
   }
   updateMaskFollow()
+  // After the controls have settled the camera and before the point-cloud traversal,
+  // which the gates of phase B will feed from this frame's centre.
+  sphereFade?.update()
   updateAtmosphere(now)
   const stats = updateStreaming(now)
   const daylightState = environmentLayer?.update(
@@ -4307,6 +4344,17 @@ async function main(): Promise<void> {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
     globe.controls.minDistance = 1
   }
+  // Needs the globe's ellipsoid for the view-centre hit and the ENU frame, which is
+  // ready by now. The shells hang under `scene` because the centre is render space and
+  // is rebuilt from the camera every frame — no rebase bookkeeping.
+  sphereFade = createSphereFade({
+    camera,
+    ellipsoid: globe.ellipsoid,
+    scene,
+    worldToEnu,
+    enuToWorld,
+    settings: sphereFadeSettings,
+  })
   keyboardNavigation = createKeyboardNavigation({
     camera,
     controls: globe.controls,
@@ -4397,6 +4445,9 @@ async function main(): Promise<void> {
     get range() { return rangeDebug },
     /** Off-axis error correction — flip `.enabled` to A/B it against a still view. */
     get viewDepth() { return viewDepth },
+    /** The dome under the view centre — `.stats()` for where it sits and whether it is
+     *  frozen, `.settings` to drive it from the console. */
+    get sphereFade() { return sphereFade },
     get controls() { return globe?.controls ?? null },
     /** Why the last press did or did not lift the pivot onto the canopy. */
     get pivotDebug() { return pivotDebug },

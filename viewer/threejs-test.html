@@ -859,6 +859,29 @@
         </div>
       </details>
       <details class="design-section" open>
+        <summary>Sphere fade (test)</summary>
+        <div class="row">
+          <label class="h" for="sphereDebugToggle">Debug shells</label>
+          <button class="act on" id="sphereDebugToggle" type="button" aria-pressed="true" aria-describedby="sphereDebugNote">◯ Shells · On</button>
+          <span class="weather-note" id="sphereDebugNote">Two translucent spheres standing on the basemap under the centre of the view: blue is the outer one, amber the inner. They keep their size in metres at every zoom, so they shrink on screen as the camera climbs. When the view centre misses the ground they hold their last offset from the camera and travel with it</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereOuterM">Outer radius · <span class="val" id="sphereOuterMVal">—</span></label>
+          <input type="range" id="sphereOuterM" min="50" max="2000" step="10" />
+          <span class="weather-note">Will gate loading: a tile the error target asks for is only fetched if its box reaches into this sphere</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereInnerM">Inner radius · <span class="val" id="sphereInnerMVal">—</span></label>
+          <input type="range" id="sphereInnerM" min="25" max="2000" step="5" />
+          <span class="weather-note">Will gate drawing and set the falloff: points shrink and sink to the map from the centre out and vanish at this distance. Never larger than the outer radius</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereOpacity">Shell opacity · <span class="val" id="sphereOpacityVal">—</span></label>
+          <input type="range" id="sphereOpacity" min="0" max="1" step="0.05" />
+          <span class="weather-note">How strongly the shells tint what is behind them. They never write depth, so the scene stays readable through them</span>
+        </div>
+      </details>
+      <details class="design-section" open>
         <summary>Distance thinning (test)</summary>
         <div class="row">
           <label class="h" for="thinToggle">Thinning</label>
