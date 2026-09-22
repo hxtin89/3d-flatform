@@ -13,6 +13,8 @@ import { setMaskMode, setPointSizeScale } from '../state/actions'
 import { setCompareMode, setOption } from '../state/render-options-bridge'
 import { setRainCycleEnabled } from '../scene/Rain'
 import type { WorldDatasetId } from '../world-datasets'
+import { setWildlifeEnabled, useWildlifeStore } from '../wildlife-store'
+import { supportsWildlifeDataset } from '../wildlife-dataset'
 
 const fmtInt = (value: number) => Math.round(value).toLocaleString('en-US')
 const STYLES: DonationShapeStyle[] = ['column', 'xray', 'canopy', 'wall']
@@ -73,10 +75,12 @@ export function SettingsPanel() {
   const rainVisualActive = useUiStore((s) => s.rainVisualActive)
   const cloudState = useUiStore((s) => s.cloudState)
   const compareMode = useUiStore((s) => s.compareMode)
+  const wildlifeEnabled = useWildlifeStore((s) => s.enabled)
   const requested = useUiStore((s) => s.requested)
   const selectedRuntime = datasets[selectedDatasetId]
   const activeRuntime = datasets[activeDatasetId]
   const donationControlsEnabled = Boolean(activeRuntime?.definition.hasDonationShape)
+  const wildlifeSupported = supportsWildlifeDataset(activeRuntime?.definition)
 
   useEffect(() => { setSelectedDatasetId(activeDatasetId) }, [activeDatasetId])
 
@@ -212,6 +216,13 @@ export function SettingsPanel() {
         <span className="weather-note" id="compareReloadNote">Reloads with ?compare=1: no device benchmark, no startup resolution cap — the full, fair comparison</span>
       </div>
       <div id="compareRows">
+        {wildlifeSupported && <div className="row opt-row">
+          <label className="h" htmlFor="wildlifeFeaturesToggle">Wildlife features</label>
+          <button type="button" className={`act ${wildlifeEnabled ? 'on' : ''}`} id="wildlifeFeaturesToggle" aria-pressed={wildlifeEnabled} onClick={() => setWildlifeEnabled(!wildlifeEnabled)}>
+            🦜 Wildlife · {wildlifeEnabled ? 'On' : 'Off'}
+          </button>
+          <span className="weather-note">Pantiacolla mock features fetched from the current camera view</span>
+        </div>}
         {RENDER_OPTION_ROWS.map((rowDef) => {
           const on = requested[rowDef.key]
           return (

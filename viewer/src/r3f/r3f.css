@@ -123,6 +123,62 @@ body.mask-vignette #vignette { display: block; }
 
 /* DOM labels projected from real Three.js markers. */
 #markerOverlay { position: fixed; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
+.wildlife-overlay { position: absolute; inset: 0; pointer-events: none; }
+.wildlife-marker-label { --wildlife-accent: var(--lime); display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px;
+                          color: #f7f5ed; background: rgba(0, 37, 29, .86); border: 2px solid var(--wildlife-accent);
+                          border-radius: 999px; box-shadow: 0 8px 26px rgba(0,15,10,.28); cursor: pointer;
+                          pointer-events: auto; font: 800 8px/1 ui-monospace, SFMono-Regular, monospace;
+                          letter-spacing: .06em; backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+.wildlife-marker-label:hover, .wildlife-marker-label.is-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--wildlife-accent) 34%, transparent), 0 8px 26px rgba(0,15,10,.28); }
+.wildlife-marker-label:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.wildlife-marker-icon { display: grid; place-items: center; width: 22px; height: 22px; overflow: hidden; border-radius: 50%; color: #002d22; background: var(--wildlife-accent); font-size: 13px; }
+.wildlife-marker-icon img { width: 100%; height: 100%; object-fit: cover; }
+.wildlife-marker-icon.is-vector { border-radius: 0; background: var(--wildlife-accent); -webkit-mask: var(--wildlife-icon-url) center / contain no-repeat; mask: var(--wildlife-icon-url) center / contain no-repeat; }
+.wildlife-cluster { --wildlife-accent: #d9f99d; position: relative; width: 60px; height: 60px; padding: 3px; justify-content: center; }
+.wildlife-cluster .wildlife-marker-icon { width: 50px; height: 50px; }
+.wildlife-cluster .wildlife-marker-text, .wildlife-animal .wildlife-marker-text { display: none; }
+.wildlife-marker-count { position: absolute; right: -5px; bottom: -5px; min-width: 22px; padding: 4px; border: 2px solid #002d22; border-radius: 999px; color: #002d22; background: var(--wildlife-accent); font-size: 9px; line-height: 1; }
+.wildlife-animal { --wildlife-accent: #ffc76e; width: 52px; height: 52px; padding: 3px; justify-content: center; }
+.wildlife-animal .wildlife-marker-icon { width: 42px; height: 42px; }
+.wildlife-camera { --wildlife-accent: #87d6ff; }
+.wildlife-camera .wildlife-marker-icon { color: #00334d; background: #87d6ff; }
+.wildlife-sensor { --wildlife-accent: #e7a9ff; }
+.wildlife-sensor .wildlife-marker-icon { color: #3c114a; background: #e7a9ff; }
+.wildlife-marker-label.is-compact { padding: 5px; }
+.wildlife-marker-label.is-compact .wildlife-marker-text { display: none; }
+.wildlife-cluster.is-compact { width: 52px; height: 52px; padding: 3px; }
+.wildlife-cluster.is-compact .wildlife-marker-icon { width: 42px; height: 42px; }
+.wildlife-animal.is-compact { width: 44px; height: 44px; padding: 3px; }
+.wildlife-animal.is-compact .wildlife-marker-icon { width: 34px; height: 34px; }
+.wildlife-popup { position: fixed; z-index: 2; display: grid; gap: 6px; width: 210px; padding: 11px;
+                   color: var(--paper); background: rgba(0,35,26,.93); border: 1px solid rgba(217,249,157,.48);
+                   border-radius: 5px 13px 13px 13px; box-shadow: 0 16px 44px rgba(0,15,10,.36);
+                   pointer-events: auto; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.wildlife-popup[hidden] { display: none; }
+.wildlife-popup-type { color: var(--lime); font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.wildlife-popup strong { font: 500 17px/1.1 "Iowan Old Style", Baskerville, serif; }
+.wildlife-popup-detail { color: rgba(240,237,227,.7); font-size: 11px; line-height: 1.35; }
+.wildlife-popup-actions { display: flex; gap: 7px; margin-top: 2px; }
+.wildlife-popup-actions button { padding: 5px 8px; border: 1px solid rgba(217,249,157,.38); border-radius: 6px;
+                                color: #002d22; background: var(--lime); cursor: pointer; font: 800 8px/1 ui-monospace, SFMono-Regular, monospace; }
+.wildlife-popup-actions .wildlife-popup-close { margin-left: auto; color: rgba(240,237,227,.76); background: transparent; border-color: rgba(240,237,227,.24); font-size: 14px; }
+#wildlifeDock { position: fixed; right: 10px; bottom: calc(78px + var(--safe-b, 0px)); z-index: 19; display: grid; gap: 8px;
+                 width: 226px; padding: 10px; color: var(--paper); background: rgba(0,35,26,.84);
+                 border: 1px solid rgba(217,249,157,.28); border-radius: 6px 15px 15px 15px;
+                 box-shadow: 0 14px 42px rgba(0,15,10,.28); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#wildlifeDock[hidden] { display: none; }
+.wildlife-dock-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wildlife-dock-head strong { color: var(--lime); font: 800 8px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .14em; text-transform: uppercase; }
+.wildlife-dock-head span { color: rgba(240,237,227,.5); font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .08em; text-transform: uppercase; }
+#wildlifeStatus { min-height: 14px; color: rgba(240,237,227,.7); font-size: 10px; line-height: 1.25; }
+#wildlifeDock[data-state="error"] #wildlifeStatus { color: #ffb4ab; }
+#wildlifeCounts { color: rgba(240,237,227,.5); font: 700 8px/1.35 ui-monospace, SFMono-Regular, monospace; }
+.wildlife-filters { display: flex; flex-wrap: wrap; gap: 5px; }
+.wildlife-filter, #wildlifeRetry { padding: 5px 7px; color: rgba(240,237,227,.54); background: rgba(255,255,255,.04);
+                                   border: 1px solid rgba(240,237,227,.18); border-radius: 999px; cursor: pointer;
+                                   font: 800 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .07em; text-transform: uppercase; }
+.wildlife-filter.is-on { color: #002d22; background: var(--lime); border-color: var(--lime); }
+#wildlifeRetry { width: max-content; color: #fff5e6; border-color: rgba(255,180,171,.5); }
 #captions { position: fixed; left: 0; right: 0; bottom: calc(96px + var(--safe-b, 0px)); z-index: 14;
             display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
 .story-caption { max-width: 560px; padding: 14px 24px 16px; border-radius: 14px; text-align: center;

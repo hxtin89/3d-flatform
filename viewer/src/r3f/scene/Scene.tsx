@@ -21,6 +21,7 @@ import { Audio } from './Audio'
 import { DonationShape } from './DonationShape'
 import { DoubleClick } from './DoubleClick'
 import { GroundFallback } from './GroundFallback'
+import { WildlifeFeatures } from './WildlifeFeatures'
 
 function NoPointerEvents() {
   const setEvents = useThree((s) => s.setEvents)
@@ -47,6 +48,7 @@ export function Scene() {
             <Environment />
             <DonationShape />
             <Markers />
+            <WildlifeFeatures />
             <DoubleClick />
           </>
         )}

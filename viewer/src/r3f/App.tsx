@@ -13,6 +13,7 @@ import { VideoModal } from './ui/VideoModal'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { SplatOverlay } from './ui/SplatOverlay'
 import { CompareBoot } from './ui/CompareBoot'
+import { WildlifeDock } from './ui/WildlifeDock'
 import { useUiStore } from './state/ui-store'
 import './state/render-options-bridge'
 import {
@@ -31,6 +32,7 @@ export function App() {
       </CanvasRoot>
       <Vignette />
       <MarkerOverlay />
+      <WildlifeDock />
       <Captions />
       <SplatHint />
       <InteractionStatus />
