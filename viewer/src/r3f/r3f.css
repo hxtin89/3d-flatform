@@ -144,6 +144,9 @@ body.mask-vignette #vignette { display: block; }
 .wildlife-camera .wildlife-marker-icon { color: #00334d; background: #87d6ff; }
 .wildlife-sensor { --wildlife-accent: #e7a9ff; }
 .wildlife-sensor .wildlife-marker-icon { color: #3c114a; background: #e7a9ff; }
+.wildlife-camera, .wildlife-sensor { width: 52px; height: 52px; padding: 3px; justify-content: center; }
+.wildlife-camera .wildlife-marker-icon, .wildlife-sensor .wildlife-marker-icon { width: 42px; height: 42px; }
+.wildlife-camera .wildlife-marker-text, .wildlife-sensor .wildlife-marker-text { display: none; }
 .wildlife-marker-label.is-compact { padding: 5px; }
 .wildlife-marker-label.is-compact .wildlife-marker-text { display: none; }
 .wildlife-cluster.is-compact { width: 52px; height: 52px; padding: 3px; }

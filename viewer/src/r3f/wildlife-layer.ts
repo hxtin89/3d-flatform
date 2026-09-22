@@ -37,6 +37,7 @@ export function createFeatureLayer(options: FeatureLayerOptions): FeatureLayer {
   const records = new Map<string, MarkerRecord>()
   let visible = true
   let selectedId: string | null = null
+  let hoveredId: string | null = null
   const popup = document.createElement('section'); popup.className = 'wildlife-popup'; popup.hidden = true
   const popupType = document.createElement('span'); popupType.className = 'wildlife-popup-type'
   const popupTitle = document.createElement('strong')
@@ -46,18 +47,36 @@ export function createFeatureLayer(options: FeatureLayerOptions): FeatureLayer {
   const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.className = 'wildlife-popup-close'; closeButton.textContent = '×'; closeButton.setAttribute('aria-label', 'Close wildlife details')
   popupActions.append(flyButton, closeButton); popup.append(popupType, popupTitle, popupDetailEl, popupActions); host.append(popup)
   const selected = () => selectedId ? records.get(selectedId) ?? null : null
-  const closePopup = () => { selectedId = null; popup.hidden = true; for (const record of records.values()) record.label.classList.remove('is-selected') }
-  const select = (record: MarkerRecord) => {
-    selectedId = record.feature.id
-    for (const item of records.values()) item.label.classList.toggle('is-selected', item.feature.id === selectedId)
+  const hovered = () => hoveredId ? records.get(hoveredId) ?? null : null
+  const active = () => hovered() ?? selected()
+  const updateActiveMarker = () => {
+    const activeId = active()?.feature.id
+    for (const item of records.values()) item.label.classList.toggle('is-selected', item.feature.id === activeId)
+  }
+  const showPopup = (record: MarkerRecord) => {
+    updateActiveMarker()
     popupType.textContent = TYPE_NAME[record.feature.type]; popupTitle.textContent = record.feature.label; popupDetailEl.textContent = popupDetail(record.feature); popup.hidden = false
+  }
+  const closePopup = () => { selectedId = null; hoveredId = null; popup.hidden = true; updateActiveMarker() }
+  const select = (record: MarkerRecord) => { selectedId = record.feature.id; hoveredId = null; showPopup(record) }
+  const showHover = (record: MarkerRecord) => { hoveredId = record.feature.id; showPopup(record) }
+  const clearHover = (record: MarkerRecord) => {
+    if (hoveredId !== record.feature.id) return
+    hoveredId = null
+    const retained = selected()
+    if (retained) showPopup(retained)
+    else { popup.hidden = true; updateActiveMarker() }
   }
   const onDocumentKeydown = (event: KeyboardEvent) => { if (event.key === 'Escape' && selectedId) closePopup() }
   document.addEventListener('keydown', onDocumentKeydown); closeButton.addEventListener('click', closePopup)
   flyButton.addEventListener('click', () => { const record = selected(); if (record) options.onFlyTo(record.feature, record.group.position.clone()) })
   const removeRecord = (record: MarkerRecord) => {
     record.label.remove(); root.remove(record.group)
-    if (selectedId === record.feature.id) closePopup()
+    if (selectedId === record.feature.id) selectedId = null
+    if (hoveredId === record.feature.id) hoveredId = null
+    const retained = active()
+    if (retained) showPopup(retained)
+    else { popup.hidden = true; updateActiveMarker() }
   }
   const clearRecords = () => { closePopup(); for (const record of records.values()) removeRecord(record); records.clear() }
   const makeMarkerVisual = (feature: FeatureEntry): HTMLElement => {
@@ -83,10 +102,16 @@ export function createFeatureLayer(options: FeatureLayerOptions): FeatureLayer {
     label.append(visual, text)
     if (feature.type === 'cluster') { const count = document.createElement('span'); count.className = 'wildlife-marker-count'; count.textContent = String(feature.count); label.append(count) }
     host.append(label)
-    const record = { feature, group, anchor, label, width: 0, height: 0, rangeVisible: true }; label.addEventListener('click', () => select(record)); return record
+    const record = { feature, group, anchor, label, width: 0, height: 0, rangeVisible: true }
+    label.addEventListener('pointerenter', () => showHover(record))
+    label.addEventListener('pointerleave', () => clearHover(record))
+    label.addEventListener('focus', () => showHover(record))
+    label.addEventListener('blur', () => clearHover(record))
+    label.addEventListener('click', () => select(record))
+    return record
   }
   const updatePopup = (camera: THREE.PerspectiveCamera) => {
-    const record = selected(); if (!record || record.label.hidden || !visible) { popup.hidden = true; return }
+    const record = active(); if (!record || record.label.hidden || !visible) { popup.hidden = true; return }
     record.anchor.getWorldPosition(worldPosition); projected.copy(worldPosition).project(camera)
     const x = THREE.MathUtils.clamp((projected.x * .5 + .5) * window.innerWidth + 18, 10, window.innerWidth - 238)
     const y = THREE.MathUtils.clamp((-projected.y * .5 + .5) * window.innerHeight + 10, 10, window.innerHeight - 145)
