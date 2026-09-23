@@ -79,6 +79,15 @@ unchanged — a drawRange prefix of k·n vertices draws points 0..n-1 exactly li
   found that three r185 never frees an attribute replaced on a live geometry, so the first
   version (fresh attributes per switch) leaked three GPU buffers per tile per switch, plus a
   VAO per tile on WebGL2.
+- **Verified in the browser pane, 2026-09-23** (WebGPU, landed pose at 80 m, 21 tiles,
+  1.56 M points, dome and thinning as shipped): the panel button switched all 97 loaded
+  tiles, and the 22 tiles that arrived afterwards came in as triangles; programs,
+  pipelines and node builds unchanged (34 / 21 / 26), `renderer.info.memory` byte-identical
+  before and after; Square forces quads and releases them again; no console errors. Pixel
+  check: differences above 24 levels between a quad and a triangle frame sit ~150 pixels
+  (0.01 %) above the noise between two quad frames. GPU time over five interleaved rounds:
+  cloud share 1.323 ms quad, 1.248 ms triangle, **−5.7 %**, lower in every round — the
+  control result the plan expected (the earlier runtime swap measured −8 %).
 - `setDotMode` walks `tiles.forEachLoadedModel` (cached tiles too — the lesson of f84d92c),
   and new tiles are built in the current mode at `load-model`.
 - Fix `sampleGroundZ` first: it trusts any dot-geometry bounding sphere above radius 1 as a
