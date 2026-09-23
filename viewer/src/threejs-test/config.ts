@@ -285,10 +285,18 @@ export const EXPERIENCE_CONFIG = {
       // Grazing hits count as misses past this multiple of the camera height — the
       // same constant that bounds the refinement range, so the two agree.
       maxRangeFactor: 6,
-      // The centre never sits further ahead of the camera than this, in metres on the
-      // ground, so a tilted view keeps its foreground whole — 300 m lands the camera's
-      // nadir just inside the 310 m plateau the defaults above leave. Infinity is off.
-      maxAheadM: 300 as number,
+      // The adaptive dome — see sphere-fade.ts. The inner radius is `growth` times the
+      // camera's distance to the centre, between innerRadiusM and maxRadiusM; outer
+      // radius and ramp scale with it. At 0.6 the dome reaches ~31° off the focus.
+      // Measured 2026-09-23: from 1 km up the whole forest is under 1.4 ms with the dome
+      // off, so the size up there is a matter of look, not of cost.
+      growth: 0.6,
+      // Reached around 5 km height looking down.
+      maxRadiusM: 3000,
+      // The focus spot slides this far below the middle of the screen at full side
+      // view, in half screen heights — 0.4 is just above the lower third.
+      focusDrop: 0.4,
+      easeSeconds: 0.3,
     },
     // Base size when the per-tile spacing above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).

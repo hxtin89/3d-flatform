@@ -869,7 +869,7 @@
         <div class="row">
           <label class="h" for="sphereRampInset">Ramp width · <span class="val" id="sphereRampInsetVal">—</span></label>
           <input type="range" id="sphereRampInset" min="0" max="1000" step="10" />
-          <span class="weather-note">How far inside the inner radius the falloff starts, in metres. Nearer the centre than that every point is drawn whole; over these last metres to the rim the size and the height ramp down to nothing. Wider than the radius ramps from the very centre</span>
+          <span class="weather-note">How far inside the inner radius the falloff starts, in metres at the close-up size; it widens in step as the dome grows. Nearer the centre than that every point is drawn whole; over these last metres to the rim the size and the height ramp down to nothing. Wider than the radius ramps from the very centre</span>
         </div>
         <div class="row">
           <label class="h" for="sphereFadeIn">Fade-in exponent · <span class="val" id="sphereFadeInVal">—</span></label>
@@ -882,9 +882,19 @@
           <span class="weather-note">How the ramp lands on nothing at the rim. Above 1 the points linger small and low before they vanish; below 1 they vanish abruptly. Each end is shaped by its own slider only</span>
         </div>
         <div class="row">
-          <label class="h" for="sphereMaxAhead">Centre pull-in · <span class="val" id="sphereMaxAheadVal">—</span></label>
-          <input type="range" id="sphereMaxAhead" min="0" max="1500" step="10" />
-          <span class="weather-note">Furthest the dome's centre may sit ahead of the camera, in metres along the ground. A tilted view looks at ground hundreds of metres out, which leaves the foreground in the ramp; past this distance the centre is pulled back towards the camera, onto the line below the middle of the screen. All the way right is off: the centre stays under the middle of the view</span>
+          <label class="h" for="sphereGrowth">Growth with distance · <span class="val" id="sphereGrowthVal">—</span></label>
+          <input type="range" id="sphereGrowth" min="0" max="1.5" step="0.05" />
+          <span class="weather-note">The inner radius as a share of the camera's distance to the dome's centre, so the dome covers about the same part of the screen at every height and reads as a vignette from high up. Never below the inner radius set further down, which is the size close to the canopy; the outer radius and the ramp grow in step. All the way left keeps the dome at one fixed size</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereMaxRadius">Maximum radius · <span class="val" id="sphereMaxRadiusVal">—</span></label>
+          <input type="range" id="sphereMaxRadius" min="500" max="8000" step="100" />
+          <span class="weather-note">Where the growth stops, in metres. Above the height that reaches it the dome keeps its size and shrinks on screen as the camera climbs on</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereFocusDrop">Focus in side view · <span class="val" id="sphereFocusDropVal">—</span></label>
+          <input type="range" id="sphereFocusDrop" min="0" max="0.8" step="0.05" />
+          <span class="weather-note">How far below the middle of the screen the dome's centre sits once the camera is tilted fully to the side, as a share of half the screen height. Looking straight down it is always the middle; in between it slides on the same tilt curve as the side-view vignette. It never goes so far down that the ground in the middle of the screen leaves the whole part of the dome, so from high up it stays nearer the middle. All the way left keeps it in the middle at every tilt</span>
         </div>
         <div class="row">
           <label class="h" for="sphereDebugToggle">Debug shells</label>
@@ -899,7 +909,7 @@
         <div class="row">
           <label class="h" for="sphereInnerM">Inner radius · <span class="val" id="sphereInnerMVal">—</span></label>
           <input type="range" id="sphereInnerM" min="25" max="2000" step="5" />
-          <span class="weather-note">Will gate drawing and set the falloff: points shrink and sink to the map from the centre out and vanish at this distance. Never larger than the outer radius</span>
+          <span class="weather-note">Gates drawing and sets the falloff: points shrink and sink to the map from the centre out and vanish at this distance. This is the size close to the canopy, the floor the growth starts from. Never larger than the outer radius</span>
         </div>
         <div class="row">
           <label class="h" for="sphereOpacity">Shell opacity · <span class="val" id="sphereOpacityVal">—</span></label>

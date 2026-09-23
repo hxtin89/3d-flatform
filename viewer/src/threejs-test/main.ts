@@ -2381,6 +2381,10 @@ function sideAnchorEnu2d(target: THREE.Vector2): THREE.Vector2 {
   )
 }
 
+/** How far into side view the camera is this frame, 0 top-down to 1 side-on — set by
+ *  updateMaskFollow, read by the dome. */
+let sideViewFactor = 0
+
 function updateMaskFollow(): void {
   const mode = uniforms.maskMode.value
   ndc.set(0, 0)
@@ -2390,6 +2394,7 @@ function updateMaskFollow(): void {
   const sideFactor = enuFrameReady
     ? 1 - smooth01(vignetteSideAngleDeg, vignetteTopAngleDeg, cameraPitchDeg())
     : 0
+  sideViewFactor = sideFactor
   if (enuFrameReady) sideAnchorEnu2d(sideAnchor2d)
   // The fovea slides toward the bottom edge on the same curve, so the two features
   // anchor alike and there is one definition of "how far into side view we are".
@@ -2875,12 +2880,19 @@ bindDesignSlider('sphereFadeIn', sphereFadeSettings.fadeIn, (v) => v.toFixed(1),
 bindDesignSlider('sphereFadeOut', sphereFadeSettings.fadeOut, (v) => v.toFixed(1), (v) => {
   sphereFadeSettings.fadeOut = v
 })
-// The slider's right end stands for Infinity, the pull-in switched off.
-const sphereMaxAheadOff = Number($<HTMLInputElement>('#sphereMaxAhead').max)
-bindDesignSlider('sphereMaxAhead',
-  Math.min(sphereFadeSettings.maxAheadM, sphereMaxAheadOff),
-  (v) => v >= sphereMaxAheadOff ? 'off' : asMetres(v),
-  (v) => { sphereFadeSettings.maxAheadM = v >= sphereMaxAheadOff ? Infinity : v })
+// The adaptive dome: growth with distance, its ceiling, and how far down the screen the
+// focus spot slides at full side view. 0 growth and 0 drop is the fixed dome.
+bindDesignSlider('sphereGrowth', sphereFadeSettings.growth, (v) =>
+  v > 0 ? `${v.toFixed(2)} × distance` : 'off · fixed size', (v) => {
+  sphereFadeSettings.growth = v
+})
+bindDesignSlider('sphereMaxRadius', sphereFadeSettings.maxRadiusM, asMetres, (v) => {
+  sphereFadeSettings.maxRadiusM = v
+})
+bindDesignSlider('sphereFocusDrop', sphereFadeSettings.focusDrop, (v) =>
+  v > 0 ? `${Math.round(v * 100)} % down` : 'off · middle', (v) => {
+  sphereFadeSettings.focusDrop = v
+})
 const sphereGateReadoutEl = $('#sphereGateReadout')
 
 const sphereFadeCentreRawEnu = new THREE.Vector3()
@@ -2895,7 +2907,7 @@ function applySphereFadeUniforms(dome: SphereFade | null): void {
   sphereFadeCentreRawEnu.copy(dome.centreWorld).applyMatrix4(enuInverseRender)
   uniforms.sphereFadeCentre.value.copy(sphereFadeCentreRawEnu)
   uniforms.sphereFadeRadius.value = dome.innerRadius()
-  uniforms.sphereFadeRampInset.value = Math.max(0, sphereFadeSettings.rampInsetM)
+  uniforms.sphereFadeRampInset.value = dome.rampWidth()
   uniforms.sphereFadeIn.value = Math.max(0.01, sphereFadeSettings.fadeIn)
   uniforms.sphereFadeOut.value = Math.max(0.01, sphereFadeSettings.fadeOut)
   uniforms.sphereFadeUpWorld.value.copy(enuUp)
@@ -4115,7 +4127,8 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
-      + (sphereFade.stats().pulledInM > 0 ? ` · centre pulled in ${Math.round(sphereFade.stats().pulledInM)} m` : '')
+      + ` · radius ${Math.round(sphereFade.innerRadius())} m`
+      + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
       + (initialPovActive()
         ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
           ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
@@ -4524,6 +4537,7 @@ async function main(): Promise<void> {
     scene,
     worldToEnu,
     enuToWorld,
+    sideViewFactor: () => sideViewFactor,
     settings: sphereFadeSettings,
   })
   keyboardNavigation = createKeyboardNavigation({
