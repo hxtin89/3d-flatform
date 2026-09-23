@@ -132,6 +132,39 @@ export function installUploadProbe(renderer: any): boolean {
       firstMs += ms; firstBytes += bytes; firstCount++
     }
   }
+  // The pulled dot feed uploads each tile as a texture rather than as attributes, so it
+  // would read as free above. Its point-data textures are counted the same way: timed, by
+  // bytes, and split into first uploads and re-uploads (after the unload plugin freed the
+  // GPU copy of a hidden tile). Other textures — imagery, noise — are left out, so the
+  // numbers stay the point cloud's.
+  const textures = renderer?._textures
+  if (textures && typeof textures.updateTexture === 'function') {
+    const originalTexture = textures.updateTexture.bind(textures)
+    const seenTextures = new WeakSet<object>()
+    textures.updateTexture = (texture: any, options: any) => {
+      if (!texture?.userData?.cloudPointData) return originalTexture(texture, options)
+      let pending = true
+      try {
+        const data = textures.get(texture)
+        pending = !(data?.initialized === true && data?.version === texture.version)
+      } catch { pending = true }
+      if (!pending) return originalTexture(texture, options)
+      const startedAt = performance.now()
+      const result = originalTexture(texture, options)
+      const ms = performance.now() - startedAt
+      const bytes = texture?.image?.data?.byteLength ?? 0
+      if (uploadFrameAt !== frameOrdinal) { uploadFrameAt = frameOrdinal; uploadFrameMs = 0 }
+      uploadFrameMs += ms
+      if (uploadFrameMs > worstUploadFrameMs) worstUploadFrameMs = uploadFrameMs
+      if (seenTextures.has(texture)) {
+        reMs += ms; reBytes += bytes; reCount++
+      } else {
+        seenTextures.add(texture)
+        firstMs += ms; firstBytes += bytes; firstCount++
+      }
+      return result
+    }
+  }
   uploadProbeInstalled = true
   return true
 }

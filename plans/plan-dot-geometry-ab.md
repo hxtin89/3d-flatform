@@ -1,6 +1,8 @@
 # Plan: dot geometry A/B — quad or triangle, instanced or vertex-pulled
 
-Branch `sbb/dot-geometry-ab`, off `SphereFade` at f84d92c. Written 2026-09-23. Not started.
+Branch `sbb/dot-geometry-ab`, off `SphereFade` at f84d92c. Written 2026-09-23. Steps 1 and 2
+built and verified on 2026-09-23; results under "Step 2 results" below. Open: the arrival
+cost, and the protocol's visible-window and phone runs.
 
 ## Why
 
@@ -101,7 +103,20 @@ unchanged — a drawRange prefix of k·n vertices draws points 0..n-1 exactly li
 - `shadedPixelArea` × `dotAreaFactor`; the overdraw comment's "4/π" becomes 1.69 for the
   triangle. The render bench records effective shape and feed.
 
-### Step 2 — feed switch, vertex-pulled
+### Step 2 — feed switch, vertex-pulled (built 2026-09-23)
+
+As built, the design below held, with these changes from review:
+- Every dot geometry, in both feeds, drops three's geometry record on dispose
+  (`forgetOnDispose` in streaming.ts), so the second-dispose leak described at the end of
+  this plan cannot strand a switched-out geometry.
+- A tile with no colour attribute packs black, matching what the instanced graph draws.
+- A pulled tile that changes shape keeps its texture; only a feed change packs or frees it.
+- The shared quad index starts at 2¹⁹ points (the 270 k overview tile is above 2¹⁸). A
+  pulled geometry detaches it on dispose only while it is still the current shared index,
+  so an outgrown index is freed with its last user.
+- The graph cache is cleared when an effect is toggled, so old graphs are not retained.
+- `renderer.initTexture()` at arrival was not added: the texture uploads on first draw,
+  like the instanced attributes, and the upload probe counts it there.
 
 Per tile:
 - **One RGBA32F `DataTexture`, 16 B per point** — xyz = tile-local position, w = colour as
@@ -161,6 +176,84 @@ pipeline serve both, no WebGPU validation errors, and `?webgl` draws the same pi
 (attribute-less draws and vertex-stage `texelFetch` are legal in WebGL2 but only a run
 proves three's fallback does it). Stop and re-plan if any of these fails.
 
+## Step 2 results (2026-09-23)
+
+**Conditions.** The Browser pane was hidden, which pauses rAF. The app was booted into a
+fresh document with a stand-in installed before any module ran: `requestAnimationFrame`
+as a 16 ms `setTimeout`, and `document.hidden` reporting false. Timers run at full rate in
+the hidden pane, so tiles streamed and GPU timestamps resolved. Same machine and session
+for every arm, switched at runtime, resident set unchanged within each pose. GPU timestamps
+are quantised to about 65 µs, and per-frame times were bimodal, flipping between two
+clusters from one frame to the next, most likely another GPU client time-slicing. Means
+over 300 frames per arm, four passes per pose in ABCD DCBA order, cloud share = arm minus
+the cloud-hidden frame. Treat the ratios as solid and the absolute values as indicative;
+the protocol's visible Chrome window has not been run.
+
+**Correctness gate: passed on both backends.**
+- All loaded tiles switch (91 on WebGPU, 86 on WebGL2) in about 110 ms. A cold
+  `?feed=pull` boot builds every arriving tile pulled (91 of 91) and lands on the same view.
+- Each pulled mode adds one node build, one pipeline and one vertex/fragment program pair.
+  A mode nobody draws releases its program. No per-tile builds.
+- The pulled vertex shader has a single `textureLoad` and decodes the colour once.
+- Frozen-frame pixel check (render loop stopped, the same frame rendered through each
+  feed): pulled and instanced are **pixel-identical**, max channel difference 0, for both
+  shapes, on WebGPU and on WebGL2. Hiding the cloud changes 58–60 % of pixels, so the
+  capture is live. Pulled triangle against pulled quad differs on 0.04 % of pixels.
+- Square forces the pulled triangle to quads and releases it back.
+- No WebGPU validation errors, no GL errors, no console errors. The only new message is
+  three's warning that the attribute-free geometry has no `position`; it fires once per
+  switch into a pulled mode (once per node build), not per tile.
+- `renderer.info.memory` is identical after every return to the same mode over twelve
+  switches.
+
+**GPU time, WebGPU.** Cloud share in ms:
+
+| Arm | nadir (1.89 M points, 27 drawn tiles) | tilt40 (3.54 M points, 50 drawn tiles) |
+|---|---|---|
+| instanced quad | 2.80 | 5.83 |
+| instanced triangle | 2.75 (−2 %) | 5.62 (−4 %) |
+| pulled quad | 0.74 (**−74 %**) | 1.95 (**−67 %**) |
+| pulled triangle | 0.65 (**−77 %**) | 1.31 (**−78 %**) |
+| cloud hidden (frame) | 0.31 | 0.31 |
+
+Every pass shows the same order for the feeds; the pulled quad saved 73–76 % per pass at
+nadir. The low cluster alone (p10) gives the same picture: −70 % and −74 % at nadir, −69 %
+and −75 % at tilt40. Pulled triangle against pulled quad: −12 % at nadir (lower in three of
+four passes) and −33 % at tilt40 (all four). The instanced quad's low cluster at nadir
+(about 1.6 ms of cloud) matches step 1's visible-pane figure scaled to the point count, so
+the stand-in does not distort the instanced cost.
+
+The copy-based proxy measured −30 % and −43 %; pulling from a texture beats it. Under
+instancing the cost is paid per instance, whatever the vertex count, and the texture fetch
+costs far less than that.
+
+**Frame time, WebGL2** (nadir, render loop stopped, 30 renders then a one-pixel read to
+sync, four interleaved rounds; includes CPU): cloud share 1.95 ms instanced quad, 1.87 ms
+instanced triangle, 1.33 ms pulled quad (−32 %), 1.07 ms pulled triangle (−45 %).
+
+**GPU memory** (27 drawn tiles): instanced 31.2 MB of point attributes; pulled 30.4 MB of
+textures plus 1.0 MB of attributes. 16 bytes per point either way. The shared quad index
+(2¹⁹ points, 12.6 MB) stays allocated after leaving the pulled quad, cached for the next
+switch; free it if the pulled feed ships without the quad.
+
+**Arrival cost: fails the criterion as measured.** Cold boots, same landing: instanced
+median 1.7 ms per 75 k-point tile (29 ns per point), pulled median 2.6 ms (45 ns per point).
+The difference is `packPointData`: 0.7 ms per 75 k points in isolation, and hoisting its
+branches does not change that. The hidden renderer runs JavaScript slowly (a strided
+position copy alone took 0.5 ms), so a visible window should show less. The fix is the one
+the CPU-heap note already asks for: have `reorderForPrefixSampling`, which copies both
+arrays anyway, write the texture layout directly, so the texture array is the only CPU
+store and packing costs nothing extra.
+
+**Against the decision criteria.** Saves at least 25 % at nadir and tilt40: yes, by a
+wide margin. Not slower on WebGL2: yes, faster on this machine; phones not run. GPU memory
+at 16 bytes per point: yes. Arrival within ~0.3 ms: no, fix above. CPU heap fix planned:
+yes, the same fix. Pulled triangle over pulled quad: at least 10 % at both poses, yes; the
+rims by eye are still to judge.
+
+**Not yet run:** the visible Chrome window with unquantised timestamps, the `horizon`
+pose, zero point size, thinning off, and the Android and Apple phones.
+
 ## Measurement protocol
 
 - A visible, focused Chrome window (the Browser pane throttles rAF; use it for
@@ -211,7 +304,8 @@ the first dispose but never clears `initialized`, so `updateForRender` never cal
 frees nothing, and three's `info.memoryMap` keeps the re-uploaded attributes alive. With
 `UnloadTilesPlugin` hiding and re-showing tiles as the camera moves, that could leak a
 tile's full point buffers per cycle — in today's viewer, not only on this branch.
-Unmeasured; filed as a separate task.
+Unmeasured; filed as a separate task. On this branch the dot geometries are covered by
+`forgetOnDispose`; the carriers and the rest of the viewer are left to that task.
 
 ## Relation to the culling plan
 

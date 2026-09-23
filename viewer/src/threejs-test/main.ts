@@ -12,7 +12,8 @@ import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createSphereFade, type SphereFade, type SphereFadeSettings } from './sphere-fade'
 import {
-  drawnPoints, isDotMesh, parseDotShape, shapeAreaFactor, type DotShape,
+  drawnPoints, isDotMesh, parseDotFeed, parseDotShape, shapeAreaFactor,
+  type DotFeed, type DotMode, type DotShape,
 } from './dot-geometry'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import { createViewDepthCorrection, type ViewDepthCorrection } from './view-depth'
@@ -2972,18 +2973,27 @@ roundDotsToggleEl.addEventListener('click', () => {
 syncRoundDotsToggle()
 
 /**
- * Dot geometry A/B, step 1 of plans/plan-dot-geometry-ab.md: every point drawn as a quad
- * (4 vertices, 2 triangles) or as a triangle (3 vertices, 1 triangle) around the same round
- * dot, instancing kept. `?dot=tri|quad` is the boot state; the button flips every loaded
- * tile in place, so both sides are measured on the same resident tiles at the same pose.
+ * Dot geometry A/B — plans/plan-dot-geometry-ab.md. Two independent switches:
  *
- * The request and the effect are kept apart because the triangle only works as a round
- * dot: with the cut off (Square) it would draw bare triangles, so Square always draws quads
- * whatever is requested, and the button says so.
+ * - **shape** (step 1): every point drawn as a quad (4 vertices, 2 triangles) or a
+ *   triangle (3 vertices, 1 triangle) around the same round dot.
+ * - **feed** (step 2): instanced, as today, or pulled — no instancing, each tile drawn as
+ *   `k × points` vertices that read their point from a per-tile data texture.
+ *
+ * `?dot=tri|quad` and `?feed=pull|inst` are the boot state; the buttons rebuild every
+ * loaded tile in place from its own point arrays, so all four arms are measured on the same
+ * resident tiles at the same pose.
+ *
+ * The requested and the effective shape are kept apart because the triangle only works as
+ * a round dot: with the cut off (Square) it would draw bare triangles, so Square always
+ * draws quads whatever is requested, and the readout says so.
  */
 let requestedDotShape: DotShape = parseDotShape(params.get('dot')) ?? EXPERIENCE_CONFIG.lod.dotGeometry.shape
+let requestedDotFeed: DotFeed = parseDotFeed(params.get('feed')) ?? EXPERIENCE_CONFIG.lod.dotGeometry.feed
 const effectiveDotShape = (): DotShape => (roundDots ? requestedDotShape : 'quad')
+const effectiveDotMode = (): DotMode => ({ shape: effectiveDotShape(), feed: requestedDotFeed })
 const dotShapeToggleEl = $<HTMLButtonElement>('#dotShapeToggle')
+const dotFeedToggleEl = $<HTMLButtonElement>('#dotFeedToggle')
 const dotShapeReadoutEl = $('#dotShapeReadout')
 function syncDotShapeToggle(changed?: number): void {
   const effective = effectiveDotShape()
@@ -2991,21 +3001,29 @@ function syncDotShapeToggle(changed?: number): void {
   dotShapeToggleEl.classList.toggle('on', triangle)
   dotShapeToggleEl.setAttribute('aria-pressed', String(triangle))
   dotShapeToggleEl.textContent = triangle ? '▲ Triangle · 3 vertices' : '■ Quad · 4 vertices'
+  const pulled = requestedDotFeed === 'pulled'
+  dotFeedToggleEl.classList.toggle('on', pulled)
+  dotFeedToggleEl.setAttribute('aria-pressed', String(pulled))
+  dotFeedToggleEl.textContent = pulled ? '⇣ Pulled · no instancing' : '⧉ Instanced'
   const forced = effective !== requestedDotShape
   dotShapeReadoutEl.textContent = [
-    `drawing ${effective === 'triangle' ? 'triangles' : 'quads'}`,
+    `drawing ${effective === 'triangle' ? 'triangles' : 'quads'}, ${pulled ? 'pulled from textures' : 'instanced'}`,
     forced ? 'forced to quads by the Square dot shape' : null,
     `${shapeAreaFactor(effective).toFixed(3)} d² rasterised per dot`,
     changed !== undefined ? `${changed} tiles switched` : null,
   ].filter(Boolean).join(' · ')
 }
 function applyDotShapeSetting(): number {
-  const changed = stream?.setDotShape(effectiveDotShape()) ?? 0
+  const changed = stream?.setDotMode(effectiveDotMode()) ?? 0
   syncDotShapeToggle(stream ? changed : undefined)
   return changed
 }
 dotShapeToggleEl.addEventListener('click', () => {
   requestedDotShape = requestedDotShape === 'triangle' ? 'quad' : 'triangle'
+  applyDotShapeSetting()
+})
+dotFeedToggleEl.addEventListener('click', () => {
+  requestedDotFeed = requestedDotFeed === 'pulled' ? 'instanced' : 'pulled'
   applyDotShapeSetting()
 })
 syncDotShapeToggle()
@@ -4597,7 +4615,7 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
     onPointTile: (object, url) => groundPatchMask.addTile(object, url),
-    dotShape: effectiveDotShape(),
+    dotMode: effectiveDotMode(),
   })
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
@@ -4661,28 +4679,35 @@ async function main(): Promise<void> {
     /** Whether the streamer is still refining the landing view from its own eye. */
     get initialPov() { return initialPovActive() },
     /**
-     * The dot-geometry A/B from the console: `__wild.dots.set('tri')` / `set('quad')`, and
-     * `.state` for what is requested, what is drawn and how the loaded tiles are split.
+     * The dot-geometry A/B from the console: `__wild.dots.set('tri')`, `set('quad')`,
+     * `set('pulled')`, `set('instanced')`, or several at once — `set('tri', 'pulled')`.
+     * `.state` says what is requested, what is drawn and how the loaded tiles are split.
      */
     dots: {
-      set(shape: string) {
-        const parsed = parseDotShape(shape)
-        if (!parsed) throw new Error(`dot shape must be 'quad' or 'tri', got ${shape}`)
-        requestedDotShape = parsed
+      set(...values: string[]) {
+        for (const value of values) {
+          const shape = parseDotShape(value)
+          const feed = parseDotFeed(value)
+          if (shape) requestedDotShape = shape
+          else if (feed) requestedDotFeed = feed
+          else throw new Error(`expected quad, tri, pulled or instanced, got ${value}`)
+        }
         const changed = applyDotShapeSetting()
-        return { requested: requestedDotShape, effective: effectiveDotShape(), changed }
+        return { requested: { shape: requestedDotShape, feed: requestedDotFeed }, effective: effectiveDotMode(), changed }
       },
       get state() {
-        const tiles = { quad: 0, triangle: 0 }
+        const tiles: Record<string, number> = {}
         stream?.tiles.forEachLoadedModel((model: THREE.Object3D) => {
           model.traverse((object: THREE.Object3D) => {
-            if (isDotMesh(object)) tiles[object.userData.dot.shape as DotShape]++
+            if (!isDotMesh(object)) return
+            const key = `${object.userData.dot.feed}/${object.userData.dot.shape}`
+            tiles[key] = (tiles[key] ?? 0) + 1
           })
         })
         return {
-          requested: requestedDotShape,
-          effective: effectiveDotShape(),
-          stream: stream?.dotShape() ?? null,
+          requested: { shape: requestedDotShape, feed: requestedDotFeed },
+          effective: effectiveDotMode(),
+          stream: stream?.dotMode() ?? null,
           loadedDotMeshes: tiles,
         }
       },
@@ -5000,6 +5025,7 @@ async function main(): Promise<void> {
       // units between the two (the triangle rasterises 1.325 d², the quad 1 d²), so a
       // sample that does not say which one produced it cannot be compared.
       dotShape: effectiveDotShape(),
+      dotFeed: requestedDotFeed,
     }),
     // The boot and flight brakes hold the error target far above the working band, so a
     // measurement taken under them describes the brake and not the setting being tested.

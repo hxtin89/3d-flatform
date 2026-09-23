@@ -246,6 +246,14 @@ export const EXPERIENCE_CONFIG = {
       shape: 'quad' as 'quad' | 'triangle',
       /** The triangle's inscribed circle in drawn diameters: the dot (0.5) plus 1 %. */
       triInradius: 0.505,
+      /**
+       * How the points reach the GPU — step 2 of the A/B. 'instanced' is today's path;
+       * 'pulled' draws without instancing and reads each point from a per-tile data
+       * texture. `?feed=pull|inst` picks the boot state, the panel flips it at runtime.
+       */
+      feed: 'instanced' as 'instanced' | 'pulled',
+      /** Width of the per-tile point-data texture, a power of two. */
+      textureWidth: 1024,
     },
     /**
      * The dome: two spheres standing on the basemap under the view centre, in metres.

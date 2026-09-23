@@ -8,15 +8,16 @@ import { recordArrival } from './arrival-cost'
 import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
   effectMaterialStale,
-  POINT_COLOR_ATTRIBUTE, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
+  POINT_COLOR_ATTRIBUTE, POINT_DATA_PROPERTY, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
   denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
 } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import {
-  applyDotShape, applyDotShapeToGeometry, dotAreaFactor, dotShapeOf, dotState, drawnPoints,
-  initDotState, isDotMesh, loadedPoints, setDrawnPoints, type DotShape,
+  applyDotShape, applyDotShapeToGeometry, buildPulledGeometry, dotAreaFactor, dotState,
+  drawnPoints, initDotState, isDotMesh, loadedPoints, packPointData, sameDotMode,
+  setDrawnPoints, type DotMode,
 } from './dot-geometry'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -151,14 +152,14 @@ export interface StreamingCloud {
    */
   setPovLoad(eyeWorld: THREE.Vector3 | null, maxPoints?: number): void
   /**
-   * Draw every point as `shape` — see dot-geometry.ts. Applied at once to every loaded
-   * tile, cached ones included, by swapping the corner data in place; tiles that arrive
-   * later are built in it. Nothing is re-fetched, so the resident set and the pose stay
-   * exactly as they were, which is what makes the switch a fair A/B. Returns how many
-   * dot meshes changed.
+   * Draw every point in `mode` — shape and feed, see dot-geometry.ts. Applied at once to
+   * every loaded tile, cached ones included, rebuilt from each tile's own point arrays;
+   * tiles that arrive later are built in it. Nothing is re-fetched, so the resident set
+   * and the pose stay exactly as they were, which is what makes the switch a fair A/B.
+   * Returns how many dot meshes changed.
    */
-  setDotShape(shape: DotShape): number
-  dotShape(): DotShape
+  setDotMode(mode: DotMode): number
+  dotMode(): DotMode
   /** Ground and canopy height under a footprint, from the resident tiles.
    * Null until enough points are loaded there. See sampleGroundZ() below for
    * why this is a statistic and not a raycast. */
@@ -392,8 +393,8 @@ export function createStreamingCloud(opts: {
   onPointTile?: (object: THREE.Object3D, url: string) => void
   /** The root tileset itself was unreachable (404/403) — this cloud will stay empty. */
   onRootError?: (url: string, error: unknown) => void
-  /** The primitive the first tiles are built as. `setDotShape` changes it later. */
-  dotShape?: DotShape
+  /** How the first tiles are drawn. `setDotMode` changes it later. */
+  dotMode?: DotMode
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
   const useRequestVolumes = opts.requestVolumes !== false
@@ -747,8 +748,9 @@ export function createStreamingCloud(opts: {
   // One camera-facing primitive per point, instanced. Its corner offsets live in the
   // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
   // the point size, and `uv` gives the round-dot cutout. Quad or triangle — see
-  // dot-geometry.ts, which owns both, and setDotShape below.
-  let dotShape: DotShape = opts.dotShape ?? 'quad'
+  // dot-geometry.ts, which owns both, and setDotMode below — which can also drop the
+  // instancing and draw the tile from a data texture instead.
+  let dotMode: DotMode = { ...(opts.dotMode ?? { shape: 'quad', feed: 'instanced' }) }
 
   /**
    * Widen a 3-byte colour to 4 bytes here, so three does not do it inside the render pass.
@@ -833,35 +835,22 @@ export function createStreamingCloud(opts: {
       source.geometry.boundingSphere = null
     }
 
-    const geometry = new THREE.InstancedBufferGeometry()
-    applyDotShapeToGeometry(geometry, dotShape)
-    // The tile's own buffers are reused as-is — no copy, no format conversion.
-    // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
-    // vector via NodeBuilder.getTypeFromAttribute.
-    geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(
-      reordered ? reordered.position : position.array,
-      reordered ? 3 : position.itemSize,
-      position.normalized,
-    ))
-    // The reorder already produced RGBA, so `padColourForGpu` is only for the pre-ordered
-    // packs and the layouts the reorder declines to handle.
-    const colorAttribute = reordered
-      ? (reordered.color
-        ? new THREE.InstancedBufferAttribute(reordered.color, 4, color?.normalized ?? true)
-        : null)
-      : (color ? padColourForGpu(color) : null)
-    if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
-    geometry.instanceCount = position.count
+    // Both feeds are built from the carrier's arrays as they now stand — reordered or as
+    // they arrived — so a later feed switch can rebuild either one from the same source
+    // without re-fetching anything.
+    const { geometry, colorItemSize, pointData } = buildDotGeometry(source.geometry, dotMode)
 
     const spacing = tileSpacingMetres(tile, position.count)
-    const material = createCloudMaterial(uniforms, colorAttribute?.itemSize ?? 3, spacing, {
+    const material = createCloudMaterial(uniforms, colorItemSize, spacing, {
       level: densityLevel(density),
       tint: densityLevelColor(density),
       // The pipeline's way of saying "this cannot refine further" — written both for
       // genuine bottom nodes and for any node too sparse to subdivide, which is why the
       // error view gives it a colour of its own rather than a place on the ramp.
       isLeaf: tile?.geometricError === 0,
-    })
+    }, dotMode)
+    // Before the first render: the pulled graph's texel reference resolves against it.
+    if (pointData) (material as any)[POINT_DATA_PROPERTY] = pointData
     // Read back by the tile trace in main.ts — the one place the derived size can
     // be checked against the depth the tile came from.
     material.userData.pointSpacingM = spacing
@@ -869,12 +858,13 @@ export function createStreamingCloud(opts: {
     // A Mesh, not a Sprite: WebGPUUtils.getPrimitiveTopology only names a
     // topology for isMesh, and Mesh avoids Sprite's own culling and raycasting.
     mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
-    // On the mesh rather than the geometry, because applyThinning has the mesh and the
-    // shape switch replaces the geometry's corner data. `orderIsFair` is false only for the
-    // layouts `reorderForPrefixSampling` declines, which are then drawn whole rather than
-    // as a biased wedge.
+    // On the mesh rather than the geometry, because applyThinning has the mesh and a
+    // switch replaces the geometry's corner data or the geometry itself. `orderIsFair` is
+    // false only for the layouts `reorderForPrefixSampling` declines, which are then drawn
+    // whole rather than as a biased wedge.
     initDotState(mesh, {
-      shape: dotShape,
+      feed: dotMode.feed,
+      shape: dotMode.shape,
       points: position.count,
       orderIsFair: reordered !== null || tilesArePreOrdered(),
     })
@@ -883,6 +873,143 @@ export function createStreamingCloud(opts: {
     // of the test rather than left as a phantom target that changes size with the shape.
     mesh.raycast = () => {}
     return mesh
+  }
+
+  /**
+   * Make `geometry.dispose()` free the GPU buffers every time, not only the first.
+   *
+   * three r185 registers its free-on-dispose listener when a geometry is first drawn and
+   * removes it on the first dispose — but keeps its record that the geometry was set up, so
+   * when UnloadTilesPlugin hides a tile and it is shown again the buffers are re-uploaded
+   * with no listener attached. The next dispose (the next hide, an eviction, or a dot-mode
+   * switch replacing the geometry) then frees nothing, and three's info map keeps the
+   * buffers alive for good. Dropping three's record here makes the next draw set the
+   * geometry up afresh and register a new listener. Added at build time, so it runs before
+   * three's own listener; that one needs nothing the record held.
+   */
+  function forgetOnDispose<T extends THREE.BufferGeometry>(geometry: T): T {
+    geometry.addEventListener('dispose', () => { (renderer as any)?._geometries?.delete?.(geometry) })
+    return geometry
+  }
+
+  /**
+   * The colour component count the instanced graph is built for: what padColourForGpu
+   * will hand the GPU for this carrier colour. Recorded on the material for both feeds, so
+   * a tile switched back to instanced gets the graph that matches its attribute.
+   */
+  function instancedColourItemSize(color: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined): number {
+    if (!color) return 3
+    const bytes = (color.array as any).BYTES_PER_ELEMENT
+    if (color.itemSize === 3 && bytes === 1 && !(color as any).isInterleavedBufferAttribute) return 4
+    return color.itemSize
+  }
+
+  /**
+   * Build a dot geometry in `mode` from a carrier's point arrays.
+   *
+   * Instanced: the per-point arrays are wrapped as instanced attributes as they are — no
+   * copy — with the colour widened to RGBA where WebGPU needs a 4-byte stride.
+   *
+   * Pulled: an attribute-free geometry plus the tile's point-data texture, packed from the
+   * same arrays (16 bytes per point on the GPU, like the attributes it replaces).
+   */
+  function buildDotGeometry(carrier: THREE.BufferGeometry, mode: DotMode, keepPointData = false): {
+    geometry: THREE.BufferGeometry
+    colorItemSize: number
+    pointData: THREE.DataTexture | null
+  } {
+    const position = carrier.getAttribute('position')
+    const color = carrier.getAttribute('color')
+    const colorItemSize = instancedColourItemSize(color)
+    if (mode.feed === 'pulled') {
+      return {
+        geometry: forgetOnDispose(buildPulledGeometry(mode.shape, position.count)),
+        colorItemSize,
+        // A pulled tile changing shape keeps the texture it has — the data is the same.
+        pointData: keepPointData ? null : packPointData(position, color),
+      }
+    }
+    const geometry = forgetOnDispose(new THREE.InstancedBufferGeometry())
+    applyDotShapeToGeometry(geometry, mode.shape)
+    // The tile's own buffers are reused as-is — no copy, no format conversion.
+    // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
+    // vector via NodeBuilder.getTypeFromAttribute.
+    geometry.setAttribute(POINT_POSITION_ATTRIBUTE, new THREE.InstancedBufferAttribute(
+      position.array as any, position.itemSize, position.normalized,
+    ))
+    // A reordered carrier already holds RGBA, which padColourForGpu passes through as it
+    // is; only pre-ordered packs and the layouts the reorder declines get widened here.
+    const colorAttribute = color ? padColourForGpu(color) : null
+    if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
+    geometry.instanceCount = position.count
+    return { geometry, colorItemSize, pointData: null }
+  }
+
+  /**
+   * Draw one dot mesh in `mode`, if it is not already. Returns whether it changed.
+   *
+   * A shape change inside the instanced feed rewrites the corner buffer in place
+   * (applyDotShape). Anything that crosses feeds, or changes the shape of a pulled tile, is
+   * a rebuild from the carrier's arrays: a new geometry, the texture attached or released,
+   * the graph for the new mode, and the old geometry disposed. The Mesh and its material
+   * stay the same objects — the render gate, the arrival queue, the inspector and the
+   * disposal lists all hold them. The drawn count is carried across, so the thinning
+   * state survives.
+   *
+   * The graph swap goes through the material's own rebuild closure, which bumps the
+   * material version. That is the only thing that makes three re-key a render object, and
+   * without it the old pipeline — whose vertex layout steps the point attributes per
+   * instance — would survive and draw every vertex at point 0.
+   */
+  function applyDotMode(mesh: THREE.Mesh, mode: DotMode, tile: any): boolean {
+    const state = dotState(mesh)
+    if (!state || sameDotMode(state, mode)) return false
+    if (state.feed === 'instanced' && mode.feed === 'instanced') return applyDotShape(mesh, mode.shape)
+
+    const carrier = mesh.parent as THREE.Points | null
+    const carrierGeometry = (carrier as any)?.geometry as THREE.BufferGeometry | undefined
+    if (!carrierGeometry?.getAttribute('position')) return false
+    const drawn = drawnPoints(mesh)
+    const material = mesh.material as any
+    const engineData = tile?.engineData
+
+    const previousTexture: THREE.DataTexture | undefined = material[POINT_DATA_PROPERTY]
+    // A pulled tile changing shape keeps the texture it has: the data does not change, so
+    // it is not packed again.
+    const keepTexture = mode.feed === 'pulled' && previousTexture !== undefined
+    const { geometry, pointData } = buildDotGeometry(carrierGeometry, mode, keepTexture)
+    const texture = keepTexture ? previousTexture : pointData
+    if (texture) {
+      material[POINT_DATA_PROPERTY] = texture
+      if (Array.isArray(engineData?.textures) && !engineData.textures.includes(texture)) {
+        engineData.textures.push(texture)
+      }
+    } else if (previousTexture) {
+      // Deleted rather than set to null, so the material's cache key matches a tile that
+      // was instanced from the start.
+      delete material[POINT_DATA_PROPERTY]
+      previousTexture.dispose()
+      if (Array.isArray(engineData?.textures)) {
+        const at = engineData.textures.indexOf(previousTexture)
+        if (at >= 0) engineData.textures.splice(at, 1)
+      }
+    }
+
+    const previousGeometry = mesh.geometry
+    mesh.geometry = geometry
+    if (Array.isArray(engineData?.geometry)) {
+      const at = engineData.geometry.indexOf(previousGeometry)
+      if (at >= 0) engineData.geometry[at] = geometry
+      else engineData.geometry.push(geometry)
+    }
+    previousGeometry.dispose()
+
+    state.feed = mode.feed
+    state.shape = mode.shape
+    material.userData.dotMode = { ...mode }
+    rebuildEffectMaterial(material)
+    setDrawnPoints(mesh, drawn)
+    return true
   }
 
   // Materials must be tile-owned. A shared material is unsafe with
@@ -938,6 +1065,11 @@ export function createStreamingCloud(opts: {
       const engineData = tile?.engineData
       if (Array.isArray(engineData?.geometry)) engineData.geometry.push(mesh.geometry)
       if (Array.isArray(engineData?.materials)) engineData.materials.push(mesh.material)
+      // A pulled tile's point data too. material.dispose() does not free textures, and the
+      // unload plugin's pass over the material only frees the GPU copy for a later
+      // re-upload; this is what releases it when the tile is evicted.
+      const pointData = (mesh.material as any)?.[POINT_DATA_PROPERTY]
+      if (pointData && Array.isArray(engineData?.textures)) engineData.textures.push(pointData)
 
       // The quads hang under the original Points rather than replacing it: the
       // PNTS loader hands back that Points object *as* the tile root, so at this
@@ -1087,8 +1219,9 @@ export function createStreamingCloud(opts: {
         // Safety net under refreshEffects: whatever path let a tile keep a graph built
         // under other effect flags, it is caught the frame it is drawn again.
         if (show && effectMaterialStale(mesh.material)) rebuildEffectMaterial(mesh.material)
-        // The same for the dot shape, under setDotShape.
-        if (show && dotShapeOf(mesh) !== dotShape) applyDotShape(mesh, dotShape)
+        // The same for the dot mode, under setDotMode.
+        const dot = dotState(mesh)
+        if (show && dot && !sameDotMode(dot, dotMode)) applyDotMode(mesh, dotMode, tile)
       }
     }
   }
@@ -1296,21 +1429,21 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.radius = radius
       maskRadiusRequested = radius
     },
-    setDotShape(shape) {
-      dotShape = shape
+    setDotMode(mode) {
+      dotMode = { ...mode }
       let changed = 0
       // Every loaded tile, not just the visible ones — the lesson of the effect switch:
       // a tile parked in the cache keeps whatever it had and comes back with it.
-      tiles.forEachLoadedModel((model: THREE.Object3D) => {
+      tiles.forEachLoadedModel((model: THREE.Object3D, tile: any) => {
         model.traverse((object: THREE.Object3D) => {
-          if (isDotMesh(object) && applyDotShape(object, shape)) changed++
+          if (isDotMesh(object) && applyDotMode(object, dotMode, tile)) changed++
         })
       })
       // Tiles still waiting for their reveal hang under a live tile, so the walk above has
       // them already.
       return changed
     },
-    dotShape: () => dotShape,
+    dotMode: () => ({ ...dotMode }),
     setPovLoad(eyeWorld, maxPoints = Infinity) {
       if (!eyeWorld) { povActive = false; povRadius = Infinity; povPoints = 0; return }
       povActive = true
@@ -1349,7 +1482,12 @@ export function createStreamingCloud(opts: {
         const tileScene = (tile as any)?.engineData?.scene
         if (!tileScene) continue
         tileScene.traverse((object: any) => {
+          // A dot mesh is sampled through its instanced point attribute, which wraps the
+          // carrier's own position array. A pulled dot mesh has no attributes, so it reads
+          // that same array off its carrier directly — the carrier and the dot mesh share
+          // one world matrix — which keeps the sample set identical in both feeds.
           const attribute = object.geometry?.getAttribute?.(POINT_POSITION_ATTRIBUTE)
+            ?? (isDotMesh(object) ? (object.parent as any)?.geometry?.getAttribute?.('position') : null)
             ?? (object.isPoints ? object.geometry?.getAttribute?.('position') : null)
           if (!attribute || attribute.count === 0) return
           object.updateWorldMatrix(true, false)

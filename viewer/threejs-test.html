@@ -866,6 +866,11 @@
           <span class="weather-note" id="dotShapeNote">Every point is drawn as a small shape the round dot is cut out of: a square of 4 vertices and 2 triangles, or one triangle of 3 vertices around the same circle. The dot looks the same either way; the triangle is 30% larger, and those extra corner pixels are thrown away. Switching changes every loaded tile in place, so both sides compare the same tiles at the same view. The Square dot shape always draws quads. <code>?dot=tri</code> boots on triangles</span>
           <span class="weather-note" id="dotShapeReadout">—</span>
         </div>
+        <div class="row">
+          <label class="h" for="dotFeedToggle">Instancing · A/B</label>
+          <button class="act" id="dotFeedToggle" type="button" aria-pressed="false" aria-describedby="dotFeedNote">⧉ Instanced</button>
+          <span class="weather-note" id="dotFeedNote">Instanced hands the card one tiny shape per point, which it processes a point at a time. Pulled draws each tile as one long list of corners instead, and every corner looks its point up in a texture — the same data, the same 16 bytes per point, so many points share each batch of vertex work. Switching rebuilds every loaded tile in place, which costs a moment and a re-upload. <code>?feed=pull</code> boots pulled</span>
+        </div>
       </details>
       <details class="design-section" open>
         <summary>Sphere fade (test)</summary>

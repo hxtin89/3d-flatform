@@ -32,7 +32,31 @@ import { EXPERIENCE_CONFIG } from './config.ts'
  */
 export type DotShape = 'quad' | 'triangle'
 
+/**
+ * How the GPU is handed the points — step 2 of plans/plan-dot-geometry-ab.md.
+ *
+ * - **instanced**: one hardware instance per point, the corners in a tiny per-vertex
+ *   buffer and the point in per-instance attributes. Today's path. Measured: the cost is
+ *   per instance, because a 3- or 4-vertex instance fills a whole vertex batch.
+ * - **pulled**: no instancing and no per-vertex attributes at all. Each tile draws
+ *   `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
+ *   the shader derives the point from the vertex index and reads it from a per-tile data
+ *   texture, so vertices of many points share a batch. Same 16 bytes per point on the GPU.
+ */
+export type DotFeed = 'instanced' | 'pulled'
+
+export interface DotMode {
+  shape: DotShape
+  feed: DotFeed
+}
+
+export function sameDotMode(a: DotMode, b: DotMode): boolean {
+  return a.shape === b.shape && a.feed === b.feed
+}
+
 export interface DotState {
+  /** Current feed. The shape below is always the one drawn in it. */
+  feed: DotFeed
   shape: DotShape
   /** Points the tile holds — what thinning draws a prefix of. */
   points: number
@@ -154,10 +178,163 @@ export function applyDotShapeToGeometry(geometry: THREE.BufferGeometry, shape: D
  */
 export function applyDotShape(mesh: THREE.Mesh, shape: DotShape): boolean {
   const state = dotState(mesh)
-  if (!state || state.shape === shape) return false
+  // Instanced only: a pulled tile's shape lives in its geometry and its shader, so a shape
+  // change there is a rebuild — see applyDotMode in streaming.ts.
+  if (!state || state.feed !== 'instanced' || state.shape === shape) return false
   applyDotShapeToGeometry(mesh.geometry, shape)
   state.shape = shape
   return true
+}
+
+/** The corners a shape draws, in order, in drawn diameters — for the pulled shader's
+ *  lookup table, which indexes them by `vertexIndex % k`. */
+export function dotCorners(shape: DotShape): [number, number][] {
+  const corners = SHAPES[shape].corners
+  const count = shape === 'triangle' ? 3 : 4
+  const out: [number, number][] = []
+  for (let i = 0; i < count; i++) out.push([corners[i * 3], corners[i * 3 + 1]])
+  return out
+}
+
+/** Vertices (triangle) or indices (quad) a pulled tile draws per point. */
+export function pulledVerticesPerPoint(shape: DotShape): number {
+  return shape === 'triangle' ? 3 : 6
+}
+
+// ---------------------------------------------------------------- pulled feed
+
+/** Width of every point-data texture, a power of two so the shader splits the point index
+ *  into a column and a row with a mask and a shift. 1024 keeps a 270 k-point tile at 264
+ *  rows, and caps a tile at ~2 M points under WebGL2's guaranteed 2048-row minimum. */
+export const POINT_DATA_WIDTH = EXPERIENCE_CONFIG.lod.dotGeometry.textureWidth
+export const POINT_DATA_WIDTH_BITS = Math.round(Math.log2(POINT_DATA_WIDTH))
+
+/**
+ * Pack a tile's points into one RGBA32F texel each: xyz = the tile-local position, w =
+ * the colour as the exact integer `r·65536 + g·256 + b`.
+ *
+ * 16 bytes per point, the same as the instanced path's two attributes. The colour goes in
+ * as an integer-valued float rather than bit-cast bytes: every integer below 2²⁴ is exact
+ * in float32, and decoding needs only power-of-two divides, identical in WGSL and GLSL.
+ * Bit-casting RGBA8 would not survive — with alpha 255 about half of all colours land on
+ * NaN or Inf patterns. Alpha is dropped; the cloud never reads it.
+ *
+ * Every tile's texture has the same format, type and filters. Those are not in three's
+ * render cache key, but the generated shader and its bind layout depend on them, so one
+ * odd texture would reuse an incompatible pipeline.
+ */
+export function packPointData(
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  color: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null | undefined,
+): THREE.DataTexture {
+  const count = position.count
+  const width = POINT_DATA_WIDTH
+  const height = Math.max(1, Math.ceil(count / width))
+  // Whole rows: the upload copies full rows, so the last one is padded.
+  const data = new Float32Array(width * height * 4)
+  const src = position.array
+  const flat = src instanceof Float32Array && position.itemSize === 3
+    && !(position as any).isInterleavedBufferAttribute
+  const colours = color?.array
+  const colourItems = color?.itemSize ?? 0
+  const byteColours = colours instanceof Uint8Array && (colourItems === 3 || colourItems === 4)
+    && !(color as any).isInterleavedBufferAttribute
+  for (let i = 0, d = 0; i < count; i++, d += 4) {
+    if (flat) {
+      const s = i * 3
+      data[d] = src[s]; data[d + 1] = src[s + 1]; data[d + 2] = src[s + 2]
+    } else {
+      data[d] = position.getX(i); data[d + 1] = position.getY(i); data[d + 2] = position.getZ(i)
+    }
+    // No colour attribute: black, because that is what the instanced graph draws — three's
+    // attribute node falls back to vec3(0) when a geometry lacks `cloudPointColor`.
+    let r = 0, g = 0, b = 0
+    if (byteColours) {
+      const s = i * colourItems
+      r = colours[s]; g = colours[s + 1]; b = colours[s + 2]
+    } else if (color) {
+      r = Math.round(color.getX(i) * 255); g = Math.round(color.getY(i) * 255); b = Math.round(color.getZ(i) * 255)
+    }
+    data[d + 3] = r * 65536 + g * 256 + b
+  }
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType)
+  texture.minFilter = THREE.NearestFilter
+  texture.magFilter = THREE.NearestFilter
+  texture.generateMipmaps = false
+  texture.flipY = false
+  // No per-draw uv matrix work on the WebGL fallback.
+  texture.matrixAutoUpdate = false
+  texture.name = 'cloudPointData'
+  texture.userData.cloudPointData = true
+  texture.needsUpdate = true
+  return texture
+}
+
+let sharedQuadIndex: THREE.BufferAttribute | null = null
+let sharedQuadIndexPoints = 0
+
+/**
+ * The index every pulled quad draws from: `4i + {0,1,2,0,2,3}`, so `vertexIndex` carries
+ * the point (÷ 4) and the corner (mod 4) and the quad keeps the vertex reuse it has today.
+ *
+ * One buffer for every tile, grown to the largest tile seen. It starts at 2¹⁹ points
+ * (12.6 MB) because the deployed overview tile holds 270 k points, just over 2¹⁸ — starting
+ * lower grew it on the first real load. A superseded index stays with the geometries that
+ * hold it, which is still valid for their counts, and three frees it as they are disposed:
+ * only the *current* shared index is protected from a tile's dispose (buildPulledGeometry).
+ */
+function quadIndexFor(points: number): THREE.BufferAttribute {
+  if (!sharedQuadIndex || points > sharedQuadIndexPoints) {
+    const capacity = Math.max(1 << 19, 2 ** Math.ceil(Math.log2(Math.max(1, points))))
+    const index = new Uint32Array(capacity * 6)
+    for (let i = 0, j = 0; i < capacity; i++, j += 6) {
+      const v = i * 4
+      index[j] = v; index[j + 1] = v + 1; index[j + 2] = v + 2
+      index[j + 3] = v; index[j + 4] = v + 2; index[j + 5] = v + 3
+    }
+    sharedQuadIndex = new THREE.BufferAttribute(index, 1)
+    sharedQuadIndexPoints = capacity
+  }
+  return sharedQuadIndex
+}
+
+/**
+ * The geometry of a pulled tile: no attributes at all, and for the quad the shared index.
+ *
+ * The draw range is mandatory — with no position attribute three would compute an infinite
+ * vertex count and skip the draw. The bounding sphere is pinned like the instanced one's,
+ * for three's sort order.
+ *
+ * The shared index must survive any one tile's disposal: three frees the index of a
+ * geometry on its `dispose` event without counting who else holds it, and UnloadTilesPlugin
+ * disposes geometries every time a tile leaves the screen. So the current shared index is
+ * detached for the length of the dispose call and put back afterwards, when the tile may be
+ * shown again. A superseded one is left attached, so three frees it like any other; a tile
+ * that still draws with it re-uploads it from its CPU array, as three does for any index.
+ *
+ * Expected console noise: three logs `AttributeNode: Vertex attribute "position" not found
+ * on geometry.` once per pulled pipeline build. NodeMaterial.setupPosition assigns
+ * positionLocal, which is declared as a varying of the `position` attribute; the varying
+ * starts at vec3(0) and is then assigned positionNode, so nothing drawn changes. A dummy
+ * `position` attribute to silence it would clamp the non-indexed draw to its count.
+ */
+export function buildPulledGeometry(shape: DotShape, points: number): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry()
+  if (shape === 'quad') {
+    geometry.setIndex(quadIndexFor(points))
+    const baseDispose = geometry.dispose.bind(geometry)
+    geometry.dispose = () => {
+      const index = geometry.index
+      const shared = index !== null && index === sharedQuadIndex
+      if (shared) geometry.index = null
+      baseDispose()
+      if (shared) geometry.index = index
+    }
+  }
+  geometry.setDrawRange(0, points * pulledVerticesPerPoint(shape))
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), CORNER_SPHERE_RADIUS)
+  geometry.userData.pulledDots = true
+  return geometry
 }
 
 export function initDotState(mesh: THREE.Mesh, state: DotState): void {
@@ -177,14 +354,26 @@ export function loadedPoints(mesh: THREE.Mesh): number {
 }
 
 export function drawnPoints(mesh: THREE.Mesh): number {
+  const state = dotState(mesh)
+  if (state?.feed === 'pulled') {
+    return Math.round(mesh.geometry.drawRange.count / pulledVerticesPerPoint(state.shape))
+  }
   return (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount ?? 0
 }
 
-/** Draw the first `count` points. A prefix, which the arrival reorder makes a fair sample. */
+/**
+ * Draw the first `count` points. A prefix, which the arrival reorder makes a fair sample —
+ * in both feeds: a draw range of `k·n` vertices or indices draws points 0..n-1 exactly as
+ * an instance count of n does, so thinning and its dissolve carry over unchanged.
+ */
 export function setDrawnPoints(mesh: THREE.Mesh, count: number): void {
-  const full = loadedPoints(mesh)
-  ;(mesh.geometry as THREE.InstancedBufferGeometry).instanceCount =
-    Math.max(0, Math.min(full, Math.round(count)))
+  const state = dotState(mesh)
+  const n = Math.max(0, Math.min(loadedPoints(mesh), Math.round(count)))
+  if (state?.feed === 'pulled') {
+    mesh.geometry.setDrawRange(0, n * pulledVerticesPerPoint(state.shape))
+  } else {
+    ;(mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = n
+  }
 }
 
 export function dotShapeOf(mesh: THREE.Mesh): DotShape {
@@ -199,6 +388,17 @@ export function dotAreaFactor(mesh: THREE.Mesh): number {
 /** The same for a shape rather than a mesh, for the readout notes. */
 export function shapeAreaFactor(shape: DotShape): number {
   return SHAPES[shape].areaFactor
+}
+
+export function dotModeOf(mesh: THREE.Mesh): DotMode | null {
+  const state = dotState(mesh)
+  return state ? { shape: state.shape, feed: state.feed } : null
+}
+
+export function parseDotFeed(value: string | null | undefined): DotFeed | null {
+  if (value === 'pull' || value === 'pulled') return 'pulled'
+  if (value === 'inst' || value === 'instanced') return 'instanced'
+  return null
 }
 
 export function parseDotShape(value: string | null | undefined): DotShape | null {

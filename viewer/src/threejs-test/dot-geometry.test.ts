@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import * as THREE from 'three'
 import {
-  applyDotShape, applyDotShapeToGeometry, dotAreaFactor, drawnPoints, initDotState,
-  loadedPoints, setDrawnPoints, shapeAreaFactor,
+  applyDotShape, applyDotShapeToGeometry, buildPulledGeometry, dotAreaFactor, dotCorners,
+  drawnPoints, initDotState, loadedPoints, packPointData, POINT_DATA_WIDTH, setDrawnPoints,
+  shapeAreaFactor,
 } from './dot-geometry.ts'
 import { EXPERIENCE_CONFIG } from './config.ts'
 
@@ -92,7 +93,7 @@ test('a runtime switch swaps corners in place and leaves the point data alone', 
   g.instanceCount = 10
   const material = new THREE.MeshBasicMaterial()
   const mesh = new THREE.Mesh(g, material)
-  initDotState(mesh, { shape: 'quad', points: 10, orderIsFair: true })
+  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 10, orderIsFair: true })
   const versionBefore = material.version
   const position = g.getAttribute('position')
   const uv = g.getAttribute('uv')
@@ -120,7 +121,7 @@ test('a runtime switch swaps corners in place and leaves the point data alone', 
 test('drawn points are a clamped prefix of the loaded points', () => {
   const g = new THREE.InstancedBufferGeometry()
   const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial())
-  initDotState(mesh, { shape: 'quad', points: 100, orderIsFair: true })
+  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 100, orderIsFair: true })
   assert.equal(loadedPoints(mesh), 100)
   setDrawnPoints(mesh, 37.4)
   assert.equal(drawnPoints(mesh), 37)
@@ -128,4 +129,84 @@ test('drawn points are a clamped prefix of the loaded points', () => {
   assert.equal(drawnPoints(mesh), 100)
   setDrawnPoints(mesh, -3)
   assert.equal(drawnPoints(mesh), 0)
+})
+
+test('point data packs xyz and the colour as an exact integer, one texel per point', () => {
+  const n = 1500
+  const pos = new Float32Array(n * 3)
+  const col = new Uint8Array(n * 4)
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = i * 0.25; pos[i * 3 + 1] = -i; pos[i * 3 + 2] = 1000 + i * 0.001
+    col[i * 4] = i % 256; col[i * 4 + 1] = (i * 7) % 256; col[i * 4 + 2] = 255 - (i % 256); col[i * 4 + 3] = 255
+  }
+  const tex = packPointData(new THREE.BufferAttribute(pos, 3), new THREE.BufferAttribute(col, 4, true))
+  assert.equal(tex.image.width, POINT_DATA_WIDTH)
+  assert.equal(tex.image.height, Math.ceil(n / POINT_DATA_WIDTH))
+  assert.equal(tex.type, THREE.FloatType)
+  assert.equal(tex.minFilter, THREE.NearestFilter)
+  assert.equal(tex.magFilter, THREE.NearestFilter)
+  const data = tex.image.data as Float32Array
+  assert.equal(data.length, POINT_DATA_WIDTH * tex.image.height * 4, 'whole rows')
+  for (const i of [0, 1, 777, n - 1]) {
+    assert.equal(data[i * 4], Math.fround(pos[i * 3]))
+    assert.equal(data[i * 4 + 1], Math.fround(pos[i * 3 + 1]))
+    assert.equal(data[i * 4 + 2], Math.fround(pos[i * 3 + 2]))
+    // Decoded the way the shader does it: u32, then shifts and masks.
+    const packed = data[i * 4 + 3] >>> 0
+    assert.equal(packed >>> 16 & 255, col[i * 4])
+    assert.equal(packed >>> 8 & 255, col[i * 4 + 1])
+    assert.equal(packed & 255, col[i * 4 + 2])
+    assert.ok(Number.isInteger(data[i * 4 + 3]), 'exact integer in float32')
+  }
+  // RGB colours, and no colour at all (black, like the instanced feed's missing attribute).
+  const rgb = new Uint8Array([10, 20, 30])
+  const one = packPointData(new THREE.BufferAttribute(new Float32Array([1, 2, 3]), 3), new THREE.BufferAttribute(rgb, 3, true))
+  assert.equal((one.image.data as Float32Array)[3], 10 * 65536 + 20 * 256 + 30)
+  const bare = packPointData(new THREE.BufferAttribute(new Float32Array([1, 2, 3]), 3), null)
+  assert.equal((bare.image.data as Float32Array)[3], 0, 'black, like the instanced feed')
+})
+
+test('a pulled geometry has no attributes and draws k vertices per point', () => {
+  const tri = buildPulledGeometry('triangle', 500)
+  assert.equal(Object.keys(tri.attributes).length, 0)
+  assert.equal(tri.index, null)
+  assert.equal(tri.drawRange.count, 1500)
+  const quad = buildPulledGeometry('quad', 500)
+  assert.equal(Object.keys(quad.attributes).length, 0)
+  assert.equal(quad.drawRange.count, 3000)
+  const index = Array.from((quad.index!.array as Uint32Array).slice(0, 12))
+  assert.deepEqual(index, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7], '4i + {0,1,2,0,2,3}')
+  assert.equal(buildPulledGeometry('quad', 10).index, quad.index, 'one shared index')
+})
+
+test('disposing one pulled quad leaves the shared index with every other tile', () => {
+  const a = buildPulledGeometry('quad', 100)
+  const b = buildPulledGeometry('quad', 100)
+  const seen: (THREE.BufferAttribute | null)[] = []
+  // What three reads on the dispose event: the geometry's index at that moment.
+  a.addEventListener('dispose', () => seen.push(a.index))
+  a.dispose()
+  assert.deepEqual(seen, [null], 'index hidden from the dispose listeners')
+  assert.equal(a.index, b.index, 'and put back afterwards')
+  assert.ok(b.index)
+})
+
+test('drawn points follow the draw range in the pulled feed', () => {
+  for (const [shape, k] of [['triangle', 3], ['quad', 6]] as const) {
+    const mesh = new THREE.Mesh(buildPulledGeometry(shape, 200), new THREE.MeshBasicMaterial())
+    initDotState(mesh, { feed: 'pulled', shape, points: 200, orderIsFair: true })
+    assert.equal(drawnPoints(mesh), 200)
+    setDrawnPoints(mesh, 73)
+    assert.equal(mesh.geometry.drawRange.count, 73 * k)
+    assert.equal(drawnPoints(mesh), 73)
+    assert.equal(applyDotShape(mesh, shape === 'quad' ? 'triangle' : 'quad'), false, 'pulled shape is a rebuild, not an in-place swap')
+  }
+})
+
+test('the pulled corner tables are the shapes the instanced path draws', () => {
+  assert.deepEqual(dotCorners('quad'), [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]])
+  const g = new THREE.InstancedBufferGeometry()
+  applyDotShapeToGeometry(g, 'triangle')
+  const p = g.getAttribute('position')
+  assert.deepEqual(dotCorners('triangle'), [0, 1, 2].map((i) => [p.getX(i), p.getY(i)]))
 })

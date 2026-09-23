@@ -48,6 +48,8 @@ export interface BenchSample {
    *  — the dot-geometry A/B. The triangle rasterises 1.325 d² against the quad's 1, so
    *  overdraw and area per point are not comparable across a run that does not say. */
   dotShape: string
+  /** How the points reached the GPU ('instanced' or 'pulled') — step 2 of the A/B. */
+  dotFeed: string
 }
 
 export interface BenchResult extends BenchSample {

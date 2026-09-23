@@ -2,14 +2,85 @@
 // tile-owned so Three can release CPU and GPU resources as the camera moves.
 // Points are drawn as instanced quads — see createCloudMaterial for why.
 import * as THREE from 'three'
-import { PointsNodeMaterial } from 'three/webgpu'
+import { MaterialReferenceNode, PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, positionView, texture, texture3D, uv,
   vec2, vec3, vec4, float, int, mix, smoothstep, step, length, max, min, abs, exp, floor, hash,
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, renderGroup,
   pow, clamp, modelWorldMatrix, modelWorldMatrixInverse, transformDirection,
+  vertexIndex, uint, ivec2, varying, nodeObject, materialPointSize, screenDPR, viewportSize,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
+import {
+  dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
+} from './dot-geometry'
+
+/** The material property a pulled tile's point-data texture sits on. An own property, not
+ *  userData: UnloadTilesPlugin frees the textures it finds on a hidden tile's material, and
+ *  the tile cache counts their bytes. */
+export const POINT_DATA_PROPERTY = 'pointData'
+
+const INSTANCED_QUAD: DotMode = { shape: 'quad', feed: 'instanced' }
+
+/**
+ * `materialReference(name, 'texture')` with a texel fetch instead of a filtered sample.
+ *
+ * The reference is what keeps every pulled tile on one shared graph: it resolves against
+ * the material being drawn, so one node reads each tile's own texture — the same trick the
+ * basemap uses for its imagery. But r185 gives the reference no `.load()`, and its inner
+ * texture node samples through a filtering sampler, which RGBA32F point data cannot use.
+ * So the inner node is switched to a sampler-less load (and no uv matrix) when three
+ * creates it, and the texel coordinate is supplied through the builder context, three's
+ * own pattern for a custom uv. `texture().onObjectUpdate()` looks like the simpler route
+ * and is not: on WebGPU the texture node resets its update type and the callback silently
+ * never runs.
+ */
+const MaterialReferenceBase = MaterialReferenceNode as any
+class PointDataReference extends MaterialReferenceBase {
+  constructor(property: string, inputType: string) {
+    super(property, inputType)
+  }
+
+  setNodeType(uniformType: string): void {
+    super.setNodeType(uniformType)
+    ;(this as any).node.setSampler(false).setUpdateMatrix(false)
+  }
+}
+
+/** `SpriteNodeMaterial.setupVertex`, which PointsNodeMaterial's sprite path starts from. */
+const SPRITE_SETUP_VERTEX = (Object.getPrototypeOf(PointsNodeMaterial.prototype) as any).setupVertex
+
+/**
+ * PointsNodeMaterial with the sprite corner taken from a node when one is given.
+ *
+ * three's sprite path hard-codes the corner offset as the `position` attribute. A pulled
+ * tile has no attributes at all — the corner comes from the vertex index — so the offset
+ * has to be a node. With `cornerNode` unset the parent's own path runs untouched, which is
+ * what every instanced tile uses.
+ *
+ * The pulled branch repeats the parent's arithmetic: size in CSS pixels × DPR, offset by
+ * the corner, scaled to clip space and multiplied back by w. Size attenuation, rotation and
+ * scale are left out because this cloud uses none of them (`sizeAttenuation` is false and
+ * the size is built in `sizeNode`). It starts from `SpriteNodeMaterial.setupVertex`, not
+ * `super.setupVertex`, which here would be PointsNodeMaterial's and recurse back into this.
+ */
+export class CloudPointsMaterial extends PointsNodeMaterial {
+  static get type(): string {
+    return 'CloudPointsMaterial'
+  }
+
+  /** Corner offset in drawn diameters, or null to read it from the geometry. */
+  cornerNode: any = null
+
+  setupVertexSprite(builder: any): any {
+    if (!this.cornerNode) return (PointsNodeMaterial.prototype as any).setupVertexSprite.call(this, builder)
+    const mvp: any = SPRITE_SETUP_VERTEX.call(this, builder)
+    const sizeNode = (this as any).sizeNode
+    const pointSize: any = (sizeNode !== null ? vec2(sizeNode) : materialPointSize).mul(screenDPR)
+    const offset: any = vec2(this.cornerNode).mul(pointSize).div(viewportSize.div(2)).mul(mvp.w)
+    return mvp.add(vec4(offset, 0, 0))
+  }
+}
 
 export interface CloudUniforms {
   maskCenter: any
@@ -727,7 +798,7 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
  * hit the cache.
  */
 let effectsVersion = 0
-const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any }>()
+const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any; cornerNode: any }>()
 
 /** The basemap builds its own graph from the same effect flags and needs the same cache
  *  invalidation — see globe.ts. */
@@ -739,6 +810,11 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
   effectsVersion++
+  // Every cached graph carries the old version in its key and can never be looked up
+  // again. Dropping them lets them go once no material still uses them — which matters
+  // for the pulled graphs, whose texel reference otherwise keeps the last tile it drew
+  // (its material and point-data texture) reachable for the rest of the session.
+  cloudGraphCache.clear()
   return true
 }
 
@@ -824,17 +900,66 @@ const NO_TILE_DEBUG: TileDebugInfo = { level: 0, tint: 0xffffff, isLeaf: false }
  * (thinning scale, spacing, and the two inspector inputs) travel through the shared
  * `onObjectUpdate` nodes above, which read them off the material being drawn.
  */
-function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
-  const key = `${colorItemSize}|${effectsVersion}|${highPrecisionMatrices ? 1 : 0}`
+function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = INSTANCED_QUAD) {
+  // The instanced graph is the same for both shapes — the shape lives in the corner buffer.
+  // A pulled graph carries the shape itself (its vertex-index maths and corner table), and
+  // no colour attribute, so its key is the shape instead of the colour size.
+  const feedKey = mode.feed === 'pulled' ? `pulled-${mode.shape}` : `${colorItemSize}`
+  const key = `${feedKey}|${effectsVersion}|${highPrecisionMatrices ? 1 : 0}`
   const cached = cloudGraphCache.get(key)
   if (cached) return cached
 
   const thinScale = tileThinScale
   const spacingMetres = tileSpacingMetres
 
-  // Drives positionLocal, so positionWorld stays the point centre rather than a quad
-  // corner — the mask, cloud shadow and height grading keep working.
-  const pointLocal: any = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+  // The point, its colour, the round-dot coordinate and — pulled only — the corner.
+  //
+  // Instanced: per-instance attributes, and the corner and uv from the tiny per-vertex
+  // buffer three's sprite path reads.
+  //
+  // Pulled: nothing per vertex. The vertex index carries the point (÷ k) and the corner
+  // (mod k): k = 3 for the non-indexed triangle, and 4 for the quad, whose shared index
+  // holds 4i + {0,1,2,0,2,3}. The point is fetched from the tile's data texture — one
+  // texel, xyz position and the colour packed into w — and the colour and the dot
+  // coordinate are handed to the fragment stage as varyings, because the vertex index
+  // does not exist there.
+  let pointLocal: any
+  let pointColor: any
+  let dotUv: any
+  let cornerNode: any = null
+  if (mode.feed === 'pulled') {
+    const k = mode.shape === 'triangle' ? 3 : 4
+    // u32 on both sides, so the division stays integer.
+    const pointIndex: any = vertexIndex.div(uint(k))
+    const cornerIndex: any = vertexIndex.mod(uint(k))
+    const corners = dotCorners(mode.shape)
+    let corner: any = vec2(corners[corners.length - 1][0], corners[corners.length - 1][1])
+    for (let i = corners.length - 2; i >= 0; i--) {
+      corner = cornerIndex.equal(uint(i)).select(vec2(corners[i][0], corners[i][1]), corner)
+    }
+    const column: any = pointIndex.bitAnd(uint(POINT_DATA_WIDTH - 1))
+    const row: any = pointIndex.shiftRight(uint(POINT_DATA_WIDTH_BITS))
+    const texel: any = (nodeObject(new PointDataReference(POINT_DATA_PROPERTY, 'texture') as any) as any)
+      .context({ getUV: () => ivec2(int(column), int(row)) })
+    pointLocal = texel.xyz
+    const packed: any = uint(texel.w)
+    const rgb: any = vec3(
+      float(packed.shiftRight(uint(16)).bitAnd(uint(255))),
+      float(packed.shiftRight(uint(8)).bitAnd(uint(255))),
+      float(packed.bitAnd(uint(255))),
+    ).div(255)
+    pointColor = varying(rgb, 'v_cloudColor')
+    dotUv = varying(corner.add(vec2(0.5)), 'v_cloudDotUv')
+    cornerNode = corner
+  } else {
+    // Drives positionLocal, so positionWorld stays the point centre rather than a quad
+    // corner — the mask, cloud shadow and height grading keep working.
+    pointLocal = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+    pointColor = colorItemSize === 4
+      ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
+      : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
+    dotUv = uv()
+  }
   let positionNode: any = pointLocal
   /** 1 outside the dome effect; the falloff factor inside it. Multiplied into the size. */
   let sphereFade: any = null
@@ -944,10 +1069,6 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
     u.sizeSpacingMix,
   ).mul(keep)
 
-  const pointColor = colorItemSize === 4
-    ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
-    : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
-
   /**
    * The inspector's per-tile inputs: x = level, y = 1 for a leaf, z = the tile's own
    * error over the live target, w = 1 where refinement stopped. x and y are set once,
@@ -971,7 +1092,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
     // every pixel this one statement decides whether the other eighteen are shaded in
     // full before being thrown away.
     if (effects.roundDots) {
-      If(uv().sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
+      If(dotUv.sub(vec2(0.5)).length().greaterThan(0.5), () => Discard())
     }
 
     const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
@@ -1064,7 +1185,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number) {
     return mix(finished, debugColor, u.debugStrength.mul(step(0.5, u.debugMode)))
   })()
 
-  const graph = { sizeNode, positionNode, colorNode: buildColorNode() }
+  const graph = { sizeNode, positionNode, colorNode: buildColorNode(), cornerNode }
   cloudGraphCache.set(key, graph)
   return graph
 }
@@ -1087,8 +1208,11 @@ export function createCloudMaterial(
    * a baked constant: a literal here would fork the shader for every tile. */
   spacingM: number = EXPERIENCE_CONFIG.lod.pointSize.fallbackSpacingM,
   debug: TileDebugInfo = NO_TILE_DEBUG,
-): PointsNodeMaterial {
-  const material = new PointsNodeMaterial()
+  /** How the tile is drawn — see dot-geometry.ts. A pulled tile must carry its point-data
+   *  texture on `material[POINT_DATA_PROPERTY]` before it is first rendered. */
+  mode: DotMode = INSTANCED_QUAD,
+): CloudPointsMaterial {
+  const material = new CloudPointsMaterial()
   if (highPrecisionMatrices) material.contextNode = HIGH_PRECISION_CONTEXT
   material.transparent = false
   material.depthWrite = true
@@ -1117,17 +1241,18 @@ export function createCloudMaterial(
   material.userData.debugTile = { value: new THREE.Vector4(debug.level, debug.isLeaf ? 1 : 0, 1, 1) }
   material.userData.debugTint = new THREE.Color(debug.tint)
 
-  // One graph for every tile that shares these two facts; see cloudGraphFor.
-  const graph = cloudGraphFor(u, colorItemSize)
-  material.sizeNode = graph.sizeNode
-  material.positionNode = graph.positionNode
-  material.colorNode = graph.colorNode
+  // One graph for every tile that shares these facts; see cloudGraphFor. The dot mode is
+  // read at every rebuild rather than captured, because a feed switch changes it and then
+  // rebuilds through this same closure.
+  material.userData.dotMode = mode
   material.userData.rebuildEffectGraph = () => {
-    const next = cloudGraphFor(u, colorItemSize)
+    const next = cloudGraphFor(u, colorItemSize, material.userData.dotMode ?? INSTANCED_QUAD)
     material.sizeNode = next.sizeNode
     material.positionNode = next.positionNode
     material.colorNode = next.colorNode
+    material.cornerNode = next.cornerNode
   }
+  material.userData.rebuildEffectGraph()
   // Stamped so a tile that sat hidden in the cache through a switch can be recognised
   // and rebuilt when it is drawn again — see effectMaterialStale and applyRenderGate.
   material.userData.effectsVersion = effectsVersion
