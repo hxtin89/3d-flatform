@@ -17,6 +17,7 @@ import {
 import { EXPERIENCE_CONFIG } from './config'
 import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
+import { releaseVertexArraysOnDispose } from './vertex-arrays'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -202,8 +203,13 @@ export function createGlobe(opts: {
   // world-anchored vignette dim — in vignette mode the imagery fades to black around
   // the mask radius, so the point-cloud cutout blends seamlessly instead of sitting
   // as a bright hard circle on the map (dim is 1 in the other mask modes).
+  //
+  // And on the WebGL2 fallback each tile's vertex-array objects are deleted with its
+  // geometry, which three never does — see vertex-arrays.ts. Registered here because the
+  // tile has not been drawn yet, so the listener lands before three's own.
   tiles.addEventListener('load-model', ({ scene: s }: any) => {
     s.traverse((o: any) => {
+      if (o.geometry) releaseVertexArraysOnDispose(renderer, o.geometry)
       const map = o.material?.map
       if (!map) return
       map.flipY = false
