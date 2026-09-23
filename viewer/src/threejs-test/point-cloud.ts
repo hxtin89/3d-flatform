@@ -820,6 +820,21 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
 }
 
 /**
+ * Forget the pulled feed's graphs, once no tile draws with them.
+ *
+ * Each pulled graph's texel reference keeps pointing at the last material it drew, and its
+ * inner texture node at that tile's point-data texture: three updates them per draw and
+ * never resets them. After a switch back to instanced that is the only thing still holding
+ * the texture's array — up to 4.3 MB per graph for the overview tile. Dropping the graphs
+ * lets it go. A later return to the pulled feed builds each graph once more.
+ */
+export function dropPulledCloudGraphs(): void {
+  for (const key of [...cloudGraphCache.keys()]) {
+    if (key.startsWith('pulled-')) cloudGraphCache.delete(key)
+  }
+}
+
+/**
  * Rebuild one material's node graph under the current flags. Materials record how to
  * rebuild themselves at creation, because the graph is built from things only the
  * creator has — the tile's own texture, its colour item size. The point cloud swaps all

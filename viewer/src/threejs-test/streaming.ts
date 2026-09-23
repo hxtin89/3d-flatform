@@ -7,7 +7,7 @@ import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-rend
 import { recordArrival } from './arrival-cost'
 import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
-  effectMaterialStale,
+  effectMaterialStale, dropPulledCloudGraphs,
   POINT_COLOR_ATTRIBUTE, POINT_DATA_PROPERTY, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
@@ -16,8 +16,8 @@ import {
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import {
   applyDotShape, applyDotShapeToGeometry, buildPulledGeometry, dotAreaFactor, dotState,
-  drawnPoints, initDotState, isDotMesh, loadedPoints, packPointData, sameDotMode,
-  setDrawnPoints, type DotMode,
+  drawnPoints, initDotState, isDotMesh, loadedPoints, packPointData, prepareSharedQuadIndex,
+  sameDotMode, setDrawnPoints, type DotMode,
 } from './dot-geometry'
 import {
   adoptPointData, packPointsForPulling, pointDataForCarrier, PREFIX_SAMPLE_ROUNDS,
@@ -627,6 +627,7 @@ export function createStreamingCloud(opts: {
   // dot-geometry.ts, which owns both, and setDotMode below — which can also drop the
   // instancing and draw the tile from a data texture instead.
   let dotMode: DotMode = { ...(opts.dotMode ?? { shape: 'quad', feed: 'instanced' }) }
+  if (dotMode.feed === 'pulled' && dotMode.shape === 'quad') prepareSharedQuadIndex()
 
   /**
    * Widen a 3-byte colour to 4 bytes here, so three does not do it inside the render pass.
@@ -894,6 +895,12 @@ export function createStreamingCloud(opts: {
       }
     }
 
+    // Drops every render object of the material now, as the unload plugin does on each
+    // hide. Without it, a tile the dome's render gate keeps off the render list holds its
+    // old render object — and through it the old geometry and the arrays it wrapped — until
+    // it is drawn again. The next draw rebuilds anyway: the graph swap below bumps the
+    // material version.
+    material.dispose()
     const previousGeometry = mesh.geometry
     mesh.geometry = geometry
     if (Array.isArray(engineData?.geometry)) {
@@ -1340,6 +1347,7 @@ export function createStreamingCloud(opts: {
     },
     setDotMode(mode) {
       dotMode = { ...mode }
+      if (dotMode.feed === 'pulled' && dotMode.shape === 'quad') prepareSharedQuadIndex()
       let changed = 0
       // Every loaded tile, not just the visible ones — the lesson of the effect switch:
       // a tile parked in the cache keeps whatever it had and comes back with it.
@@ -1350,6 +1358,9 @@ export function createStreamingCloud(opts: {
       })
       // Tiles still waiting for their reveal hang under a live tile, so the walk above has
       // them already.
+      // Every loaded tile now draws with an instanced graph, and tiles still in flight build
+      // in the new mode, so the cached pulled graphs only hold the last texture they drew.
+      if (dotMode.feed === 'instanced') dropPulledCloudGraphs()
       return changed
     },
     dotMode: () => ({ ...dotMode }),

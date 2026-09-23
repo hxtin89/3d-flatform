@@ -47,10 +47,12 @@ Conditions for a fair answer (from the adversarial review):
   in config.ts.
 - Boot: `?dot=quad|tri` and `?feed=inst|pull` (for cold-load arrival cost only).
 - Runtime: a new panel section **"Dot geometry (test)"** after "Point spacing & size",
-  with two toggles, and `__wild.dots.set({ shape, feed })` returning a promise that
-  resolves after the rebuild, `renderer.compileAsync`, and 60 settle frames.
-  `__wild.dots.state()` reports the effective mode, tiles per mode, fallbacks and bytes
-  per point.
+  with two toggles. As built, the console API is `__wild.dots.set('tri' | 'quad' |
+  'pulled' | 'instanced', ...)`, which returns `{ requested, effective, changed }`
+  synchronously, and a `__wild.dots.state` getter reporting the requested, effective and
+  streamed mode, tiles per mode and CPU bytes per point. There are no fallbacks. Callers
+  settle frames themselves before sampling; `__poses.bench` already waits for 30 quiet
+  frames. (Planned first as a promise that settled after the rebuild; not needed.)
 - **Effective shape = `roundDots ? shape : 'quad'`.** The triangle only works as a round
   dot; Square always draws quads, in both feeds.
 
@@ -97,9 +99,11 @@ unchanged — a drawRange prefix of k·n vertices draws points 0..n-1 exactly li
   tile bound, which only works because the quad's is 0.707 (the triangle's is ~1.16). As
   built, the disc reject now runs only for the carrier `Points` and still only above 1 m, so
   the sample set is byte-identical to before; the dot geometry's sphere is also pinned to
-  0.707 for both shapes, which keeps three's opaque sort order unchanged. Removing the
-  double sampling (carrier plus dot mesh) is left for step 2, where the pulled dot mesh
-  carries no point attribute and drops out on its own.
+  0.707 for both shapes, which keeps three's opaque sort order unchanged. The double
+  sampling (carrier plus dot mesh) was meant to drop out in step 2; instead step 2 kept it
+  on purpose, the pulled dot mesh reading its carrier, so both feeds sample identically.
+  It predates the branch, and removing it (with `probeMinSamples` halved, since the gate
+  was tuned with the doubling) is on the optimisation list.
 - `mesh.raycast = () => {}` on dot meshes (GlobeControls raycasts the whole scene).
 - `shadedPixelArea` × `dotAreaFactor`; the overdraw comment's "4/π" becomes 1.69 for the
   triangle. The render bench records effective shape and feed.
@@ -113,8 +117,12 @@ As built, the design below held, with these changes from review:
 - A tile with no colour attribute packs black, matching what the instanced graph draws.
 - A pulled tile that changes shape keeps its texture; only a feed change packs or frees it.
 - The shared quad index starts at 2¹⁹ points (the 270 k overview tile is above 2¹⁸). A
-  pulled geometry detaches it on dispose only while it is still the current shared index,
-  so an outgrown index is freed with its last user.
+  pulled geometry detaches it on dispose only while it is still the current shared index.
+  An outgrown index is freed by the first holder disposed after the growth (the others
+  re-upload it), and one nobody holds at that moment stays in three's info map. Growth
+  needs a tile above 2¹⁹ points, which no current pack has. The index is built when the
+  stream starts in or switches to the pulled quad, outside any tile's arrival timer, and
+  the upload probe books its upload apart (`uploads.shared*`).
 - The graph cache is cleared when an effect is toggled, so old graphs are not retained.
 - `renderer.initTexture()` at arrival was not added: the texture uploads on first draw,
   like the instanced attributes, and the upload probe counts it there.

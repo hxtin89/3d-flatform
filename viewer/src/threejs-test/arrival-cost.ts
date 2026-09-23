@@ -22,6 +22,7 @@
  * work, read from the console via `window.__cost`. Keeping it out of `updateHud` also
  * keeps it out of the per-frame DOM writes it is meant to be measuring.
  */
+import { SHARED_QUAD_INDEX_NAME } from './dot-geometry'
 
 /** Big enough to cover a long drag at 120 Hz, small enough to stay a cheap sort. */
 const FRAME_WINDOW = 1200
@@ -96,6 +97,11 @@ let firstCount = 0
 let reMs = 0
 let reBytes = 0
 let reCount = 0
+/** Buffers shared by every tile, uploaded once — today only the pulled quad's shared index.
+ *  Booked apart so the per-tile counts and the worst upload frame stay per tile. */
+let sharedMs = 0
+let sharedBytes = 0
+let sharedCount = 0
 let worstUploadFrameMs = 0
 let uploadFrameMs = 0
 let uploadFrameAt = -1
@@ -120,6 +126,10 @@ export function installUploadProbe(renderer: any): boolean {
     original(attribute, type)
     const ms = performance.now() - startedAt
     const bytes = attribute?.array?.byteLength ?? 0
+    if (attribute?.name === SHARED_QUAD_INDEX_NAME) {
+      sharedMs += ms; sharedBytes += bytes; sharedCount++
+      return
+    }
     // Same rAF turn as the previous upload? Then they share a frame, and it is the sum
     // that the viewer feels, not the individual call.
     if (uploadFrameAt !== frameOrdinal) { uploadFrameAt = frameOrdinal; uploadFrameMs = 0 }
@@ -244,6 +254,11 @@ export interface CostReport {
     reMB: number
     /** The worst single frame's total upload time, summed across attributes. */
     worstFrameMs: number
+    /** Buffers every tile shares, uploaded once (the pulled quad's index) — left out of
+     *  the counts above and of the worst frame. */
+    sharedCount: number
+    sharedMs: number
+    sharedMB: number
   }
   shaders: ReturnType<typeof programCounts>
 }
@@ -298,6 +313,9 @@ export function costReport(renderer?: any): CostReport {
       reMs: round(reMs),
       reMB: round(reBytes / 1e6),
       worstFrameMs: round(worstUploadFrameMs),
+      sharedCount,
+      sharedMs: round(sharedMs),
+      sharedMB: round(sharedBytes / 1e6),
     },
     shaders: programCounts(renderer),
   }
@@ -315,5 +333,6 @@ export function resetCost(): void {
   // The probe stays installed — only its counters reset. Re-wrapping would stack wrappers.
   firstMs = 0; firstBytes = 0; firstCount = 0
   reMs = 0; reBytes = 0; reCount = 0
+  sharedMs = 0; sharedBytes = 0; sharedCount = 0
   worstUploadFrameMs = 0; uploadFrameMs = 0; uploadFrameAt = -1
 }

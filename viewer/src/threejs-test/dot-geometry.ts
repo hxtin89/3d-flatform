@@ -361,15 +361,21 @@ export function unpackPointData(view: THREE.BufferAttribute, hasColour: boolean)
 let sharedQuadIndex: THREE.BufferAttribute | null = null
 let sharedQuadIndexPoints = 0
 
+/** The name the shared quad index carries, so the upload probe in arrival-cost.ts can book
+ *  its one-off upload apart from the per-tile ones. */
+export const SHARED_QUAD_INDEX_NAME = 'sharedQuadIndex'
+
 /**
  * The index every pulled quad draws from: `4i + {0,1,2,0,2,3}`, so `vertexIndex` carries
  * the point (÷ 4) and the corner (mod 4) and the quad keeps the vertex reuse it has today.
  *
  * One buffer for every tile, grown to the largest tile seen. It starts at 2¹⁹ points
  * (12.6 MB) because the deployed overview tile holds 270 k points, just over 2¹⁸ — starting
- * lower grew it on the first real load. A superseded index stays with the geometries that
- * hold it, which is still valid for their counts, and three frees it as they are disposed:
- * only the *current* shared index is protected from a tile's dispose (buildPulledGeometry).
+ * lower grew it on the first real load. Growth needs a tile above 2¹⁹ points, which no
+ * current pack has (the pipeline caps tiles at 150 k). If it happens, a superseded index
+ * is no longer protected from a tile's dispose (buildPulledGeometry): the first holder
+ * disposed frees its GPU copy and the others re-upload it on their next draw, and one no
+ * geometry holds at the moment of growth stays in three's info map for the session.
  */
 function quadIndexFor(points: number): THREE.BufferAttribute {
   if (!sharedQuadIndex || points > sharedQuadIndexPoints) {
@@ -381,9 +387,19 @@ function quadIndexFor(points: number): THREE.BufferAttribute {
       index[j + 3] = v; index[j + 4] = v + 2; index[j + 5] = v + 3
     }
     sharedQuadIndex = new THREE.BufferAttribute(index, 1)
+    sharedQuadIndex.name = SHARED_QUAD_INDEX_NAME
     sharedQuadIndexPoints = capacity
   }
   return sharedQuadIndex
+}
+
+/**
+ * Build the shared quad index now, if the pulled quad will need it. Called when the stream
+ * starts in, or switches to, the pulled quad, so its 2–4 ms fill lands there and not
+ * inside the first tile's arrival timer.
+ */
+export function prepareSharedQuadIndex(): void {
+  quadIndexFor(0)
 }
 
 /**

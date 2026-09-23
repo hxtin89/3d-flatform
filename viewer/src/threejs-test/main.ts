@@ -4685,24 +4685,33 @@ async function main(): Promise<void> {
      */
     dots: {
       set(...values: string[]) {
+        // Every argument is checked before anything changes: a typo halfway through must
+        // not leave the requested mode ahead of what the stream draws.
+        let shape = requestedDotShape
+        let feed = requestedDotFeed
         for (const value of values) {
-          const shape = parseDotShape(value)
-          const feed = parseDotFeed(value)
-          if (shape) requestedDotShape = shape
-          else if (feed) requestedDotFeed = feed
+          const parsedShape = parseDotShape(value)
+          const parsedFeed = parseDotFeed(value)
+          if (parsedShape) shape = parsedShape
+          else if (parsedFeed) feed = parsedFeed
           else throw new Error(`expected quad, tri, pulled or instanced, got ${value}`)
         }
+        requestedDotShape = shape
+        requestedDotFeed = feed
         const changed = applyDotShapeSetting()
         return { requested: { shape: requestedDotShape, feed: requestedDotFeed }, effective: effectiveDotMode(), changed }
       },
       get state() {
         const tiles: Record<string, number> = {}
         // CPU bytes held per point, per feed: every distinct ArrayBuffer a loaded dot mesh
-        // keeps reachable, counted once, by where it hangs — the carrier's arrays, the dot
-        // geometry's (the shared quad index and the corner buffers left out), the point-data
-        // texture, and the loader's copy of the tile on engineData.metadata. Leaves out the
-        // graph cache's last-drawn material and the mask's in-flight tile, so a heap
-        // snapshot reads a little higher.
+        // keeps reachable, counted once. A buffer held in two places is booked to the first
+        // holder in this order: the point-data texture, the carrier's arrays, the dot
+        // geometry's (the shared quad index and the corner buffers left out), and the
+        // loader's copy of the tile on engineData.metadata. So a pulled carrier's view of
+        // its texture reads under `texture`, and an instanced geometry's wrap of the
+        // carrier's arrays under `carrier`. Leaves out the mask's in-flight tile and
+        // anything held by a stale render object of a tile the dome keeps hidden, so a heap
+        // snapshot can read a little higher.
         type Bytes = { points: number; carrier: number; dotGeometry: number; texture: number; tileMetadata: number; packedCarriers: number }
         const bytes: Record<string, Bytes> = {}
         const seen = new Set<ArrayBufferLike>()
@@ -4719,6 +4728,7 @@ async function main(): Promise<void> {
             tiles[key] = (tiles[key] ?? 0) + 1
             const entry = bytes[dot.feed] ??= { points: 0, carrier: 0, dotGeometry: 0, texture: 0, tileMetadata: 0, packedCarriers: 0 }
             entry.points += dot.points
+            count(entry, 'texture', (object.material as any)?.pointData?.image?.data?.buffer)
             const carrier = (object.parent as any)?.geometry as THREE.BufferGeometry | undefined
             if (carrier) {
               for (const attribute of Object.values(carrier.attributes)) count(entry, 'carrier', (attribute as any).array?.buffer)
@@ -4727,7 +4737,6 @@ async function main(): Promise<void> {
             for (const attribute of Object.values(object.geometry.attributes)) {
               if (attribute.count > 8) count(entry, 'dotGeometry', (attribute as any).array?.buffer)
             }
-            count(entry, 'texture', (object.material as any)?.pointData?.image?.data?.buffer)
             const metadata = tile?.engineData?.metadata
             count(entry, 'tileMetadata', metadata?.featureTable?.buffer)
             count(entry, 'tileMetadata', metadata?.batchTable?.buffer)
@@ -5063,11 +5072,12 @@ async function main(): Promise<void> {
       overdraw: Number(lastOverdraw.toFixed(2)),
       areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
       dots: roundDots ? 'A round' : 'B square',
-      // The shape actually drawn, after the Square rule. Overdraw and area per point change
-      // units between the two (the triangle rasterises 1.325 d², the quad 1 d²), so a
-      // sample that does not say which one produced it cannot be compared.
-      dotShape: effectiveDotShape(),
-      dotFeed: requestedDotFeed,
+      // What the stream actually draws, after the Square rule. Overdraw and area per point
+      // change units between the shapes (the triangle rasterises 1.325 d², the quad 1 d²),
+      // so a sample that does not say which one produced it cannot be compared. Read from
+      // the stream rather than the request, which can run ahead of it.
+      dotShape: stream?.dotMode().shape ?? effectiveDotShape(),
+      dotFeed: stream?.dotMode().feed ?? requestedDotFeed,
     }),
     // The boot and flight brakes hold the error target far above the working band, so a
     // measurement taken under them describes the brake and not the setting being tested.
