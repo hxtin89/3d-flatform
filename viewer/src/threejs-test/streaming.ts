@@ -789,10 +789,43 @@ export function createStreamingCloud(opts: {
    * buffers alive for good. Dropping three's record here makes the next draw set the
    * geometry up afresh and register a new listener. Added at build time, so it runs before
    * three's own listener; that one needs nothing the record held.
+   *
+   * On the WebGL2 fallback it also deletes the vertex-array objects built for the
+   * geometry's attributes. three r185 caches one VAO per attribute set, keyed by the
+   * attributes' upload ids, and never deletes any: `destroyAttribute` only deletes the
+   * buffers. A buffer still attached to a VAO that is not bound keeps its storage (GLES 3.0
+   * §5.1.3), so every instanced rebuild after a feed switch, and every hide and re-show by
+   * the unload plugin, left one more copy of the tile's point buffers in the driver —
+   * while `renderer.info` subtracted their bytes and read stable. Runs before three's
+   * listener, while the upload ids are still readable. The pulled feed has no vertex
+   * attributes, so all its tiles share one VAO under the empty key, which this leaves be.
    */
   function forgetOnDispose<T extends THREE.BufferGeometry>(geometry: T): T {
-    geometry.addEventListener('dispose', () => { (renderer as any)?._geometries?.delete?.(geometry) })
+    geometry.addEventListener('dispose', () => {
+      releaseVertexArrays(geometry)
+      ;(renderer as any)?._geometries?.delete?.(geometry)
+    })
     return geometry
+  }
+
+  function releaseVertexArrays(geometry: THREE.BufferGeometry): void {
+    const backend = (renderer as any)?.backend
+    if (!backend?.isWebGLBackend || !backend.vaoCache || typeof backend.has !== 'function') return
+    const ids = new Set<string>()
+    for (const attribute of Object.values(geometry.attributes)) {
+      if (!backend.has(attribute)) continue
+      const id = backend.get(attribute)?.id
+      if (id !== undefined) ids.add(String(id))
+    }
+    if (!ids.size) return
+    const gl = backend.gl as WebGL2RenderingContext
+    for (const key of Object.keys(backend.vaoCache)) {
+      if (!key.split(':').some((token) => ids.has(token))) continue
+      const vao = backend.vaoCache[key]
+      if (backend.state?.currentVAO === vao) backend.state.resetVertexState()
+      gl.deleteVertexArray(vao)
+      delete backend.vaoCache[key]
+    }
   }
 
   /**
