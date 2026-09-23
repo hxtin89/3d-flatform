@@ -1,8 +1,9 @@
 # Plan: dot geometry A/B — quad or triangle, instanced or vertex-pulled
 
 Branch `sbb/dot-geometry-ab`, off `SphereFade` at f84d92c. Written 2026-09-23. Steps 1 and 2
-built and verified on 2026-09-23; results under "Step 2 results" below. Open: the arrival
-cost, and the protocol's visible-window and phone runs.
+built and verified on 2026-09-23; results under "Step 2 results" below. The arrival cost
+was fixed the same day by packing during the reorder. Open: the protocol's visible-window
+and phone runs, and the triangle rims by eye.
 
 ## Why
 
@@ -127,9 +128,10 @@ Per tile:
   last row padded, `needsUpdate = true`, `renderer.initTexture()` at arrival so the upload
   lands in the arrival timer. Every tile texture must have the same format and type — they
   are not in the cache key, but the codegen depends on them.
-- Stored as an **own property** `material.pointData` (not userData), so the tile LRU counts
-  its bytes and the unload plugin's texture loop frees it; also registered in the tile's
-  disposal lists.
+- Stored as an **own property** `material.pointData` (not userData), so the unload plugin's
+  texture loop frees its GPU copy; also registered in the tile's disposal lists. (The
+  original reasoning that the tile LRU counts its bytes was wrong: 3d-tiles-renderer
+  estimates a tile's bytes once, before `load-model`, and never sees the texture.)
 - Geometry: plain `BufferGeometry` with **no attributes**. Triangle: non-indexed,
   `drawRange` mandatory (without it three computes an infinite count and skips the draw).
   Quad: one shared Uint32 index `4i + {0,1,2,0,2,3}` sized from the largest
@@ -164,10 +166,11 @@ Traps to design out:
 - The arrival-cost upload probe only wraps attribute uploads; wrap texture uploads too, or
   the pulled side looks free.
 
-Memory: GPU stays at 16 B per point. CPU gains 16 B per point on this branch (three keeps
-the texture's source array for re-upload after an unload). Acceptable for the test,
-reported per arm; the shippable fix is to make the texture array the only CPU store and
-point the ground-patch mask and `sampleGroundZ` at it with stride 4.
+Memory: GPU stays at 16 B per point. CPU first gained 16 B per point on this branch (three
+keeps the texture's source array for re-upload after an unload). Fixed with the arrival
+cost: the texture array is now the only CPU store in the pulled feed, and the carrier holds
+a four-float view of it, which the ground-patch mask and `sampleGroundZ` read by item size.
+See "Arrival fix" under the results.
 
 ## Spike gate before step 2 is built out
 
@@ -236,7 +239,8 @@ textures plus 1.0 MB of attributes. 16 bytes per point either way. The shared qu
 (2¹⁹ points, 12.6 MB) stays allocated after leaving the pulled quad, cached for the next
 switch; free it if the pulled feed ships without the quad.
 
-**Arrival cost: fails the criterion as measured.** Cold boots, same landing: instanced
+**Arrival cost: failed the criterion as first built (fixed, see "Arrival fix" below).**
+Cold boots, same landing: instanced
 median 1.7 ms per 75 k-point tile (29 ns per point), pulled median 2.6 ms (45 ns per point).
 The difference is `packPointData`: 0.7 ms per 75 k points in isolation, and hoisting its
 branches does not change that. The hidden renderer runs JavaScript slowly (a strided
@@ -245,11 +249,46 @@ the CPU-heap note already asks for: have `reorderForPrefixSampling`, which copie
 arrays anyway, write the texture layout directly, so the texture array is the only CPU
 store and packing costs nothing extra.
 
+**Arrival fix, 2026-09-23: passes.** The pulled feed now packs during the reorder
+(`packPointsForPulling` in point-order.ts): the same permutation, written straight into
+the texture layout, bit-identical to packing afterwards. The carrier keeps a four-float
+view of the texture's array (`adoptPointData`) instead of arrays of its own, and a switch
+back to instanced unpacks it first. Chosen over a worker, a lazy pack at first draw,
+storage buffers and a faster separate loop: the reorder already writes 16 bytes per point,
+which is the texture's size, so fusing removes the second pass instead of moving it.
+Measured, cold boots with `?preset=strong`, landing plus a 40° tilt, hidden pane:
+
+| | Arrival median per 75 k tile | ns per point | CPU bytes per point |
+|---|---|---|---|
+| instanced, before | 1.1 ms | 17 | 31 |
+| pulled, before | 1.7 ms | 32 | 47 |
+| pulled, after | 1.1 ms | 19 | 16 |
+| instanced, after | 1.4 ms (noise; code unchanged) | 37 (one 70 ms outlier) | 16 |
+
+Timed directly on one real 75 k-point tile in the page, interleaved, 60 runs: instanced
+reorder 1.5 ms, the old pulled pair 2.7 ms, the fused pass 0.6 ms. The fused pass is the
+cheaper of the two because it writes one Float32 array instead of a Float32 and a Uint8.
+
+The CPU drop to 16 bytes per point in both feeds needed a second fix
+(commit 691443e): the loader's result object, kept as `engineData.metadata`, held the
+tile's whole PNTS body, about 15 bytes per point. Clearing it on the model alone had
+freed nothing.
+
+Checked after the change, WebGPU and WebGL2: frozen-frame pixel identity between feeds for
+both shapes and across round trips (max difference 0), `sampleGroundZ` identical in both
+feeds (407 268 samples), GPU memory and CPU bytes back to the same values after every
+switch, and an unload and re-show cycle leaves pulled identical to instanced. The ground
+patch mask resumes a tile that is switched mid-splat instead of dropping it.
+
+Still open: with thinning off, or on a pre-ordered pack, the pulled feed runs the one-round
+pack while the instanced feed wraps the arrays without a copy — about +0.4 ms per 75 k
+tile there. Only a worker or a layout shipped by the pipeline goes below that.
+
 **Against the decision criteria.** Saves at least 25 % at nadir and tilt40: yes, by a
 wide margin. Not slower on WebGL2: yes, faster on this machine; phones not run. GPU memory
-at 16 bytes per point: yes. Arrival within ~0.3 ms: no, fix above. CPU heap fix planned:
-yes, the same fix. Pulled triangle over pulled quad: at least 10 % at both poses, yes; the
-rims by eye are still to judge.
+at 16 bytes per point: yes. Arrival within ~0.3 ms: yes after the fix, for the shipped
+path with thinning on. CPU memory: 16 bytes per point in both feeds. Pulled triangle over
+pulled quad: at least 10 % at both poses, yes; the rims by eye are still to judge.
 
 **Not yet run:** the visible Chrome window with unquantised timestamps, the `horizon`
 pose, zero point size, thinning off, and the Android and Apple phones.

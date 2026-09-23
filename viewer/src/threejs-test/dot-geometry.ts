@@ -63,6 +63,10 @@ export interface DotState {
   /** False only for the layouts the arrival reorder declines; those are drawn whole,
    *  because a prefix of an unreordered tile is a crop rather than a sample. */
   orderIsFair: boolean
+  /** Whether the tile arrived with a colour attribute. A pulled tile's carrier gives its
+   *  colour up to the texture, so a switch back to instanced needs this to know whether
+   *  to recreate one — a tile without colour draws black in both feeds. */
+  hasColour: boolean
   /** The thinning ramp's current keep fraction, or undefined before its first frame. */
   keepNow?: number
 }
@@ -209,9 +213,19 @@ export function pulledVerticesPerPoint(shape: DotShape): number {
 export const POINT_DATA_WIDTH = EXPERIENCE_CONFIG.lod.dotGeometry.textureWidth
 export const POINT_DATA_WIDTH_BITS = Math.round(Math.log2(POINT_DATA_WIDTH))
 
+/** Rows of a point-data texture holding `points` texels — whole rows, at least one. */
+export function pointDataRows(points: number): number {
+  return Math.max(1, Math.ceil(points / POINT_DATA_WIDTH))
+}
+
+/** Floats a point-data texture's array holds: whole rows of RGBA, the last one padded. */
+export function pointDataLength(points: number): number {
+  return POINT_DATA_WIDTH * pointDataRows(points) * 4
+}
+
 /**
- * Pack a tile's points into one RGBA32F texel each: xyz = the tile-local position, w =
- * the colour as the exact integer `r·65536 + g·256 + b`.
+ * Wrap a packed array as a tile's point-data texture: one RGBA32F texel per point, xyz =
+ * the tile-local position, w = the colour as the exact integer `r·65536 + g·256 + b`.
  *
  * 16 bytes per point, the same as the instanced path's two attributes. The colour goes in
  * as an integer-valued float rather than bit-cast bytes: every integer below 2²⁴ is exact
@@ -219,19 +233,44 @@ export const POINT_DATA_WIDTH_BITS = Math.round(Math.log2(POINT_DATA_WIDTH))
  * Bit-casting RGBA8 would not survive — with alpha 255 about half of all colours land on
  * NaN or Inf patterns. Alpha is dropped; the cloud never reads it.
  *
- * Every tile's texture has the same format, type and filters. Those are not in three's
- * render cache key, but the generated shader and its bind layout depend on them, so one
- * odd texture would reuse an incompatible pipeline.
+ * `data` must hold `pointDataLength(points)` floats: the upload copies whole rows, and the
+ * padding texels past the last point are never drawn.
+ *
+ * Every tile's texture goes through here, so every one has the same format, type and
+ * filters. Those are not in three's render cache key, but the generated shader and its
+ * bind layout depend on them, so one odd texture would reuse an incompatible pipeline.
+ */
+export function makePointDataTexture(data: Float32Array, points: number): THREE.DataTexture {
+  const texture = new THREE.DataTexture(
+    data, POINT_DATA_WIDTH, pointDataRows(points), THREE.RGBAFormat, THREE.FloatType,
+  )
+  texture.minFilter = THREE.NearestFilter
+  texture.magFilter = THREE.NearestFilter
+  texture.generateMipmaps = false
+  texture.flipY = false
+  // No per-draw uv matrix work on the WebGL fallback.
+  texture.matrixAutoUpdate = false
+  texture.name = 'cloudPointData'
+  // Read by the upload probe in arrival-cost.ts, which times these uploads separately.
+  texture.userData.cloudPointData = true
+  texture.needsUpdate = true
+  return texture
+}
+
+/**
+ * Pack any position and colour layout into a point-data texture — the general path.
+ *
+ * The arrival path does not come here: `packPointsForPulling` in point-order.ts writes the
+ * texture layout in the same pass as the reorder, for the layouts PNTS ships. This one is
+ * for whatever that declines, and it copies, so a carrier packed this way keeps its own
+ * arrays next to the texture.
  */
 export function packPointData(
   position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
   color: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null | undefined,
 ): THREE.DataTexture {
   const count = position.count
-  const width = POINT_DATA_WIDTH
-  const height = Math.max(1, Math.ceil(count / width))
-  // Whole rows: the upload copies full rows, so the last one is padded.
-  const data = new Float32Array(width * height * 4)
+  const data = new Float32Array(pointDataLength(count))
   const src = position.array
   const flat = src instanceof Float32Array && position.itemSize === 3
     && !(position as any).isInterleavedBufferAttribute
@@ -257,17 +296,66 @@ export function packPointData(
     }
     data[d + 3] = r * 65536 + g * 256 + b
   }
-  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType)
-  texture.minFilter = THREE.NearestFilter
-  texture.magFilter = THREE.NearestFilter
-  texture.generateMipmaps = false
-  texture.flipY = false
-  // No per-draw uv matrix work on the WebGL fallback.
-  texture.matrixAutoUpdate = false
-  texture.name = 'cloudPointData'
-  texture.userData.cloudPointData = true
-  texture.needsUpdate = true
-  return texture
+  return makePointDataTexture(data, count)
+}
+
+/**
+ * Is this the carrier view of a point-data texture — xyz plus packed colour, four floats
+ * per point? That is how a pulled tile's carrier holds its points (see adoptPointData in
+ * point-order.ts), and nothing else in the viewer builds a four-float position.
+ */
+export function isPackedPositionView(
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null | undefined,
+): position is THREE.BufferAttribute {
+  return Boolean(position) && position!.itemSize === 4 && position!.array instanceof Float32Array
+    && !(position as any).isInterleavedBufferAttribute
+}
+
+/**
+ * The texture a packed carrier view belongs to, rebuilt around the same array.
+ *
+ * The view covers exactly its points; the texture needs whole rows. When the view starts
+ * the padded array it was cut from — always, for a view adoptPointData made — the texture
+ * wraps that array again and nothing is copied. Otherwise the texels are copied into a
+ * fresh padded array, and the caller should re-adopt so only one copy stays.
+ */
+export function textureFromPackedView(view: THREE.BufferAttribute): THREE.DataTexture {
+  const points = view.count
+  const length = pointDataLength(points)
+  const src = view.array as Float32Array
+  if (src.byteOffset === 0 && src.buffer.byteLength >= length * 4) {
+    return makePointDataTexture(new Float32Array(src.buffer, 0, length), points)
+  }
+  const data = new Float32Array(length)
+  data.set(src.subarray(0, points * 4))
+  return makePointDataTexture(data, points)
+}
+
+/**
+ * Undo the packing: tight Float32 xyz, and — when the tile had colour — RGBA8 with alpha
+ * 255, which is what the instanced feed wraps. The colour decode is the shader's, in JS:
+ * every packed value is an integer below 2²⁴, so `>>> 0` recovers it exactly.
+ */
+export function unpackPointData(view: THREE.BufferAttribute, hasColour: boolean): {
+  position: Float32Array
+  color: Uint8Array | null
+} {
+  const count = view.count
+  const src = view.array as Float32Array
+  const position = new Float32Array(count * 3)
+  for (let i = 0, s = 0, d = 0; i < count; i++, s += 4, d += 3) {
+    position[d] = src[s]; position[d + 1] = src[s + 1]; position[d + 2] = src[s + 2]
+  }
+  if (!hasColour) return { position, color: null }
+  const color = new Uint8Array(count * 4)
+  for (let i = 0, s = 3, d = 0; i < count; i++, s += 4, d += 4) {
+    const packed = src[s] >>> 0
+    color[d] = (packed >>> 16) & 255
+    color[d + 1] = (packed >>> 8) & 255
+    color[d + 2] = packed & 255
+    color[d + 3] = 255
+  }
+  return { position, color }
 }
 
 let sharedQuadIndex: THREE.BufferAttribute | null = null

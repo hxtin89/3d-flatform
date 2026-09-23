@@ -16,8 +16,9 @@ import {
 } from './dot-geometry'
 
 /** The material property a pulled tile's point-data texture sits on. An own property, not
- *  userData: UnloadTilesPlugin frees the textures it finds on a hidden tile's material, and
- *  the tile cache counts their bytes. */
+ *  userData: UnloadTilesPlugin frees the GPU copy of the textures it finds on a hidden
+ *  tile's material. The tile cache does not count it: 3d-tiles-renderer estimates a tile's
+ *  bytes once, before `load-model` hands the tile to the viewer, from the arrays it parsed. */
 export const POINT_DATA_PROPERTY = 'pointData'
 
 const INSTANCED_QUAD: DotMode = { shape: 'quad', feed: 'instanced' }

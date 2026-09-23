@@ -19,6 +19,10 @@ import {
   drawnPoints, initDotState, isDotMesh, loadedPoints, packPointData, sameDotMode,
   setDrawnPoints, type DotMode,
 } from './dot-geometry'
+import {
+  adoptPointData, packPointsForPulling, pointDataForCarrier, PREFIX_SAMPLE_ROUNDS,
+  reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+} from './point-order'
 import { EXPERIENCE_CONFIG } from './config'
 
 export interface StreamingStats {
@@ -580,22 +584,6 @@ export function createStreamingCloud(opts: {
   let parseBudget = limits.maxParses
 
   /**
-   * Put a tile's points into a random order, once, in place.
-   *
-   * This is what makes thinning possible without a compute pass. Drawing fewer points is
-   * done by lowering `instanceCount`, which draws a *prefix* of the buffer — and a prefix
-   * is only a fair sample of the tile if the order carries no spatial structure. The
-   * points arrive from a COPC octree, so their natural order is spatially clustered:
-   * taking the first half would take one half of the tile's ground and leave the other
-   * half empty.
-   *
-   * Seeded from the tile's own size and first coordinate rather than Math.random, so a
-   * tile shuffles identically on every load and two measurement runs compare the same
-   * picture. Done in place: the tile owns these arrays, nothing else depends on their
-   * order (`sampleGroundZ` and the mask builder both stride over them as a sample, which
-   * a shuffle only makes more representative), and copying would double tile memory.
-   */
-  /**
    * True once the tileset says its points are already in a progressive order.
    *
    * Read from the root tileset's `asset.extras.pointOrder` rather than assumed, because
@@ -632,118 +620,6 @@ export function createStreamingCloud(opts: {
    * and reorder unconditionally; if it ships off, delete the reorder along with thinning.
    */
   let fairOrderWanted = true
-
-  /**
-   * How many interleaved rounds `reorderForPrefixSampling` emits.
-   *
-   * A prefix of `keep` covers `keep * ROUNDS` complete rounds, so it must be at least one
-   * or the prefix stops partway across the tile and is a crop again. That fixes a floor:
-   * **ROUNDS >= 1 / THINNING_MIN_KEEP**, which is 1/0.02 = 50. 64 clears it with headroom.
-   *
-   * Measured, not guessed — per-cell coefficient of variation at the 2% floor on a 270k
-   * tile: ROUNDS 32 gives 0.92 with 101 of 256 cells empty (it covers only 32 * 0.02 =
-   * 64% of the buffer, exactly the predicted crop), 48 gives 0.46, 64 gives 0.54, 96
-   * gives 0.44. Above 5% keep they are all within 0.02 of each other. Do not lower this
-   * below 50 without lowering THINNING_MIN_KEEP with it.
-   *
-   * Larger is not better: a prefix includes runs of `keep * ROUNDS` *consecutive* source
-   * indices, and the source order is spatially smooth, so long runs re-cluster the sample.
-   * ROUNDS 1024 measured 0.71 at 10% against 0.42 for 64.
-   *
-   * **Why 61 and not a round number.** `ground-patch-mask.ts` decides whether a tile adds
-   * any coverage by probing it at `count / 64` intervals — 64 samples spread across the
-   * buffer (`isRedundant`). If ROUNDS shares factors with that 64, the probe lands at the
-   * same offset inside every round and collapses onto a handful of source indices. Measured
-   * on a 270k tile, distinct lattice cells hit by those 64 probes: **58 unshuffled, 59 at
-   * ROUNDS 61, but only 8 at ROUNDS 64 and 16 at 96.** A probe that samples 8 spots instead
-   * of 58 will call tiles redundant that are not, and the mask drops them — coverage holes,
-   * not just a slower walk. 61 is prime, so it cannot alias with any probe count.
-   */
-  const PREFIX_SAMPLE_ROUNDS = 61
-
-  /**
-   * Rewrite a tile so that *any prefix of it is an evenly spread sample of the whole tile*.
-   *
-   * Thinning draws a prefix via `instanceCount`, which is a fair sample only if the order
-   * carries no large-scale spatial structure. The packs come from a COPC octree, so a
-   * prefix is a crop — but measuring four real tiles showed consecutive points sit 10-22x
-   * closer together than random pairs, which means the order is *smoothly* spatial: a
-   * prefix is a crop, yet every k-th point is a near-perfect sample. Per-cell coefficient
-   * of variation at 10% kept, lower is better: raw prefix 3.04, this reorder 0.42, the
-   * random shuffle it replaces 0.41. So it *matches* the shuffle rather than beating it —
-   * an idealised fractional stride reaches 0.40, and the small gap is the mid-round
-   * truncation described on PREFIX_SAMPLE_ROUNDS. What matters is that the figure stays
-   * flat as the sample shrinks (0.40 at 56% kept, 0.43 at 5%) where the raw prefix runs
-   * from 1.00 to 4.28.
-   *
-   * So: round-robin over a fixed stride. Every ROUNDS-th point, then the same offset by
-   * one, and so on. A prefix of the result is a union of stride samples, evenly spread at
-   * every length the viewer asks for.
-   *
-   * This replaces a seeded Fisher-Yates shuffle that cost 4-12 ms of main-thread time per
-   * tile and was the single most expensive thing in bringing a tile online. A shuffle is
-   * random access in both directions and defeats the prefetcher; this is constant-stride
-   * reads and sequential writes. Measured on the real tiles: 12.6 -> 2.2 ms at 75k points,
-   * 62.4 -> 6.3 ms at 270k.
-   *
-   * It widens the colour to RGBA in the same pass, because WebGPU needs the 4-byte stride
-   * and the alternative is a second full copy of it — see `padColourForGpu`.
-   *
-   * Returns null when the tile is not in the one layout this handles, in which case the
-   * caller keeps the arrays as they arrived and the tile is drawn whole rather than thinned.
-   */
-  function reorderForPrefixSampling(
-    position: any,
-    color: any,
-  ): { position: Float32Array; color: Uint8Array | null } | null {
-    const count = position.count
-    if (!(count > 2) || position.itemSize !== 3) return null
-    const src = position.array
-    if (!(src instanceof Float32Array)) return null
-    const colourArray = color?.array
-    const colourItems = color?.itemSize ?? 0
-    // Only the two layouts PNTS actually ships. Anything else falls back rather than
-    // growing a general path that would be both slower and barely exercised.
-    if (color && !(colourArray instanceof Uint8Array && (colourItems === 3 || colourItems === 4))) {
-      return null
-    }
-    const rounds = Math.min(PREFIX_SAMPLE_ROUNDS, count)
-    const out = new Float32Array(count * 3)
-    const outColour = color ? new Uint8Array(count * 4) : null
-
-    // Written out once per colour layout rather than as one loop with a branch inside: a
-    // dynamic item size and a variable inner trip count stop V8 specialising the body,
-    // which measured 15x slower when `padColourForGpu` was first written that way.
-    if (outColour && colourItems === 3) {
-      const rgb = colourArray as Uint8Array
-      for (let r = 0, w = 0; r < rounds; r++) {
-        for (let i = r; i < count; i += rounds, w++) {
-          const s = i * 3, d = w * 3, dc = w * 4
-          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
-          outColour[dc] = rgb[s]; outColour[dc + 1] = rgb[s + 1]
-          outColour[dc + 2] = rgb[s + 2]; outColour[dc + 3] = 255
-        }
-      }
-    } else if (outColour) {
-      const rgba = colourArray as Uint8Array
-      for (let r = 0, w = 0; r < rounds; r++) {
-        for (let i = r; i < count; i += rounds, w++) {
-          const s = i * 3, d = w * 3, sc = i * 4, dc = w * 4
-          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
-          outColour[dc] = rgba[sc]; outColour[dc + 1] = rgba[sc + 1]
-          outColour[dc + 2] = rgba[sc + 2]; outColour[dc + 3] = rgba[sc + 3]
-        }
-      }
-    } else {
-      for (let r = 0, w = 0; r < rounds; r++) {
-        for (let i = r; i < count; i += rounds, w++) {
-          const s = i * 3, d = w * 3
-          out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
-        }
-      }
-    }
-    return { position: out, color: outColour }
-  }
 
   // One camera-facing primitive per point, instanced. Its corner offsets live in the
   // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
@@ -805,42 +681,67 @@ export function createStreamingCloud(opts: {
     return new THREE.InstancedBufferAttribute(out, 4, color.normalized)
   }
 
-  /** Rebuild one loaded THREE.Points tile as instanced quads. Returns null when
-   * the tile carries no usable position buffer. */
+  /** Rebuild one loaded THREE.Points tile as dot meshes in the current mode. Returns null
+   * when the tile carries no usable position buffer. */
   function buildPointQuads(source: THREE.Points, tile: any, density: DensityBand): THREE.Mesh | null {
     const position = source.geometry?.getAttribute('position')
     if (!position) return null
     const color = source.geometry.getAttribute('color')
+    const points = position.count
+    const hasColour = color !== undefined
+    // From the colour as it arrived, before either feed rewrites it: what the instanced
+    // graph needs if the tile is ever drawn that way. A pulled carrier gives its colour up
+    // to the texture, and gets back RGBA8 on a switch — which is 4, as a Uint8 RGB or RGBA
+    // arrival is.
+    const colorItemSize = instancedColourItemSize(color)
     // Skipped entirely while thinning is off — nothing draws a prefix then, so the order
-    // is unneeded rather than unfair, and the tile keeps the arrays exactly as they
-    // arrived. A pre-ordered pack already satisfies the prefix rule and likewise needs
-    // only the colour widening below.
-    const reordered = (fairOrderWanted && !tilesArePreOrdered())
-      ? reorderForPrefixSampling(position, color)
-      : null
-    if (reordered) {
-      // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
-      // mask walk the same order the drawn tile does — and so the tile's original PNTS
-      // ArrayBuffer, which these arrays replace, stops being referenced by anything the
-      // viewer holds. That buffer carries both position and colour, so releasing it pays
-      // for the copies: 15 bytes per point go, 16 arrive.
-      source.geometry.setAttribute('position', new THREE.BufferAttribute(reordered.position, 3))
-      if (reordered.color) {
-        source.geometry.setAttribute(
-          'color', new THREE.BufferAttribute(reordered.color, 4, color?.normalized ?? true),
-        )
+    // is unneeded rather than unfair, and the tile keeps the order it arrived in. A
+    // pre-ordered pack already satisfies the prefix rule.
+    const wantOrder = fairOrderWanted && !tilesArePreOrdered()
+    let reordered = false
+    let geometry: THREE.BufferGeometry
+    let pointData: THREE.DataTexture | null = null
+
+    if (dotMode.feed === 'pulled') {
+      // One pass: reorder (or keep the order, with one round) and pack the texture. The
+      // carrier then holds a view of the texture's array and nothing else, so the tile is
+      // held once — see point-order.ts. A layout the fast pass declines is packed by the
+      // general path and keeps its arrays, drawn whole as in the instanced feed.
+      const order = wantOrder && reorderAccepts(position, color)
+      pointData = packPointsForPulling(position, color, order ? PREFIX_SAMPLE_ROUNDS : 1)
+      if (pointData) {
+        reordered = order
+        adoptPointData(source.geometry, pointData, points)
+        source.geometry.boundingSphere = null
+      } else {
+        pointData = packPointData(position, color)
       }
-      // Derived from the same points, and a permutation cannot change it — but it may
-      // already have been built against the attribute just replaced.
-      source.geometry.boundingSphere = null
+      geometry = forgetOnDispose(buildPulledGeometry(dotMode.shape, points))
+    } else {
+      const arrays = wantOrder ? reorderForPrefixSampling(position, color) : null
+      if (arrays) {
+        reordered = true
+        // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
+        // mask walk the same order the drawn tile does — and so the tile's original PNTS
+        // ArrayBuffer, which these arrays replace, stops being referenced by anything the
+        // viewer holds. That buffer carries both position and colour, so releasing it pays
+        // for the copies: 15 bytes per point go, 16 arrive.
+        source.geometry.setAttribute('position', new THREE.BufferAttribute(arrays.position, 3))
+        if (arrays.color) {
+          source.geometry.setAttribute(
+            'color', new THREE.BufferAttribute(arrays.color, 4, color?.normalized ?? true),
+          )
+        }
+        // Derived from the same points, and a permutation cannot change it — but it may
+        // already have been built against the attribute just replaced.
+        source.geometry.boundingSphere = null
+      }
+      // Built from the carrier's arrays as they now stand — reordered or as they arrived —
+      // so a later feed switch can rebuild from the same source without re-fetching.
+      geometry = buildInstancedGeometry(source.geometry, dotMode.shape)
     }
 
-    // Both feeds are built from the carrier's arrays as they now stand — reordered or as
-    // they arrived — so a later feed switch can rebuild either one from the same source
-    // without re-fetching anything.
-    const { geometry, colorItemSize, pointData } = buildDotGeometry(source.geometry, dotMode)
-
-    const spacing = tileSpacingMetres(tile, position.count)
+    const spacing = tileSpacingMetres(tile, points)
     const material = createCloudMaterial(uniforms, colorItemSize, spacing, {
       level: densityLevel(density),
       tint: densityLevelColor(density),
@@ -860,13 +761,14 @@ export function createStreamingCloud(opts: {
     mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
     // On the mesh rather than the geometry, because applyThinning has the mesh and a
     // switch replaces the geometry's corner data or the geometry itself. `orderIsFair` is
-    // false only for the layouts `reorderForPrefixSampling` declines, which are then drawn
-    // whole rather than as a biased wedge.
+    // false only for the layouts the reorder declines, which are then drawn whole rather
+    // than as a biased wedge — by the same rule in both feeds.
     initDotState(mesh, {
       feed: dotMode.feed,
       shape: dotMode.shape,
-      points: position.count,
-      orderIsFair: reordered !== null || tilesArePreOrdered(),
+      points,
+      orderIsFair: reordered || tilesArePreOrdered(),
+      hasColour,
     })
     // GlobeControls raycasts the whole scene. What a dot mesh would offer it is one
     // corner primitive at the tile's local origin — never the canopy — so it is taken out
@@ -905,32 +807,18 @@ export function createStreamingCloud(opts: {
   }
 
   /**
-   * Build a dot geometry in `mode` from a carrier's point arrays.
+   * Build an instanced dot geometry from a carrier's point arrays: they are wrapped as
+   * instanced attributes as they are — no copy — with the colour widened to RGBA where
+   * WebGPU needs a 4-byte stride.
    *
-   * Instanced: the per-point arrays are wrapped as instanced attributes as they are — no
-   * copy — with the colour widened to RGBA where WebGPU needs a 4-byte stride.
-   *
-   * Pulled: an attribute-free geometry plus the tile's point-data texture, packed from the
-   * same arrays (16 bytes per point on the GPU, like the attributes it replaces).
+   * The carrier must hold tight arrays. A pulled carrier holds a four-float view of its
+   * texture instead, which applyDotMode unpacks (restoreCarrierArrays) before it gets here.
    */
-  function buildDotGeometry(carrier: THREE.BufferGeometry, mode: DotMode, keepPointData = false): {
-    geometry: THREE.BufferGeometry
-    colorItemSize: number
-    pointData: THREE.DataTexture | null
-  } {
+  function buildInstancedGeometry(carrier: THREE.BufferGeometry, shape: DotMode['shape']): THREE.InstancedBufferGeometry {
     const position = carrier.getAttribute('position')
     const color = carrier.getAttribute('color')
-    const colorItemSize = instancedColourItemSize(color)
-    if (mode.feed === 'pulled') {
-      return {
-        geometry: forgetOnDispose(buildPulledGeometry(mode.shape, position.count)),
-        colorItemSize,
-        // A pulled tile changing shape keeps the texture it has — the data is the same.
-        pointData: keepPointData ? null : packPointData(position, color),
-      }
-    }
     const geometry = forgetOnDispose(new THREE.InstancedBufferGeometry())
-    applyDotShapeToGeometry(geometry, mode.shape)
+    applyDotShapeToGeometry(geometry, shape)
     // The tile's own buffers are reused as-is — no copy, no format conversion.
     // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
     // vector via NodeBuilder.getTypeFromAttribute.
@@ -942,7 +830,7 @@ export function createStreamingCloud(opts: {
     const colorAttribute = color ? padColourForGpu(color) : null
     if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
     geometry.instanceCount = position.count
-    return { geometry, colorItemSize, pointData: null }
+    return geometry
   }
 
   /**
@@ -950,11 +838,17 @@ export function createStreamingCloud(opts: {
    *
    * A shape change inside the instanced feed rewrites the corner buffer in place
    * (applyDotShape). Anything that crosses feeds, or changes the shape of a pulled tile, is
-   * a rebuild from the carrier's arrays: a new geometry, the texture attached or released,
-   * the graph for the new mode, and the old geometry disposed. The Mesh and its material
-   * stay the same objects — the render gate, the arrival queue, the inspector and the
-   * disposal lists all hold them. The drawn count is carried across, so the thinning
-   * state survives.
+   * a rebuild from the carrier: a new geometry, the texture attached or released, the
+   * graph for the new mode, and the old geometry disposed. The Mesh and its material stay
+   * the same objects — the render gate, the arrival queue, the inspector and the disposal
+   * lists all hold them. The drawn count is carried across, so the thinning state
+   * survives.
+   *
+   * The carrier's arrays change form with the feed (point-order.ts): into the pulled feed
+   * they become the texture — the identity pack, since the carrier is already in its final
+   * order — and the carrier keeps a view of it; out of it they are unpacked back into
+   * tight arrays *before* the instanced geometry wraps them. A pulled shape change keeps
+   * the texture it has and packs nothing.
    *
    * The graph swap goes through the material's own rebuild closure, which bumps the
    * material version. That is the only thing that makes three re-key a render object, and
@@ -974,11 +868,16 @@ export function createStreamingCloud(opts: {
     const engineData = tile?.engineData
 
     const previousTexture: THREE.DataTexture | undefined = material[POINT_DATA_PROPERTY]
-    // A pulled tile changing shape keeps the texture it has: the data does not change, so
-    // it is not packed again.
-    const keepTexture = mode.feed === 'pulled' && previousTexture !== undefined
-    const { geometry, pointData } = buildDotGeometry(carrierGeometry, mode, keepTexture)
-    const texture = keepTexture ? previousTexture : pointData
+    let texture: THREE.DataTexture | null = null
+    let geometry: THREE.BufferGeometry
+    if (mode.feed === 'pulled') {
+      texture = previousTexture ?? pointDataForCarrier(carrierGeometry)
+      geometry = forgetOnDispose(buildPulledGeometry(mode.shape, state.points))
+    } else {
+      // A no-op for a carrier that never gave its arrays up (a declined layout).
+      restoreCarrierArrays(carrierGeometry, state.hasColour)
+      geometry = buildInstancedGeometry(carrierGeometry, mode.shape)
+    }
     if (texture) {
       material[POINT_DATA_PROPERTY] = texture
       if (Array.isArray(engineData?.textures) && !engineData.textures.includes(texture)) {

@@ -93,7 +93,7 @@ test('a runtime switch swaps corners in place and leaves the point data alone', 
   g.instanceCount = 10
   const material = new THREE.MeshBasicMaterial()
   const mesh = new THREE.Mesh(g, material)
-  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 10, orderIsFair: true })
+  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 10, orderIsFair: true, hasColour: true })
   const versionBefore = material.version
   const position = g.getAttribute('position')
   const uv = g.getAttribute('uv')
@@ -121,7 +121,7 @@ test('a runtime switch swaps corners in place and leaves the point data alone', 
 test('drawn points are a clamped prefix of the loaded points', () => {
   const g = new THREE.InstancedBufferGeometry()
   const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial())
-  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 100, orderIsFair: true })
+  initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 100, orderIsFair: true, hasColour: true })
   assert.equal(loadedPoints(mesh), 100)
   setDrawnPoints(mesh, 37.4)
   assert.equal(drawnPoints(mesh), 37)
@@ -194,7 +194,7 @@ test('disposing one pulled quad leaves the shared index with every other tile', 
 test('drawn points follow the draw range in the pulled feed', () => {
   for (const [shape, k] of [['triangle', 3], ['quad', 6]] as const) {
     const mesh = new THREE.Mesh(buildPulledGeometry(shape, 200), new THREE.MeshBasicMaterial())
-    initDotState(mesh, { feed: 'pulled', shape, points: 200, orderIsFair: true })
+    initDotState(mesh, { feed: 'pulled', shape, points: 200, orderIsFair: true, hasColour: true })
     assert.equal(drawnPoints(mesh), 200)
     setDrawnPoints(mesh, 73)
     assert.equal(mesh.geometry.drawRange.count, 73 * k)

@@ -538,10 +538,19 @@ export function createGroundPatchMask(opts: {
         // detaches the scene, which leaves a half-splatted tile being read through a
         // buffer nobody owns and a matrix nobody maintains. The remaining points then
         // land wherever that resolves to — a solid block of coverage kilometres from
-        // any tile. So every slice is re-checked, not just the first: if the buffer
-        // was swapped under us the tile is dropped, and the displayed test is repeated
-        // rather than trusted from the frame it started in.
-        if (cursor > 0 && position !== slicePosition) { queue.shift(); cursor = 0; slicePosition = null; continue }
+        // any tile. So every slice is re-checked, not just the first: the displayed test
+        // is repeated rather than trusted from the frame it started in, and a tile whose
+        // points changed under us is dropped.
+        //
+        // A new attribute with the same count is not such a change. The dot-geometry feed
+        // switch rewrites a carrier's arrays between tight xyz and a four-float view of
+        // its texture (point-order.ts) without touching the points or their order, and
+        // `splat` strides by the item size, so the tile resumes where it stopped.
+        // Restarting instead would be wrong: at cursor 0 the redundancy probe would see
+        // the covered prefix — an even sample of the whole tile — and skip the rest.
+        if (cursor > 0 && position !== slicePosition && position.count !== slicePosition?.count) {
+          queue.shift(); cursor = 0; slicePosition = null; continue
+        }
         if (!isDisplayed(object)) {
           if (cursor > 0) { queue.shift(); cursor = 0; slicePosition = null; continue }
           if (deferrals-- <= 0) break
