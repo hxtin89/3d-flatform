@@ -892,6 +892,16 @@
           <span class="weather-note">Where the growth stops, in metres. Above the height that reaches it the dome keeps its size and shrinks on screen as the camera climbs on</span>
         </div>
         <div class="row">
+          <label class="h" for="sphereRimDetail">Detail at the rim · <span class="val" id="sphereRimDetailVal">—</span></label>
+          <input type="range" id="sphereRimDetail" min="1" max="8" step="0.5" />
+          <span class="weather-note">Tiles in the fade band are refined coarser, following the fade and judged at the middle of each tile: as fine as ever in the whole part of the dome, and this many times coarser at the rim. Their points are drawn small and low out there anyway. All the way left is off</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereBandThinning">Thinning in the band · <span class="val" id="sphereBandThinningVal">—</span></label>
+          <input type="range" id="sphereBandThinning" min="0" max="1" step="0.05" />
+          <span class="weather-note">A tile lying wholly in the fade band draws only its share of points, down to its fade: fewer points as well as smaller ones, without widening the ones left. Rides on distance thinning, so it does nothing while that is off. All the way left is off</span>
+        </div>
+        <div class="row">
           <label class="h" for="sphereFocusDrop">Focus in side view · <span class="val" id="sphereFocusDropVal">—</span></label>
           <input type="range" id="sphereFocusDrop" min="0" max="0.8" step="0.05" />
           <span class="weather-note">How far below the middle of the screen the dome's centre sits once the camera is tilted fully to the side, as a share of half the screen height. Looking straight down it is always the middle; in between it slides on the same tilt curve as the side-view vignette. It never goes so far down that the ground in the middle of the screen leaves the whole part of the dome, so from high up it stays nearer the middle. All the way left keeps it in the middle at every tilt</span>

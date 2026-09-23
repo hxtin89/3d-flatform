@@ -80,6 +80,12 @@ export interface SphereFadeSettings {
   focusDrop: number
   /** Time constant the centre and radius ease with, seconds. 0 snaps. */
   easeSeconds: number
+  /** Error-target multiplier at the rim — tiles in the fade band refine coarser along
+   *  the fade curve, reaching this factor at the rim. 1 is off. See DomeBand. */
+  rimDetailFactor: number
+  /** How far tiles lying wholly in the fade band are thinned towards their fade factor,
+   *  0..1. 0 is off. Needs distance thinning, whose point order it draws a prefix of. */
+  bandThinning: number
 }
 
 export interface SphereFadeStats {

@@ -2757,7 +2757,7 @@ let tilesPerFrame = 2
  *  from DEFAULT_LIMITS; the slider exists because lowering it is the cheapest way to bound
  *  how much gets uploaded to the card in any one frame. */
 let maxParses = 2
-let lastThinning: { drawn: number; loaded: number } | null = null
+let lastThinning: { drawn: number; loaded: number; domeCut: number } | null = null
 /** How many visible tiles the finest-layer rule shrank this frame — see applyEffectiveSpacing. */
 let lastEffectiveSpacing: { shrunk: number; tiles: number } | null = null
 
@@ -2888,6 +2888,14 @@ bindDesignSlider('sphereGrowth', sphereFadeSettings.growth, (v) =>
 })
 bindDesignSlider('sphereMaxRadius', sphereFadeSettings.maxRadiusM, asMetres, (v) => {
   sphereFadeSettings.maxRadiusM = v
+})
+bindDesignSlider('sphereRimDetail', sphereFadeSettings.rimDetailFactor, (v) =>
+  v > 1 ? `${v.toFixed(1)}× coarser at the rim` : 'off', (v) => {
+  sphereFadeSettings.rimDetailFactor = v
+})
+bindDesignSlider('sphereBandThinning', sphereFadeSettings.bandThinning, (v) =>
+  v > 0 ? asPercent(v) : 'off', (v) => {
+  sphereFadeSettings.bandThinning = v
 })
 bindDesignSlider('sphereFocusDrop', sphereFadeSettings.focusDrop, (v) =>
   v > 0 ? `${Math.round(v * 100)} % down` : 'off · middle', (v) => {
@@ -3824,7 +3832,13 @@ function updateStreaming(now: number): StreamingStats | null {
   const dome = sphereFade && sphereFadeSettings.enabled && sphereFade.placed() ? sphereFade : null
   if (dome) stream.setMaskSphere(dome.centreWorld, dome.outerRadius())
   else stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
-  stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0)
+  stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0, dome ? {
+    rampM: dome.rampWidth(),
+    fadeIn: sphereFadeSettings.fadeIn,
+    fadeOut: sphereFadeSettings.fadeOut,
+    rimDetailFactor: sphereFadeSettings.rimDetailFactor,
+    thinning: sphereFadeSettings.bandThinning,
+  } : undefined)
   applySphereFadeUniforms(dome)
   // The eye the point-of-view load refines from: the flight's landing pose while it is
   // in the air (a mid-air retarget moves it once), the staged boot pose before that —
@@ -4128,6 +4142,7 @@ function updateHud(stats: StreamingStats | null): void {
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
       + ` · radius ${Math.round(sphereFade.innerRadius())} m`
+      + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
       + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
       + (initialPovActive()
         ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
