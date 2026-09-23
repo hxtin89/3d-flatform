@@ -4615,6 +4615,7 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
     onPointTile: (object, url) => groundPatchMask.addTile(object, url),
+    onPointTileDisposed: (object) => groundPatchMask.removeTile(object),
     dotMode: effectiveDotMode(),
   })
   // Options can be selected before the async boot sequence creates the stream.
@@ -4655,6 +4656,7 @@ async function main(): Promise<void> {
       if (!boxes) {
         console.warn('[ground-patch] tileset carried no usable node boxes — patch stays off')
         uniforms.groundPatchAmount.value = 0
+        groundPatchMask.disable()
         return
       }
       applyGroundPatchExtent()
@@ -4662,6 +4664,7 @@ async function main(): Promise<void> {
       }).catch((error) => {
       console.warn('[ground-patch] extent failed — patch stays off', error)
       uniforms.groundPatchAmount.value = 0
+      groundPatchMask.disable()
     })
   })
   // Debug handle for streaming diagnosis in the console.

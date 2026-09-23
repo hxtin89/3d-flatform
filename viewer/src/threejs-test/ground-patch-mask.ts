@@ -114,6 +114,17 @@ export interface GroundPatchMask {
    * world matrix has not been composed yet.
    */
   addTile(object: THREE.Object3D, url?: string): void
+  /**
+   * Forget a tile that is being evicted. A queued tile that is never shown again would
+   * otherwise stay in the queue for the session — rotated to the back every frame, since
+   * it is never displayed — and keep its point arrays, dot mesh and material alive.
+   */
+  removeTile(object: THREE.Object3D): void
+  /**
+   * Stop taking tiles, for when the lattice could not be sized: without an extent the
+   * queue is never worked, so every tile loaded afterwards would be kept alive.
+   */
+  disable(): void
   /** Spend this frame's budget on the queue and upload whatever changed. */
   update(): void
   /**
@@ -134,7 +145,7 @@ export interface GroundPatchMask {
   /** Allocated-cell map plus any tile whose ENU span is implausibly wide. */
   debugCells(): { grid: any; map: string[]; cellsUsed: number; strays: unknown[] }
   /** Cells in use, of those available — for diagnostics and the console report. */
-  stats(): { cellsUsed: number; cellsAvailable: number; metresPerPixel: number }
+  stats(): { cellsUsed: number; cellsAvailable: number; metresPerPixel: number; queued: number }
   dispose(): void
 }
 
@@ -273,6 +284,8 @@ export function createGroundPatchMask(opts: {
 
   /** How far into the head of the queue the last frame got. */
   let cursor = 0
+  /** Set by disable(): the lattice has no extent, so nothing is queued any more. */
+  let disabled = false
   // The attribute the in-flight tile started on, so a swap under us is detectable.
   let slicePosition: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null = null
   let splatChecks = 0
@@ -517,8 +530,24 @@ export function createGroundPatchMask(opts: {
     },
 
     addTile(object, url) {
+      if (disabled) return
       if (url !== undefined) (object as any).__maskUrl = url
       queue.push(object)
+    },
+
+    removeTile(object) {
+      const at = queue.indexOf(object)
+      if (at < 0) return
+      // The head may be mid-splat; its cursor and attribute belong to it alone.
+      if (at === 0) { cursor = 0; slicePosition = null }
+      queue.splice(at, 1)
+    },
+
+    disable() {
+      disabled = true
+      queue.length = 0
+      cursor = 0
+      slicePosition = null
     },
 
     update() {
@@ -745,7 +774,7 @@ export function createGroundPatchMask(opts: {
       return { grid: { ...grid }, map: rows, cellsUsed, strays }
     },
     stats() {
-      return { cellsUsed, cellsAvailable: maxCells, metresPerPixel }
+      return { cellsUsed, cellsAvailable: maxCells, metresPerPixel, queued: queue.length }
     },
 
     dispose() {

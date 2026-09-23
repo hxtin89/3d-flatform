@@ -395,6 +395,9 @@ export function createStreamingCloud(opts: {
    * renderer was going to download anyway — see ground-patch-mask.
    */
   onPointTile?: (object: THREE.Object3D, url: string) => void
+  /** Called for each of those objects when its tile is evicted, so whatever queued it can
+   *  let go of it. */
+  onPointTileDisposed?: (object: THREE.Object3D) => void
   /** The root tileset itself was unreachable (404/403) — this cloud will stay empty. */
   onRootError?: (url: string, error: unknown) => void
   /** How the first tiles are drawn. `setDotMode` changes it later. */
@@ -1048,7 +1051,25 @@ export function createStreamingCloud(opts: {
     tileStats.set(tile, { points, density, debugTiles, quads })
     recordArrival(performance.now() - arrivalStartedAt, points)
   })
-  tiles.addEventListener('dispose-model', ({ tile }: any) => tileStats.delete(tile))
+  // Fired before 3d-tiles-renderer disposes the tile, while its scene is still whole. Both
+  // queues that hold a tile's objects between its arrival and its first frame on screen
+  // have to be told here: an evicted tile keeps its parentage (only its scene is detached
+  // from the group, and a tile that is merely hidden is detached the same way), so nothing
+  // downstream can tell a dead tile from a hidden one by looking at it.
+  tiles.addEventListener('dispose-model', ({ scene, tile }: any) => {
+    const stats = tileStats.get(tile)
+    if (stats && pendingReveal.length > 0) {
+      for (const mesh of stats.quads) {
+        const at = pendingReveal.indexOf(mesh)
+        if (at >= 0) pendingReveal.splice(at, 1)
+        mesh.userData.pendingReveal = false
+      }
+    }
+    if (opts.onPointTileDisposed) {
+      scene?.traverse?.((object: any) => { if (object.isPoints) opts.onPointTileDisposed!(object) })
+    }
+    tileStats.delete(tile)
+  })
   // A missing tile is a gap in the published data, not a crash, and the
   // renderer retries whenever it comes back into view. Report each URL once so
   // one absent tile cannot bury the console, but leave the retries alone: the
@@ -1201,9 +1222,8 @@ export function createStreamingCloud(opts: {
         while (released < arrivalBudget && pendingReveal.length > 0) {
           const mesh = pendingReveal.shift()!
           mesh.userData.pendingReveal = false
-          // Still parented means the tile is still alive; a disposed tile's mesh has been
-          // detached and there is nothing to show.
-          if (!mesh.parent) continue
+          // Evicted tiles have already been taken out of the queue (see 'dispose-model'),
+          // so everything here is still loaded.
           mesh.visible = true
           released++
         }
@@ -1707,9 +1727,9 @@ export function createStreamingCloud(opts: {
       const doomed = itemList.slice()
       let dropped = 0
       for (const item of doomed) if (cache.remove(item)) dropped++
-      // `tileStats` needs no clearing — it is a WeakMap keyed on the tile objects, and
-      // `dispose-model` deletes each entry as the removals fire. `pendingReveal` does:
-      // it holds strong references to meshes whose tiles have just been disposed.
+      // `tileStats` and `pendingReveal` need no clearing: `dispose-model` deletes each
+      // tile's entry and takes its meshes out of the queue as the removals fire. Cleared
+      // anyway, as a guard for any tile disposed without the event.
       pendingReveal.length = 0
       return dropped
     },
