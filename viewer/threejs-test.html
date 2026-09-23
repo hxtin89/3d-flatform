@@ -882,6 +882,11 @@
           <span class="weather-note">How the ramp lands on nothing at the rim. Above 1 the points linger small and low before they vanish; below 1 they vanish abruptly. Each end is shaped by its own slider only</span>
         </div>
         <div class="row">
+          <label class="h" for="sphereMaxAhead">Centre pull-in · <span class="val" id="sphereMaxAheadVal">—</span></label>
+          <input type="range" id="sphereMaxAhead" min="0" max="1500" step="10" />
+          <span class="weather-note">Furthest the dome's centre may sit ahead of the camera, in metres along the ground. A tilted view looks at ground hundreds of metres out, which leaves the foreground in the ramp; past this distance the centre is pulled back towards the camera, onto the line below the middle of the screen. All the way right is off: the centre stays under the middle of the view</span>
+        </div>
+        <div class="row">
           <label class="h" for="sphereDebugToggle">Debug shells</label>
           <button class="act" id="sphereDebugToggle" type="button" aria-pressed="false" aria-describedby="sphereDebugNote">◯ Shells · Off</button>
           <span class="weather-note" id="sphereDebugNote">Two translucent spheres standing on the basemap under the centre of the view: blue is the outer one, amber the inner. They keep their size in metres at every zoom, so they shrink on screen as the camera climbs. When the view centre misses the ground they hold their last offset from the camera and travel with it</span>

@@ -11,7 +11,9 @@ import { getOrigin } from './origin'
  * The centre is the point where the ray through the middle of the screen meets the
  * WGS84 ellipsoid the imagery is draped on, so it is always on the map and always in the
  * middle of the frame: pan and it slides across the ground, zoom out and it stays the
- * same size in metres while shrinking on screen. Both radii are settings in metres.
+ * same size in metres while shrinking on screen. Both radii are settings in metres. A
+ * tilted view's hit can lie far ahead; `maxAheadM` then pulls the centre back along the
+ * ground towards the camera, off the middle of the frame and onto the line below it.
  *
  * Phase A: placement and the two translucent debug shells. The load gate (outer sphere),
  * the render gate (inner sphere) and the per-point size/height falloff of phase B all read
@@ -53,6 +55,15 @@ export interface SphereFadeSettings {
    * default is that constant so the two agree on where "looking across" begins.
    */
   maxRangeFactor: number
+  /**
+   * Furthest the centre may sit ahead of the camera, in metres on the ground plane
+   * (camera nadir to centre). A tilted view's centre hit lies hundreds of metres out,
+   * which leaves the foreground — nearest, and largest on screen — in the ramp or past
+   * the rim; beyond this distance the centre is pulled back along the ground towards the
+   * camera, so it is no longer under the middle of the screen but on the line below it.
+   * `Infinity` is off: the centre stays on the hit.
+   */
+  maxAheadM: number
 }
 
 export interface SphereFadeStats {
@@ -67,6 +78,9 @@ export interface SphereFadeStats {
   hitRangeM: number
   /** Camera to the sphere centre, metres. */
   cameraDistanceM: number
+  /** How far `maxAheadM` pulled the centre back from the hit this frame, metres; 0 when
+   *  it did not act. Held from the last hit while frozen. */
+  pulledInM: number
   /** The centre in the cloud's lifted ENU frame — the frame `worldToEnu` in main.ts
    *  reports in, not the shader's raw ENU. */
   centreEnu: { x: number; y: number; z: number }
@@ -136,6 +150,7 @@ export function createSphereFade(opts: {
   let placed = false
   let frozen = false
   let hitRange = NaN
+  let pulledIn = 0
   /**
    * Pinned: the centre is kept in ENU (`centreEnu`) and re-expressed in render space
    * every frame, because the entrance flight it exists for crosses 130 km and rebases
@@ -195,8 +210,20 @@ export function createSphereFade(opts: {
         hitRange = range
         groundZ = hitEnu.z
         frozenOffsetEnu.set(hitEnu.x - cameraEnu.x, hitEnu.y - cameraEnu.y)
-        centreEnu.copy(hitEnu)
-        centreWorld.copy(hitEcef)
+        // Pulled back in the ground plane at the hit's own height: over a few hundred
+        // metres the ellipsoid drops by centimetres, well under anything the fade shows.
+        // The clamped offset is what a later miss carries on with.
+        const ahead = frozenOffsetEnu.length()
+        const limit = Math.max(0, settings.maxAheadM)
+        pulledIn = ahead > limit ? ahead - limit : 0
+        if (pulledIn > 0) {
+          frozenOffsetEnu.multiplyScalar(limit / ahead)
+          centreEnu.set(cameraEnu.x + frozenOffsetEnu.x, cameraEnu.y + frozenOffsetEnu.y, groundZ)
+          enuToWorld(centreEnu, centreWorld)
+        } else {
+          centreEnu.copy(hitEnu)
+          centreWorld.copy(hitEcef)
+        }
         placed = true
       }
     }
@@ -263,6 +290,7 @@ export function createSphereFade(opts: {
         pinned,
         hitRangeM: hitRange,
         cameraDistanceM: placed ? camera.position.distanceTo(centreWorld) : NaN,
+        pulledInM: pinned ? 0 : pulledIn,
         centreEnu: { x: centreEnu.x, y: centreEnu.y, z: centreEnu.z },
         outerRadiusM: outerRadius(),
         innerRadiusM: innerRadius(),

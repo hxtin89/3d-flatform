@@ -2875,6 +2875,12 @@ bindDesignSlider('sphereFadeIn', sphereFadeSettings.fadeIn, (v) => v.toFixed(1),
 bindDesignSlider('sphereFadeOut', sphereFadeSettings.fadeOut, (v) => v.toFixed(1), (v) => {
   sphereFadeSettings.fadeOut = v
 })
+// The slider's right end stands for Infinity, the pull-in switched off.
+const sphereMaxAheadOff = Number($<HTMLInputElement>('#sphereMaxAhead').max)
+bindDesignSlider('sphereMaxAhead',
+  Math.min(sphereFadeSettings.maxAheadM, sphereMaxAheadOff),
+  (v) => v >= sphereMaxAheadOff ? 'off' : asMetres(v),
+  (v) => { sphereFadeSettings.maxAheadM = v >= sphereMaxAheadOff ? Infinity : v })
 const sphereGateReadoutEl = $('#sphereGateReadout')
 
 const sphereFadeCentreRawEnu = new THREE.Vector3()
@@ -4109,6 +4115,7 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
+      + (sphereFade.stats().pulledInM > 0 ? ` · centre pulled in ${Math.round(sphereFade.stats().pulledInM)} m` : '')
       + (initialPovActive()
         ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
           ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
