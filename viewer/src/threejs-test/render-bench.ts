@@ -44,6 +44,10 @@ export interface BenchSample {
    *  remembered, because the two differ by 27% of drawn area and a mislabelled run is
    *  worse than no run. */
   dots: string
+  /** The primitive each point was drawn as ('quad' or 'triangle'), after the Square rule
+   *  — the dot-geometry A/B. The triangle rasterises 1.325 d² against the quad's 1, so
+   *  overdraw and area per point are not comparable across a run that does not say. */
+  dotShape: string
 }
 
 export interface BenchResult extends BenchSample {

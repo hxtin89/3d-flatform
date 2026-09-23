@@ -237,6 +237,17 @@ export const EXPERIENCE_CONFIG = {
       geometricErrorScale: 2,
     },
     /**
+     * The primitive every point is drawn as — see dot-geometry.ts and
+     * plans/plan-dot-geometry-ab.md. A test switch: quad is today's picture; the triangle
+     * draws the same round dot from 3 vertices instead of 4. `?dot=tri|quad` picks the
+     * boot state, the panel flips it at runtime. The Square dot shape always draws quads.
+     */
+    dotGeometry: {
+      shape: 'quad' as 'quad' | 'triangle',
+      /** The triangle's inscribed circle in drawn diameters: the dot (0.5) plus 1 %. */
+      triInradius: 0.505,
+    },
+    /**
      * The dome: two spheres standing on the basemap under the view centre, in metres.
      * The centre is the view-centre ray's hit on the ellipsoid, so it rides the ground
      * with the camera and keeps its size in metres at every zoom. The outer sphere is

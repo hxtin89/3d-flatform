@@ -14,6 +14,10 @@ import {
   denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
 } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
+import {
+  applyDotShape, applyDotShapeToGeometry, dotAreaFactor, dotShapeOf, dotState, drawnPoints,
+  initDotState, isDotMesh, loadedPoints, setDrawnPoints, type DotShape,
+} from './dot-geometry'
 import { EXPERIENCE_CONFIG } from './config'
 
 export interface StreamingStats {
@@ -146,6 +150,15 @@ export interface StreamingCloud {
    * its frustum-and-camera behaviour. Needs an active mask sphere to have any effect.
    */
   setPovLoad(eyeWorld: THREE.Vector3 | null, maxPoints?: number): void
+  /**
+   * Draw every point as `shape` — see dot-geometry.ts. Applied at once to every loaded
+   * tile, cached ones included, by swapping the corner data in place; tiles that arrive
+   * later are built in it. Nothing is re-fetched, so the resident set and the pose stay
+   * exactly as they were, which is what makes the switch a fair A/B. Returns how many
+   * dot meshes changed.
+   */
+  setDotShape(shape: DotShape): number
+  dotShape(): DotShape
   /** Ground and canopy height under a footprint, from the resident tiles.
    * Null until enough points are loaded there. See sampleGroundZ() below for
    * why this is a statistic and not a raycast. */
@@ -379,6 +392,8 @@ export function createStreamingCloud(opts: {
   onPointTile?: (object: THREE.Object3D, url: string) => void
   /** The root tileset itself was unreachable (404/403) — this cloud will stay empty. */
   onRootError?: (url: string, error: unknown) => void
+  /** The primitive the first tiles are built as. `setDotShape` changes it later. */
+  dotShape?: DotShape
 }): StreamingCloud {
   const { tilesetUrl, camera, renderer, scene, uniforms, errorTarget = 256 } = opts
   const useRequestVolumes = opts.requestVolumes !== false
@@ -729,14 +744,11 @@ export function createStreamingCloud(opts: {
     return { position: out, color: outColour }
   }
 
-  // One camera-facing quad per point, instanced. The corner offsets live in the
-  // `position` attribute because that is what PointsNodeMaterial's sprite path
-  // scales by the point size; `uv` gives the round-dot cutout.
-  const QUAD_CORNERS = new Float32Array([
-    -0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
-  ])
-  const QUAD_UVS = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1])
-  const QUAD_INDICES = [0, 1, 2, 0, 2, 3]
+  // One camera-facing primitive per point, instanced. Its corner offsets live in the
+  // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
+  // the point size, and `uv` gives the round-dot cutout. Quad or triangle — see
+  // dot-geometry.ts, which owns both, and setDotShape below.
+  let dotShape: DotShape = opts.dotShape ?? 'quad'
 
   /**
    * Widen a 3-byte colour to 4 bytes here, so three does not do it inside the render pass.
@@ -822,9 +834,7 @@ export function createStreamingCloud(opts: {
     }
 
     const geometry = new THREE.InstancedBufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(QUAD_CORNERS, 3))
-    geometry.setAttribute('uv', new THREE.BufferAttribute(QUAD_UVS, 2))
-    geometry.setIndex(QUAD_INDICES)
+    applyDotShapeToGeometry(geometry, dotShape)
     // The tile's own buffers are reused as-is — no copy, no format conversion.
     // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
     // vector via NodeBuilder.getTypeFromAttribute.
@@ -842,10 +852,6 @@ export function createStreamingCloud(opts: {
       : (color ? padColourForGpu(color) : null)
     if (colorAttribute) geometry.setAttribute(POINT_COLOR_ATTRIBUTE, colorAttribute)
     geometry.instanceCount = position.count
-    // Carried onto the quad geometry because applyThinning has the mesh, not the carrier.
-    // False only for the layouts `reorderForPrefixSampling` declines, which are then drawn
-    // whole rather than as a biased wedge.
-    geometry.userData.orderIsFair = reordered !== null || tilesArePreOrdered()
 
     const spacing = tileSpacingMetres(tile, position.count)
     const material = createCloudMaterial(uniforms, colorAttribute?.itemSize ?? 3, spacing, {
@@ -863,6 +869,19 @@ export function createStreamingCloud(opts: {
     // A Mesh, not a Sprite: WebGPUUtils.getPrimitiveTopology only names a
     // topology for isMesh, and Mesh avoids Sprite's own culling and raycasting.
     mesh.frustumCulled = false // tile-level culling is handled by TilesRenderer
+    // On the mesh rather than the geometry, because applyThinning has the mesh and the
+    // shape switch replaces the geometry's corner data. `orderIsFair` is false only for the
+    // layouts `reorderForPrefixSampling` declines, which are then drawn whole rather than
+    // as a biased wedge.
+    initDotState(mesh, {
+      shape: dotShape,
+      points: position.count,
+      orderIsFair: reordered !== null || tilesArePreOrdered(),
+    })
+    // GlobeControls raycasts the whole scene. What a dot mesh would offer it is one
+    // corner primitive at the tile's local origin — never the canopy — so it is taken out
+    // of the test rather than left as a phantom target that changes size with the shape.
+    mesh.raycast = () => {}
     return mesh
   }
 
@@ -1068,6 +1087,8 @@ export function createStreamingCloud(opts: {
         // Safety net under refreshEffects: whatever path let a tile keep a graph built
         // under other effect flags, it is caught the frame it is drawn again.
         if (show && effectMaterialStale(mesh.material)) rebuildEffectMaterial(mesh.material)
+        // The same for the dot shape, under setDotShape.
+        if (show && dotShapeOf(mesh) !== dotShape) applyDotShape(mesh, dotShape)
       }
     }
   }
@@ -1275,6 +1296,21 @@ export function createStreamingCloud(opts: {
       maskRegion.sphere.radius = radius
       maskRadiusRequested = radius
     },
+    setDotShape(shape) {
+      dotShape = shape
+      let changed = 0
+      // Every loaded tile, not just the visible ones — the lesson of the effect switch:
+      // a tile parked in the cache keeps whatever it had and comes back with it.
+      tiles.forEachLoadedModel((model: THREE.Object3D) => {
+        model.traverse((object: THREE.Object3D) => {
+          if (isDotMesh(object) && applyDotShape(object, shape)) changed++
+        })
+      })
+      // Tiles still waiting for their reveal hang under a live tile, so the walk above has
+      // them already.
+      return changed
+    },
+    dotShape: () => dotShape,
     setPovLoad(eyeWorld, maxPoints = Infinity) {
       if (!eyeWorld) { povActive = false; povRadius = Infinity; povPoints = 0; return }
       povActive = true
@@ -1319,15 +1355,20 @@ export function createStreamingCloud(opts: {
           object.updateWorldMatrix(true, false)
           local.multiplyMatrices(enuInverse, object.matrixWorld)
 
-          // Cheap reject: the tile's bounds in ENU versus the footprint disc.
+          // Cheap reject: the tile's bounds in ENU versus the footprint disc. Only the
+          // carrier's sphere describes the tile; a dot mesh's describes its corner
+          // offsets. This used to tell them apart by radius alone (a real bound is over a
+          // metre, the quad's corners 0.707) — which a triangle's 1.16 would have passed,
+          // silently rejecting tiles against their local origin. So it now asks what the
+          // object is first, and keeps the radius test too: a sub-metre carrier, a
+          // one-point leaf say, was never disc-rejected and still is not. The dot mesh is
+          // sampled unbounded, as it always was, so the sample set is exactly as before.
           const geometry = object.geometry
-          if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-          const bounds = geometry.boundingSphere
-          if (bounds) {
-            point.copy(bounds.center).applyMatrix4(local)
-            // The instanced quads keep their bounds around the 4 corner offsets,
-            // so only a real point bound (radius over a metre) can be trusted.
-            if (bounds.radius > 1) {
+          if (object.isPoints) {
+            if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+            const bounds = geometry.boundingSphere
+            if (bounds && bounds.radius > 1) {
+              point.copy(bounds.center).applyMatrix4(local)
               const dx = point.x - centreEnu.x
               const dy = point.y - centreEnu.y
               if (Math.hypot(dx, dy) > radiusM + bounds.radius) return
@@ -1596,14 +1637,14 @@ export function createStreamingCloud(opts: {
           if (!stats) continue
           loaded += stats.points
           for (const mesh of stats.quads) {
-            const full = (mesh.geometry as any).userData?.fullCount
-              ?? (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
-            ;(mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = full
+            const full = loadedPoints(mesh)
+            setDrawnPoints(mesh, full)
             const scale = (mesh.material as any)?.userData?.thinScale
             if (scale) scale.value = 1
             // Forget the ramp state too, or switching thinning back on would fade down
             // from wherever it happened to be rather than from the full tile.
-            if ((mesh.geometry as any).userData) (mesh.geometry as any).userData.keepNow = undefined
+            const dot = dotState(mesh)
+            if (dot) dot.keepNow = undefined
             // Loaded but off the render list by the dome's gate: not drawn, not counted.
             if (mesh.visible) drawn += full
           }
@@ -1636,19 +1677,14 @@ export function createStreamingCloud(opts: {
           && children.some((child) => tiles.visibleTiles.has(child))
 
         for (const mesh of stats.quads) {
-          const geometry = mesh.geometry as THREE.InstancedBufferGeometry
-          const anyGeometry = geometry as any
-          if (anyGeometry.userData?.fullCount === undefined) {
-            anyGeometry.userData = anyGeometry.userData ?? {}
-            anyGeometry.userData.fullCount = geometry.instanceCount
-          }
-          const full: number = anyGeometry.userData.fullCount
+          const dot = dotState(mesh)
+          const full = loadedPoints(mesh)
           const spacingM = (mesh.material as any)?.userData?.pointSpacingM
           const scale = (mesh.material as any)?.userData?.thinScale
           // Off the render list by the dome's gate. Its keep fraction is left where it
           // was — nothing is drawn, so nothing needs deciding — and it is not counted.
           if (!mesh.visible) continue
-          if (!full || !(spacingM > 0) || !scale) { drawn += geometry.instanceCount; continue }
+          if (!dot || !full || !(spacingM > 0) || !scale) { drawn += drawnPoints(mesh); continue }
           // A tile loaded while thinning was off skipped its shuffle, so its points are still
           // in the tile's own spatially clustered order and a prefix of them is one lobe of
           // the tile rather than a sample of it. Draw it whole instead: the alternative is a
@@ -1658,8 +1694,8 @@ export function createStreamingCloud(opts: {
           // frame the toggle was hit, across every resident tile (hundreds), and it would
           // desynchronise the colours, which were copied at parse in the pre-shuffle order.
           // Tiles churn, and each one that reloads comes back thinnable.
-          if (anyGeometry.userData.orderIsFair !== true) {
-            geometry.instanceCount = full
+          if (dot.orderIsFair !== true) {
+            setDrawnPoints(mesh, full)
             scale.value = 1
             drawn += full
             continue
@@ -1709,13 +1745,13 @@ export function createStreamingCloud(opts: {
           // The prefix draw is what makes this a clean dissolve rather than a shimmer —
           // a ramp only ever adds or removes points at the tail, and never changes which
           // of the surviving points are on screen.
-          const previousKeep = anyGeometry.userData.keepNow
+          const previousKeep = dot.keepNow
           if (previousKeep !== undefined && dtMs > 0 && settings.rampMs > 0) {
             keep = previousKeep + (keep - previousKeep) * (1 - Math.exp(-dtMs / settings.rampMs))
           }
-          anyGeometry.userData.keepNow = keep
+          dot.keepNow = keep
           const count = Math.max(1, Math.round(full * keep))
-          geometry.instanceCount = count
+          setDrawnPoints(mesh, count)
           // Survivors stand in for the ones that went, so they are drawn as wide as the
           // gap they now have to cover. Without this the ground thins into holes instead
           // of staying covered.
@@ -1749,7 +1785,7 @@ export function createStreamingCloud(opts: {
         for (const mesh of stats.quads) {
           // Off the render list by the dome's gate: shades nothing, so it is not billed.
           if (!mesh.visible) continue
-          const instances = (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount
+          const instances = drawnPoints(mesh)
           if (!instances) continue
           // The effective spacing, not the tile's own: that is what the uniform holds and
           // therefore what the shader draws. Billing `pointSpacingM` here would put this
@@ -1759,8 +1795,8 @@ export function createStreamingCloud(opts: {
             ?? (mesh.material as any)?.userData?.pointSpacingM
           if (!(spacingM > 0)) continue
           // The carrier this mesh hangs under still holds the tile's real point bounds;
-          // the quad geometry's own sphere describes the four corner offsets and says
-          // nothing about where the tile is (see sampleGroundZ for the same trap).
+          // the dot geometry's own sphere describes the corner offsets and says nothing
+          // about where the tile is (see sampleGroundZ for the same trap).
           const carrier = mesh.parent as THREE.Object3D | null
           const geometry = carrier ? (carrier as any).geometry : null
           if (!geometry) continue
@@ -1785,7 +1821,9 @@ export function createStreamingCloud(opts: {
           // The widening is part of the drawn size, so it is part of the painted area.
           const thinScale = (mesh.material as any)?.userData?.thinScale?.value ?? 1
           const diameter = diameterPx(spacingM, Math.max(depth, camera.near), thinScale)
-          areaPx += instances * diameter * diameter
+          // The primitive's own area: d² for the quad, 1.325 d² for the triangle, which is
+          // rasterised in full before the round-dot cut throws its corners away.
+          areaPx += instances * diameter * diameter * dotAreaFactor(mesh)
           points += instances
         }
       }

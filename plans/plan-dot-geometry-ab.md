@@ -70,18 +70,24 @@ Every current `instanceCount` site goes through this: `applyThinning` (both bran
 unchanged — a drawRange prefix of k·n vertices draws points 0..n-1 exactly like
 `instanceCount`, so the dissolve and the prefix fairness carry over.
 
-### Step 1 — shape switch, instanced
+### Step 1 — shape switch, instanced (built 2026-09-23)
 
-- Quad and triangle share **one graph and one pipeline**: with an index `[0,1,2]` on the
-  triangle the geometry cache key is unchanged, so the flip is a pure swap of the
-  `position`, `uv` and index attributes on the existing geometry, then
-  `material.needsUpdate` for safety.
+- Quad and triangle share **one graph and one pipeline**. As built, each dot geometry owns
+  a four-corner `position`/`uv` buffer and the quad index `[0,1,2,0,2,3]` once; a switch
+  rewrites the corner values in place and sets the draw range to 6 indices (quad) or the
+  first 3 (triangle). No new attribute objects and no material version bump: the review
+  found that three r185 never frees an attribute replaced on a live geometry, so the first
+  version (fresh attributes per switch) leaked three GPU buffers per tile per switch, plus a
+  VAO per tile on WebGL2.
 - `setDotMode` walks `tiles.forEachLoadedModel` (cached tiles too — the lesson of f84d92c),
   and new tiles are built in the current mode at `load-model`.
 - Fix `sampleGroundZ` first: it trusts any dot-geometry bounding sphere above radius 1 as a
-  tile bound, which only works because the quad's is 0.707 (the triangle's is ~1.16). Make
-  it sample the carriers only — correct in all four arms, and it removes today's double
-  sampling.
+  tile bound, which only works because the quad's is 0.707 (the triangle's is ~1.16). As
+  built, the disc reject now runs only for the carrier `Points` and still only above 1 m, so
+  the sample set is byte-identical to before; the dot geometry's sphere is also pinned to
+  0.707 for both shapes, which keeps three's opaque sort order unchanged. Removing the
+  double sampling (carrier plus dot mesh) is left for step 2, where the pulled dot mesh
+  carries no point attribute and drops out on its own.
 - `mesh.raycast = () => {}` on dot meshes (GlobeControls raycasts the whole scene).
 - `shadedPixelArea` × `dotAreaFactor`; the overdraw comment's "4/π" becomes 1.69 for the
   triangle. The render bench records effective shape and feed.
@@ -189,9 +195,14 @@ Square without a second primitive.
 
 ## Open question found on the way
 
-Reading three r185 suggests that after a geometry's first dispose its dispose listener is
-never registered again, which could leak on the second hide of the same tile — in today's
-path too. Unmeasured; check GPU memory over repeated hide/show cycles during step 1.
+Confirmed by reading three r185 (`renderers/common/Geometries.js`): `initGeometry` marks a
+geometry `initialized` and registers its dispose listener; the listener removes itself on
+the first dispose but never clears `initialized`, so `updateForRender` never calls
+`initGeometry` again. From the second unload of the same tile on, `geometry.dispose()`
+frees nothing, and three's `info.memoryMap` keeps the re-uploaded attributes alive. With
+`UnloadTilesPlugin` hiding and re-showing tiles as the camera moves, that could leak a
+tile's full point buffers per cycle — in today's viewer, not only on this branch.
+Unmeasured; filed as a separate task.
 
 ## Relation to the culling plan
 

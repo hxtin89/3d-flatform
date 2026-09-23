@@ -11,6 +11,9 @@ import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
 import { createSphereFade, type SphereFade, type SphereFadeSettings } from './sphere-fade'
+import {
+  drawnPoints, isDotMesh, parseDotShape, shapeAreaFactor, type DotShape,
+} from './dot-geometry'
 import { createViewAngleCorrection, type ViewAngleCorrection } from './view-angle'
 import { createViewDepthCorrection, type ViewDepthCorrection } from './view-depth'
 import {
@@ -2963,8 +2966,49 @@ roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
   if (setCloudEffectEnabled('roundDots', roundDots)) stream?.refreshEffects()
   syncRoundDotsToggle()
+  // The triangle is only a round dot, so the effective shape follows this switch too.
+  applyDotShapeSetting()
 })
 syncRoundDotsToggle()
+
+/**
+ * Dot geometry A/B, step 1 of plans/plan-dot-geometry-ab.md: every point drawn as a quad
+ * (4 vertices, 2 triangles) or as a triangle (3 vertices, 1 triangle) around the same round
+ * dot, instancing kept. `?dot=tri|quad` is the boot state; the button flips every loaded
+ * tile in place, so both sides are measured on the same resident tiles at the same pose.
+ *
+ * The request and the effect are kept apart because the triangle only works as a round
+ * dot: with the cut off (Square) it would draw bare triangles, so Square always draws quads
+ * whatever is requested, and the button says so.
+ */
+let requestedDotShape: DotShape = parseDotShape(params.get('dot')) ?? EXPERIENCE_CONFIG.lod.dotGeometry.shape
+const effectiveDotShape = (): DotShape => (roundDots ? requestedDotShape : 'quad')
+const dotShapeToggleEl = $<HTMLButtonElement>('#dotShapeToggle')
+const dotShapeReadoutEl = $('#dotShapeReadout')
+function syncDotShapeToggle(changed?: number): void {
+  const effective = effectiveDotShape()
+  const triangle = requestedDotShape === 'triangle'
+  dotShapeToggleEl.classList.toggle('on', triangle)
+  dotShapeToggleEl.setAttribute('aria-pressed', String(triangle))
+  dotShapeToggleEl.textContent = triangle ? '▲ Triangle · 3 vertices' : '■ Quad · 4 vertices'
+  const forced = effective !== requestedDotShape
+  dotShapeReadoutEl.textContent = [
+    `drawing ${effective === 'triangle' ? 'triangles' : 'quads'}`,
+    forced ? 'forced to quads by the Square dot shape' : null,
+    `${shapeAreaFactor(effective).toFixed(3)} d² rasterised per dot`,
+    changed !== undefined ? `${changed} tiles switched` : null,
+  ].filter(Boolean).join(' · ')
+}
+function applyDotShapeSetting(): number {
+  const changed = stream?.setDotShape(effectiveDotShape()) ?? 0
+  syncDotShapeToggle(stream ? changed : undefined)
+  return changed
+}
+dotShapeToggleEl.addEventListener('click', () => {
+  requestedDotShape = requestedDotShape === 'triangle' ? 'quad' : 'triangle'
+  applyDotShapeSetting()
+})
+syncDotShapeToggle()
 
 const foveationToggleEl = $<HTMLButtonElement>('#foveationToggle')
 const syncFoveationToggle = () => {
@@ -3949,9 +3993,10 @@ function errorTargetLabel(): string {
  * halves of the frame sit at opposite ends of the min/max clamp, and a single figure for
  * both describes neither.
  *
- * The area counted is the quad, not the circle inside it. The round dot is a Discard in
- * the colour node, which runs *after* rasterisation, so the corners are shaded and then
- * thrown away: 4/π of the fragments are paid for and 1 of them is kept.
+ * The area counted is the primitive, not the circle inside it. The round dot is a Discard
+ * in the colour node, which runs *after* rasterisation, so the corners are shaded and then
+ * thrown away: 4/π of the fragments are paid for and 1 of them is kept with the quad, and
+ * 1.69 with the triangle of the dot-geometry A/B, whose area is 1.325 d².
  *
  * `Stacking` is how far the on-screen point density sits above what one clean layer at
  * the live error target would give. The target is enforced per tile, but ADD refinement
@@ -4552,6 +4597,7 @@ async function main(): Promise<void> {
     errorTarget: sseAuto,
     debugVolume: showDiagnostics,
     onPointTile: (object, url) => groundPatchMask.addTile(object, url),
+    dotShape: effectiveDotShape(),
   })
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
@@ -4614,6 +4660,33 @@ async function main(): Promise<void> {
     get sphereFade() { return sphereFade },
     /** Whether the streamer is still refining the landing view from its own eye. */
     get initialPov() { return initialPovActive() },
+    /**
+     * The dot-geometry A/B from the console: `__wild.dots.set('tri')` / `set('quad')`, and
+     * `.state` for what is requested, what is drawn and how the loaded tiles are split.
+     */
+    dots: {
+      set(shape: string) {
+        const parsed = parseDotShape(shape)
+        if (!parsed) throw new Error(`dot shape must be 'quad' or 'tri', got ${shape}`)
+        requestedDotShape = parsed
+        const changed = applyDotShapeSetting()
+        return { requested: requestedDotShape, effective: effectiveDotShape(), changed }
+      },
+      get state() {
+        const tiles = { quad: 0, triangle: 0 }
+        stream?.tiles.forEachLoadedModel((model: THREE.Object3D) => {
+          model.traverse((object: THREE.Object3D) => {
+            if (isDotMesh(object)) tiles[object.userData.dot.shape as DotShape]++
+          })
+        })
+        return {
+          requested: requestedDotShape,
+          effective: effectiveDotShape(),
+          stream: stream?.dotShape() ?? null,
+          loadedDotMeshes: tiles,
+        }
+      },
+    },
     /** 0 while the cinematic flight runs, 1 once it has settled. */
     get flightProgress() { return cinematicFlightProgress },
     get flightStarted() { return loaderFlightStarted },
@@ -4871,9 +4944,9 @@ async function main(): Promise<void> {
         if (typeof value !== 'number') return
         spacing = value
         own = object.material.userData.pointSpacingM ?? value
-        points += (object.geometry as THREE.InstancedBufferGeometry).instanceCount ?? 0
-        // The carrier still holds the tile's real point bounds; the quad geometry's own
-        // sphere describes the four corner offsets — see shadedPixelArea for the same trap.
+        if (isDotMesh(object)) points += drawnPoints(object)
+        // The carrier still holds the tile's real point bounds; the dot geometry's own
+        // sphere describes the corner offsets — see shadedPixelArea for the same trap.
         const carrier = object.parent as THREE.Object3D | null
         const geometry = carrier ? (carrier as any).geometry : null
         if (!geometry) return
@@ -4923,6 +4996,10 @@ async function main(): Promise<void> {
       overdraw: Number(lastOverdraw.toFixed(2)),
       areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
       dots: roundDots ? 'A round' : 'B square',
+      // The shape actually drawn, after the Square rule. Overdraw and area per point change
+      // units between the two (the triangle rasterises 1.325 d², the quad 1 d²), so a
+      // sample that does not say which one produced it cannot be compared.
+      dotShape: effectiveDotShape(),
     }),
     // The boot and flight brakes hold the error target far above the working band, so a
     // measurement taken under them describes the brake and not the setting being tested.
