@@ -1040,6 +1040,16 @@ export function createStreamingCloud(opts: {
     // this is dead weight for a PNTS tile either way.
     ;(model as any).featureTable = null
     ;(model as any).batchTable = null
+    // The loader's result object holds the same two tables: TilesRenderer keeps it as
+    // `engineData.metadata` for the life of the tile, so dropping only the model's copies
+    // above released nothing — the PNTS body, about 15 bytes per point, stayed reachable
+    // through it in both feeds. In this renderer only the Google auth plugin reads that
+    // object, and only its `asset.copyright`. Null for tiles that parse to a bare Object3D.
+    const metadata = tile?.engineData?.metadata
+    if (metadata) {
+      metadata.featureTable = null
+      metadata.batchTable = null
+    }
     for (const source of sources) {
       points += source.geometry?.getAttribute('position')?.count ?? 0
       // Before setDrawRange(0, 0) below parks the carrier — the positions stay

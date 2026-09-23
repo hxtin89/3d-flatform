@@ -4697,18 +4697,60 @@ async function main(): Promise<void> {
       },
       get state() {
         const tiles: Record<string, number> = {}
-        stream?.tiles.forEachLoadedModel((model: THREE.Object3D) => {
+        // CPU bytes held per point, per feed: every distinct ArrayBuffer a loaded dot mesh
+        // keeps reachable, counted once, by where it hangs — the carrier's arrays, the dot
+        // geometry's (the shared quad index and the corner buffers left out), the point-data
+        // texture, and the loader's copy of the tile on engineData.metadata. Leaves out the
+        // graph cache's last-drawn material and the mask's in-flight tile, so a heap
+        // snapshot reads a little higher.
+        type Bytes = { points: number; carrier: number; dotGeometry: number; texture: number; tileMetadata: number; packedCarriers: number }
+        const bytes: Record<string, Bytes> = {}
+        const seen = new Set<ArrayBufferLike>()
+        const count = (entry: Bytes, key: keyof Bytes, buffer: ArrayBufferLike | undefined) => {
+          if (!buffer || seen.has(buffer)) return
+          seen.add(buffer)
+          entry[key] += buffer.byteLength
+        }
+        stream?.tiles.forEachLoadedModel((model: THREE.Object3D, tile: any) => {
           model.traverse((object: THREE.Object3D) => {
             if (!isDotMesh(object)) return
-            const key = `${object.userData.dot.feed}/${object.userData.dot.shape}`
+            const dot = object.userData.dot
+            const key = `${dot.feed}/${dot.shape}`
             tiles[key] = (tiles[key] ?? 0) + 1
+            const entry = bytes[dot.feed] ??= { points: 0, carrier: 0, dotGeometry: 0, texture: 0, tileMetadata: 0, packedCarriers: 0 }
+            entry.points += dot.points
+            const carrier = (object.parent as any)?.geometry as THREE.BufferGeometry | undefined
+            if (carrier) {
+              for (const attribute of Object.values(carrier.attributes)) count(entry, 'carrier', (attribute as any).array?.buffer)
+              if (carrier.getAttribute('position')?.itemSize === 4) entry.packedCarriers++
+            }
+            for (const attribute of Object.values(object.geometry.attributes)) {
+              if (attribute.count > 8) count(entry, 'dotGeometry', (attribute as any).array?.buffer)
+            }
+            count(entry, 'texture', (object.material as any)?.pointData?.image?.data?.buffer)
+            const metadata = tile?.engineData?.metadata
+            count(entry, 'tileMetadata', metadata?.featureTable?.buffer)
+            count(entry, 'tileMetadata', metadata?.batchTable?.buffer)
           })
         })
+        const cpuBytesPerPoint: Record<string, Record<string, number>> = {}
+        for (const [feed, entry] of Object.entries(bytes)) {
+          const per = (value: number) => Number((value / Math.max(1, entry.points)).toFixed(2))
+          cpuBytesPerPoint[feed] = {
+            total: per(entry.carrier + entry.dotGeometry + entry.texture + entry.tileMetadata),
+            carrier: per(entry.carrier),
+            dotGeometry: per(entry.dotGeometry),
+            texture: per(entry.texture),
+            tileMetadata: per(entry.tileMetadata),
+            packedCarriers: entry.packedCarriers,
+          }
+        }
         return {
           requested: { shape: requestedDotShape, feed: requestedDotFeed },
           effective: effectiveDotMode(),
           stream: stream?.dotMode() ?? null,
           loadedDotMeshes: tiles,
+          cpuBytesPerPoint,
         }
       },
     },
