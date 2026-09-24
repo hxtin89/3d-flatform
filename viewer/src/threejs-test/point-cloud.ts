@@ -640,7 +640,7 @@ export function setHighPrecisionMatrices(enabled: boolean): void {
  * bounding-sphere centre, so mediump rounds each tile onto its own grid and the
  * neighbours drift apart by up to a metre. The hairline cracks let the clear
  * colour through — the blue lines between map tiles. Imagery therefore stays on
- * the high-precision path unconditionally, including during loader and flight. */
+ * the high-precision path unconditionally, including during flights with Flight drop on. */
 export function applyHighPrecisionAlways(material: any): void {
   if (!material || material.contextNode === HIGH_PRECISION_CONTEXT) return
   material.contextNode = HIGH_PRECISION_CONTEXT

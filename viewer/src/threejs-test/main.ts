@@ -51,7 +51,7 @@ import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-ben
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
-import { flightSseFloor } from './flight-quality'
+import { flightSseFloor, matrixPrecisionWanted } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
 import { createGroundPatchMask } from './ground-patch-mask'
 import { createRenderBench } from './render-bench'
@@ -866,8 +866,8 @@ function setSplatSolo(on: boolean): void {
 
 const onPrecisionToggle = () => {
   highPrecisionMatrices = !highPrecisionMatrices
-  // The loop owns the actual switch — it also has to suppress it during the
-  // loader and the flight.
+  // The loop owns the actual switch — it also drops it during flights while the
+  // Flight drop option is on.
   updateMatrixPrecision(performance.now())
   syncPrecisionToggle()
 }
@@ -3810,13 +3810,6 @@ let flightEndedAt = -Infinity
 let wasFlying = false
 let appliedHighPrecision: boolean | null = null
 
-/**
- * High-precision matrices are only worth their per-tile CPU matrix multiply
- * once the camera is close enough for the ECEF rounding to reach a pixel.
- * Held off through the loader as well as the flight, so the material rebuild
- * the switch triggers happens exactly once — on arrival, while flightSseFloor
- * still keeps the tile count down — instead of once at each end of the flight.
- */
 function setPointCloudRevealed(revealed: boolean): void {
   pointCloudRevealed = revealed
   if (stream) stream.group.visible = revealed
@@ -3840,15 +3833,28 @@ function updateCloudReveal(): void {
   }
 }
 
+/**
+ * Apply the precision the panel asks for. The point cloud uses the CPU-side model-view
+ * matrix from its first tile, as the basemap always has: that costs one matrix multiply
+ * per drawn tile, where every switch costs a shader build and a new render object for
+ * every loaded tile — a 10-35 ms hitch when it landed 1.2 s into the entrance flight.
+ * Only the Flight drop option (off by default) lowers it; see matrixPrecisionWanted.
+ */
 function updateMatrixPrecision(now: number): void {
   if (wasFlying && !cameraFlight.active) flightEndedAt = now
   wasFlying = cameraFlight.active
 
-  const flightSuppressed = renderOptions.effective().flightPrecisionDrop && cameraFlight.active
-  const want = highPrecisionMatrices && !bootLoading && !flightSuppressed
-  if (want === appliedHighPrecision) return
+  const want = matrixPrecisionWanted({
+    wish: highPrecisionMatrices,
+    flightDrop: renderOptions.effective().flightPrecisionDrop,
+    flying: cameraFlight.active,
+    bootLoading,
+  })
+  // Not latched before the stream exists, or a toggle during boot would be recorded as
+  // applied without ever reaching a material.
+  if (want === appliedHighPrecision || !stream) return
   appliedHighPrecision = want
-  stream?.setHighPrecision(want)
+  stream.setHighPrecision(want)
 }
 
 function updateStreaming(now: number): StreamingStats | null {
