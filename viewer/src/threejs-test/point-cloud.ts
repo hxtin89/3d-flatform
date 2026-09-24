@@ -915,13 +915,18 @@ const NO_TILE_DEBUG: TileDebugInfo = { level: 0, tint: 0xffffff, isLeaf: false }
  * Safe to share because nothing in here is per tile any more: the four values that are
  * (thinning scale, spacing, and the two inspector inputs) travel through the shared
  * `onObjectUpdate` nodes above, which read them off the material being drawn.
+ *
+ * Matrix precision is not part of the key. The body reads the view position and the
+ * sprite's model-view, but three resolves both per build from the builder's context,
+ * which the material's contextNode fills — and the contextNode is part of the material's
+ * own cache key, so the two precisions still build apart while sharing one graph.
  */
 function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = INSTANCED_QUAD) {
   // The instanced graph is the same for both shapes — the shape lives in the corner buffer.
   // A pulled graph carries the shape itself (its vertex-index maths and corner table), and
   // no colour attribute, so its key is the shape instead of the colour size.
   const feedKey = mode.feed === 'pulled' ? `pulled-${mode.shape}` : `${colorItemSize}`
-  const key = `${feedKey}|${effectsVersion}|${highPrecisionMatrices ? 1 : 0}`
+  const key = `${feedKey}|${effectsVersion}`
   const cached = cloudGraphCache.get(key)
   if (cached) return cached
 
