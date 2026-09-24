@@ -883,7 +883,7 @@
         <div class="row">
           <label class="h" for="sphereRampInset">Ramp width · <span class="val" id="sphereRampInsetVal">—</span></label>
           <input type="range" id="sphereRampInset" min="0" max="1000" step="10" />
-          <span class="weather-note">How far inside the inner radius the falloff starts, in metres. Nearer the centre than that every point is drawn whole; over these last metres to the rim the size and the height ramp down to nothing. Wider than the radius ramps from the very centre</span>
+          <span class="weather-note">How far inside the inner radius the falloff starts, in metres at the close-up size; it widens in step as the dome grows. Nearer the centre than that every point is drawn whole; over these last metres to the rim the size and the height ramp down to nothing. Wider than the radius ramps from the very centre</span>
         </div>
         <div class="row">
           <label class="h" for="sphereFadeIn">Fade-in exponent · <span class="val" id="sphereFadeInVal">—</span></label>
@@ -894,6 +894,31 @@
           <label class="h" for="sphereFadeOut">Fade-out exponent · <span class="val" id="sphereFadeOutVal">—</span></label>
           <input type="range" id="sphereFadeOut" min="0.2" max="5" step="0.1" />
           <span class="weather-note">How the ramp lands on nothing at the rim. Above 1 the points linger small and low before they vanish; below 1 they vanish abruptly. Each end is shaped by its own slider only</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereGrowth">Growth with distance · <span class="val" id="sphereGrowthVal">—</span></label>
+          <input type="range" id="sphereGrowth" min="0" max="1.5" step="0.05" />
+          <span class="weather-note">The inner radius as a share of the camera's distance to the dome's centre, so the dome covers about the same part of the screen at every height and reads as a vignette from high up. Never below the inner radius set further down, which is the size close to the canopy; the outer radius and the ramp grow in step. All the way left keeps the dome at one fixed size</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereMaxRadius">Maximum radius · <span class="val" id="sphereMaxRadiusVal">—</span></label>
+          <input type="range" id="sphereMaxRadius" min="500" max="8000" step="100" />
+          <span class="weather-note">Where the growth stops, in metres. Above the height that reaches it the dome keeps its size and shrinks on screen as the camera climbs on</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereRimDetail">Detail at the rim · <span class="val" id="sphereRimDetailVal">—</span></label>
+          <input type="range" id="sphereRimDetail" min="1" max="8" step="0.5" />
+          <span class="weather-note">Tiles lying wholly in the fade band are refined coarser, following the fade: never where a tile reaches the whole part of the dome, and this many times coarser at the rim. Off by default, because it changes detail at tile boundaries. Their points are drawn small and low out there anyway. All the way left is off</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereBandThinning">Thinning in the band · <span class="val" id="sphereBandThinningVal">—</span></label>
+          <input type="range" id="sphereBandThinning" min="0" max="1" step="0.05" />
+          <span class="weather-note">A tile lying wholly in the fade band draws only its share of points, down to its fade: fewer points as well as smaller ones, without widening the ones left. Rides on distance thinning, so it does nothing while that is off. All the way left is off</span>
+        </div>
+        <div class="row">
+          <label class="h" for="sphereFocusDrop">Focus in side view · <span class="val" id="sphereFocusDropVal">—</span></label>
+          <input type="range" id="sphereFocusDrop" min="0" max="0.8" step="0.05" />
+          <span class="weather-note">How far below the middle of the screen the dome's centre sits once the camera is tilted fully to the side, as a share of half the screen height. Looking straight down it is always the middle; in between it slides on the same tilt curve as the side-view vignette. It never goes so far down that the ground in the middle of the screen leaves the whole part of the dome, so from high up it stays nearer the middle. All the way left keeps it in the middle at every tilt</span>
         </div>
         <div class="row">
           <label class="h" for="sphereDebugToggle">Debug shells</label>
@@ -908,7 +933,7 @@
         <div class="row">
           <label class="h" for="sphereInnerM">Inner radius · <span class="val" id="sphereInnerMVal">—</span></label>
           <input type="range" id="sphereInnerM" min="25" max="2000" step="5" />
-          <span class="weather-note">Will gate drawing and set the falloff: points shrink and sink to the map from the centre out and vanish at this distance. Never larger than the outer radius</span>
+          <span class="weather-note">Gates drawing and sets the falloff: points shrink and sink to the map from the centre out and vanish at this distance. This is the size close to the canopy, the floor the growth starts from. Never larger than the outer radius</span>
         </div>
         <div class="row">
           <label class="h" for="sphereOpacity">Shell opacity · <span class="val" id="sphereOpacityVal">—</span></label>
@@ -935,8 +960,8 @@
         </div>
         <div class="row">
           <label class="h" for="thinTarget">Thin to · <span class="val" id="thinTargetVal">—</span></label>
-          <input type="range" id="thinTarget" min="1" max="4" step="0.1" />
-          <span class="weather-note">How far apart the kept points should sit out there, as a multiple of the spacing the error target already asks for. 1 only removes points finer than the target</span>
+          <input type="range" id="thinTarget" min="0.2" max="4" step="0.05" />
+          <span class="weather-note">How far apart the kept points should sit out there, as a multiple of the spacing the error target already asks for. 1 thins everything down to exactly the target, which reads coarser than the unthinned cloud; below 1 keeps some of the finer detail the tree delivered</span>
         </div>
         <div class="row">
           <label class="h" for="thinMaxWiden">Widen survivors up to · <span class="val" id="thinMaxWidenVal">—</span></label>

@@ -2386,6 +2386,10 @@ function sideAnchorEnu2d(target: THREE.Vector2): THREE.Vector2 {
   )
 }
 
+/** How far into side view the camera is this frame, 0 top-down to 1 side-on — set by
+ *  updateMaskFollow, read by the dome. */
+let sideViewFactor = 0
+
 function updateMaskFollow(): void {
   const mode = uniforms.maskMode.value
   ndc.set(0, 0)
@@ -2395,6 +2399,7 @@ function updateMaskFollow(): void {
   const sideFactor = enuFrameReady
     ? 1 - smooth01(vignetteSideAngleDeg, vignetteTopAngleDeg, cameraPitchDeg())
     : 0
+  sideViewFactor = sideFactor
   if (enuFrameReady) sideAnchorEnu2d(sideAnchor2d)
   // The fovea slides toward the bottom edge on the same curve, so the two features
   // anchor alike and there is one definition of "how far into side view we are".
@@ -2696,9 +2701,9 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * where the savings are, below 1 keeps more than asked.
  */
 /**
- * On by default, with the preset below: measured on a tilted canopy view at 7.5 M points
- * it draws 56% of them for about 1.8x less GPU time, and screenshots against the unthinned
- * frame showed no difference.
+ * On by default. The first preset (target 1.0) drew 56% of a tilted 7.5 M-point view for
+ * about 1.8x less GPU time and passed a screenshot check, but was later judged too coarse
+ * on a full screen; the preset below keeps more — see `thinTargetScale`.
  *
  * Switching it off is byte-identical to the feature not existing, so it stays the first
  * thing to try when the cloud looks wrong.
@@ -2721,7 +2726,16 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * out on their own.
  */
 let thinningOn = params.get('thinning') !== 'off'
-let thinTargetScale = 1
+/**
+ * 0.5, not 1. At 1 every tile beyond the far distance was thinned to exactly the error
+ * target's spacing, which reads visibly coarser than the unthinned cloud: the tree
+ * delivers finer than the target (a tile stops refining anywhere between half and all
+ * of it) and that surplus *is* the detail. Measured 2026-09-24 against keeping every
+ * point, share drawn at 1077 m nadir / 250 m 45° / 442 m 70° / 130 m 60°:
+ * 1.0 and 0.3 covered kept 45 / 77 / 73 / 32 %; 0.5 and 0.5 keep 78 / 90 / 88 / 79 %.
+ * Judged too coarse by eye at the old setting.
+ */
+let thinTargetScale = 0.5
 /** A tile whose own children are also drawn is duplicated detail, and this is where
  *  nearly all the saving comes from — but 0 made the step far too violent to hide.
  *
@@ -2729,13 +2743,18 @@ let thinTargetScale = 1
  *  so at 0 a tile swung between 100% and the 2% floor — a factor of fifty, in one frame,
  *  repeatedly, while the camera moves. At 0.3 the worst swing is a factor of three, which
  *  the temporal ramp in applyThinning can actually dissolve. The far field still loses
- *  most of its duplicated ancestors; it just stops announcing it. */
-let ancestorKeep = 0.3
+ *  most of its duplicated ancestors; it just stops announcing it.
+ *
+ *  0.5 since 2026-09-24, with the target above: the ancestors' points sit *between*
+ *  their children's, so dropping 70 % of them was part of what read as too coarse. */
+let ancestorKeep = 0.5
 /** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
- *  points in a normal view sit beyond it — and 800 m is far enough from 100 that the
- *  per-tile steps in between cannot read as a ring. */
+ *  points in a normal view sit beyond it. The far end was 800 m until 2026-09-24 and is
+ *  2000 m by choice, for more detail: with the target and covered share above it keeps
+ *  89 / 98 / 98 / 87 % of the points at 1077 m nadir / 250 m 45° / 442 m 70° / 130 m 60°,
+ *  against 78 / 90 / 88 / 79 % at 800 m. */
 let thinNearM = 100
-let thinFarM = 800
+let thinFarM = 2000
 const THINNING_MIN_KEEP = 0.02
 /** How far a survivor may be widened to stand in for what was dropped. 2 doubles the
  *  drawn diameter at most — measured, the uncapped figure reaches 7 and turns the horizon
@@ -2757,7 +2776,7 @@ let tilesPerFrame = 2
  *  from DEFAULT_LIMITS; the slider exists because lowering it is the cheapest way to bound
  *  how much gets uploaded to the card in any one frame. */
 let maxParses = 2
-let lastThinning: { drawn: number; loaded: number } | null = null
+let lastThinning: { drawn: number; loaded: number; domeCut: number } | null = null
 /** How many visible tiles the finest-layer rule shrank this frame — see applyEffectiveSpacing. */
 let lastEffectiveSpacing: { shrunk: number; tiles: number } | null = null
 
@@ -2880,6 +2899,27 @@ bindDesignSlider('sphereFadeIn', sphereFadeSettings.fadeIn, (v) => v.toFixed(1),
 bindDesignSlider('sphereFadeOut', sphereFadeSettings.fadeOut, (v) => v.toFixed(1), (v) => {
   sphereFadeSettings.fadeOut = v
 })
+// The adaptive dome: growth with distance, its ceiling, and how far down the screen the
+// focus spot slides at full side view. 0 growth and 0 drop is the fixed dome.
+bindDesignSlider('sphereGrowth', sphereFadeSettings.growth, (v) =>
+  v > 0 ? `${v.toFixed(2)} × distance` : 'off · fixed size', (v) => {
+  sphereFadeSettings.growth = v
+})
+bindDesignSlider('sphereMaxRadius', sphereFadeSettings.maxRadiusM, asMetres, (v) => {
+  sphereFadeSettings.maxRadiusM = v
+})
+bindDesignSlider('sphereRimDetail', sphereFadeSettings.rimDetailFactor, (v) =>
+  v > 1 ? `${v.toFixed(1)}× coarser at the rim` : 'off', (v) => {
+  sphereFadeSettings.rimDetailFactor = v
+})
+bindDesignSlider('sphereBandThinning', sphereFadeSettings.bandThinning, (v) =>
+  v > 0 ? asPercent(v) : 'off', (v) => {
+  sphereFadeSettings.bandThinning = v
+})
+bindDesignSlider('sphereFocusDrop', sphereFadeSettings.focusDrop, (v) =>
+  v > 0 ? `${Math.round(v * 100)} % down` : 'off · middle', (v) => {
+  sphereFadeSettings.focusDrop = v
+})
 const sphereGateReadoutEl = $('#sphereGateReadout')
 
 const sphereFadeCentreRawEnu = new THREE.Vector3()
@@ -2894,7 +2934,7 @@ function applySphereFadeUniforms(dome: SphereFade | null): void {
   sphereFadeCentreRawEnu.copy(dome.centreWorld).applyMatrix4(enuInverseRender)
   uniforms.sphereFadeCentre.value.copy(sphereFadeCentreRawEnu)
   uniforms.sphereFadeRadius.value = dome.innerRadius()
-  uniforms.sphereFadeRampInset.value = Math.max(0, sphereFadeSettings.rampInsetM)
+  uniforms.sphereFadeRampInset.value = dome.rampWidth()
   uniforms.sphereFadeIn.value = Math.max(0.01, sphereFadeSettings.fadeIn)
   uniforms.sphereFadeOut.value = Math.max(0.01, sphereFadeSettings.fadeOut)
   uniforms.sphereFadeUpWorld.value.copy(enuUp)
@@ -3869,7 +3909,13 @@ function updateStreaming(now: number): StreamingStats | null {
   const dome = sphereFade && sphereFadeSettings.enabled && sphereFade.placed() ? sphereFade : null
   if (dome) stream.setMaskSphere(dome.centreWorld, dome.outerRadius())
   else stream.setMaskSphere(maskWorldActive ? maskSphereWorld : null, maskWorldRadius)
-  stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0)
+  stream.setRenderSphere(dome ? dome.centreWorld : null, dome ? dome.innerRadius() : 0, dome ? {
+    rampM: dome.rampWidth(),
+    fadeIn: sphereFadeSettings.fadeIn,
+    fadeOut: sphereFadeSettings.fadeOut,
+    rimDetailFactor: sphereFadeSettings.rimDetailFactor,
+    thinning: sphereFadeSettings.bandThinning,
+  } : undefined)
   applySphereFadeUniforms(dome)
   // The eye the point-of-view load refines from: the flight's landing pose while it is
   // in the air (a mid-air retarget moves it once), the staged boot pose before that —
@@ -4173,6 +4219,9 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
+      + ` · radius ${Math.round(sphereFade.innerRadius())} m`
+      + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
+      + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
       + (initialPovActive()
         ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
           ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
@@ -4584,6 +4633,7 @@ async function main(): Promise<void> {
     scene,
     worldToEnu,
     enuToWorld,
+    sideViewFactor: () => sideViewFactor,
     settings: sphereFadeSettings,
   })
   keyboardNavigation = createKeyboardNavigation({

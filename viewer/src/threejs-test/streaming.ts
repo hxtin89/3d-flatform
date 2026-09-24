@@ -144,8 +144,11 @@ export interface StreamingCloud {
    * draw every selected tile). A tile outside it is left exactly as selected — loaded,
    * resident, counted — and only its quads are taken off the render list, which is what
    * stops three uploading or compiling anything for it. Takes effect inside `update()`.
+   *
+   * `band`, when given, is the fade band just inside the rim — see DomeBand. A tile in it
+   * is refined coarser and, with distance thinning on, drawn with fewer points.
    */
-  setRenderSphere(centerWorld: THREE.Vector3 | null, radius: number): void
+  setRenderSphere(centerWorld: THREE.Vector3 | null, radius: number, band?: DomeBand): void
   /**
    * Initial point-of-view load. While an eye is set, the mask sphere stops asking the
    * camera frustum: every tile whose box reaches into the sphere is selected, and its
@@ -200,7 +203,7 @@ export interface StreamingCloud {
    * Returns what was drawn against what is loaded, so the panel can report the fraction
    * rather than leaving it to be inferred.
    */
-  applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
+  applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number; domeCut: number }
   /**
    * Drop every resident tile so the next traversal fetches and parses them again.
    *
@@ -231,6 +234,24 @@ export interface StreamingCloud {
     diameterPx: (spacingM: number, viewDepthM: number, thinScale: number) => number,
   ): { areaPx: number; points: number }
   dispose(): void
+}
+
+/**
+ * The dome's fade band as the streamer uses it: the same curve the shader melts the
+ * points with (sphereFadeFactor in point-cloud.ts), judged at a tile box's nearest point
+ * to the centre — the least faded point it holds — so a tile reaching into the whole
+ * part of the dome is never touched.
+ */
+export interface DomeBand {
+  /** Width of the band inside the rim, metres. */
+  rampM: number
+  fadeIn: number
+  fadeOut: number
+  /** Error-target multiplier at the rim, 1 at the band's inner edge, following the fade.
+   *  1 is off. */
+  rimDetailFactor: number
+  /** How far a tile inside the band is thinned towards its fade factor, 0..1. 0 is off. */
+  thinning: number
 }
 
 export interface ThinningSettings {
@@ -581,6 +602,66 @@ export function createStreamingCloud(opts: {
    */
   const renderSphere = new THREE.Sphere()
   let renderGateActive = false
+  /** The fade band inside the render sphere's rim, or null for none. */
+  let domeBand: DomeBand | null = null
+  /**
+   * The dome's fade factor for a tile, 1 while no band is in force.
+   *
+   * At the box's nearest point to the centre by default — the largest factor any point
+   * of the tile is drawn with, so 1 anywhere the box reaches the whole part of the dome.
+   * That is the right judge for thinning, which is uniform over the tile and would thin
+   * its whole part too. `atCentre` judges at the box's middle instead, for the detail.
+   */
+  const domeBoxCentre = new THREE.Vector3()
+  const domeObb = new THREE.Box3()
+  const domeObbMatrix = new THREE.Matrix4()
+  function domeFadeFor(tile: any, atCentre = false): number {
+    if (!renderGateActive || !domeBand) return 1
+    const volume = tile?.engineData?.boundingVolume
+    if (!volume) return 1
+    const ramp = Math.max(0.001, Math.min(domeBand.rampM, renderSphere.radius))
+    const start = renderSphere.radius - ramp
+    let d: number
+    if (atCentre) {
+      volume.getOBB(domeObb, domeObbMatrix)
+      domeObb.getCenter(domeBoxCentre).applyMatrix4(domeObbMatrix)
+      d = domeBoxCentre.distanceTo(renderSphere.center)
+    } else {
+      d = volume.distanceToPoint(renderSphere.center)
+    }
+    const t = THREE.MathUtils.clamp((d - start) / ramp, 0, 1)
+    if (t <= 0) return 1
+    if (t >= 1) return 0
+    // Same monotonic two-exponent curve as sphereFadeFactor in point-cloud.ts.
+    const rise = t ** Math.max(0.01, domeBand.fadeIn)
+    const fall = (1 - t) ** Math.max(0.01, domeBand.fadeOut)
+    return 1 - rise / (rise + fall)
+  }
+  /**
+   * Coarser detail in the fade band: a tile's projected error is divided by a factor
+   * that follows the fade, 1 in the whole part of the dome and `rimDetailFactor` at the
+   * rim — the error target seen from that tile rises from 4 to 16 at the default 4.
+   * Points out there are drawn shrunk and sunk anyway; refining them as finely as the
+   * plateau bought draws nobody could read. A plain multiplier like the foveation and
+   * view-angle wrappers, so the three compose in any order.
+   *
+   * Judged at the tile's nearest point, so a tile reaching into the whole part of the
+   * dome always refines — and so does every descendant there, since their boxes nest
+   * inside it — which keeps the resolution in the whole part exactly what it is with the
+   * dome off. Judging at the box middle saved far more (−16 % drawn at 250 m and 45°)
+   * but coarsened the straddling ancestors *inside* the whole part too: measured at
+   * 442 m it took 21 % of the whole part's points at 70° and 23 % at 55°, and showed as
+   * coarse rectangles. With the nearest-point judge the saving is small (−1.5 % there),
+   * because the hierarchy draws every level at once and the coarse ancestors, up to
+   * 1.5 km across, always reach the whole part. Off by default for that reason.
+   */
+  const viewErrorBeforeDome = (tiles as any).calculateTileViewError.bind(tiles)
+  ;(tiles as any).calculateTileViewError = (tile: any, target: any) => {
+    viewErrorBeforeDome(tile, target)
+    if (!domeBand || !(domeBand.rimDetailFactor > 1) || !target.inView) return
+    const fade = domeFadeFor(tile)
+    if (fade < 1) target.error /= 1 + (domeBand.rimDetailFactor - 1) * (1 - fade)
+  }
   let renderGateHidden = 0
   let renderGateTiles = 0
   /** The wanted parse concurrency, kept separately so leaf loading can borrow the queue and
@@ -1377,9 +1458,10 @@ export function createStreamingCloud(opts: {
       povEye.copy(eyeWorld)
       tiles.group.worldToLocal(povEye)
     },
-    setRenderSphere(centerWorld, radius) {
-      if (!centerWorld || !(radius > 0)) { renderGateActive = false; return }
+    setRenderSphere(centerWorld, radius, band) {
+      if (!centerWorld || !(radius > 0)) { renderGateActive = false; domeBand = null; return }
       renderGateActive = true
+      domeBand = band ?? null
       // Same frame as the mask sphere: the bounding volumes live in the tiles' own root
       // frame, which is the group's local space — lift included.
       tiles.group.updateWorldMatrix(true, false)
@@ -1692,6 +1774,7 @@ export function createStreamingCloud(opts: {
       fairOrderWanted = settings !== null
       let drawn = 0
       let loaded = 0
+      let domeCut = 0
       if (!settings) {
         // Off: every tile back to its full buffer and its own spacing.
         for (const tile of tiles.visibleTiles) {
@@ -1711,7 +1794,9 @@ export function createStreamingCloud(opts: {
             if (mesh.visible) drawn += full
           }
         }
-        return { drawn, loaded }
+        // Nothing for the fade band either: its thinning is a prefix draw, and a tile only
+        // has an order a prefix can sample while distance thinning is on.
+        return { drawn, loaded, domeCut }
       }
 
       // Real elapsed time, so the ramp below is frame-rate independent. Clamped because a
@@ -1722,10 +1807,14 @@ export function createStreamingCloud(opts: {
       lastThinningAt = nowMs
 
       camera.getWorldDirection(coverForward)
+      const bandThinning = domeBand ? THREE.MathUtils.clamp(domeBand.thinning, 0, 1) : 0
       for (const tile of tiles.visibleTiles) {
         const stats = tileStats.get(tile)
         if (!stats) continue
         loaded += stats.points
+        // The fade band's share, on top of the distance keep below. The dome moves and
+        // grows eased, so this changes smoothly on its own and is not ramped again.
+        const domeKeep = bandThinning > 0 ? 1 - bandThinning * (1 - domeFadeFor(tile)) : 1
         // A tile with any of its children also on screen is an ancestor under a finer
         // layer, and the cheapest place to take points away from — but not because they
         // are duplicates. The levels are a strict partition (see applyEffectiveSpacing):
@@ -1812,7 +1901,9 @@ export function createStreamingCloud(opts: {
             keep = previousKeep + (keep - previousKeep) * (1 - Math.exp(-dtMs / settings.rampMs))
           }
           dot.keepNow = keep
-          const count = Math.max(1, Math.round(full * keep))
+          const distanceCount = Math.max(1, Math.round(full * keep))
+          const count = Math.max(1, Math.round(full * keep * domeKeep))
+          domeCut += distanceCount - count
           setDrawnPoints(mesh, count)
           // Survivors stand in for the ones that went, so they are drawn as wide as the
           // gap they now have to cover. Without this the ground thins into holes instead
@@ -1827,11 +1918,15 @@ export function createStreamingCloud(opts: {
           // quilt of blobs along the horizon — visibly worse than the gaps it was there
           // to fill. Past the cap the far field is allowed to go slightly open instead,
           // which at that distance reads as texture.
-          scale.value = Math.min(Math.sqrt(full / count), settings.maxWiden)
+          //
+          // Widened for the distance thinning only. What the fade band takes away is meant
+          // to go: the band melts the canopy into fewer, smaller points, and widening the
+          // survivors would fill back in the thinning the band is there to show.
+          scale.value = Math.min(Math.sqrt(full / distanceCount), settings.maxWiden)
           drawn += count
         }
       }
-      return { drawn, loaded }
+      return { drawn, loaded, domeCut }
     },
     shadedPixelArea(diameterPx) {
       // The shader divides by view depth — the distance along the camera axis, not the
