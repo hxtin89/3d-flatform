@@ -621,20 +621,21 @@ export function createStreamingCloud(opts: {
    * plateau bought draws nobody could read. A plain multiplier like the foveation and
    * view-angle wrappers, so the three compose in any order.
    *
-   * Judged at the middle of the tile's box, not its nearest point. The hierarchy draws
-   * every level at once, and near the canopy most points sit in tiles that straddle the
-   * rim — measured at 250 m and 45°: 26 straddling tiles held 53 % of the points — so a
-   * nearest-point judge left almost everything alone (−1.5 % drawn). Judged at the
-   * middle, a straddler whose bulk lies in the band stops refining: −16 % drawn and 13
-   * fewer tiles there, −18 % at 21°. The price is in the outer ring of the whole part,
-   * 11 % fewer points between 60 % and 100 % of its radius; the core inside that kept
-   * every point, and side by side the two could not be told apart.
+   * Judged at the tile's nearest point, so a tile reaching into the whole part of the
+   * dome always refines — and so does every descendant there, since their boxes nest
+   * inside it — which keeps the resolution in the whole part exactly what it is with the
+   * dome off. Judging at the box middle saved far more (−16 % drawn at 250 m and 45°)
+   * but coarsened the straddling ancestors *inside* the whole part too: measured at
+   * 442 m it took 21 % of the whole part's points at 70° and 23 % at 55°, and showed as
+   * coarse rectangles. With the nearest-point judge the saving is small (−1.5 % there),
+   * because the hierarchy draws every level at once and the coarse ancestors, up to
+   * 1.5 km across, always reach the whole part. Off by default for that reason.
    */
   const viewErrorBeforeDome = (tiles as any).calculateTileViewError.bind(tiles)
   ;(tiles as any).calculateTileViewError = (tile: any, target: any) => {
     viewErrorBeforeDome(tile, target)
     if (!domeBand || !(domeBand.rimDetailFactor > 1) || !target.inView) return
-    const fade = domeFadeFor(tile, true)
+    const fade = domeFadeFor(tile)
     if (fade < 1) target.error /= 1 + (domeBand.rimDetailFactor - 1) * (1 - fade)
   }
   let renderGateHidden = 0

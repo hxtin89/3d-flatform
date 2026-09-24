@@ -297,10 +297,12 @@ export const EXPERIENCE_CONFIG = {
       // view, in half screen heights — 0.4 is just above the lower third.
       focusDrop: 0.4,
       easeSeconds: 0.3,
-      // The fade band spends fewer points: coarser detail (error target 4 → 16 at the
-      // rim) and, with distance thinning on, fewer points per tile in the band.
-      rimDetailFactor: 4,
-      bandThinning: 1,
+      // Both off: inside the dome the resolution stays exactly what it is with the dome
+      // off. Coarser detail and per-tile thinning in the band change density at tile
+      // boundaries, which showed as rectangles (see the view-error wrapper in
+      // streaming.ts); kept as sliders for experiments.
+      rimDetailFactor: 1,
+      bandThinning: 0,
     },
     // Base size when the per-tile spacing above is toggled off (Cesium comparison:
     // one fixed size like Cesium's pointSize, slider still multiplies).

@@ -2696,9 +2696,9 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * where the savings are, below 1 keeps more than asked.
  */
 /**
- * On by default, with the preset below: measured on a tilted canopy view at 7.5 M points
- * it draws 56% of them for about 1.8x less GPU time, and screenshots against the unthinned
- * frame showed no difference.
+ * On by default. The first preset (target 1.0) drew 56% of a tilted 7.5 M-point view for
+ * about 1.8x less GPU time and passed a screenshot check, but was later judged too coarse
+ * on a full screen; the preset below keeps more — see `thinTargetScale`.
  *
  * Switching it off is byte-identical to the feature not existing, so it stays the first
  * thing to try when the cloud looks wrong.
@@ -2721,7 +2721,16 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  * out on their own.
  */
 let thinningOn = params.get('thinning') !== 'off'
-let thinTargetScale = 1
+/**
+ * 0.5, not 1. At 1 every tile beyond the far distance was thinned to exactly the error
+ * target's spacing, which reads visibly coarser than the unthinned cloud: the tree
+ * delivers finer than the target (a tile stops refining anywhere between half and all
+ * of it) and that surplus *is* the detail. Measured 2026-09-24 against keeping every
+ * point, share drawn at 1077 m nadir / 250 m 45° / 442 m 70° / 130 m 60°:
+ * 1.0 and 0.3 covered kept 45 / 77 / 73 / 32 %; 0.5 and 0.5 keep 78 / 90 / 88 / 79 %.
+ * Judged too coarse by eye at the old setting.
+ */
+let thinTargetScale = 0.5
 /** A tile whose own children are also drawn is duplicated detail, and this is where
  *  nearly all the saving comes from — but 0 made the step far too violent to hide.
  *
@@ -2729,8 +2738,11 @@ let thinTargetScale = 1
  *  so at 0 a tile swung between 100% and the 2% floor — a factor of fifty, in one frame,
  *  repeatedly, while the camera moves. At 0.3 the worst swing is a factor of three, which
  *  the temporal ramp in applyThinning can actually dissolve. The far field still loses
- *  most of its duplicated ancestors; it just stops announcing it. */
-let ancestorKeep = 0.3
+ *  most of its duplicated ancestors; it just stops announcing it.
+ *
+ *  0.5 since 2026-09-24, with the target above: the ancestors' points sit *between*
+ *  their children's, so dropping 70 % of them was part of what read as too coarse. */
+let ancestorKeep = 0.5
 /** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
  *  points in a normal view sit beyond it — and 800 m is far enough from 100 that the
  *  per-tile steps in between cannot read as a ring. */
