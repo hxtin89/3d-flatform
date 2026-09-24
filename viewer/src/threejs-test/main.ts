@@ -1457,7 +1457,7 @@ function buildPivotMarker(): THREE.Group {
   material.depthTest = false
   material.depthWrite = false
   material.transparent = true
-  material.toneMapped = false
+  // No toneMapped flag: r185 WebGPU tone-maps the finished frame, never one material.
   pivotMarkerMaterial = material
 
   const group = new THREE.Group()
