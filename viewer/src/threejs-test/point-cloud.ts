@@ -9,6 +9,7 @@ import {
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, renderGroup,
   pow, clamp, modelWorldMatrix, modelWorldMatrixInverse, transformDirection,
   vertexIndex, uint, ivec2, varying, nodeObject, materialPointSize, screenDPR, viewportSize,
+  sRGBTransferEOTF,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import {
@@ -964,16 +965,17 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
       float(packed.shiftRight(uint(8)).bitAnd(uint(255))),
       float(packed.bitAnd(uint(255))),
     ).div(255)
-    pointColor = varying(rgb, 'v_cloudColor')
+    pointColor = varying(sRGBTransferEOTF(rgb), 'v_cloudColor')
     dotUv = varying(corner.add(vec2(0.5)), 'v_cloudDotUv')
     cornerNode = corner
   } else {
     // Drives positionLocal, so positionWorld stays the point centre rather than a quad
     // corner — the mask, cloud shadow and height grading keep working.
     pointLocal = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
-    pointColor = colorItemSize === 4
+    const encoded = colorItemSize === 4
       ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
       : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
+    pointColor = varying(sRGBTransferEOTF(encoded), 'v_cloudColor')
     dotUv = uv()
   }
   let positionNode: any = pointLocal
@@ -1149,9 +1151,9 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const height01 = smoothstep(u.canopyBaseZ, u.canopyTopZ, enu.z)
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
-    // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
+    // pointColor is already linear: decoded per vertex with the exact sRGB curve, the
+    // same one the sampler applies to the basemap, so cloud and map match in the darks.
     const graded = pointColor
-      .pow(2.2)
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)
       .mul(cloudShadow)

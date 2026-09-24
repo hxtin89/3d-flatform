@@ -1108,6 +1108,21 @@ export const EXPERIENCE_CONFIG = {
       tint: 1,
     },
   },
+  // The output curve between the linear working colour and the sRGB canvas. It runs
+  // inside every material's output (or at the end of the DoF pass), so it adds no pass.
+  toneMapping: {
+    /**
+     * `neutral` is Khronos PBR Neutral: the identity while every channel sits in
+     * 0.08–0.8 linear, so captured point RGB and satellite colour pass through
+     * unchanged, and only values pushed toward and above 1 by daylight or
+     * mapBrightness roll off instead of clipping. `none` is the old hard clip;
+     * `agx` and `aces` are kept for comparison only — both desaturate photo colour.
+     * `?tonemap=` overrides this for an A/B.
+     */
+    mode: 'neutral' as 'none' | 'neutral' | 'agx' | 'aces',
+    /** Linear multiplier applied before the curve. Ignored by `none`. */
+    exposure: 1,
+  },
   // The one effect that cannot live inside a colour node: a circle of confusion
   // has to read neighbouring pixels, so DoF is a real post pass (see
   // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel

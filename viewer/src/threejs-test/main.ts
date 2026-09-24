@@ -474,6 +474,20 @@ const renderer = new WebGPURenderer({
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
+// Applied per material when drawing straight to the canvas; the DoF pipeline turns it off
+// for its scene pass and applies it once in its output transform, so both paths match.
+const TONE_MAPPINGS = {
+  none: THREE.NoToneMapping,
+  neutral: THREE.NeutralToneMapping,
+  agx: THREE.AgXToneMapping,
+  aces: THREE.ACESFilmicToneMapping,
+} as const
+const toneMappingParam = params.get('tonemap')
+const toneMappingMode = toneMappingParam && toneMappingParam in TONE_MAPPINGS
+  ? toneMappingParam as keyof typeof TONE_MAPPINGS
+  : EXPERIENCE_CONFIG.toneMapping.mode
+renderer.toneMapping = TONE_MAPPINGS[toneMappingMode]
+renderer.toneMappingExposure = EXPERIENCE_CONFIG.toneMapping.exposure
 // Daylight sky above the globe horizon. The matching distance fog hides the
 // finite map edge without another mesh, texture sample or post-process pass.
 const DAYLIGHT_SKY = 0x8bc9ec
