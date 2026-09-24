@@ -25,6 +25,7 @@ import {
   setCarrierBounds,
 } from './point-order'
 import { EXPERIENCE_CONFIG } from './config'
+import { sampleGroundHeights, type GroundSample } from './ground-sample'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
 
 export interface StreamingStats {
@@ -296,15 +297,7 @@ export interface ThinningSettings {
   farM: number
 }
 
-export interface GroundSample {
-  /** Low percentile of point height — the forest floor, in raw ENU metres. */
-  groundZ: number
-  /** High percentile — the canopy top. */
-  canopyZ: number
-  samples: number
-  /** Occupied cells of the 5×5 support grid; low values mean a thin sample. */
-  support: number
-}
+export type { GroundSample }
 
 export interface StreamingLimits {
   cacheMinTiles: number
@@ -320,9 +313,6 @@ export interface StreamingLimits {
 
 const MIB = 1024 * 1024
 
-// Reused by the ground probe so a per-frame sample allocates nothing.
-const scratchMatrix = new THREE.Matrix4()
-const scratchVector = new THREE.Vector3()
 // Reused by tileSpacingMetres, which runs once per loaded tile.
 const spacingBox = new THREE.Box3()
 const spacingObb = new THREE.Matrix4()
@@ -688,6 +678,11 @@ export function createStreamingCloud(opts: {
     pointOrderChecked = true
     pointsPreOrdered = root?.asset?.extras?.pointOrder === 'progressive'
     return pointsPreOrdered
+  }
+
+  /** The scene of every tile the renderer selected this frame, for the ground probe. */
+  function* visibleTileScenes(): Generator<THREE.Object3D | undefined> {
+    for (const tile of tiles.visibleTiles) yield (tile as any)?.engineData?.scene
   }
 
   /**
@@ -1083,8 +1078,9 @@ export function createStreamingCloud(opts: {
       // a failed layers test skips only this object — the children loop sits outside that
       // branch. Nothing else in the viewer uses layers.
       //
-      // The geometry stays readable, which it has to: sampleGroundZ, shadedPixelArea and
-      // applyThinning all reach through `mesh.parent` for the tile's real point bounds.
+      // The geometry stays readable, which it has to: sampleGroundZ reads the carrier
+      // itself, and shadedPixelArea and applyThinning reach it through `mesh.parent` for
+      // the tile's real point bounds.
       source.layers.disableAll()
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
@@ -1484,78 +1480,12 @@ export function createStreamingCloud(opts: {
       // THREE.Points.raycast clamps its loop to zero vertices and the instanced
       // child only carries four corner offsets in `position` — a raycast here
       // finds nothing, silently, whatever threshold it is given. The raw tile
-      // positions do survive, as the instanced attribute the quads read, so we
-      // sample those directly.
-      const heights: number[] = []
-      // 5×5 support grid: a candidate height backed by one corner of the
-      // footprint is noise, not ground.
-      const support = new Uint8Array(25)
-      const local = scratchMatrix
-      const point = scratchVector
-
-      for (const tile of tiles.visibleTiles) {
-        const tileScene = (tile as any)?.engineData?.scene
-        if (!tileScene) continue
-        tileScene.traverse((object: any) => {
-          // A dot mesh is sampled through its instanced point attribute, which wraps the
-          // carrier's own position array. A pulled dot mesh has no attributes, so it reads
-          // that same array off its carrier directly — the carrier and the dot mesh share
-          // one world matrix — which keeps the sample set identical in both feeds.
-          const attribute = object.geometry?.getAttribute?.(POINT_POSITION_ATTRIBUTE)
-            ?? (isDotMesh(object) ? (object.parent as any)?.geometry?.getAttribute?.('position') : null)
-            ?? (object.isPoints ? object.geometry?.getAttribute?.('position') : null)
-          if (!attribute || attribute.count === 0) return
-          object.updateWorldMatrix(true, false)
-          local.multiplyMatrices(enuInverse, object.matrixWorld)
-
-          // Cheap reject: the tile's bounds in ENU versus the footprint disc. Only the
-          // carrier's sphere describes the tile; a dot mesh's describes its corner
-          // offsets. This used to tell them apart by radius alone (a real bound is over a
-          // metre, the quad's corners 0.707) — which a triangle's 1.16 would have passed,
-          // silently rejecting tiles against their local origin. So it now asks what the
-          // object is first, and keeps the radius test too: a sub-metre carrier, a
-          // one-point leaf say, was never disc-rejected and still is not. The dot mesh is
-          // sampled unbounded, as it always was, so the sample set is exactly as before.
-          const geometry = object.geometry
-          if (object.isPoints) {
-            if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-            const bounds = geometry.boundingSphere
-            if (bounds && bounds.radius > 1) {
-              point.copy(bounds.center).applyMatrix4(local)
-              const dx = point.x - centreEnu.x
-              const dy = point.y - centreEnu.y
-              if (Math.hypot(dx, dy) > radiusM + bounds.radius) return
-            }
-          }
-
-          const limit = EXPERIENCE_CONFIG.donationShape.probeMaxSamplesPerTile
-          const stride = Math.max(1, Math.floor(attribute.count / limit))
-          for (let index = 0; index < attribute.count; index += stride) {
-            point.set(attribute.getX(index), attribute.getY(index), attribute.getZ(index))
-            point.applyMatrix4(local)
-            const dx = point.x - centreEnu.x
-            const dy = point.y - centreEnu.y
-            if (Math.abs(dx) > radiusM || Math.abs(dy) > radiusM) continue
-            heights.push(point.z)
-            const column = Math.min(4, Math.max(0, Math.floor(((dx / radiusM) + 1) * 2.5)))
-            const row = Math.min(4, Math.max(0, Math.floor(((dy / radiusM) + 1) * 2.5)))
-            support[row * 5 + column] = 1
-          }
-        })
-      }
-
-      if (heights.length < EXPERIENCE_CONFIG.donationShape.probeMinSamples) return null
-      heights.sort((a, b) => a - b)
-      const at = (fraction: number): number =>
-        heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
-      let occupied = 0
-      for (const cell of support) occupied += cell
-      return {
-        groundZ: at(EXPERIENCE_CONFIG.donationShape.probeGroundPercentile),
-        canopyZ: at(EXPERIENCE_CONFIG.donationShape.probeCanopyPercentile),
-        samples: heights.length,
-        support: occupied,
-      }
+      // positions do survive, on the carrier itself — its own position, a four-float
+      // view of the point texture in the pulled feed — so we sample those directly.
+      // See ground-sample.ts.
+      return sampleGroundHeights(
+        visibleTileScenes(), centreEnu, radiusM, enuInverse, EXPERIENCE_CONFIG.donationShape,
+      )
     },
     stats() {
       let points = 0
@@ -1961,8 +1891,8 @@ export function createStreamingCloud(opts: {
             ?? (mesh.material as any)?.userData?.pointSpacingM
           if (!(spacingM > 0)) continue
           // The carrier this mesh hangs under still holds the tile's real point bounds;
-          // the dot geometry's own sphere describes the corner offsets and says nothing
-          // about where the tile is (see sampleGroundZ for the same trap).
+          // the dot geometry's own sphere is pinned corner data (dot-geometry.ts) and says
+          // nothing about where the tile is.
           const carrier = mesh.parent as THREE.Object3D | null
           const geometry = carrier ? (carrier as any).geometry : null
           if (!geometry) continue

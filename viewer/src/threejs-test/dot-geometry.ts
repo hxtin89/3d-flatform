@@ -119,8 +119,8 @@ const SHAPES: Record<DotShape, ShapeDefinition> = {
  * The corner sphere of every dot geometry, set by hand. three would compute it from the
  * corners — radius 0.707 for the quad but 1.16 for the triangle, centred off the origin —
  * and three's opaque sort key reads it. Pinning it to the quad's value keeps the draw
- * order identical between the two shapes. (sampleGroundZ used to read it too, to tell a
- * dot mesh from a tile bound by its radius; it now asks what the object is instead.)
+ * order identical between the two shapes. (The ground probe never reads it: it samples
+ * the carriers only.)
  */
 const CORNER_SPHERE_RADIUS = Math.SQRT1_2
 
