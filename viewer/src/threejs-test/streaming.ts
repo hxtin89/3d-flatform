@@ -20,8 +20,9 @@ import {
   sameDotMode, setDrawnPoints, type DotMode,
 } from './dot-geometry'
 import {
-  adoptPointData, packPointsForPulling, pointDataForCarrier, PREFIX_SAMPLE_ROUNDS,
-  reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+  adoptPointData, computeCarrierBounds, newPointBounds, packPointsForPulling, pointDataForCarrier,
+  PREFIX_SAMPLE_ROUNDS, reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+  setCarrierBounds,
 } from './point-order'
 import { EXPERIENCE_CONFIG } from './config'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
@@ -787,6 +788,11 @@ export function createStreamingCloud(opts: {
     let reordered = false
     let geometry: THREE.BufferGeometry
     let pointData: THREE.DataTexture | null = null
+    // The carrier's box and sphere, filled by whichever arrival pass runs — see
+    // PointBounds in point-order.ts. Only ever the carrier's: the dot geometry keeps its
+    // pinned corner sphere, which is three's sort key for the render list.
+    const bounds = newPointBounds()
+    let boundsFilled = false
 
     if (dotMode.feed === 'pulled') {
       // One pass: reorder (or keep the order, with one round) and pack the texture. The
@@ -794,17 +800,17 @@ export function createStreamingCloud(opts: {
       // held once — see point-order.ts. A layout the fast pass declines is packed by the
       // general path and keeps its arrays, drawn whole as in the instanced feed.
       const order = wantOrder && reorderAccepts(position, color)
-      pointData = packPointsForPulling(position, color, order ? PREFIX_SAMPLE_ROUNDS : 1)
+      pointData = packPointsForPulling(position, color, order ? PREFIX_SAMPLE_ROUNDS : 1, bounds)
       if (pointData) {
         reordered = order
         adoptPointData(source.geometry, pointData, points)
-        source.geometry.boundingSphere = null
+        boundsFilled = true
       } else {
         pointData = packPointData(position, color)
       }
       geometry = releaseVertexArraysOnDispose(renderer, buildPulledGeometry(dotMode.shape, points))
     } else {
-      const arrays = wantOrder ? reorderForPrefixSampling(position, color) : null
+      const arrays = wantOrder ? reorderForPrefixSampling(position, color, bounds) : null
       if (arrays) {
         reordered = true
         // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
@@ -818,14 +824,17 @@ export function createStreamingCloud(opts: {
             'color', new THREE.BufferAttribute(arrays.color, 4, color?.normalized ?? true),
           )
         }
-        // Derived from the same points, and a permutation cannot change it — but it may
-        // already have been built against the attribute just replaced.
-        source.geometry.boundingSphere = null
+        boundsFilled = true
       }
       // Built from the carrier's arrays as they now stand — reordered or as they arrived —
       // so a later feed switch can rebuild from the same source without re-fetching.
       geometry = buildInstancedGeometry(source.geometry, dotMode.shape)
     }
+    // Set here rather than left for three to build lazily in the tile's first visible frame.
+    // The arrivals no pass covered — thinning off, pre-ordered packs, tiny tiles, declined
+    // layouts — get a standalone pass that gives the same bits.
+    if (boundsFilled) setCarrierBounds(source.geometry, bounds)
+    else computeCarrierBounds(source.geometry)
 
     const spacing = tileSpacingMetres(tile, points)
     const material = createCloudMaterial(uniforms, colorItemSize, spacing, {
@@ -1957,10 +1966,10 @@ export function createStreamingCloud(opts: {
           const carrier = mesh.parent as THREE.Object3D | null
           const geometry = carrier ? (carrier as any).geometry : null
           if (!geometry) continue
-          // Computed here rather than skipped when absent. three only builds the sphere
-          // when something asks for it, and the carrier is parked with an empty draw
-          // range, so nothing ever does — skipping meant these tiles were left out of the
-          // area for the whole session while their points stayed in the point count.
+          // buildPointQuads gives every carrier its sphere on arrival; this is the fallback
+          // for anything built another way. Computed rather than skipped when absent, since
+          // skipping once left such tiles out of the area for the whole session while their
+          // points stayed in the point count.
           if (!geometry.boundingSphere) geometry.computeBoundingSphere()
           const bounds = geometry.boundingSphere
           if (!bounds) continue

@@ -7,8 +7,9 @@ import {
   POINT_DATA_WIDTH, textureFromPackedView, unpackPointData,
 } from './dot-geometry.ts'
 import {
-  adoptPointData, fastPointLayout, packPointsForPulling, pointDataForCarrier,
-  PREFIX_SAMPLE_ROUNDS, reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+  adoptPointData, computeCarrierBounds, fastPointLayout, newPointBounds, packPointsForPulling,
+  pointDataForCarrier, PREFIX_SAMPLE_ROUNDS, reorderAccepts, reorderForPrefixSampling,
+  restoreCarrierArrays, type PointBounds,
 } from './point-order.ts'
 
 // Deterministic pseudo-random tile data: positions spread over a few hundred metres, colours
@@ -258,5 +259,171 @@ test('every point-data texture is made the same way', () => {
     assert.equal(t.userData.cloudPointData, true)
     assert.equal(t.wrapS, textures[0].wrapS)
     assert.equal(t.wrapT, textures[0].wrapT)
+  }
+})
+
+// ---- Carrier bounds from the arrival passes: three's own box and sphere, bit for bit.
+
+/** three's own box and sphere for an attribute, on a throwaway geometry. */
+function threeBounds(position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): PointBounds {
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', position)
+  g.computeBoundingBox()
+  g.computeBoundingSphere()
+  return { box: g.boundingBox!, sphere: g.boundingSphere! }
+}
+
+function carrierBounds(carrier: THREE.BufferGeometry): PointBounds {
+  return { box: carrier.boundingBox!, sphere: carrier.boundingSphere! }
+}
+
+/** Object.is on every double: tells -0 from +0 and matches NaN with NaN. */
+function sameBounds(got: PointBounds, want: PointBounds, message: string) {
+  const pairs: [string, number, number][] = [
+    ['min.x', got.box.min.x, want.box.min.x], ['min.y', got.box.min.y, want.box.min.y],
+    ['min.z', got.box.min.z, want.box.min.z], ['max.x', got.box.max.x, want.box.max.x],
+    ['max.y', got.box.max.y, want.box.max.y], ['max.z', got.box.max.z, want.box.max.z],
+    ['centre.x', got.sphere.center.x, want.sphere.center.x],
+    ['centre.y', got.sphere.center.y, want.sphere.center.y],
+    ['centre.z', got.sphere.center.z, want.sphere.center.z],
+    ['radius', got.sphere.radius, want.sphere.radius],
+  ]
+  for (const [name, a, b] of pairs) {
+    if (!Object.is(a, b)) assert.fail(`${message}: ${name} ${a} vs three ${b}`)
+  }
+}
+
+test('the instanced reorder leaves three\'s own bounds, bit for bit', () => {
+  for (const layout of LAYOUTS) {
+    for (const n of SIZES) {
+      const { position, color } = tile(n, layout)
+      const bounds = newPointBounds()
+      const arrays = reorderForPrefixSampling(position, color, bounds)
+      if (!arrays) { assert.ok(!reorderAccepts(position, color), `${layout} ${n}`); continue }
+      sameBounds(bounds, threeBounds(new THREE.BufferAttribute(arrays.position, 3)), `${layout} ${n}`)
+      // A permutation cannot move them: the same bits as the tile as it arrived.
+      sameBounds(bounds, threeBounds(position), `${layout} ${n} vs arrival order`)
+    }
+  }
+})
+
+test('the pulled pack leaves three\'s own bounds on the four-float view, bit for bit', () => {
+  for (const layout of LAYOUTS) {
+    for (const n of SIZES) {
+      for (const rounds of [1, PREFIX_SAMPLE_ROUNDS]) {
+        const { position, color } = tile(n, layout)
+        const bounds = newPointBounds()
+        const texture = packPointsForPulling(position, color, rounds, bounds)!
+        const carrier = new THREE.BufferGeometry()
+        carrier.setAttribute('position', position)
+        if (color) carrier.setAttribute('color', color)
+        adoptPointData(carrier, texture, n)
+        const view = carrier.getAttribute('position') as THREE.BufferAttribute
+        assert.equal(view.itemSize, 4)
+        sameBounds(bounds, threeBounds(view), `${layout} ${n} rounds ${rounds}`)
+        sameBounds(bounds, threeBounds(position), `${layout} ${n} rounds ${rounds} vs tight`)
+      }
+    }
+  }
+})
+
+test('the standalone pass matches three for tight, packed and declined layouts', () => {
+  const n = 5000
+  const { position, color } = tile(n, 'rgb')
+  const cases: [string, THREE.BufferAttribute | THREE.InterleavedBufferAttribute][] = [
+    ['tight xyz', position],
+    ['two points', tile(2, 'none').position],
+    ['empty', tile(0, 'none').position],
+    ['int16', new THREE.BufferAttribute(Int16Array.from({ length: n * 3 }, (_, i) => (i * 7919) % 65536 - 32768), 3)],
+    ['normalised uint16', new THREE.BufferAttribute(Uint16Array.from({ length: n * 3 }, (_, i) => (i * 104729) % 65536), 3, true)],
+    ['interleaved', new THREE.InterleavedBufferAttribute(
+      new THREE.InterleavedBuffer(Float32Array.from({ length: n * 5 }, (_, i) => Math.sin(i) * 300), 5), 3, 1)],
+  ]
+  const carrierForView = new THREE.BufferGeometry()
+  adoptPointData(carrierForView, packPointsForPulling(position, color, 1)!, n)
+  cases.push(['four-float view', carrierForView.getAttribute('position') as THREE.BufferAttribute])
+  for (const [label, attribute] of cases) {
+    const carrier = new THREE.BufferGeometry()
+    carrier.setAttribute('position', attribute)
+    computeCarrierBounds(carrier)
+    sameBounds(carrierBounds(carrier), threeBounds(attribute), label)
+  }
+})
+
+test('edge values: signed zeros, one repeated point, NaN', () => {
+  const quiet = console.error
+  console.error = () => {} // three reports NaN bounds; the passes here stay silent
+  try {
+    for (const [label, values] of [
+      ['mixed zeros', [-0, 0, -0, 0, -0, 0, -0, -0, -0, 0, 0, 0]],
+      ['all -0', [-0, -0, -0, -0, -0, -0]],
+      ['one point repeated', [5, -3, 2, 5, -3, 2, 5, -3, 2]],
+      ['NaN', [1, 2, 3, NaN, 0, 0, 4, 5, 6, 7, 8, 9]],
+    ] as const) {
+      const attribute = new THREE.BufferAttribute(new Float32Array(values), 3)
+      const want = threeBounds(attribute)
+      const carrier = new THREE.BufferGeometry()
+      carrier.setAttribute('position', attribute)
+      computeCarrierBounds(carrier)
+      sameBounds(carrierBounds(carrier), want, `${label} standalone`)
+      if (attribute.count > 2) {
+        const reordered = newPointBounds()
+        reorderForPrefixSampling(attribute, undefined, reordered)
+        sameBounds(reordered, want, `${label} reorder`)
+      }
+      const packed = newPointBounds()
+      packPointsForPulling(attribute, undefined, PREFIX_SAMPLE_ROUNDS, packed)
+      sameBounds(packed, want, `${label} pack`)
+    }
+  } finally {
+    console.error = quiet
+  }
+})
+
+test('the radius sums its squares in three\'s order', () => {
+  // The centre is a double, so x² + (y² + z²) rounds differently from three's (x² + y²) + z²
+  // for some tiles. This one catches the swap, which random tiles of this size mostly miss.
+  const values = new Float32Array([
+    -28.92697525024414, 146.45704650878906, 25.471969604492188, 149.40966796875,
+    -46.40584182739258, 138.67205810546875, 138.80718994140625, 265.39971923828125,
+    262.6545715332031, 132.5719757080078, -12.627032279968262, 207.95069885253906,
+    147.39988708496094, 213.2898406982422, 104.0223159790039,
+  ])
+  const attribute = new THREE.BufferAttribute(values, 3)
+  const want = threeBounds(attribute)
+  const carrier = new THREE.BufferGeometry()
+  carrier.setAttribute('position', attribute)
+  computeCarrierBounds(carrier)
+  sameBounds(carrierBounds(carrier), want, 'standalone')
+  const reordered = newPointBounds()
+  reorderForPrefixSampling(attribute, undefined, reordered)
+  sameBounds(reordered, want, 'reorder')
+  const packed = newPointBounds()
+  packPointsForPulling(attribute, undefined, PREFIX_SAMPLE_ROUNDS, packed)
+  sameBounds(packed, want, 'pack')
+})
+
+test('the arrival bounds still hold after a feed round trip', () => {
+  const n = 4000
+  const { position, color } = tile(n, 'rgba')
+  const bounds = newPointBounds()
+  const carrier = new THREE.BufferGeometry()
+  carrier.setAttribute('position', position)
+  carrier.setAttribute('color', color!)
+  adoptPointData(carrier, packPointsForPulling(position, color, PREFIX_SAMPLE_ROUNDS, bounds)!, n)
+  restoreCarrierArrays(carrier, true)
+  sameBounds(bounds, threeBounds(carrier.getAttribute('position')), 'after restore')
+})
+
+test('asking for bounds changes no output bit', () => {
+  for (const layout of LAYOUTS) {
+    const { position, color } = tile(3001, layout)
+    const a = packPointsForPulling(position, color, PREFIX_SAMPLE_ROUNDS)!.image.data as Float32Array
+    const b = packPointsForPulling(position, color, PREFIX_SAMPLE_ROUNDS, newPointBounds())!.image.data as Float32Array
+    sameBits(a, b, `${layout} pack`)
+    const r1 = reorderForPrefixSampling(position, color)!
+    const r2 = reorderForPrefixSampling(position, color, newPointBounds())!
+    sameBits(r1.position, r2.position, `${layout} reorder positions`)
+    assert.deepEqual(r1.color, r2.color, `${layout} reorder colours`)
   }
 })

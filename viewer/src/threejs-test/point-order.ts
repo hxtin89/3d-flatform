@@ -53,6 +53,90 @@ export const PREFIX_SAMPLE_ROUNDS = 61
 type PointAttribute = THREE.BufferAttribute | THREE.InterleavedBufferAttribute
 
 /**
+ * A carrier's box and sphere exactly as three's computeBoundingBox and
+ * computeBoundingSphere would leave them, bit for bit (the tests hold them to that).
+ *
+ * The arrival passes read every point anyway, so they collect the box on the way and the
+ * sphere takes one more pass over the output. Without this the carrier's sphere was left
+ * null and built lazily by three — two full passes — in the tile's first visible frame,
+ * by whichever of applyThinning, shadedPixelArea or sampleGroundZ asked first. Measured in
+ * node: three's lazy pair costs 0.9-1.3 ms at 75k points and 2.8-4.3 ms at 270k; the fused
+ * version adds 0.2-0.3 ms at 75k to the arrival pass, most of it the radius pass.
+ */
+export type PointBounds = { box: THREE.Box3; sphere: THREE.Sphere }
+
+export function newPointBounds(): PointBounds {
+  return { box: new THREE.Box3(), sphere: new THREE.Sphere() }
+}
+
+/**
+ * The second half of three's computeBoundingSphere: the box centre, then the largest
+ * distance to it. Math.min / Math.max in the passes, not comparisons, because that is what
+ * Vector3.min / max do — a comparison keeps whichever zero it saw first, where Math.min
+ * gives -0. And the squares summed in three's order, x + y + z: the centre is a double,
+ * so the order is observable in the last bit.
+ *
+ * `array` holds xyz at `stride` floats per point, and only `count` points are read — the
+ * texture's padding texels are zeros and would pull the tile origin into the sphere.
+ */
+function finishPointBounds(
+  bounds: PointBounds,
+  minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number,
+  array: Float32Array, stride: number, count: number,
+): void {
+  bounds.box.min.set(minX, minY, minZ)
+  bounds.box.max.set(maxX, maxY, maxZ)
+  // Box3.getCenter: (min + max) * 0.5, or the origin for an empty box — as three does.
+  const centre = bounds.box.getCenter(bounds.sphere.center)
+  const cx = centre.x, cy = centre.y, cz = centre.z
+  let maxRadiusSq = 0
+  for (let i = 0, o = 0; i < count; i++, o += stride) {
+    const dx = cx - array[o], dy = cy - array[o + 1], dz = cz - array[o + 2]
+    maxRadiusSq = Math.max(maxRadiusSq, dx * dx + dy * dy + dz * dz)
+  }
+  bounds.sphere.radius = Math.sqrt(maxRadiusSq)
+}
+
+/**
+ * Give a carrier its bounds now, for the arrivals no pass above covers: pre-ordered packs,
+ * thinning off and tiles too small to reorder in the instanced feed, and the layouts the
+ * passes decline. Tight Float32 xyz and the four-float texture view get the same two tight
+ * passes; anything else goes through three itself, which is exact by definition.
+ */
+export function computeCarrierBounds(carrier: THREE.BufferGeometry): void {
+  const position = carrier.getAttribute('position') as PointAttribute | undefined
+  if (!position) return
+  const tight = (position.itemSize === 3 || position.itemSize === 4)
+    && position.array instanceof Float32Array
+    && !(position as any).isInterleavedBufferAttribute
+    && !carrier.morphAttributes.position
+  if (!tight) {
+    carrier.computeBoundingBox()
+    carrier.computeBoundingSphere()
+    return
+  }
+  const array = position.array as Float32Array
+  const stride = position.itemSize
+  const count = position.count
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+  for (let i = 0, o = 0; i < count; i++, o += stride) {
+    const x = array[o], y = array[o + 1], z = array[o + 2]
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
+  }
+  const bounds = newPointBounds()
+  finishPointBounds(bounds, minX, minY, minZ, maxX, maxY, maxZ, array, stride, count)
+  setCarrierBounds(carrier, bounds)
+}
+
+/** Hand bounds an arrival pass filled to the carrier they describe. */
+export function setCarrierBounds(carrier: THREE.BufferGeometry, bounds: PointBounds): void {
+  carrier.boundingBox = bounds.box
+  carrier.boundingSphere = bounds.sphere
+}
+
+/**
  * The layouts the fast passes handle: tight Float32 xyz, and colour as tight Uint8 RGB,
  * Uint8 RGBA or none — the ones PNTS actually ships. Null for anything else, which then
  * falls back rather than growing a general path that would be both slower and barely
@@ -113,10 +197,12 @@ export function reorderAccepts(
  *
  * Returns null when the tile is not in the one layout this handles, in which case the
  * caller keeps the arrays as they arrived and the tile is drawn whole rather than thinned.
+ * `bounds`, when given, is filled exactly when the result is not null.
  */
 export function reorderForPrefixSampling(
   position: PointAttribute,
   color: PointAttribute | null | undefined,
+  bounds?: PointBounds,
 ): { position: Float32Array; color: Uint8Array | null } | null {
   if (!reorderAccepts(position, color)) return null
   const count = position.count
@@ -126,6 +212,10 @@ export function reorderForPrefixSampling(
   const rounds = Math.min(PREFIX_SAMPLE_ROUNDS, count)
   const out = new Float32Array(count * 3)
   const outColour = color ? new Uint8Array(count * 4) : null
+  // Tracked whether or not `bounds` was asked for: a branch inside the loops is the kind
+  // of thing that stops V8 specialising them (below).
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
 
   // Written out once per colour layout rather than as one loop with a branch inside: a
   // dynamic item size and a variable inner trip count stop V8 specialising the body,
@@ -135,7 +225,10 @@ export function reorderForPrefixSampling(
     for (let r = 0, w = 0; r < rounds; r++) {
       for (let i = r; i < count; i += rounds, w++) {
         const s = i * 3, d = w * 3, dc = w * 4
-        out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        out[d] = x; out[d + 1] = y; out[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
         outColour[dc] = rgb[s]; outColour[dc + 1] = rgb[s + 1]
         outColour[dc + 2] = rgb[s + 2]; outColour[dc + 3] = 255
       }
@@ -145,7 +238,10 @@ export function reorderForPrefixSampling(
     for (let r = 0, w = 0; r < rounds; r++) {
       for (let i = r; i < count; i += rounds, w++) {
         const s = i * 3, d = w * 3, sc = i * 4, dc = w * 4
-        out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        out[d] = x; out[d + 1] = y; out[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
         outColour[dc] = rgba[sc]; outColour[dc + 1] = rgba[sc + 1]
         outColour[dc + 2] = rgba[sc + 2]; outColour[dc + 3] = rgba[sc + 3]
       }
@@ -154,10 +250,14 @@ export function reorderForPrefixSampling(
     for (let r = 0, w = 0; r < rounds; r++) {
       for (let i = r; i < count; i += rounds, w++) {
         const s = i * 3, d = w * 3
-        out[d] = src[s]; out[d + 1] = src[s + 1]; out[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        out[d] = x; out[d + 1] = y; out[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
       }
     }
   }
+  if (bounds) finishPointBounds(bounds, minX, minY, minZ, maxX, maxY, maxZ, out, 3, count)
   return { position: out, color: outColour }
 }
 
@@ -172,12 +272,14 @@ export function reorderForPrefixSampling(
  * colour leaves w at 0, which decodes to black — what the instanced graph draws for it.
  *
  * Returns null for the layouts `fastPointLayout` declines; the caller then packs with the
- * general `packPointData` and keeps the arrays as they arrived.
+ * general `packPointData` and keeps the arrays as they arrived. `bounds`, when given, is
+ * filled exactly when the result is not null.
  */
 export function packPointsForPulling(
   position: PointAttribute,
   color: PointAttribute | null | undefined,
   rounds: number,
+  bounds?: PointBounds,
 ): THREE.DataTexture | null {
   const layout = fastPointLayout(position, color)
   if (layout === null) return null
@@ -185,13 +287,18 @@ export function packPointsForPulling(
   const src = position.array as Float32Array
   const R = Math.max(1, Math.min(Math.floor(rounds), count))
   const data = new Float32Array(pointDataLength(count))
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
 
   if (layout === 'rgb') {
     const rgb = color!.array as Uint8Array
     for (let r = 0, w = 0; r < R; r++) {
       for (let i = r; i < count; i += R, w++) {
         const s = i * 3, d = w * 4
-        data[d] = src[s]; data[d + 1] = src[s + 1]; data[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        data[d] = x; data[d + 1] = y; data[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
         data[d + 3] = rgb[s] * 65536 + rgb[s + 1] * 256 + rgb[s + 2]
       }
     }
@@ -200,7 +307,10 @@ export function packPointsForPulling(
     for (let r = 0, w = 0; r < R; r++) {
       for (let i = r; i < count; i += R, w++) {
         const s = i * 3, sc = i * 4, d = w * 4
-        data[d] = src[s]; data[d + 1] = src[s + 1]; data[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        data[d] = x; data[d + 1] = y; data[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
         data[d + 3] = rgba[sc] * 65536 + rgba[sc + 1] * 256 + rgba[sc + 2]
       }
     }
@@ -208,10 +318,15 @@ export function packPointsForPulling(
     for (let r = 0, w = 0; r < R; r++) {
       for (let i = r; i < count; i += R, w++) {
         const s = i * 3, d = w * 4
-        data[d] = src[s]; data[d + 1] = src[s + 1]; data[d + 2] = src[s + 2]
+        const x = src[s], y = src[s + 1], z = src[s + 2]
+        data[d] = x; data[d + 1] = y; data[d + 2] = z
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z)
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
       }
     }
   }
+  // Over the texels just written, at four floats per point and only `count` of them.
+  if (bounds) finishPointBounds(bounds, minX, minY, minZ, maxX, maxY, maxZ, data, 4, count)
   return makePointDataTexture(data, count)
 }
 
@@ -224,7 +339,8 @@ export function packPointsForPulling(
  *
  * Every reader of the carrier copes with the four-float stride: three's bounds and
  * `getX/Y/Z` read through the item size, and the ground-patch mask strides by it.
- * The bounds are left alone — the points and their order are unchanged.
+ * The bounds are left alone — the points and their order are unchanged, so the ones the
+ * arrival pass set (buildPointQuads) survive this and restoreCarrierArrays alike.
  */
 export function adoptPointData(carrier: THREE.BufferGeometry, texture: THREE.DataTexture, points: number): void {
   const data = texture.image.data as Float32Array
