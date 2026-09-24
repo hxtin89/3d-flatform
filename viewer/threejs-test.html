@@ -828,7 +828,7 @@
         <div class="row">
           <label class="h" for="roundDotsToggle">Dot shape · A/B</label>
           <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● Round</button>
-          <span class="weather-note" id="roundDotsNote">Square removes the shader's circular cut, which lets the card skip hidden points. Measured worth 0.8% — a look decision, not a speed one</span>
+          <span class="weather-note" id="roundDotsNote">Square removes the shader's circular cut, which lets the card skip hidden points. Measured worth 0.8% — a look decision, not a speed one. Square also keeps Vertices per dot on quads, since an uncut triangle would change the look</span>
         </div>
         <div class="row">
           <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>
@@ -863,7 +863,7 @@
         <div class="row">
           <label class="h" for="dotShapeToggle">Vertices per dot · A/B</label>
           <button class="act" id="dotShapeToggle" type="button" aria-pressed="false" aria-describedby="dotShapeNote">■ Quad · 4 vertices</button>
-          <span class="weather-note" id="dotShapeNote">Every point is drawn as a small shape the round dot is cut out of: a square of 4 vertices and 2 triangles, or one triangle of 3 vertices around the same circle. The dot looks the same either way; the triangle is 30% larger, and those extra corner pixels are thrown away. Switching changes every loaded tile in place, so both sides compare the same tiles at the same view. The Square dot shape always draws quads. <code>?dot=tri</code> boots on triangles</span>
+          <span class="weather-note" id="dotShapeNote">Every point is drawn as a small shape the round dot is cut out of: a square of 4 vertices and 2 triangles, or one triangle of 3 vertices around the same circle. The dot looks the same either way; the triangle is 30% larger, and those extra corner pixels are thrown away. Switching changes every loaded tile in place, so both sides compare the same tiles at the same view. With Dot shape on ■ Square it still draws quads when Triangle is picked, so this stays a pure speed test. <code>?dot=tri</code> boots on triangles</span>
           <span class="weather-note" id="dotShapeReadout">—</span>
         </div>
         <div class="row">
