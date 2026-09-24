@@ -205,7 +205,7 @@ export function createGlobe(opts: {
   // Each tile also gets a node material whose colour is multiplied by the shared
   // world-anchored vignette dim — in vignette mode the imagery fades to black around
   // the mask radius, so the point-cloud cutout blends seamlessly instead of sitting
-  // as a bright hard circle on the map (dim is 1 in the other mask modes).
+  // as a bright hard circle on the map (compiled out in the other mask modes).
   //
   // And on the WebGL2 fallback each tile's vertex-array objects are deleted with its
   // geometry, which three never does — see vertex-arrays.ts. Registered here because the

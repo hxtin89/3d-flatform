@@ -11,6 +11,7 @@ import {
   vertexIndex, uint, ivec2, varying, nodeObject, materialPointSize, screenDPR, viewportSize,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
+import { compiledTermsAtBoot } from './compiled-terms'
 import {
   dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
 } from './dot-geometry'
@@ -199,10 +200,9 @@ export interface CloudUniforms {
    * and a second error view that close to the first is a way to lose track of which one
    * you are looking at.
    *
-   * A uniform rather than an effect flag, so switching costs one write instead of a
-   * TSL rebuild across every live tile material — the same trade `sizeSpacingMix`
-   * makes, and worth it here for a handful of ALU ops in a shader that already
-   * samples a 3D texture.
+   * The palette is compiled in only while a mode is on (the `debugPalette` effect, see
+   * compiled-terms.ts), so switching the inspector on or off costs one rebuild of the
+   * tile shaders; switching between the two modes is a uniform write.
    */
   debugMode: any
   /** How far the false colour covers the real one, 0..1. Below 1 the canopy structure
@@ -351,7 +351,7 @@ export function createUniforms(): CloudUniforms {
 }
 
 /** Vignette coverage in the survey's ENU frame: 1 in the core, 0 outside the
- * radius, and a flat 1 in every non-vignette mask mode. */
+ * radius. Only built while the `vignette` effect is on. */
 function maskFadeNode(u: CloudUniforms): any {
   const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
   const distance = length(enu.xy.sub(u.maskCenter))
@@ -370,6 +370,10 @@ function maskFadeNode(u: CloudUniforms): any {
  * so surroundAmount 0 reproduces the original look exactly.
  */
 export function applyMaskSurround(u: CloudUniforms, color: any, floor = 0): any {
+  // Outside the vignette mode the fade is a flat 1 and this returns `color` exactly —
+  // 1 · (1 - floor) + floor is exactly 1 in float32 for both floors used, and the surround
+  // mix weight is then 0 — so the term is left out rather than computed.
+  if (!effects.vignette) return color
   const fade: any = maskFadeNode(u)
   const dimmed = color.mul(fade.mul(1 - floor).add(float(floor)))
   const outside = fade.oneMinus().mul(u.maskSurroundAmount)
@@ -659,6 +663,7 @@ export function applyHighPrecisionAlways(material: any): void {
  * know at compile time that the uniform will be zero. So a discard gated by a uniform
  * costs the fast path for the whole session in exchange for a feature nobody switched on.
  */
+const bootTerms = compiledTermsAtBoot()
 const effects = {
   groundFog: true,
   groundPatch: true,
@@ -666,7 +671,7 @@ const effects = {
   /** Cut each square quad into a circle. Off is the A side of the early-Z comparison. */
   roundDots: true,
   /** The level inspector's "show only this layer" cut. Only emitted while it is in use. */
-  debugIsolate: false,
+  debugIsolate: bootTerms.debugIsolate,
   /**
    * The dome's per-point size and height falloff, and the matching cut on the ground
    * patch. A flag rather than a uniform because it sits in the vertex stage of every
@@ -674,6 +679,14 @@ const effects = {
    * per-point work, so off has to mean absent.
    */
   sphereFade: EXPERIENCE_CONFIG.lod.sphereFade.enabled as boolean,
+  /**
+   * Terms that do nothing while their feature is off, and so are only emitted while it is
+   * on: the vignette's dissolve and dim, the foveation bend, the inspector's palette.
+   * main.ts flips them from the feature switches — see compiled-terms.ts.
+   */
+  vignette: bootTerms.vignette,
+  foveaBend: bootTerms.foveaBend,
+  debugPalette: bootTerms.debugPalette,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -695,6 +708,8 @@ export type CloudEffect = keyof typeof effects
  * point spacing — neighbours would collide and whole blocks would pop instead of
  * individual points. A floor on the width keeps the smoothstep edges from collapsing onto
  * each other at fringe 0.
+ *
+ * Only emitted while the `vignette` effect is on; outside the vignette mode it is a flat 1.
  */
 function maskDissolveKeep(u: CloudUniforms): any {
   const enu = u.enuInverse.mul(vec4(positionWorld, 1)).xyz
@@ -1033,19 +1048,26 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
    * and draw the ramp as visible boxes.
    *
    * Same geometry as foveation.ts `measure`, evaluated at a point instead of a rectangle:
-   * distance from the core rectangle, eased over `falloff`. Equal factors collapse it to
-   * a constant, which is what an unfoveated frame writes.
+   * distance from the core rectangle, eased over `falloff`. Only emitted while foveation
+   * is on (the `foveaBend` effect): an unfoveated frame writes equal factors of 1, which
+   * make the bend exactly 1 for every point, so it is left out rather than computed.
    */
   // Annotated `any` like the rest of this file's node plumbing — the untyped uniforms
   // otherwise collapse TSL's overloads.
-  const halfHeights: any = u.sizePxPerMetre.div(viewDepth).div(u.sizeHalfHeightPx)
-  const view: any = positionView
-  const foveaX: any = view.x.mul(halfHeights).abs().sub(u.foveaCore.y).max(float(0))
-  const foveaY: any = view.y.mul(halfHeights).sub(u.foveaCore.x).abs().sub(u.foveaCore.z).max(float(0))
-  const foveaGap: any = foveaX.mul(foveaX).add(foveaY.mul(foveaY)).sqrt()
-  const foveaRamp: any = smoothstep(float(0), float(1), foveaGap.div(u.foveaCore.w.max(float(0.001))))
-  const foveaFactor: any = mix(u.foveaFactors.x, u.foveaFactors.y, foveaRamp)
-  const requestedPx: any = u.sizeRequestedPx.mul(foveaFactor).max(float(0.001))
+  let requestedPx: any
+  if (effects.foveaBend) {
+    const halfHeights: any = u.sizePxPerMetre.div(viewDepth).div(u.sizeHalfHeightPx)
+    const view: any = positionView
+    const foveaX: any = view.x.mul(halfHeights).abs().sub(u.foveaCore.y).max(float(0))
+    const foveaY: any = view.y.mul(halfHeights).sub(u.foveaCore.x).abs().sub(u.foveaCore.z).max(float(0))
+    const foveaGap: any = foveaX.mul(foveaX).add(foveaY.mul(foveaY)).sqrt()
+    const foveaRamp: any = smoothstep(float(0), float(1), foveaGap.div(u.foveaCore.w.max(float(0.001))))
+    const foveaFactor: any = mix(u.foveaFactors.x, u.foveaFactors.y, foveaRamp)
+    requestedPx = u.sizeRequestedPx.mul(foveaFactor).max(float(0.001))
+  } else {
+    // The same floor as the bent branch, and as its CPU copy in main.ts.
+    requestedPx = u.sizeRequestedPx.max(float(0.001))
+  }
   /**
    * The shortfall: how far short of the requested spacing the tree actually came.
    *
@@ -1082,13 +1104,15 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
   //
   // The dome's falloff rides on the same size for the same reason: a point at the rim is
   // drawn at zero width and never costs a fragment. Applied after the clamp, so the
-  // floor cannot hold a fading point open.
-  const keep: any = sphereFade ? maskDissolveKeep(u).mul(sphereFade) : maskDissolveKeep(u)
-  const sizeNode = mix(
+  // floor cannot hold a fading point open. Either is left out while its effect is off.
+  const vignetteKeep: any = effects.vignette ? maskDissolveKeep(u) : null
+  const keep: any = vignetteKeep && sphereFade ? vignetteKeep.mul(sphereFade) : (vignetteKeep ?? sphereFade)
+  const sized: any = mix(
     u.pointSize.mul(thinScale),
     u.pointSize.mul(shortfall).clamp(u.sizeMinPx, u.sizeMaxPx),
     u.sizeSpacingMix,
-  ).mul(keep)
+  )
+  const sizeNode = keep ? sized.mul(keep) : sized
 
   /**
    * The inspector's per-tile inputs: x = level, y = 1 for a leaf, z = the tile's own
@@ -1167,6 +1191,8 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const fog = groundFogNode(u)
     const atmospheric = fog ? mix(graded, fog.color, fog.amount) : graded
     const finished = applyMaskSurround(u, atmospheric, 0.30)
+    // The inspector's palette, below, only while a mode is on; at mode 0 its mix weight is 0.
+    if (!effects.debugPalette) return finished
 
     /**
      * Error headroom: where this tile's own error sat against the live target.

@@ -4,9 +4,10 @@
 import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
-  createUniforms, setCloudShadowTexture, setGroundPatchMask,
+  cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask,
   setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
+import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -593,8 +594,9 @@ function applyPointSize(): void {
   // shortfall and tries to compensate for a decision that was deliberate.
   uniforms.sizeRequestedPx.value = targetPx
   uniforms.sizeHalfHeightPx.value = Math.max(height / 2, 1)
-  // Equal factors collapse the ramp to a constant, so an unfoveated frame pays a few ALU
-  // ops and changes nothing. The centre follows the same tilt the guides draw.
+  // Equal factors collapse the ramp to a constant; an unfoveated frame has the bend
+  // compiled out altogether (syncCompiledShaderTerms). The centre follows the same tilt
+  // the guides draw.
   const fovea = foveationSettings.enabled
   uniforms.foveaFactors.value.set(
     fovea ? foveationSettings.centreFactor : 1,
@@ -635,6 +637,10 @@ function applyPointSize(): void {
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
+/** Shader terms kept in although their feature is off — `__wild.shaderTerms.force`, for
+ *  A/Bs against the old inert shader. Declared up here because the inspector's switches
+ *  run syncCompiledShaderTerms while the module is still loading. */
+const forcedShaderTerms = new Set<CompiledTerm>()
 let foveation: Foveation | null = null
 /** Same arrangement as foveation: the panel writes these before the globe exists. */
 const sphereFadeSettings: SphereFadeSettings = { ...EXPERIENCE_CONFIG.lod.sphereFade }
@@ -2308,6 +2314,7 @@ function constrainControlsCamera(): void {
 
 function setMaskMode(mode: number): void {
   uniforms.maskMode.value = mode
+  syncCompiledShaderTerms()
   if (mode !== 2) {
     uniforms.vignetteStrength.value = 0
     vignetteEl.style.opacity = '0'
@@ -3078,6 +3085,7 @@ const syncFoveationToggle = () => {
 }
 foveationToggleEl.addEventListener('click', () => {
   foveationSettings.enabled = !foveationSettings.enabled
+  syncCompiledShaderTerms()
   syncFoveationToggle()
   updateFoveationGuides()
 })
@@ -3271,22 +3279,40 @@ function bindSeg(id: string, key: string, apply: (value: number) => void): void 
   select(Number(buttons.find((button) => button.classList.contains('on'))?.dataset[key] ?? 0))
 }
 
-// ---- level & error inspector. Every control here writes a uniform, so the whole
-// section costs nothing until it is switched on and needs no material rebuild when it
-// is. Mode 0 is the untouched render; see CloudUniforms.debugMode.
+// ---- level & error inspector. Switching it on or off rebuilds the tile shaders once —
+// its palette and isolate cut are only compiled in while it is on — and every control
+// inside it is a uniform write. Mode 0 is the untouched render; see CloudUniforms.debugMode.
 const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
 /**
+ * Emit exactly the optional shader terms the current settings use — see compiled-terms.ts.
+ *
  * The isolate cut has to be emitted or not emitted, never merely skipped: it discards,
  * and a discard in the source denies the whole material the early depth test even at
- * debugMode 0. So the inspector now pays a rebuild when it is switched on, and every
- * ordinary session gets the fast path back.
+ * debugMode 0. The vignette, the fovea bend and the inspector palette are left out for
+ * the plainer reason that they cost every point or fragment their work to produce the
+ * value they were given. Each flip rebuilds the tile shaders once; the vignette also
+ * lives in the map's, so it rebuilds both layers.
+ *
+ * Called from each switch, and once a frame from the loop, so a uniform written from the
+ * console (`__three.uniforms`) brings its term in before the next draw.
  */
-const syncDebugIsolateEffect = () => {
-  const wanted = uniforms.debugMode.value > 0 && uniforms.debugIsolate.value > 0
-  if (setCloudEffectEnabled('debugIsolate', wanted)) stream?.refreshEffects()
+function syncCompiledShaderTerms(): void {
+  const wanted = compiledTermsWanted({
+    maskMode: uniforms.maskMode.value,
+    foveation: foveationSettings.enabled,
+    debugMode: uniforms.debugMode.value,
+    debugIsolate: uniforms.debugIsolate.value,
+  }, forcedShaderTerms)
+  // One const each: `a || b` would stop at the first flag that changed.
+  const vignette = setCloudEffectEnabled('vignette', wanted.vignette)
+  const fovea = setCloudEffectEnabled('foveaBend', wanted.foveaBend)
+  const palette = setCloudEffectEnabled('debugPalette', wanted.debugPalette)
+  const isolate = setCloudEffectEnabled('debugIsolate', wanted.debugIsolate)
+  if (vignette) refreshEffectShaders()
+  else if (fovea || palette || isolate) stream?.refreshEffects()
 }
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
@@ -3294,12 +3320,12 @@ bindSeg('debugModeSeg', 'debugMode', (mode) => {
   // The band key is static markup, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
-  syncDebugIsolateEffect()
+  syncCompiledShaderTerms()
 })
 bindSeg('debugIsolateSeg', 'debugIsolate', (isolate) => {
   uniforms.debugIsolate.value = isolate
   debugLevelRowEl.hidden = isolate !== 2
-  syncDebugIsolateEffect()
+  syncCompiledShaderTerms()
 })
 bindDesignSlider('debugIsolateLevel', 0, (v) => `d${Math.round(v)}`, (v) => {
   uniforms.debugIsolateLevel.value = Math.round(v)
@@ -4432,6 +4458,7 @@ function loop(now: number): void {
   // never a shift in the middle of it.
   updateOrigin()
   nanWatch('updateOrigin')
+  syncCompiledShaderTerms()
   cameraFlight.update(now)
   nanWatch('cameraFlight')
   updateCloudReveal()
@@ -4741,6 +4768,24 @@ async function main(): Promise<void> {
     get sphereFade() { return sphereFade },
     /** Whether the streamer is still refining the landing view from its own eye. */
     get initialPov() { return initialPovActive() },
+    /**
+     * Optional shader terms (compiled-terms.ts). `force('vignette' | 'foveaBend' |
+     * 'debugPalette', true)` keeps one in while its feature is off — the old inert shader,
+     * the other arm of a pixel or GPU-time A/B — and `force(name, false)` lets it go again.
+     * `.state` says which are forced and which effect version the shaders are on.
+     */
+    shaderTerms: {
+      force(name: CompiledTerm, on: boolean) {
+        if (!COMPILED_TERMS.includes(name)) throw new Error(`expected one of ${COMPILED_TERMS.join(', ')}, got ${name}`)
+        if (on) forcedShaderTerms.add(name)
+        else forcedShaderTerms.delete(name)
+        syncCompiledShaderTerms()
+        return this.state
+      },
+      get state() {
+        return { forced: [...forcedShaderTerms], effectsVersion: cloudEffectsVersion() }
+      },
+    },
     /**
      * The dot-geometry A/B from the console: `__wild.dots.set('tri')`, `set('quad')`,
      * `set('pulled')`, `set('instanced')`, or several at once — `set('tri', 'pulled')`.
