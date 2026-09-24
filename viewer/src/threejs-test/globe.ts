@@ -104,6 +104,9 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   const key = cloudEffectsVersion()
   const cached = imageryGraphCache.get(key)
   if (cached) return cached
+  // A new version means every older graph is dead to later lookups. Dropped rather than
+  // kept, because each one's map reference still holds the last tile material it drew.
+  imageryGraphCache.clear()
 
   const raw = (materialReference('map', 'texture') as any).rgb
   const graded = gradeImageryNode(uniforms, raw)
@@ -226,6 +229,7 @@ export function createGlobe(opts: {
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
       mat.colorNode = imageryColorNode(uniforms)
       mat.userData.rebuildEffectGraph = () => { mat.colorNode = imageryColorNode(uniforms) }
+      mat.userData.effectsVersion = cloudEffectsVersion()
       o.material.dispose()
       o.material = mat
     })
@@ -550,7 +554,11 @@ export function createGlobe(opts: {
     },
     setResolution,
     refreshEffects() {
-      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+      // Every loaded tile, not just the ones in the scene group: a tile hidden in the cache
+      // is out of the group, and would otherwise come back with the graph it left with.
+      tiles.forEachLoadedModel((model: any) => {
+        model.traverse((object: any) => rebuildEffectMaterial(object.material))
+      })
     },
     setImageryEnabled(enabled) {
       if (enabled === imageryEnabled) return
