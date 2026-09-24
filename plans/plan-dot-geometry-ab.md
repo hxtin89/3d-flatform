@@ -111,9 +111,11 @@ unchanged — a drawRange prefix of k·n vertices draws points 0..n-1 exactly li
 ### Step 2 — feed switch, vertex-pulled (built 2026-09-23)
 
 As built, the design below held, with these changes from review:
-- Every dot geometry, in both feeds, drops three's geometry record on dispose
-  (`forgetOnDispose` in streaming.ts), so the second-dispose leak described at the end of
-  this plan cannot strand a switched-out geometry.
+- Every dot geometry, in both feeds, drops three's geometry record on dispose, so the
+  second-dispose leak described at the end of this plan cannot strand a switched-out
+  geometry. This was first done per dot geometry (`forgetOnDispose` in streaming.ts); since
+  the merge of `sbb/geometry-dispose-fix`, `installGeometryDisposeFix` (geometry-dispose.ts)
+  does it for every geometry the renderer draws.
 - A tile with no colour attribute packs black, matching what the instanced graph draws.
 - A pulled tile that changes shape keeps its texture; only a feed change packs or frees it.
 - The shared quad index starts at 2¹⁹ points (the 270 k overview tile is above 2¹⁸). A
@@ -351,8 +353,9 @@ the first dispose but never clears `initialized`, so `updateForRender` never cal
 frees nothing, and three's `info.memoryMap` keeps the re-uploaded attributes alive. With
 `UnloadTilesPlugin` hiding and re-showing tiles as the camera moves, that could leak a
 tile's full point buffers per cycle — in today's viewer, not only on this branch.
-Unmeasured; filed as a separate task. On this branch the dot geometries are covered by
-`forgetOnDispose`; the carriers and the rest of the viewer are left to that task.
+Since measured and fixed: `installGeometryDisposeFix` (geometry-dispose.ts) covers every
+geometry, the basemap included, and replaced the dot-only `forgetOnDispose`. Reported
+upstream as three.js #34646.
 
 ## Relation to the culling plan
 

@@ -721,7 +721,7 @@ export function createStreamingCloud(opts: {
       } else {
         pointData = packPointData(position, color)
       }
-      geometry = forgetOnDispose(buildPulledGeometry(dotMode.shape, points))
+      geometry = releaseVertexArraysOnDispose(renderer, buildPulledGeometry(dotMode.shape, points))
     } else {
       const arrays = wantOrder ? reorderForPrefixSampling(position, color) : null
       if (arrays) {
@@ -783,28 +783,6 @@ export function createStreamingCloud(opts: {
   }
 
   /**
-   * Make `geometry.dispose()` free the GPU buffers every time, not only the first.
-   *
-   * three r185 registers its free-on-dispose listener when a geometry is first drawn and
-   * removes it on the first dispose — but keeps its record that the geometry was set up, so
-   * when UnloadTilesPlugin hides a tile and it is shown again the buffers are re-uploaded
-   * with no listener attached. The next dispose (the next hide, an eviction, or a dot-mode
-   * switch replacing the geometry) then frees nothing, and three's info map keeps the
-   * buffers alive for good. Dropping three's record here makes the next draw set the
-   * geometry up afresh and register a new listener. Added at build time, so it runs before
-   * three's own listener; that one needs nothing the record held.
-   *
-   * On the WebGL2 fallback it also deletes the vertex-array objects three built for the
-   * geometry, which three never does — see vertex-arrays.ts. The pulled feed has no vertex
-   * attributes, so all its tiles share one VAO under the empty key, which that leaves be.
-   */
-  function forgetOnDispose<T extends THREE.BufferGeometry>(geometry: T): T {
-    releaseVertexArraysOnDispose(renderer, geometry)
-    geometry.addEventListener('dispose', () => { (renderer as any)?._geometries?.delete?.(geometry) })
-    return geometry
-  }
-
-  /**
    * The colour component count the instanced graph is built for: what padColourForGpu
    * will hand the GPU for this carrier colour. Recorded on the material for both feeds, so
    * a tile switched back to instanced gets the graph that matches its attribute.
@@ -827,7 +805,7 @@ export function createStreamingCloud(opts: {
   function buildInstancedGeometry(carrier: THREE.BufferGeometry, shape: DotMode['shape']): THREE.InstancedBufferGeometry {
     const position = carrier.getAttribute('position')
     const color = carrier.getAttribute('color')
-    const geometry = forgetOnDispose(new THREE.InstancedBufferGeometry())
+    const geometry = releaseVertexArraysOnDispose(renderer, new THREE.InstancedBufferGeometry())
     applyDotShapeToGeometry(geometry, shape)
     // The tile's own buffers are reused as-is — no copy, no format conversion.
     // PNTS colours arrive as normalised Uint8, which TSL resolves to a float
@@ -882,7 +860,7 @@ export function createStreamingCloud(opts: {
     let geometry: THREE.BufferGeometry
     if (mode.feed === 'pulled') {
       texture = previousTexture ?? pointDataForCarrier(carrierGeometry)
-      geometry = forgetOnDispose(buildPulledGeometry(mode.shape, state.points))
+      geometry = releaseVertexArraysOnDispose(renderer, buildPulledGeometry(mode.shape, state.points))
     } else {
       // A no-op for a carrier that never gave its arrays up (a declined layout).
       restoreCarrierArrays(carrierGeometry, state.hasColour)
