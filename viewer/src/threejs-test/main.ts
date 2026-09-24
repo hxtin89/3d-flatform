@@ -29,6 +29,7 @@ import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
+import { installGeometryDisposeFix } from './geometry-dispose'
 import { EXPERIENCE_CONFIG } from './config'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -4493,6 +4494,9 @@ async function main(): Promise<void> {
       + (adapterInfo ? ` adapter=${adapterInfo.vendor ?? '?'} ${adapterInfo.architecture ?? ''} ${adapterInfo.description ?? ''}`.trimEnd() : ''))
   } catch { /* adapter info is best-effort diagnostics */ }
   installGraphicsRecovery(backend)
+  // Before the first render: without it, a tile geometry's GPU buffers are freed on its
+  // first unload only. See geometry-dispose.ts.
+  installGeometryDisposeFix(renderer)
 
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
