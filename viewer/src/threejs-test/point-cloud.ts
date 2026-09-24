@@ -136,6 +136,9 @@ export interface CloudUniforms {
   /** Basemap-only grading (the point cloud has its own). */
   mapSaturation: any
   mapBrightness: any
+  /** Point-cloud grade on the decoded captured colour; see gradePointNode. */
+  pointContrast: any
+  pointSaturation: any
   /**
    * Flat ground patch that replaces the satellite imagery inside the survey
    * footprint, so the map is only visible where there is no point-cloud data.
@@ -315,6 +318,8 @@ export function createUniforms(): CloudUniforms {
     groundPatchThreshold: uniform(EXPERIENCE_CONFIG.design.groundPatch.threshold),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
+    pointContrast: uniform(EXPERIENCE_CONFIG.design.pointContrast),
+    pointSaturation: uniform(EXPERIENCE_CONFIG.design.pointSaturation),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
     groundFogStrength: uniform(EXPERIENCE_CONFIG.design.groundFog.strength),
     groundFogBaseZ: uniform(0),
@@ -595,6 +600,25 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
 export function gradeImageryNode(u: CloudUniforms, rgb: any): any {
   const luma = rgb.r.mul(0.2126).add(rgb.g.mul(0.7152)).add(rgb.b.mul(0.0722))
   return mix(vec3(luma), rgb, u.mapSaturation).mul(u.mapBrightness)
+}
+
+/** Luma pivot for the point contrast: 18 % grey, the photographic mid-tone. */
+const POINT_CONTRAST_PIVOT = 0.18
+
+/**
+ * Contrast and saturation for the captured point colour, in linear light. Contrast is a
+ * power curve on luma around the pivot with the colour rescaled to the new luma, so black
+ * stays black, hue is kept and nothing goes negative; saturation then mixes against that
+ * luma like the basemap's. At 1 / 1 it returns the input colour.
+ */
+export function gradePointNode(u: CloudUniforms, rgb: any): any {
+  const luma = rgb.r.mul(0.2126).add(rgb.g.mul(0.7152)).add(rgb.b.mul(0.0722))
+  // The floor only guards the division; the grey side is built from the real luma, so a
+  // black point stays exactly black at any contrast and saturation.
+  const safeLuma = max(luma, 1e-5)
+  const pivot = float(POINT_CONTRAST_PIVOT)
+  const gain = pivot.mul(pow(safeLuma.div(pivot), u.pointContrast)).div(safeLuma)
+  return max(mix(vec3(luma.mul(gain)), rgb.mul(gain), u.pointSaturation), vec3(0))
 }
 
 /** Names of the per-instance attributes each tile geometry must carry. Kept out
@@ -965,17 +989,16 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
       float(packed.shiftRight(uint(8)).bitAnd(uint(255))),
       float(packed.bitAnd(uint(255))),
     ).div(255)
-    pointColor = varying(sRGBTransferEOTF(rgb), 'v_cloudColor')
+    pointColor = varying(rgb, 'v_cloudColor')
     dotUv = varying(corner.add(vec2(0.5)), 'v_cloudDotUv')
     cornerNode = corner
   } else {
     // Drives positionLocal, so positionWorld stays the point centre rather than a quad
     // corner — the mask, cloud shadow and height grading keep working.
     pointLocal = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
-    const encoded = colorItemSize === 4
+    pointColor = colorItemSize === 4
       ? (attribute(POINT_COLOR_ATTRIBUTE, 'vec4') as any).xyz
       : (attribute(POINT_COLOR_ATTRIBUTE, 'vec3') as any)
-    pointColor = varying(sRGBTransferEOTF(encoded), 'v_cloudColor')
     dotUv = uv()
   }
   let positionNode: any = pointLocal
@@ -1151,9 +1174,10 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const height01 = smoothstep(u.canopyBaseZ, u.canopyTopZ, enu.z)
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
-    // pointColor is already linear: decoded per vertex with the exact sRGB curve, the
-    // same one the sampler applies to the basemap, so cloud and map match in the darks.
-    const graded = pointColor
+    // PNTS RGB is sRGB encoded. Decoded with the exact curve the sampler applies to the
+    // basemap, so cloud and map match in the darks. Per fragment rather than per vertex:
+    // the frame cost tracks the per-point vertex work, not the painted area.
+    const graded = gradePointNode(u, sRGBTransferEOTF(pointColor))
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)
       .mul(cloudShadow)

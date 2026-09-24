@@ -414,6 +414,9 @@
       .seg { display: flex; border: 1px solid #2d333b; border-radius: 8px; overflow: hidden; }
       .seg button { flex: 1; background: transparent; color: #b9c0c8; border: 0; padding: 8px 3px; font: inherit; font-size: 12px; cursor: pointer; }
       .seg button.on { background: #1f6feb; color: #fff; }
+      /* Five curves do not fit the design panel's width on one row. */
+      #toneMappingSeg { flex-wrap: wrap; }
+      #toneMappingSeg button { flex: 1 0 30%; }
       input[type=range] { width: 100%; accent-color: #1f6feb; height: 28px; }
       /* A slider that carries a second, fixed value as a mark on its own track — so a
          related constant is read in place instead of in prose. --ref is a percentage
@@ -1234,12 +1237,47 @@
           </div>
           <div class="row">
             <label class="h" for="mapBrightness">Brightness · <span class="val" id="mapBrightnessVal">—</span></label>
-            <input type="range" id="mapBrightness" min="0.1" max="1.4" step="0.01" />
+            <input type="range" id="mapBrightness" min="0.1" max="2" step="0.01" />
+            <span class="weather-note">In full daylight raw white reaches the <em>Shoulder</em> knee from 80 %; at 140 % everything from raw sRGB 199 up is compressed. Past 100 % the brightest ground rolls off where <em>None</em> would clip it</span>
           </div>
           <div class="row">
             <label class="h" for="basemapErrorTarget">Sharpness budget · <span class="val" id="basemapErrorTargetVal">—</span></label>
             <input type="range" id="basemapErrorTarget" min="1" max="16" step="0.5" />
             <span class="weather-note">Allowed error in screen pixels. 1 = pixel-perfect and expensive, higher = softer and far fewer tiles (measured: 23 tiles at 1, 16 at 2, 9 at 4). The point cloud itself runs at 8</span>
+          </div>
+        </details>
+
+        <details class="design-section">
+          <summary>Tone &amp; colour</summary>
+          <div class="row">
+            <label class="h">Tone curve</label>
+            <div class="seg" id="toneMappingSeg">
+              <button data-tone-mapping="0">None</button>
+              <button data-tone-mapping="5" class="on">Shoulder</button>
+              <button data-tone-mapping="7">Neutral</button>
+              <button data-tone-mapping="6">AgX</button>
+              <button data-tone-mapping="4">ACES</button>
+            </div>
+            <span class="weather-note"><em>Shoulder</em> passes every colour up to sRGB 231 through exactly and compresses everything brighter so the white point, not 100 %, reaches white — overbright highlights roll off, in-range whites lose a few levels. <em>None</em> clips. Stock <em>Neutral</em> darkens all unlit colour and crushes the darks; <em>AgX</em> greys and <em>ACES</em> yellows it — kept for comparison. Applies to the whole frame, sky and clouds included, in the output pass that already runs, so no curve costs a pass</span>
+          </div>
+          <div class="row">
+            <label class="h" for="toneExposure">Exposure · <span class="val" id="toneExposureVal">—</span></label>
+            <input type="range" id="toneExposure" min="0.25" max="2" step="0.01" />
+            <span class="weather-note">Linear gain before the curve, for the whole frame. No effect with <em>None</em></span>
+          </div>
+          <div class="row">
+            <label class="h" for="toneWhitePoint">White point · <span class="val" id="toneWhitePointVal">—</span></label>
+            <input type="range" id="toneWhitePoint" min="1" max="3" step="0.05" />
+            <span class="weather-note"><em>Shoulder</em> only: the brightness that reaches full output. 1× means no roll-off — everything up to 100 % passes unchanged and anything brighter is scaled down until its brightest channel is full, hue kept, instead of clipped per channel. Higher keeps more gradation in lit cloud tops and bright sand at the cost of a softer top end</span>
+          </div>
+          <div class="row">
+            <label class="h" for="pointContrast">Point contrast · <span class="val" id="pointContrastVal">—</span></label>
+            <input type="range" id="pointContrast" min="0.5" max="1.5" step="0.01" />
+            <span class="weather-note">Around 18 % grey, hue kept. Most of the canopy sits below that, so more contrast mostly deepens it. 1× is the captured colour</span>
+          </div>
+          <div class="row">
+            <label class="h" for="pointSaturation">Point saturation · <span class="val" id="pointSaturationVal">—</span></label>
+            <input type="range" id="pointSaturation" min="0" max="2" step="0.01" />
           </div>
         </details>
 

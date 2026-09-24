@@ -32,6 +32,9 @@ import { recordFrame, costReport, resetCost, installUploadProbe } from './arriva
 import { installGeometryDisposeFix } from './geometry-dispose'
 import { EXPERIENCE_CONFIG } from './config'
 import {
+  installToneMapping, parseToneMappingMode, toneMappingModeOf, toneWhitePoint,
+} from './tone-mapping'
+import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
   type DonationShapeForm, type DonationShapeSource, type DonationShapeStyle,
 } from './donation-shape-data'
@@ -474,20 +477,9 @@ const renderer = new WebGPURenderer({
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
-// Applied per material when drawing straight to the canvas; the DoF pipeline turns it off
-// for its scene pass and applies it once in its output transform, so both paths match.
-const TONE_MAPPINGS = {
-  none: THREE.NoToneMapping,
-  neutral: THREE.NeutralToneMapping,
-  agx: THREE.AgXToneMapping,
-  aces: THREE.ACESFilmicToneMapping,
-} as const
-const toneMappingParam = params.get('tonemap')
-const toneMappingMode = toneMappingParam && toneMappingParam in TONE_MAPPINGS
-  ? toneMappingParam as keyof typeof TONE_MAPPINGS
-  : EXPERIENCE_CONFIG.toneMapping.mode
-renderer.toneMapping = TONE_MAPPINGS[toneMappingMode]
-renderer.toneMappingExposure = EXPERIENCE_CONFIG.toneMapping.exposure
+// Before the first frame, so the output pass is built with the registered curve. The DoF
+// pipeline renders its scene pass untone-mapped and applies the same curve once at the end.
+installToneMapping(renderer, parseToneMappingMode(params.get('tonemap')) ?? EXPERIENCE_CONFIG.toneMapping.mode)
 // Daylight sky above the globe horizon. The matching distance fog hides the
 // finite map edge without another mesh, texture sample or post-process pass.
 const DAYLIGHT_SKY = 0x8bc9ec
@@ -3371,6 +3363,20 @@ function bindDesignColor(id: string, initial: number, apply: (hex: string) => vo
 const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
+bindDesignSlider('pointContrast', DESIGN.pointContrast, asFactor, (v) => { uniforms.pointContrast.value = v })
+bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => { uniforms.pointSaturation.value = v })
+// The curve lives on the renderer, so switching it rebuilds only the output pass, never a
+// tile material. The markup's `on` is overwritten first so a ?tonemap= override shows.
+for (const button of $<HTMLDivElement>('#toneMappingSeg').querySelectorAll<HTMLButtonElement>('button')) {
+  button.classList.toggle('on', Number(button.dataset.toneMapping) === renderer.toneMapping)
+}
+bindSeg('toneMappingSeg', 'toneMapping', (v) => { renderer.toneMapping = v as THREE.ToneMapping })
+bindDesignSlider('toneExposure', EXPERIENCE_CONFIG.toneMapping.exposure, asFactor, (v) => {
+  renderer.toneMappingExposure = v
+})
+bindDesignSlider('toneWhitePoint', EXPERIENCE_CONFIG.toneMapping.whitePoint, asFactor, (v) => {
+  toneWhitePoint.value = v
+})
 // Goes through the globe because changing it has to force a re-traversal; see
 // Globe.setErrorTarget. Higher = fewer tiles per view = softer imagery.
 bindDesignSlider('basemapErrorTarget', DESIGN.basemapErrorTarget, asPixels, (v) => {
@@ -3696,6 +3702,8 @@ designCopyEl.addEventListener('click', async () => {
     maskMode: uniforms.maskMode.value,
     mapSaturation: uniforms.mapSaturation.value,
     mapBrightness: uniforms.mapBrightness.value,
+    pointContrast: uniforms.pointContrast.value,
+    pointSaturation: uniforms.pointSaturation.value,
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -3737,6 +3745,11 @@ pointLighting: ${JSON.stringify({
 atmosphere: ${JSON.stringify({
     fogNearFactor: distanceFogNearFactor,
     fogFarFactor: distanceFogFarFactor,
+  }, null, 2)}
+toneMapping: ${JSON.stringify({
+    mode: toneMappingModeOf(renderer.toneMapping),
+    exposure: renderer.toneMappingExposure,
+    whitePoint: toneWhitePoint.value,
   }, null, 2)}
 depthOfField: ${JSON.stringify({
     enabled: depthOfField.isEnabled(),

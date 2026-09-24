@@ -973,8 +973,23 @@ export const EXPERIENCE_CONFIG = {
     /** Multiplies the basemap only — the point cloud keeps its own grading.
      * Pushed above 1 so the map reads as daylight ground where it shows through: the
      * river and the survey gaps are the whole point of the ground patch, and at the
-     * old 0.1 they sat as near-black holes rather than as water and sand. */
+     * old 0.1 they sat as near-black holes rather than as water and sand.
+     * Rechecked under the `shoulder` tone curve: forest, river and sand stay under its
+     * knee and render exactly as before. Only sandbars and bright roofs (raw sRGB 199+,
+     * in full daylight) cross it and are gently compressed; of those, raw 220+ used to
+     * clip under `none` and now rolls off instead, so 1.4 stays. The panel slider runs
+     * to 2 now that overshoot rolls off rather than clips. */
     mapBrightness: 1.4,
+    /**
+     * Point-cloud grade, applied to the decoded linear colour before daylight, shadow and
+     * fog, so the look holds at every time of day. Contrast is a power curve on luma
+     * around 0.18 linear (sRGB 118) with hue kept: most of the canopy sits below that
+     * pivot, so contrast above 1 mostly deepens it. 1 = the captured colour. The panel
+     * slider spans 0.5–1.5 and clamps a config value outside it at boot.
+     */
+    pointContrast: 1,
+    /** 1 = captured saturation, 0 = grey, above 1 = more vivid. Panel range 0–2. */
+    pointSaturation: 1,
     /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
@@ -1108,20 +1123,36 @@ export const EXPERIENCE_CONFIG = {
       tint: 1,
     },
   },
-  // The output curve between the linear working colour and the sRGB canvas. It runs
-  // inside every material's output (or at the end of the DoF pass), so it adds no pass.
+  // The output curve between the linear working colour and the sRGB canvas. It runs in
+  // the output pass r185 already does for the sRGB encode, so it adds no pass — and it
+  // sees the whole frame, sky and clouds included (see tone-mapping.ts).
   toneMapping: {
     /**
-     * `neutral` is Khronos PBR Neutral: the identity while every channel sits in
-     * 0.08–0.8 linear, so captured point RGB and satellite colour pass through
-     * unchanged, and only values pushed toward and above 1 by daylight or
-     * mapBrightness roll off instead of clipping. `none` is the old hard clip;
-     * `agx` and `aces` are kept for comparison only — both desaturate photo colour.
-     * `?tonemap=` overrides this for an A/B.
+     * `shoulder` shares Khronos PBR Neutral's knee, hue-preserving peak scaling and pull
+     * toward white, but drops its 0.04 dark offset and uses its own power curve that
+     * reaches white exactly at `whitePoint`. It is the exact identity (at exposure 1)
+     * while the brightest channel stays at or under 0.8 linear (sRGB 231), so captured
+     * point RGB, satellite colour and picked panel colours render as authored. From the
+     * knee up everything is compressed so that `whitePoint`, not 1, reaches white: that
+     * includes in-range highlights (at 1.5, sRGB 255 renders as 248 and the fog colour
+     * 0xfff2e0 as about (248, 235, 218)) as well as the overbright basemap, lit cloud tops
+     * and additive overlays such as the donation parcel's sonar ring, which roll off
+     * instead of clipping. On a measured frame 0.04 % of pixels sat above the knee.
+     * Stock `neutral` darkens every unlit colour by that offset (all pixels, −16 levels
+     * on average) and crushes the darks; `none` is the hard clip; `agx` greys and `aces`
+     * yellows photo colour. Kept for comparison only. `?tonemap=` overrides this for an A/B.
      */
-    mode: 'neutral' as 'none' | 'neutral' | 'agx' | 'aces',
-    /** Linear multiplier applied before the curve. Ignored by `none`. */
+    mode: 'shoulder' as 'none' | 'shoulder' | 'neutral' | 'agx' | 'aces',
+    /** Linear multiplier applied before the curve. Ignored by `none`. Panel range
+     * 0.25–2; a config value outside it is clamped at boot. */
     exposure: 1,
+    /** `shoulder` only: the linear peak that reaches full output (white for a grey).
+     * 1 means no roll-off: everything up to 1 passes unchanged (to float precision above
+     * the knee), and brighter colours are
+     * scaled down until their brightest channel is 1, keeping their hue, instead of being
+     * clipped per channel. 1.5 keeps lit cloud tops and 1.4× sandbars graded at the cost
+     * of up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
+    whitePoint: 1.5,
   },
   // The one effect that cannot live inside a colour node: a circle of confusion
   // has to read neighbouring pixels, so DoF is a real post pass (see
