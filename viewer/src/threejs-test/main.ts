@@ -2744,10 +2744,12 @@ let thinTargetScale = 0.5
  *  their children's, so dropping 70 % of them was part of what read as too coarse. */
 let ancestorKeep = 0.5
 /** The distance ramp. 100 m keeps the near field whole for almost nothing — 87% of the
- *  points in a normal view sit beyond it — and 800 m is far enough from 100 that the
- *  per-tile steps in between cannot read as a ring. */
+ *  points in a normal view sit beyond it. The far end was 800 m until 2026-09-24 and is
+ *  2000 m by choice, for more detail: with the target and covered share above it keeps
+ *  89 / 98 / 98 / 87 % of the points at 1077 m nadir / 250 m 45° / 442 m 70° / 130 m 60°,
+ *  against 78 / 90 / 88 / 79 % at 800 m. */
 let thinNearM = 100
-let thinFarM = 800
+let thinFarM = 2000
 const THINNING_MIN_KEEP = 0.02
 /** How far a survivor may be widened to stand in for what was dropped. 2 doubles the
  *  drawn diameter at most — measured, the uncapped figure reaches 7 and turns the horizon
