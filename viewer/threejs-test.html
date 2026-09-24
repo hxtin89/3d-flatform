@@ -910,6 +910,11 @@
           <span class="weather-note">The cap itself. The frame is filled outward from the camera until it is reached: nearer tiles win, because the error each tile is judged by is its point spacing divided by its distance, so the cheapest detail to drop is always the furthest. Watch it against the point count on the HUD row above</span>
         </div>
         <div class="row">
+          <label class="h" for="budgetNearM">Never coarsen within · <span class="val" id="budgetNearMVal">—</span></label>
+          <input type="range" id="budgetNearM" min="60" max="1200" step="20" />
+          <span class="weather-note">How close the horizon may come before it stops. Inside this, refinement is never given up however tight the cap &mdash; what will not fit is taken as individual points instead, which costs density evenly rather than deleting a whole level. It is measured to a tile's nearest face, so a big cell covering the ground beneath you counts as near however far away its middle is</span>
+        </div>
+        <div class="row">
           <label class="h" for="budgetModeToggle">Ceiling or fill · A/B</label>
           <button class="act on" id="budgetModeToggle" type="button" aria-pressed="true" aria-describedby="budgetModeNote">⌃ Ceiling</button>
           <span class="weather-note" id="budgetModeNote">Ceiling only ever coarsens: a view that comes in under the cap is left exactly at the point spacing set above, and the headroom goes unspent. Fill treats the cap as a level to reach, refining <em>past</em> that spacing until the count is met &mdash; every point spent, but the near field drawn finer than the dot size was tuned for. Fill also fetches more, and reaches one level deeper per frame rather than all at once</span>
@@ -917,7 +922,7 @@
         <div class="row">
           <label class="h" for="budgetFarFirstToggle">Where it is taken from · A/B</label>
           <button class="act on" id="budgetFarFirstToggle" type="button" aria-pressed="true" aria-describedby="budgetFarFirstNote">⇥ Far first</button>
-          <span class="weather-note" id="budgetFarFirstNote">Far first spends the shortfall on the distance before the ground under you: past 400 m a tile takes the full coarsening, within 60 m only a quarter of it, easing between. Those distances are small because the camera is pinned at 80 m over the canopy &mdash; measured, a frame's tiles sit between 40 m and 460 m away. Even spreads it across the frame instead, which is what one error target does by itself. Both are inert while the frame fits: this decides where a shortfall lands, not how good a view is</span>
+          <span class="weather-note" id="budgetFarFirstNote">Far first is a closing horizon: refinement is given up strictly from the back of the view forward, and the distance it still reaches is on the HUD's error-target row. It never closes inside 60 m &mdash; the ground under the camera keeps the spacing set above, and anything that still will not fit is taken as individual points instead. Even spreads the shortfall evenly over the frame, which is what one error target does by itself; it is the honest comparison, but at a tight cap it flattens the near field along with the distance and leaves a frame of overview, which reads as sparse underfoot and dense at the horizon. Both are inert while the frame fits</span>
         </div>
       </details>
       <details class="design-section">

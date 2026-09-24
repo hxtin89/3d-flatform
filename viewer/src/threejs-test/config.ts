@@ -178,22 +178,39 @@ export const EXPERIENCE_CONFIG = {
       /** Where the slider starts. The top of its range, so switching the cap on alone
        *  changes as little as possible until it is moved. */
       defaultPoints: 6_000_000,
-      /** Spend the shortfall on the far field first; off spreads it over the frame. */
+      /**
+       * Spend the shortfall on the distance first, as a closing horizon; off spreads it
+       * evenly over the frame, which is what one error target does by itself.
+       */
       farFirst: true,
       /**
-       * The ramp, in metres from the camera to a tile's content centre.
+       * The radius the horizon never closes inside, in metres.
        *
-       * Sized to the camera envelope this app actually has, not to a map viewer's. The
-       * navigation zoom stop pins the camera at 80 m over the canopy and there is no way
-       * up, so a frame's tiles sit between 40 m and 460 m away — measured at the arrival
-       * view, 20 selected tiles, bulk between 40 and 110 m. The first guess at these
-       * (200 m and 3 km) put every tile in the frame on the near share, which turned
-       * far-first into "uniform, four times slower" and made the A/B meaningless.
+       * Measured against a tile's nearest face, so a large cell covering the ground under
+       * the camera counts as near however far its centre is. It guards the draw-side trim
+       * as well as the horizon: a tile this close keeps every point it loaded.
+       *
+       * 60 m, not more. It was 300 while the distance was measured to a tile's centre, and
+       * at that value a nadir frame has nothing outside it at all — the cap could not be
+       * met and was missed by 4%. At 60 the same frame meets the cap exactly with 28 of
+       * its 30 tiles untouched and the two farthest giving up the surplus. There is a
+       * slider on it, because where the foreground ends is a look judgement.
+       *
+       * Refinement nearer than this is never given up by the traversal. It is what stops
+       * a cap the view cannot meet from flattening the ground under the camera: measured
+       * at a 1M cap before this existed, the frame collapsed to overview everywhere, and
+       * because overview points are evenly spread in *world* space they then project
+       * dense at the horizon and sparse underfoot — the exact inverse of the point of a
+       * budget. Whatever will not fit inside this radius is taken by the draw-side trim
+       * instead, which costs density evenly rather than deleting a level.
        */
       nearM: 60,
-      farM: 400,
-      /** The near field's share while far-first is on. Not 0 — see PointBudgetSettings. */
-      nearShare: 0.25,
+      /**
+       * The distance the pressure scale is expressed against: at pressure p the horizon
+       * stands at `farFirstReferenceM / p` metres, so 1 is a kilometre and 10 is a
+       * hundred metres. Only a unit — changing it rescales the pressure and nothing else.
+       */
+      farFirstReferenceM: 1_000,
       /**
        * How far `fill` may refine *past* the SSE slider: -0.8 divides the error target
        * by five, which is between two and three levels deeper.
@@ -218,6 +235,38 @@ export const EXPERIENCE_CONFIG = {
       releaseDeadband: 0.92,
       /** Assumed for a tile whose tileset publishes no count (the one-lod route). */
       fallbackTilePoints: 75_000,
+      /**
+       * The draw-side trim: how the frame lands *on* the slider instead of under it.
+       *
+       * The traversal can only give up detail a whole quadtree step at a time, so it
+       * stops short — 3,755,294 against a 4M slider, 795,053 against 1M. With the trim on
+       * it is allowed to overshoot by `headroom` and the surplus is taken off point by
+       * point, farthest tiles first.
+       */
+      trim: {
+        /** Off with distance thinning, which writes the same two per-tile values. */
+        enabled: true,
+        /**
+         * How far the traversal may overshoot the cap, as a fraction of it. Wide enough
+         * to clear one step of four 75k children on the budgets the slider offers, and
+         * no wider — every point of overshoot is a point the trim then has to take off,
+         * which is drawn-density the frame paid to load.
+         */
+        headroom: 0.35,
+        /**
+         * Least fraction of a tile left drawn.
+         *
+         * 1/64 rather than a round number: the published point order is a round-robin
+         * over a stride of 64, and a prefix is only a fair sample once it covers one
+         * whole round of it. Below that the prefix is a crop of one corner again, which
+         * is the failure the order exists to prevent, and nothing would report it.
+         */
+        minKeep: 1 / 64,
+        /** Ceiling on widening a survivor to cover the gap its neighbours left. */
+        maxWiden: 2.5,
+        /** How long a tile takes to ease most of the way to a new keep fraction. */
+        rampMs: 260,
+      },
       /**
        * What one point costs in memory: 12 bytes of position plus a padded 4-byte colour.
        * Used to pull the cache and GPU budgets down with the slider, so a small cap does

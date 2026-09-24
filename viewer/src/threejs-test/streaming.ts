@@ -13,6 +13,7 @@ import {
   denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
 } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
+import { planPointTrim } from './point-budget'
 import { EXPERIENCE_CONFIG } from './config'
 
 export interface StreamingStats {
@@ -151,6 +152,27 @@ export interface StreamingCloud {
    */
   applyThinning(settings: ThinningSettings | null): { drawn: number; loaded: number }
   /**
+   * Bring the drawn point count down to an exact cap, by drawing a shorter prefix of the
+   * farthest tiles first.
+   *
+   * The companion to the traversal budget in point-budget.ts, and the reason the two
+   * exist together: refinement can only be given up a whole quadtree step at a time —
+   * one parent stops refining and its four children leave together, up to 300k points —
+   * so the traversal alone lands under the cap rather than on it. This removes the
+   * remainder a point at a time.
+   *
+   * Farthest first, and *not* ancestors first. Measured against the published pack: the
+   * two coarsest levels hold 0.158% of its points, so trimming every ancestor everywhere
+   * would free a rounding error — and under ADD refinement they are the only coverage
+   * wherever finer data has not arrived, so taking from them opens holes exactly where
+   * the frame is thinnest. The points are in the deep levels; that is where a cap has to
+   * take them from.
+   *
+   * Owns `instanceCount` and `thinScale`, which is why the caller must not run it while
+   * distance thinning is on: both write the same two values every frame.
+   */
+  applyPointBudget(settings: PointBudgetTrimSettings | null): PointBudgetTrimResult
+  /**
    * Point the drawn size at the density that is actually on screen at each spot, rather
    * than at each tile's own.
    *
@@ -204,6 +226,46 @@ export interface ThinningSettings {
    */
   nearM: number
   farM: number
+}
+
+export interface PointBudgetTrimSettings {
+  /** The cap the drawn count is brought down to, in points. */
+  maxPoints: number
+  /**
+   * Least fraction of a tile that may be left drawn.
+   *
+   * A floor rather than zero for the same reason the thinning has one — a tile that
+   * draws nothing pops back as a block the moment the camera moves. It also has to clear
+   * the stride the points are ordered by: a prefix is only a fair sample once it covers
+   * one whole round of that stride, and below that it is a crop of one corner again.
+   */
+  minKeep: number
+  /** Ceiling on how far a survivor may be widened to stand in for the points that went. */
+  maxWiden: number
+  /** How long a tile takes to ease most of the way to a new keep fraction. 0 disables it. */
+  rampMs: number
+  /**
+   * Radius inside which a tile is never trimmed, in metres, measured to its nearest face.
+   *
+   * The foreground is what the cap exists to protect, so it is not where the cap is paid
+   * for. Same number as the horizon protection radius, and for the same reason.
+   */
+  protectM: number
+}
+
+export interface PointBudgetTrimResult {
+  /** Points actually submitted after the trim. */
+  drawn: number
+  /** Points the visible tiles hold. */
+  loaded: number
+  /** Tiles drawing less than their full buffer. */
+  trimmedTiles: number
+  /**
+   * Points the cap asked for but could not take, because every trimmable tile was
+   * already at its floor. Non-zero means the frame is over the slider and the traversal
+   * has to give up another step — reported rather than hidden.
+   */
+  shortfall: number
 }
 
 export interface GroundSample {
@@ -415,6 +477,10 @@ export function createStreamingCloud(opts: {
   const failedTiles = new Set<string>()
   /** Timestamp of the previous thinning pass, for the ramp's elapsed time. */
   let lastThinningAt = 0
+  /** The same, for the point budget's trim, which is the thinning's alternative. */
+  let lastBudgetTrimAt = 0
+  /** Whether the trim is the feature currently holding the tiles' instance counts. */
+  let budgetTrimOwning = false
   /** The same, for the effective-spacing pass, which runs whether thinning is on or not. */
   let lastSpacingAt = 0
   /**
@@ -490,11 +556,20 @@ export function createStreamingCloud(opts: {
   }
 
   /**
-   * Whether anything currently needs a fair point order. Mirrors the thinning toggle,
-   * refreshed from `applyThinning` each frame, and true initially because thinning ships on
-   * — tiles loaded during the entrance flight run before the first `applyThinning` call.
+   * Whether anything currently needs a fair point order.
+   *
+   * Two features draw a prefix and so two can want it: the distance thinning and the
+   * point budget's trim. Each refreshes its own flag every frame — the thinning from
+   * `applyThinning`, the budget from `applyPointBudget` — and the shuffle runs if either
+   * asks, because a tile loaded while both were off keeps the clustered order it arrived
+   * in and cannot be thinned later without showing one lobe of itself.
+   *
+   * Both start true because thinning ships on and tiles loaded during the entrance flight
+   * arrive before either setter has run.
    */
-  let fairOrderWanted = true
+  let thinningWantsFairOrder = true
+  let budgetWantsFairOrder = false
+  const fairOrderWanted = (): boolean => thinningWantsFairOrder || budgetWantsFairOrder
 
   function shufflePoints(geometry: any, position: any, color: any): void {
     if (geometry.userData?.pointsShuffled) return
@@ -507,7 +582,7 @@ export function createStreamingCloud(opts: {
     // straight after this call, so shuffling later would move the positions and leave that
     // copy behind — points would take their neighbours' colours. Not shuffling at all keeps
     // both arrays in the order they arrived, which is consistent.
-    if (!fairOrderWanted) return
+    if (!fairOrderWanted()) return
     // The pipeline already emitted a stratified order, so a prefix is a fair sample
     // without doing anything — and this is the single most expensive thing in bringing a
     // tile online, at 4-11 ms of main-thread time depending on tile size.
@@ -1150,7 +1225,7 @@ export function createStreamingCloud(opts: {
     },
     applyThinning(settings) {
       // Read every frame so a tile parsed after the toggle moves gets the right treatment.
-      fairOrderWanted = settings !== null
+      thinningWantsFairOrder = settings !== null
       let drawn = 0
       let loaded = 0
       if (!settings) {
@@ -1290,6 +1365,148 @@ export function createStreamingCloud(opts: {
         }
       }
       return { drawn, loaded }
+    },
+    applyPointBudget(settings) {
+      // Read every frame, like the thinning's, so a tile parsed after the toggle moves
+      // gets an order a prefix can be taken from.
+      budgetWantsFairOrder = settings !== null
+      let drawn = 0
+      let loaded = 0
+      let trimmedTiles = 0
+
+      if (!settings) {
+        // Off has to mean *absent*, not "restored every frame". The distance thinning
+        // writes the same `instanceCount` and `thinScale` this does, and it runs first,
+        // so a restore pass here would undo its work on every single frame. The tiles are
+        // handed back exactly once, on the frame the trim stops owning them.
+        if (!budgetTrimOwning) return { drawn: 0, loaded: 0, trimmedTiles: 0, shortfall: 0 }
+        budgetTrimOwning = false
+        for (const tile of tiles.visibleTiles) {
+          const stats = tileStats.get(tile)
+          if (!stats) continue
+          loaded += stats.points
+          for (const mesh of stats.quads) {
+            const geometry = mesh.geometry as THREE.InstancedBufferGeometry
+            const anyGeometry = geometry as any
+            const full = anyGeometry.userData?.fullCount ?? geometry.instanceCount
+            geometry.instanceCount = full
+            const scale = (mesh.material as any)?.userData?.thinScale
+            if (scale) scale.value = 1
+            // Forget the ease too, or switching the cap back on fades down from wherever
+            // it happened to be rather than from the whole tile.
+            if (anyGeometry.userData) anyGeometry.userData.budgetKeep = undefined
+            drawn += full
+          }
+        }
+        return { drawn, loaded, trimmedTiles: 0, shortfall: 0 }
+      }
+      budgetTrimOwning = true
+
+      const nowMs = performance.now()
+      const dtMs = lastBudgetTrimAt === 0 ? 0 : Math.min(100, nowMs - lastBudgetTrimAt)
+      lastBudgetTrimAt = nowMs
+
+      camera.getWorldDirection(coverForward)
+      /**
+       * One entry per drawn mesh, with the view depth the trim orders by.
+       *
+       * The depth comes from the carrier's own point bounds, not from the tile's
+       * published box: an APH box is the union of a node with its whole subtree, so its
+       * centre can sit hundreds of metres from the points it is supposed to describe —
+       * measured, a 2 km overview cell reports its nearest face a few metres from a
+       * camera standing over it.
+       */
+      const entries: {
+        geometry: THREE.InstancedBufferGeometry
+        material: any
+        full: number
+        depth: number
+        fair: boolean
+      }[] = []
+      for (const tile of tiles.visibleTiles) {
+        const stats = tileStats.get(tile)
+        if (!stats) continue
+        loaded += stats.points
+        for (const mesh of stats.quads) {
+          const geometry = mesh.geometry as THREE.InstancedBufferGeometry
+          const anyGeometry = geometry as any
+          if (anyGeometry.userData?.fullCount === undefined) {
+            anyGeometry.userData = anyGeometry.userData ?? {}
+            anyGeometry.userData.fullCount = geometry.instanceCount
+          }
+          const full: number = anyGeometry.userData.fullCount
+          if (!full) continue
+          /**
+           * How far away this tile is: the distance to the **nearest point of its
+           * bounding volume**, which the renderer has already computed for the traversal.
+           *
+           * Not its centre, and the difference is the whole behaviour of the foreground.
+           * A prefix samples a tile *uniformly over its whole extent*, so trimming a tile
+           * thins every part of it at once. A large ancestor spans near ground and far
+           * ground together; by its centre it reads as distant, gets stripped toward the
+           * floor, and the survivors are widened to cover the gap — but the ground it was
+           * drawing right in front of the camera is thinned by exactly the same fraction.
+           * Beyond the horizon that ancestor is the *only* coverage there is, so the
+           * foreground goes sparse and blobby. By the nearest face it counts as near, and
+           * is left alone.
+           */
+          const front = tile?.traversal?.distanceFromCamera
+          let depth: number
+          if (typeof front === 'number' && Number.isFinite(front)) {
+            depth = Math.max(front, 0)
+          } else {
+            const carrier = mesh.parent as THREE.Object3D | null
+            const carrierGeometry = carrier ? (carrier as any).geometry : null
+            if (carrierGeometry && !carrierGeometry.boundingSphere) carrierGeometry.computeBoundingSphere()
+            const bounds = carrierGeometry?.boundingSphere
+            depth = 0
+            if (bounds && carrier) {
+              coverCentre.copy(bounds.center).applyMatrix4(carrier.matrixWorld)
+              depth = Math.max(coverCentre.sub(camera.position).dot(coverForward) - bounds.radius, camera.near)
+            }
+          }
+          entries.push({
+            geometry,
+            material: mesh.material,
+            full,
+            depth,
+            // Never take points off the foreground. Inside this radius a tile keeps every
+            // point it loaded, whatever the cap says — the cap is met by closing the
+            // horizon and by thinning what lies beyond it, and if that is not enough the
+            // shortfall is reported rather than paid for out of the ground under the
+            // camera.
+            fair: anyGeometry.userData.orderIsFair === true && depth >= settings.protectM,
+          })
+        }
+      }
+
+      // Who gives up what is decided in point-budget.ts, where it can be tested against
+      // the arithmetic rather than against a running scene.
+      const plan = planPointTrim(entries, { maxPoints: settings.maxPoints, minKeep: settings.minKeep })
+
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]
+        let keep = plan.keep[index]
+        const anyGeometry = entry.geometry as any
+        // Ease toward the target for the same reason the thinning does: the ordering is
+        // recomputed every frame, so a tile crossing another in depth would otherwise
+        // step its count in one frame and read as a stutter at a steady frame rate.
+        const previous = anyGeometry.userData.budgetKeep
+        if (previous !== undefined && dtMs > 0 && settings.rampMs > 0) {
+          keep = previous + (keep - previous) * (1 - Math.exp(-dtMs / settings.rampMs))
+        }
+        anyGeometry.userData.budgetKeep = keep
+        const count = Math.max(1, Math.min(entry.full, Math.round(entry.full * keep)))
+        entry.geometry.instanceCount = count
+        // Survivors stand in for the points that went, so they are drawn as wide as the
+        // gap they now cover — area, not width, hence the square root.
+        const scale = entry.material?.userData?.thinScale
+        if (scale) scale.value = Math.min(Math.sqrt(entry.full / count), settings.maxWiden)
+        if (count < entry.full) trimmedTiles++
+        drawn += count
+      }
+
+      return { drawn, loaded, trimmedTiles, shortfall: plan.shortfall }
     },
     shadedPixelArea(diameterPx) {
       // The shader divides by view depth — the distance along the camera axis, not the

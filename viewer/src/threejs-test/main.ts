@@ -22,7 +22,12 @@ import {
   attachOrigin, ecefToRenderMatrix, getEcefRoot, getOrigin, onRebase, originStats,
   rebaseTo, renderToEcef, renderToEcefMatrix, setOriginEnabled,
 } from './origin'
-import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
+import {
+  createStreamingCloud,
+  type PointBudgetTrimResult,
+  type StreamingCloud,
+  type StreamingStats,
+} from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
 import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
 import { fetchGlobeManifest } from './manifest'
@@ -648,11 +653,20 @@ const budgetSettings: PointBudgetSettings = {
   mode: 'ceiling',
   farFirst: BUDGET.farFirst,
   nearM: BUDGET.nearM,
-  farM: BUDGET.farM,
-  nearShare: BUDGET.nearShare,
+  // Set each frame from whether the trim is actually running — see budgetTrimActive.
+  trimHeadroom: 0,
 }
 let pointBudget: PointBudget | null = null
 let lastBudget: PointBudgetStats | null = null
+let lastBudgetTrim: PointBudgetTrimResult | null = null
+/**
+ * Whether the cap's own trim is the one holding the drawn count down this frame.
+ *
+ * It cannot run beside the distance thinning: both write `instanceCount` and `thinScale`
+ * on every visible tile every frame, so the two would take turns winning. The traversal
+ * half of the budget is unaffected either way — only the draw-side trim stands down.
+ */
+const budgetTrimActive = (): boolean => budgetSettings.enabled && BUDGET.trim.enabled && !thinningOn
 /** Wall clock of the previous budget solve, for the ease's real elapsed time. */
 let lastBudgetAt = 0
 let viewAngle: ViewAngleCorrection | null = null
@@ -2848,6 +2862,7 @@ bindDesignSlider('budgetMaxPoints', BUDGET.defaultPoints, asPointCap, (v) => {
   // The working set is capped by the same number — see refreshStreamMemoryBudget.
   refreshStreamMemoryBudget()
 })
+bindDesignSlider('budgetNearM', BUDGET.nearM, asMetres, (v) => { budgetSettings.nearM = v })
 
 roundDotsToggleEl.addEventListener('click', () => {
   roundDots = !roundDots
@@ -3686,6 +3701,9 @@ function updateStreaming(now: number): StreamingStats | null {
   // One frame of lag, and no way to avoid it — what a refinement costs is only known
   // once the traversal has reached the tile that would pay for it.
   if (pointBudget) {
+    // The traversal may only overshoot the cap while something is there to take the
+    // surplus off again.
+    budgetSettings.trimHeadroom = budgetTrimActive() ? BUDGET.trim.headroom : 0
     const dtMs = lastBudgetAt === 0 ? 0 : Math.min(100, now - lastBudgetAt)
     lastBudgetAt = now
     lastBudget = pointBudget.update(dtMs, sseAuto)
@@ -3710,6 +3728,17 @@ function updateStreaming(now: number): StreamingStats | null {
     nearM: thinNearM,
     // Guarded so dragging the near slider past the far one cannot invert the ramp.
     farM: Math.max(thinFarM, thinNearM + 50),
+  } : null)
+  // The cap's own trim, and the one place the two features are kept apart: both write
+  // every visible tile's `instanceCount` and `thinScale` every frame, so whichever ran
+  // second would simply win. Thinning keeps precedence because it is the older feature
+  // and ships on; the trim takes over only when it is switched off.
+  lastBudgetTrim = stream.applyPointBudget(budgetTrimActive() ? {
+    maxPoints: budgetSettings.maxPoints,
+    protectM: budgetSettings.nearM,
+    minKeep: BUDGET.trim.minKeep,
+    maxWiden: BUDGET.trim.maxWiden,
+    rampMs: BUDGET.trim.rampMs,
   } : null)
   lastStreamStats = stream.stats()
   return lastStreamStats
@@ -3801,6 +3830,11 @@ function errorTargetLabel(): string {
   // printed is the far end of its ramp, which is where the coarsening actually lands.
   const pressure = lastBudget?.applied ?? 0
   if (Math.abs(pressure) > 0.01 && lastBudget) {
+    // Far-first is a horizon, so it reads as one: the distance refinement still reaches.
+    // The multiplier it is implemented as means nothing to anyone looking at the picture.
+    if (pressure > 0 && Number.isFinite(lastBudget.horizonM)) {
+      return `SSE ${sseAuto.toFixed(0)} · detail to ${Math.round(lastBudget.horizonM)} m`
+    }
     const verb = pressure > 0 ? 'capped' : 'filled'
     return `SSE ${sseAuto.toFixed(0)} → ${lastBudget.farSse.toFixed(1)} · ${verb}`
   }
@@ -3971,10 +4005,14 @@ function updateHud(stats: StreamingStats | null): void {
     : (budgetActive || foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
   // What is actually submitted, which is not what is loaded once thinning is on. The
   // share is shown beside it rather than left to be worked out from two rows.
-  const drawnPoints = lastThinning ? lastThinning.drawn : (stats?.points ?? 0)
-  const thinned = Boolean(lastThinning) && lastThinning!.drawn < lastThinning!.loaded
+  // Whichever of the two prefix features is running owns this number; they never run
+  // together. The budget's trim is checked first because it only reports at all while it
+  // is the one in charge.
+  const submitted = budgetTrimActive() ? lastBudgetTrim : lastThinning
+  const drawnPoints = submitted ? submitted.drawn : (stats?.points ?? 0)
+  const thinned = Boolean(submitted) && submitted!.drawn < submitted!.loaded
   const drawnLabel = thinned
-    ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
+    ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / submitted!.loaded)}%`
     : fmtInt(drawnPoints)
   // The cap sits on this row rather than in the diagnostics: a count with a limit beside
   // it is the one reading the slider exists to produce.
@@ -4063,11 +4101,19 @@ function updateHud(stats: StreamingStats | null): void {
   // Predicted, not measured: the sum runs over the point counts the tileset publishes
   // for every node, tiles still unfetched included. That is the whole reason the cap can
   // stop a download rather than regret one — see point-budget.ts.
+  // Selected, then trimmed: the two halves of the cap, in the order they act. A shortfall
+  // means every trimmable tile is already at its floor and the traversal owes another
+  // step — the one state in which the frame is over the slider and staying there.
+  const trim = budgetTrimActive() ? lastBudgetTrim : null
   diagBudgetEl.textContent = !budgetSettings.enabled || !lastBudget ? 'off'
     : `${fmtInt(lastBudget.predicted)} @ ${lastBudget.applied.toFixed(2)}`
-      + ` · floor ${fmtInt(lastBudget.fixed)}${lastBudget.reachable ? '' : ' · unreachable'}`
+      + (trim ? ` → ${fmtInt(trim.drawn)} · ${trim.trimmedTiles} cut` : '')
+      + ` · floor ${fmtInt(lastBudget.fixed)}`
+      + (lastBudget.reachable ? '' : ' · unreachable')
+      + (trim && trim.shortfall > 0 ? ` · short ${fmtInt(trim.shortfall)}` : '')
   setState(diagBudgetEl, !budgetSettings.enabled || !lastBudget ? ''
-    : !lastBudget.reachable ? 'bad' : lastBudget.applied > 0.01 ? 'warn' : 'ok')
+    : (!lastBudget.reachable || (trim && trim.shortfall > 0)) ? 'bad'
+      : lastBudget.applied > 0.01 ? 'warn' : 'ok')
   const missing = stats?.missingTiles ?? 0
   diagMissingEl.textContent = String(missing)
   setState(diagMissingEl, missing ? 'bad' : 'ok')

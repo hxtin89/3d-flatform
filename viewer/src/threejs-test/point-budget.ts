@@ -59,19 +59,29 @@ export interface PointBudgetSettings {
    * that one survived measurement.
    */
   farFirst: boolean
-  /** Nearer than this, a tile takes only `nearShare` of the coarsening. */
-  nearM: number
-  /** Beyond this, a tile takes all of it. */
-  farM: number
   /**
-   * The near field's share of the coarsening while far-first is on.
+   * The radius the horizon may never close inside, in metres.
    *
-   * Not zero: with a hard zero the near field can never be coarsened at all, so a view
-   * that is still over budget with the whole far field already flattened has nowhere
-   * left to go and the cap simply fails. A quarter share keeps the near field moving
-   * four times slower than the horizon rather than not at all.
+   * Refinement within it is never given up by the traversal, whatever the cap says. If
+   * the near field alone will not fit, the draw-side trim takes the remainder point by
+   * point — which costs density evenly instead of deleting whole levels, and leaves the
+   * ground under the camera at the spacing the SSE slider asked for.
    */
-  nearShare: number
+  nearM: number
+  /**
+   * How far the *traversal* may overshoot the cap, as a fraction of it, because a
+   * draw-side trim will take the remainder off.
+   *
+   * Refinement can only be given up a whole step at a time — one parent stops refining
+   * and its four children leave together, up to 300k points — so on its own the
+   * traversal lands under the cap rather than on it: measured, 3,755,294 against a 4M
+   * slider and 795,053 against 1M. Letting it take the finer step and handing the excess
+   * to the trim is what closes that gap.
+   *
+   * 0 turns the overshoot off, which is the right setting whenever nothing is trimming:
+   * the cap is then kept by the traversal alone and the frame simply sits under it.
+   */
+  trimHeadroom: number
 }
 
 /**
@@ -210,6 +220,62 @@ export function easePressure(
   return Math.abs(wanted - next) <= Math.max(Math.abs(wanted), 1) * 0.005 ? wanted : next
 }
 
+/** One drawn mesh as the trim sees it. */
+export interface TrimCandidate {
+  /** Points the tile holds. */
+  full: number
+  /** View depth of its own point bounds — the order the trim takes them in. */
+  depth: number
+  /**
+   * Whether a prefix of this tile is a fair sample. False for a tile that arrived while
+   * nothing wanted a fair order: its points are still in the clustered order they were
+   * published in, so a prefix would be one corner of it. Such a tile is drawn whole.
+   */
+  fair: boolean
+}
+
+/**
+ * Decide how much of each tile to draw so the frame lands on the cap.
+ *
+ * Farthest first, each tile down to `minKeep` before the next is touched, which is what
+ * makes the loss land at the back of the view rather than being spread evenly over it.
+ *
+ * Deliberately *not* ancestors-first, and that is a measurement rather than a
+ * preference: in the published pack the two coarsest levels hold 0.158% of all points,
+ * so trimming every ancestor everywhere frees a rounding error — while under ADD
+ * refinement those same levels are the only coverage anywhere finer data has not
+ * arrived, which is most of the frame exactly when a cap starts to bite.
+ *
+ * Returns the keep fraction per candidate *in the order given*, so the caller can apply
+ * it without tracking the sort.
+ */
+export function planPointTrim(
+  candidates: readonly TrimCandidate[],
+  opts: { maxPoints: number; minKeep: number },
+): { keep: number[]; shortfall: number; total: number } {
+  const keep = new Array<number>(candidates.length).fill(1)
+  let total = 0
+  for (const candidate of candidates) total += Math.max(0, candidate.full)
+  let excess = Math.max(0, total - opts.maxPoints)
+  if (excess === 0) return { keep, shortfall: 0, total }
+
+  const order = candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => b.candidate.depth - a.candidate.depth)
+
+  const floor = Math.min(1, Math.max(0, opts.minKeep))
+  for (const { candidate, index } of order) {
+    if (excess <= 0) break
+    if (!candidate.fair || !(candidate.full > 0)) continue
+    const removable = Math.floor(candidate.full * (1 - floor))
+    const take = Math.min(removable, excess)
+    if (take <= 0) continue
+    keep[index] = (candidate.full - take) / candidate.full
+    excess -= take
+  }
+  return { keep, shortfall: excess, total }
+}
+
 export interface PointBudgetStats {
   /** Points the next traversal selects at the pressure now applied. */
   predicted: number
@@ -221,6 +287,12 @@ export interface PointBudgetStats {
   /** Points nothing here can remove — overview roots and unconditional refinements. */
   fixed: number
   reachable: boolean
+  /**
+   * How far out refinement still happens, in metres — the readable face of the applied
+   * pressure while far-first is on. Infinite when nothing is being given up, and also
+   * when the coarsening is spread evenly instead of by distance.
+   */
+  horizonM: number
   /** What the applied pressure resolves to, as error targets the HUD can print. */
   nearSse: number
   farSse: number
@@ -238,18 +310,13 @@ export interface PointBudget {
 
 const EMPTY_STATS: PointBudgetStats = {
   predicted: 0, wanted: 0, applied: 0, samples: 0, fixed: 0,
-  reachable: true, nearSse: 0, farSse: 0,
+  reachable: true, horizonM: Number.POSITIVE_INFINITY, nearSse: 0, farSse: 0,
 }
 
 /** Reused by the point estimate, which runs once per tile and never per frame. */
 const estimateBox = new THREE.Box3()
 const estimateObb = new THREE.Matrix4()
 const estimateSize = new THREE.Vector3()
-
-/** Reused by the far-first ramp, which runs once per in-view tile per traversal. */
-const weightBox = new THREE.Box3()
-const weightObb = new THREE.Matrix4()
-const weightCentre = new THREE.Vector3()
 
 export function createPointBudget(tiles: any, settings: PointBudgetSettings): PointBudget {
   const tuning = EXPERIENCE_CONFIG.lod.budget
@@ -279,30 +346,65 @@ export function createPointBudget(tiles: any, settings: PointBudgetSettings): Po
    * the cheapest measure that distinguishes a tile over there from a tile under you,
    * which is the whole job of the ramp.
    */
-  function contentDistance(tile: any, fallback: number): number {
-    const volume = tile?.engineData?.boundingVolume
-    const cameras = tiles.cameraInfo
-    if (!volume || !cameras || cameras.length === 0) return fallback
-    volume.getOBB(weightBox, weightObb)
-    weightBox.getCenter(weightCentre).applyMatrix4(weightObb)
-    let nearest = Infinity
-    for (let i = 0; i < cameras.length; i++) {
-      nearest = Math.min(nearest, weightCentre.distanceTo(cameras[i].position))
-    }
-    return Number.isFinite(nearest) ? nearest : fallback
-  }
+  /* contentDistance removed — see weightFor for why the tile's centre was the wrong
+   * number to measure the horizon against. */
 
   /**
-   * How much of the coarsening this tile takes: 0 leaves it exactly where the error
-   * target put it, 1 gives it the full share.
+   * This tile's share of the coarsening — the number that decides the ORDER refinements
+   * are given up in, because a sample leaves at `(error / target - 1) / weight`.
+   *
+   * With far-first off the weight is 1 for everyone, which is a plain uniform error
+   * target: every tile is coarsened by the same factor at once.
+   *
+   * With it on, the weight is set so that the leaving order is *exactly* distance order,
+   * farthest first. Putting the tile's own error back into the weight cancels it out of
+   * the quotient and leaves `reference / distance`, so the pressure stops being an
+   * abstract factor and becomes a **detail horizon**: at pressure p every tile beyond
+   * `reference / p` metres has given up its refinement and everything nearer is
+   * untouched. The frame really is filled outward from the camera until the cap is hit.
+   *
+   * This replaced a soft ramp — a quarter share near, full share far — and the reason is
+   * worth keeping. A soft ramp can only ever *bias* the collapse: measured at a 1M cap,
+   * it divided near errors by 1025 and far errors by 4097, a ratio of four, so it
+   * flattened the near field along with the horizon and left a frame of nothing but
+   * overview. Overview points are spread evenly in world space, so they project dense at
+   * the horizon and sparse underfoot — the exact inverse of what a point budget is for.
+   *
+   * The distance is the renderer's own `distanceFromCamera`, which is the distance to the
+   * **nearest point of the tile's bounding volume**, and that choice is the whole
+   * correctness of this feature. Refinement is a chain: reaching a d6 tile 30 m away
+   * means traversing its d0/d1/d2 ancestors first, and those are 2 km, 1 km and 500 m
+   * cells. Measured against their *centres* they read as hundreds of metres away, so a
+   * horizon at 651 m cut them — and cutting an ancestor takes its whole subtree with it,
+   * including the fine tiles directly under the camera. The frame went coarse in the
+   * foreground while the distance stayed dense, which is the opposite of the point.
+   *
+   * By the nearest face a large cell that covers the ground beneath you reads as metres
+   * away and is never cut, while a small tile genuinely out at 900 m reads as 900 m and
+   * is. The cut then lands on exactly the tiles that are wholly beyond the horizon, which
+   * is the only cut that cannot take the near field with it.
+   *
+   * A candidate (error at or under the target) keeps weight 1: it is only ever read at a
+   * negative pressure, which is `fill` reaching downward, where a horizon has no meaning.
    */
-  function weightFor(tile: any, boxDistance: number): number {
+  function weightFor(boxDistance: number, error: number, errorTarget: number): number {
     if (!settings.farFirst) return 1
-    const distance = contentDistance(tile, boxDistance)
-    if (!Number.isFinite(distance)) return 1
-    const far = Math.max(settings.farM, settings.nearM + 1)
-    const ramp = THREE.MathUtils.smoothstep(distance, settings.nearM, far)
-    return settings.nearShare + (1 - settings.nearShare) * ramp
+    // A candidate, at or under the target: only `fill` reads it, at a negative pressure,
+    // where a horizon means nothing.
+    if (!(error > errorTarget) || !(errorTarget > 0)) return 1
+    // The camera is inside this tile's volume — the renderer reports an unbounded error
+    // and a distance of zero. Never cut it: you are standing in it. Returning 0 rather
+    // than falling through also keeps `Infinity * 0` out of the arithmetic, which would
+    // otherwise reach the traversal as a NaN error, and every comparison against NaN is
+    // false — `canTraverse` would stop early-outing and walk the whole subtree.
+    if (!Number.isFinite(error) || !(boxDistance > 0)) return 0
+    return (error / errorTarget - 1) * (boxDistance / tuning.farFirstReferenceM)
+  }
+
+  /** The distance the horizon stands at for a given pressure, in metres. */
+  function horizonFor(pressure: number): number {
+    if (!settings.farFirst || !(pressure > 0)) return Number.POSITIVE_INFINITY
+    return tuning.farFirstReferenceM / pressure
   }
 
   /**
@@ -352,7 +454,7 @@ export function createPointBudget(tiles: any, settings: PointBudgetSettings): Po
   const wrapper = (tile: any, target: any): void => {
     previous(tile, target)
     if (!settings.enabled || !target.inView) return
-    const weight = weightFor(tile, target.distanceFromCamera)
+    const weight = weightFor(target.distanceFromCamera, target.error, tiles.errorTarget)
     rawError.set(tile, target.error)
     tileWeight.set(tile, weight)
     visited.push(tile)
@@ -441,13 +543,16 @@ export function createPointBudget(tiles: any, settings: PointBudgetSettings): Po
       }
 
       lastSamples = samples
+      // What the traversal is allowed to select: the cap, plus whatever a draw-side trim
+      // has undertaken to take off again. With no trim the two are the same number.
+      const selectionBudget = Math.round(settings.maxPoints * (1 + Math.max(0, settings.trimHeadroom)))
       // What the frame costs at the pressure now in force — the same arithmetic the HUD
       // reports, and the test for whether the cap is currently being kept.
       const costNow = selectedPoints(samples, errorTarget, pressure, fixed)
-      const overBudget = costNow > settings.maxPoints
+      const overBudget = costNow > selectionBudget
       const solution = solvePressure(samples, {
         errorTarget,
-        budget: settings.maxPoints,
+        budget: selectionBudget,
         fixedPoints: fixed,
         /**
          * While the frame is over the cap, the pressure may only rise.
@@ -462,7 +567,13 @@ export function createPointBudget(tiles: any, settings: PointBudgetSettings): Po
          * next traversal measures rather than something this one guesses.
          */
         minPressure: overBudget ? pressure : (settings.mode === 'fill' ? tuning.minPressure : 0),
-        maxPressure: tuning.maxPressure,
+        // Far-first stops at the pressure whose horizon stands on the protected radius:
+        // past that the traversal would start taking detail from under the camera, which
+        // is the one thing it is not allowed to do. What it cannot shed there, the trim
+        // takes as points, and `reachable` says so.
+        maxPressure: settings.farFirst && settings.nearM > 0
+          ? tuning.farFirstReferenceM / settings.nearM
+          : tuning.maxPressure,
       })
       // A deadband on the release only. Tightening always happens, because that is the
       // promise the slider makes; loosening waits until the solver has asked for a
@@ -481,7 +592,8 @@ export function createPointBudget(tiles: any, settings: PointBudgetSettings): Po
         samples: samples.length,
         fixed,
         reachable: solution.reachable,
-        nearSse: errorTarget * (1 + pressure * (settings.farFirst ? settings.nearShare : 1)),
+        horizonM: horizonFor(pressure),
+        nearSse: errorTarget,
         farSse: errorTarget * (1 + pressure),
       }
       return lastStats

@@ -3,9 +3,11 @@ import test from 'node:test'
 import {
   dropoutPressure,
   easePressure,
+  planPointTrim,
   selectedPoints,
   solvePressure,
   type BudgetSample,
+  type TrimCandidate,
 } from './point-budget.ts'
 
 const TARGET = 4
@@ -53,16 +55,16 @@ test('a frame already under budget is left alone', () => {
   assert.ok(solution.reachable)
 })
 
-test('far-first spends the far field before the near field', () => {
-  // Same error, so nothing but the distance ramp separates them: the far tile carries a
-  // full share and the near one a quarter, exactly as weightFor hands them out.
-  const near: BudgetSample = { error: 16, weight: 0.25, points: 1_000_000 }
-  const far: BudgetSample = { error: 16, weight: 1, points: 1_000_000 }
-  const solution = solvePressure([near, far], { errorTarget: TARGET, budget: 1_000_000 })
-  assert.ok(dropoutPressure(far, TARGET) < dropoutPressure(near, TARGET))
-  assert.equal(selectedPoints([near, far], TARGET, solution.pressure), 1_000_000)
-  // The survivor is the near one.
-  assert.ok(dropoutPressure(near, TARGET) > solution.pressure)
+test('spread evenly, the least refined tile is the first to go', () => {
+  // Far-first off: every tile carries weight 1, so the order is error order and the tile
+  // with the least slack over the target leaves first, wherever it happens to be. This is
+  // the plain uniform error target, kept as the A/B against the horizon.
+  const sharp: BudgetSample = { error: 64, weight: 1, points: 1_000_000 }
+  const soft: BudgetSample = { error: 8, weight: 1, points: 1_000_000 }
+  const solution = solvePressure([sharp, soft], { errorTarget: TARGET, budget: 1_000_000 })
+  assert.ok(dropoutPressure(soft, TARGET) < dropoutPressure(sharp, TARGET))
+  assert.equal(selectedPoints([sharp, soft], TARGET, solution.pressure), 1_000_000)
+  assert.ok(dropoutPressure(sharp, TARGET) > solution.pressure, 'the sharper tile survives')
 })
 
 test('points no multiplier can remove are reported rather than chased', () => {
@@ -140,4 +142,108 @@ test('the ease tightens faster than it releases', () => {
   assert.ok(down > 0.8, `expected a slow release, got ${down}`)
   // No time, no movement — a stalled frame must not snap the pressure to its target.
   assert.equal(easePressure(0.4, 1, 0, 120, 600), 0.4)
+})
+
+// ── the draw-side trim ──────────────────────────────────────────────────────────
+
+/** Four tiles of 100k, at 100 m, 400 m, 900 m and 1600 m. */
+const tiles: TrimCandidate[] = [
+  { full: 100_000, depth: 100, fair: true },
+  { full: 100_000, depth: 400, fair: true },
+  { full: 100_000, depth: 900, fair: true },
+  { full: 100_000, depth: 1600, fair: true },
+]
+
+test('a frame already under the cap is left whole', () => {
+  const plan = planPointTrim(tiles, { maxPoints: 500_000, minKeep: 1 / 64 })
+  assert.deepEqual(plan.keep, [1, 1, 1, 1])
+  assert.equal(plan.shortfall, 0)
+  assert.equal(plan.total, 400_000)
+})
+
+test('the trim takes from the back of the view first', () => {
+  // 100k over the cap. The 1600 m tile pays first and goes all the way to its floor —
+  // which is 1/64, so it can only give up 98,437 of its 100,000 — and the 1,563 it
+  // cannot cover spills to the next one back. The two nearest are never touched.
+  const plan = planPointTrim(tiles, { maxPoints: 300_000, minKeep: 1 / 64 })
+  assert.deepEqual(plan.keep.slice(0, 2), [1, 1], 'the near field is left alone')
+  assert.ok(Math.abs(plan.keep[3] - 1_563 / 100_000) < 1e-9, 'the farthest is at its floor')
+  assert.ok(plan.keep[2] > 0.98 && plan.keep[2] < 1, 'and the spill is small')
+  const drawn = tiles.reduce((sum, t, i) => sum + Math.round(t.full * plan.keep[i]), 0)
+  assert.equal(drawn, 300_000)
+  assert.equal(plan.shortfall, 0)
+})
+
+test('it empties one tile to its floor before starting on the next', () => {
+  const plan = planPointTrim(tiles, { maxPoints: 250_000, minKeep: 0.1 })
+  // The farthest is at its floor, the next one is part-way, the near two are whole.
+  assert.ok(Math.abs(plan.keep[3] - 0.1) < 1e-9)
+  assert.ok(plan.keep[2] > 0.1 && plan.keep[2] < 1)
+  assert.deepEqual(plan.keep.slice(0, 2), [1, 1])
+  const drawn = tiles.reduce((sum, t, i) => sum + Math.round(t.full * plan.keep[i]), 0)
+  assert.equal(drawn, 250_000)
+})
+
+test('the floor is respected and what it costs is reported, not hidden', () => {
+  // Every tile at a 10% floor leaves 40k drawn against a 20k cap — 20k it cannot take.
+  const plan = planPointTrim(tiles, { maxPoints: 20_000, minKeep: 0.1 })
+  for (const keep of plan.keep) assert.ok(Math.abs(keep - 0.1) < 1e-9)
+  assert.equal(plan.shortfall, 20_000)
+})
+
+test('a tile whose order is not fair is drawn whole and skipped', () => {
+  const mixed: TrimCandidate[] = [
+    { full: 100_000, depth: 1600, fair: false },
+    { full: 100_000, depth: 100, fair: true },
+  ]
+  const plan = planPointTrim(mixed, { maxPoints: 150_000, minKeep: 1 / 64 })
+  assert.equal(plan.keep[0], 1, 'the unfair tile keeps every point')
+  assert.ok(plan.keep[1] < 1, 'so the near tile pays instead')
+  assert.equal(plan.shortfall, 0)
+})
+
+// ── far-first as a closing horizon ──────────────────────────────────────────────
+
+/**
+ * The weight far-first hands a refining tile. Mirrors `weightFor` in the module: the
+ * tile's own error is put back into the weight so it cancels out of the dropout
+ * quotient, leaving `reference / distance` — an order that is exactly distance order.
+ */
+const horizonWeight = (error: number, target: number, distanceM: number, referenceM = 1000) =>
+  (error / target - 1) * (Math.max(distanceM, 1) / referenceM)
+
+test('far-first drops refinements strictly from the back of the view', () => {
+  // Wildly different errors, so error ordering and distance ordering disagree: the near
+  // tile is the one screaming for detail, and it must still be the last to lose it.
+  const near = { error: 2000, weight: horizonWeight(2000, TARGET, 50), points: 1 }
+  const mid = { error: 40, weight: horizonWeight(40, TARGET, 500), points: 1 }
+  const far = { error: 9, weight: horizonWeight(9, TARGET, 3000), points: 1 }
+  const order = [near, mid, far].map((s) => dropoutPressure(s, TARGET))
+  assert.ok(order[2] < order[1] && order[1] < order[0], `expected far→near, got ${order}`)
+})
+
+test('the pressure is a horizon distance, and a tile leaves when it reaches it', () => {
+  // A tile at 250 m must give up its refinement exactly when the horizon closes to 250 m,
+  // whatever its error is — that is what makes the number on the HUD mean something.
+  for (const error of [8, 50, 400]) {
+    const at = dropoutPressure({ error, weight: horizonWeight(error, TARGET, 250), points: 1 }, TARGET)
+    assert.ok(Math.abs(1000 / at - 250) < 1e-6, `error ${error} left at a horizon of ${1000 / at} m`)
+  }
+})
+
+test('the protected radius is what stops a tight cap flattening the near field', () => {
+  // The ceiling the solver is given: the pressure whose horizon stands on nearM. Past it
+  // the traversal would start taking detail from under the camera.
+  const nearM = 60
+  const maxPressure = 1000 / nearM
+  const inside = { error: 500, weight: horizonWeight(500, TARGET, 40), points: 4_000_000 }
+  const outside = { error: 20, weight: horizonWeight(20, TARGET, 900), points: 4_000_000 }
+  const solution = solvePressure([inside, outside], {
+    errorTarget: TARGET, budget: 1_000_000, maxPressure,
+  })
+  assert.equal(solution.reachable, false, 'it cannot fit, and says so')
+  // The far one is gone, the near one is untouched — the trim takes it from here.
+  assert.ok(dropoutPressure(outside, TARGET) <= solution.pressure)
+  assert.ok(dropoutPressure(inside, TARGET) > solution.pressure)
+  assert.equal(selectedPoints([inside, outside], TARGET, solution.pressure), 4_000_000)
 })
