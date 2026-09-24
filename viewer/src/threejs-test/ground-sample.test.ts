@@ -4,7 +4,7 @@ import * as THREE from 'three'
 
 import { EXPERIENCE_CONFIG } from './config.ts'
 import { applyDotShapeToGeometry, buildPulledGeometry, initDotState, isDotMesh } from './dot-geometry.ts'
-import { sampleGroundHeights, type GroundSampleSettings } from './ground-sample.ts'
+import { sampleGroundHeights, selectKth, type GroundSample, type GroundSampleSettings } from './ground-sample.ts'
 import {
   adoptPointData, computeCarrierBounds, packPointsForPulling, pointDataForCarrier,
   PREFIX_SAMPLE_ROUNDS, reorderForPrefixSampling, restoreCarrierArrays,
@@ -71,6 +71,17 @@ function previousProbe(
     canopyZ: at(settings.probeCanopyPercentile),
     samples: heights.length,
     support: occupied,
+  }
+}
+
+/**
+ * Same answer, field by field. `===` rather than Object.is: selecting the percentiles
+ * instead of sorting may hand back -0 where the sort had +0, which no reader can tell apart.
+ */
+function sameSample(got: GroundSample | null, want: GroundSample | null, message: string) {
+  if (want === null || got === null) { assert.equal(got, want, message); return }
+  for (const key of ['groundZ', 'canopyZ', 'samples', 'support'] as const) {
+    assert.ok(got[key] === want[key], `${message}: ${key} ${got[key]} vs ${want[key]}`)
   }
 }
 
@@ -210,7 +221,7 @@ for (const build of BUILDS) {
         for (const radius of [20, 60, 120, 180]) {
           const want = previousProbe(scenes, centre, radius, enuInverse, SETTINGS)
           const got = sampleGroundHeights(scenes, centre, radius, enuInverse, SETTINGS)
-          assert.deepStrictEqual(got, want, `${label} at (${cx}, ${cy}) r ${radius}`)
+          sameSample(got, want, `${label} at (${cx}, ${cy}) r ${radius}`)
           if (want) answered++
           else nulls++
         }
@@ -227,7 +238,7 @@ test('a corner carrier just inside the reach is sampled, and gets the old single
   const centre = new THREE.Vector2(0, 0)
   const open = { ...SETTINGS, probeMinSamples: 1 }
   const got = sampleGroundHeights(scenes, centre, 20, enuInverse, open)
-  assert.deepStrictEqual(got, previousProbe(scenes, centre, 20, enuInverse, open))
+  sameSample(got, previousProbe(scenes, centre, 20, enuInverse, open), 'corner pair')
   // Only the inner arc reaches the corner; the old reject turned both away, so each
   // sampled point came from the dot mesh alone — one copy.
   const inner = sampleGroundHeights(scenes.slice(0, 1), centre, 20, enuInverse, open)
@@ -235,4 +246,35 @@ test('a corner carrier just inside the reach is sampled, and gets the old single
   assert.ok(inner && inner.samples > 0, 'the inner arc has points in the corner')
   assert.equal(outer, null, 'the outer arc has none')
   assert.equal(got!.samples, inner!.samples)
+})
+
+test('selection finds what a sort would put at each rank', () => {
+  const cases: [string, number[]][] = [
+    ['random', Array.from({ length: 5000 }, () => random() * 100 - 50)],
+    ['sorted', Array.from({ length: 3000 }, (_, i) => i * 0.25)],
+    ['reversed', Array.from({ length: 3000 }, (_, i) => -i * 0.25)],
+    ['all equal', Array.from({ length: 2000 }, () => 7.5)],
+    ['few values', Array.from({ length: 4000 }, () => Math.floor(random() * 4))],
+    ['pairs', Array.from({ length: 4000 }, (_, i) => Math.floor(i / 2) % 97)],
+    ['signed zeros', Array.from({ length: 600 }, (_, i) => (i % 3 === 0 ? -0 : i % 3 === 1 ? 0 : 1))],
+    ['one', [3.25]],
+    ['two', [9, -9]],
+  ]
+  for (const [label, values] of cases) {
+    const sorted = Float64Array.from(values).sort()
+    const n = values.length
+    for (const k of new Set([0, 1, Math.floor(n * 0.02), Math.floor(n / 2), Math.floor(n * 0.95), n - 2, n - 1])) {
+      if (k < 0 || k >= n) continue
+      const a = Float64Array.from(values)
+      const value = selectKth(a, 0, n - 1, k)
+      assert.ok(value === sorted[k], `${label} rank ${k}: ${value} vs ${sorted[k]}`)
+      // Partitioned around k, so a second, higher rank can be looked for above it.
+      for (let i = 0; i < k; i++) assert.ok(a[i] <= value, `${label} rank ${k}: a[${i}] above`)
+      for (let i = k + 1; i < n; i++) assert.ok(a[i] >= value, `${label} rank ${k}: a[${i}] below`)
+      if (k + 1 < n) {
+        const high = Math.floor((k + 1 + n - 1) / 2)
+        assert.ok(selectKth(a, k + 1, n - 1, high) === sorted[high], `${label} ${k} then ${high}`)
+      }
+    }
+  }
 })

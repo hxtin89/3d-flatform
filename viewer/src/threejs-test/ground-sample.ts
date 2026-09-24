@@ -26,9 +26,60 @@ export interface GroundSampleSettings {
   probeCanopyPercentile: number
 }
 
-// Reused so a per-frame sample allocates nothing but its height list.
+// Reused so a probe allocates nothing. The heights only ever grow, by doubling; a wide
+// probe at a tilt peaks near half a million, 4 MB.
 const local = new THREE.Matrix4()
 const point = new THREE.Vector3()
+let heights = new Float64Array(1 << 14)
+let count = 0
+
+function pushHeight(z: number): void {
+  if (count === heights.length) {
+    const grown = new Float64Array(count * 2)
+    grown.set(heights)
+    heights = grown
+  }
+  heights[count++] = z
+}
+
+function swap(a: Float64Array, i: number, j: number): void {
+  const t = a[i]; a[i] = a[j]; a[j] = t
+}
+
+/**
+ * The value an ascending sort would put at `k`, found by partitioning `a[lo..hi]` in
+ * place rather than sorting it: the probe wants two order statistics out of up to half a
+ * million heights, and sorting them all was most of a wide probe's cost.
+ *
+ * Hoare partitioning around a median of three, which keeps sorted, reversed and all-equal
+ * input linear. On return `a[lo..k-1] <= a[k] <= a[k+1..hi]`, which is what lets a second
+ * call look for a larger rank in `a[k+1..hi]` alone. A pass budget caps the worst case: past
+ * it the rest of the range goes to the native sort. Finite values only, as the sort was.
+ */
+export function selectKth(a: Float64Array, lo: number, hi: number, k: number): number {
+  let passes = 2 * Math.ceil(Math.log2(hi - lo + 2)) + 16
+  while (hi > lo) {
+    if (--passes < 0) {
+      a.subarray(lo, hi + 1).sort()
+      return a[k]
+    }
+    const mid = (lo + hi) >>> 1
+    if (a[mid] < a[lo]) swap(a, mid, lo)
+    if (a[hi] < a[lo]) swap(a, hi, lo)
+    if (a[hi] < a[mid]) swap(a, hi, mid)
+    const pivot = a[mid]
+    let i = lo, j = hi
+    while (i <= j) {
+      while (a[i] < pivot) i++
+      while (a[j] > pivot) j--
+      if (i <= j) { swap(a, i, j); i++; j-- }
+    }
+    if (k <= j) hi = j
+    else if (k >= i) lo = i
+    else return a[k]
+  }
+  return a[k]
+}
 
 /**
  * Sample the points of `tileScenes` inside the square of half-side `radiusM` around
@@ -39,11 +90,11 @@ const point = new THREE.Vector3()
  * the carrier's position array, the pulled one reads it off the carrier — so the probe
  * used to walk every point twice, once per object. The dot mesh was also walked with no
  * bound at all, whatever its distance, which made a small probe as dear as a big one.
- * Measured in node on three ancestors plus 36 leaves of 75k points: 7.6 → 2.0 ms at
- * r 20 and 16 → 10 ms at r 60. At r 180 the sort of the heights is most of the cost.
+ * The two percentiles are then selected rather than sorted for (selectKth). Measured in
+ * node on three ancestors plus 36 leaves of 75k points, before → after: 11.7 → 1.9 ms at
+ * r 20, 19.7 → 3.5 ms at r 60, 141 → 9.9 ms at r 180.
  *
- * The result is bit-identical to the old walk, which the node test checks against a
- * verbatim copy of it. So each in-footprint point is still pushed with the weight the two
+ * The result is the old walk's, which the node test checks against a verbatim copy of it. So each in-footprint point is still pushed with the weight the two
  * objects gave it: twice for a carrier the old disc reject let through (its own walk plus
  * its dot mesh's), once for one it turned away (the dot mesh's alone), and the 400-sample
  * minimum keeps its meaning. The walk itself reaches r√2 + R rather than r + R, because
@@ -58,7 +109,7 @@ export function sampleGroundHeights(
   enuInverse: THREE.Matrix4,
   settings: GroundSampleSettings,
 ): GroundSample | null {
-  const heights: number[] = []
+  count = 0
   // 5×5 support grid: a candidate height backed by one corner of the
   // footprint is noise, not ground.
   const support = new Uint8Array(25)
@@ -95,8 +146,8 @@ export function sampleGroundHeights(
       const dx = point.x - centreEnu.x
       const dy = point.y - centreEnu.y
       if (Math.abs(dx) > radiusM || Math.abs(dy) > radiusM) continue
-      heights.push(point.z)
-      if (copies === 2) heights.push(point.z)
+      pushHeight(point.z)
+      if (copies === 2) pushHeight(point.z)
       const column = Math.min(4, Math.max(0, Math.floor(((dx / radiusM) + 1) * 2.5)))
       const row = Math.min(4, Math.max(0, Math.floor(((dy / radiusM) + 1) * 2.5)))
       support[row * 5 + column] = 1
@@ -104,16 +155,21 @@ export function sampleGroundHeights(
   }
   for (const scene of tileScenes) scene?.traverse(visit)
 
-  if (heights.length < settings.probeMinSamples) return null
-  heights.sort((a, b) => a - b)
-  const at = (fraction: number): number =>
-    heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
+  if (count === 0 || count < settings.probeMinSamples) return null
+  // The same ranks the sort was read at, the lower one selected first so the higher one
+  // is looked for only above it.
+  const rank = (fraction: number): number => Math.min(count - 1, Math.max(0, Math.floor(count * fraction)))
+  const groundRank = rank(settings.probeGroundPercentile)
+  const canopyRank = rank(settings.probeCanopyPercentile)
+  const low = Math.min(groundRank, canopyRank), high = Math.max(groundRank, canopyRank)
+  const lowZ = selectKth(heights, 0, count - 1, low)
+  const highZ = high === low ? lowZ : selectKth(heights, low + 1, count - 1, high)
   let occupied = 0
   for (const cell of support) occupied += cell
   return {
-    groundZ: at(settings.probeGroundPercentile),
-    canopyZ: at(settings.probeCanopyPercentile),
-    samples: heights.length,
+    groundZ: groundRank <= canopyRank ? lowZ : highZ,
+    canopyZ: groundRank <= canopyRank ? highZ : lowZ,
+    samples: count,
     support: occupied,
   }
 }
