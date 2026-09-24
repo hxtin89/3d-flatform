@@ -59,6 +59,16 @@ export const DENSITY_LEVEL_COLORS: readonly number[] = [
   0xf59e0b, 0xf97316, 0xef4444, 0xec4899, 0xf9a8d4, 0xf8fafc,
 ]
 
+/**
+ * The error view's five headroom bands, in the order of its cascade: < 0.4, 0.4–0.7,
+ * 0.7–1, 1–2 and ≥ 2 times the live target. sRGB hex like the level ramp, for the same
+ * reason: the panel key paints its swatches from this array, and the material decodes
+ * the same values through THREE.Color, so swatch and points cannot drift apart.
+ */
+export const ERROR_BAND_COLORS: readonly number[] = [
+  0x1e3a8a, 0x3b82f6, 0x22c55e, 0xf59e0b, 0xdc2626,
+]
+
 /** Only three One-LOD tiers exist, so they are spread across the ramp instead of
  *  taking its first three near-identical blues. */
 const ONE_LOD_RAMP_INDEX = [0, 5, 9]

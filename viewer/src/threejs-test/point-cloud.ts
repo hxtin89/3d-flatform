@@ -12,6 +12,7 @@ import {
   sRGBTransferEOTF,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
+import { ERROR_BAND_COLORS } from './density-band'
 import {
   dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
 } from './dot-geometry'
@@ -1207,14 +1208,22 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
      * A leaf is called out in white instead. It carries `geometricError: 0` and so
      * reports error 0, which on any ramp would read as "far finer than needed" when
      * what it means is "nothing left to give" — a step the target can never move.
+     *
+     * The colours are the panel key's sRGB hexes decoded to linear by THREE.Color. They
+     * used to be those bytes over 255 typed in as linear, which drew every band far
+     * lighter than the swatch explaining it.
      */
     const ratio = debugTile.z
+    const [finer, inHand, onTarget, asking, behind] = ERROR_BAND_COLORS.map((hex) => {
+      const linear = new THREE.Color(hex)
+      return vec3(linear.r, linear.g, linear.b)
+    })
     const band = mix(mix(mix(mix(
-      vec3(0.118, 0.227, 0.541),                       // < 0.4  far finer than asked
-      vec3(0.231, 0.510, 0.965), step(0.4, ratio)),    // 0.4–0.7  a level in hand
-      vec3(0.133, 0.773, 0.369), step(0.7, ratio)),    // 0.7–1    sitting on the target
-      vec3(0.961, 0.620, 0.043), step(1.0, ratio)),    // 1–2      over it, still asking
-      vec3(0.863, 0.149, 0.149), step(2.0, ratio))     // >= 2     two levels behind
+      finer,                        // < 0.4  far finer than asked
+      inHand, step(0.4, ratio)),    // 0.4–0.7  a level in hand
+      onTarget, step(0.7, ratio)),  // 0.7–1    sitting on the target
+      asking, step(1.0, ratio)),    // 1–2      over it, still asking
+      behind, step(2.0, ratio))     // >= 2     two levels behind
 
     // A leaf is white here; the level view keeps its own palette.
     const errorColor = mix(band, vec3(1), debugTile.y)

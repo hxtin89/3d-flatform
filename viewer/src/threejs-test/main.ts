@@ -23,7 +23,7 @@ import {
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
-import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
+import { densityBandForUri, densityLevelColor, ERROR_BAND_COLORS, shortBandLabel } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
@@ -3284,6 +3284,11 @@ const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
+// The band key's swatches come from the palette the material decodes, not from hexes
+// typed into the markup a second time.
+for (const swatch of document.querySelectorAll<HTMLElement>('#debugErrorKey [data-error-band]')) {
+  swatch.style.background = `#${ERROR_BAND_COLORS[Number(swatch.dataset.errorBand)].toString(16).padStart(6, '0')}`
+}
 /**
  * The isolate cut has to be emitted or not emitted, never merely skipped: it discards,
  * and a discard in the source denies the whole material the early depth test even at
@@ -3297,7 +3302,7 @@ const syncDebugIsolateEffect = () => {
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
   debugViewRowsEl.hidden = mode === 0
-  // The band key is static markup, so it only has to be revealed for the mode it
+  // The band key never changes, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
   syncDebugIsolateEffect()

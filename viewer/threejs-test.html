@@ -1053,11 +1053,11 @@
         <div class="row" id="debugErrorKeyRow" hidden>
           <label class="h">Error bands</label>
           <div class="legend" id="debugErrorKey">
-            <span><i style="background:#1e3a8a"></i>&lt; 0.4× far finer</span>
-            <span><i style="background:#3b82f6"></i>0.4–0.7× a level in hand</span>
-            <span><i style="background:#22c55e"></i>0.7–1× on target</span>
-            <span><i style="background:#f59e0b"></i>1–2× still asking</span>
-            <span><i style="background:#dc2626"></i>≥ 2× two levels behind</span>
+            <span><i data-error-band="0"></i>&lt; 0.4× far finer</span>
+            <span><i data-error-band="1"></i>0.4–0.7× a level in hand</span>
+            <span><i data-error-band="2"></i>0.7–1× on target</span>
+            <span><i data-error-band="3"></i>1–2× still asking</span>
+            <span><i data-error-band="4"></i>≥ 2× two levels behind</span>
             <span><i style="background:#ffffff"></i>leaf · cannot refine</span>
           </div>
           <span class="weather-note">Flat bands rather than a gradient: a settled frame puts almost every tile under 1×, so a continuous ramp squeezed them all into one indistinguishable blue-green. A tile over 1× is either still streaming or has run out of children</span>
