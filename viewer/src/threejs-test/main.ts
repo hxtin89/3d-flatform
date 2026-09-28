@@ -3280,8 +3280,10 @@ function bindSeg(id: string, key: string, apply: (value: number) => void): void 
 }
 
 // ---- level & error inspector. Switching it on or off rebuilds the tile shaders once —
-// its palette and isolate cut are only compiled in while it is on — and every control
-// inside it is a uniform write. Mode 0 is the untouched render; see CloudUniforms.debugMode.
+// its palette and isolate cut are only compiled in while it is on — and so does moving
+// Isolate to or from All, because the cut (a discard) is only emitted while it isolates.
+// Terminal <-> One level and the two sliders are uniform writes. Mode 0 is the untouched
+// render; see CloudUniforms.debugMode.
 const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')

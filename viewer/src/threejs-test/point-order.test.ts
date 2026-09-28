@@ -366,14 +366,20 @@ test('edge values: signed zeros, one repeated point, NaN', () => {
       carrier.setAttribute('position', attribute)
       computeCarrierBounds(carrier)
       sameBounds(carrierBounds(carrier), want, `${label} standalone`)
-      if (attribute.count > 2) {
-        const reordered = newPointBounds()
-        reorderForPrefixSampling(attribute, undefined, reordered)
-        sameBounds(reordered, want, `${label} reorder`)
+      // Every colour layout: each has its own copy of the min / max tracking.
+      for (const items of [3, 4, 0]) {
+        const colour = items
+          ? new THREE.BufferAttribute(new Uint8Array(attribute.count * items), items, true)
+          : undefined
+        if (attribute.count > 2) {
+          const reordered = newPointBounds()
+          assert.ok(reorderForPrefixSampling(attribute, colour, reordered), `${label} colour ${items} reorder`)
+          sameBounds(reordered, want, `${label} colour ${items} reorder`)
+        }
+        const packed = newPointBounds()
+        assert.ok(packPointsForPulling(attribute, colour, PREFIX_SAMPLE_ROUNDS, packed), `${label} colour ${items} pack`)
+        sameBounds(packed, want, `${label} colour ${items} pack`)
       }
-      const packed = newPointBounds()
-      packPointsForPulling(attribute, undefined, PREFIX_SAMPLE_ROUNDS, packed)
-      sameBounds(packed, want, `${label} pack`)
     }
   } finally {
     console.error = quiet

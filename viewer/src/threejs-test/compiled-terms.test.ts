@@ -1,8 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
-import { EXPERIENCE_CONFIG } from './config.ts'
-import { compiledTermsAtBoot, compiledTermsWanted, type CompiledTerm } from './compiled-terms.ts'
+import {
+  BOOT_FEATURE_STATE, compiledTermsAtBoot, compiledTermsWanted, type CompiledTerm,
+} from './compiled-terms.ts'
 
 const OFF = { maskMode: 0, foveation: false, debugMode: 0, debugIsolate: 1 }
 
@@ -38,14 +40,22 @@ test('a forced term stays in with its feature off, and only that one', () => {
   }
 })
 
-test('the boot flags are what the configured session asks for, so boot rebuilds nothing', () => {
-  assert.deepEqual(compiledTermsAtBoot(), compiledTermsWanted({
-    maskMode: EXPERIENCE_CONFIG.design.maskMode,
-    foveation: EXPERIENCE_CONFIG.lod.foveation.enabled,
-    debugMode: 0,
-    debugIsolate: 1,
-  }))
-  // Shipped config: vignette and foveation off, so the boot shader has none of the three.
+test('the inspector boots in the state the panel markup starts it in, so boot rebuilds nothing', () => {
+  // main.ts's bindSeg writes the uniform from the button marked `on` while the module
+  // loads, then syncs the shader terms. Those buttons must match BOOT_FEATURE_STATE, or
+  // the first sync rebuilds every tile shader the loader has already built.
+  const html = readFileSync(new URL('../../threejs-test.html', import.meta.url), 'utf8')
+  const onValue = (seg: string, attribute: string): number => {
+    const block = new RegExp(String.raw`id="${seg}"[\s\S]*?</div>`).exec(html)?.[0] ?? ''
+    return Number(new RegExp(String.raw`data-${attribute}="(\d+)" class="on"`).exec(block)?.[1])
+  }
+  assert.equal(onValue('debugModeSeg', 'debug-mode'), BOOT_FEATURE_STATE.debugMode)
+  assert.equal(onValue('debugIsolateSeg', 'debug-isolate'), BOOT_FEATURE_STATE.debugIsolate)
+})
+
+test('shipped config: vignette and foveation off, so the boot shader has none of the optional terms', () => {
+  // A pin on today's config, not on a rule: turning the vignette or foveation on by
+  // default is fine, and means updating this.
   assert.deepEqual(compiledTermsAtBoot(), {
     vignette: false, foveaBend: false, debugPalette: false, debugIsolate: false,
   })

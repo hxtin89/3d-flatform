@@ -48,12 +48,19 @@ export function compiledTermsWanted(
   }
 }
 
-/** The terms the first tile is built with, so booting in the configured state rebuilds nothing. */
+/**
+ * The feature state a session starts in: the configured mask mode and foveation, and the
+ * inspector as the panel's markup starts it (Off, isolate Terminal) — the buttons marked
+ * `on` that main.ts's bindSeg reads at load.
+ */
+export const BOOT_FEATURE_STATE: ShaderFeatureState = {
+  maskMode: EXPERIENCE_CONFIG.design.maskMode,
+  foveation: EXPERIENCE_CONFIG.lod.foveation.enabled,
+  debugMode: 0,
+  debugIsolate: 1,
+}
+
+/** The terms the first tile is built with, so booting in that state rebuilds nothing. */
 export function compiledTermsAtBoot(): CompiledTermFlags {
-  return compiledTermsWanted({
-    maskMode: EXPERIENCE_CONFIG.design.maskMode,
-    foveation: EXPERIENCE_CONFIG.lod.foveation.enabled,
-    debugMode: 0,
-    debugIsolate: 1,
-  })
+  return compiledTermsWanted(BOOT_FEATURE_STATE)
 }
