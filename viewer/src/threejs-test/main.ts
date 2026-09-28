@@ -8,6 +8,8 @@ import {
   setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
 import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
+import { pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
+import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -236,6 +238,9 @@ function showLoaderReadyIfComplete(): void {
   loaderEl.setAttribute('aria-busy', 'false')
   loaderActionsEl.hidden = false
   loaderStartEl.focus({ preventScroll: true })
+  // While the visitor reads the ready screen: the rotation pivot's first pick would
+  // otherwise pay for its own compilation on the first press. See warmUpPick.
+  warmUpPick(dotSizeRule())
 }
 
 function tickLoaderProgress(now: number): void {
@@ -1511,7 +1516,10 @@ function updatePivotMarker(): void {
   pivotMarker.scale.setScalar(perPixel * PIVOT_MARKER_PX * 0.5)
   if (pivotMarkerMaterial) {
     pivotMarkerMaterial.color.copy(
-      pivotDebug.reason === 'corrected' ? pivotMarkerCorrected : pivotMarkerFallback,
+      // Green for an answer about what is on screen: a dot, the ground through a gap, or
+      // the old lift; amber when it fell back to the bare map hit for want of anything else.
+      pivotDebug.reason === 'corrected' || pivotDebug.reason === 'picked' || pivotDebug.reason === 'ground'
+        ? pivotMarkerCorrected : pivotMarkerFallback,
     )
   }
 }
@@ -1559,6 +1567,10 @@ interface PivotDebug {
   pivotRoseM?: number
   /** Camera height over the lifted pivot — small means turning almost in place. */
   camAbovePivotM?: number
+  /** The pick: how long it took, and how much of the cloud it had to look at. */
+  pickMs?: number
+  pickTiles?: number
+  pickPoints?: number
 }
 let pivotDebug: PivotDebug = { reason: null, passes: [] }
 
@@ -1853,6 +1865,24 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   if (!pivotOnCanopy) { debug.reason = 'toggle off'; return false }
   if (!stream) { debug.reason = 'no stream'; return false }
   if (!enuFrameReady) { debug.reason = 'enu frame not ready'; return false }
+  // The dot the cursor is actually on. When the cloud is drawn and the ray meets none of
+  // its dots, the cursor is on the ground showing through a gap, and the map hit the
+  // controls found is exactly that — lifting it onto a canopy plane there put the pivot
+  // 65-74 m in front of the ground on screen. The lift is left for when there is no drawn
+  // cloud to pick from at all.
+  const picked = pickPivot(pivotWorld, target, debug)
+  if (picked === 'hit') return true
+  if (picked === 'miss') { debug.reason = 'ground'; return false }
+  return liftToCanopy(pivotWorld, target, debug)
+}
+
+/**
+ * The fallback: lift the map hit up the ray to the canopy height sampled around it — a
+ * 95th-percentile height over a 40 m square, widening where the points are thin. It is
+ * not the dot under the cursor, only a plane through the canopy near it.
+ */
+function liftToCanopy(pivotWorld: THREE.Vector3, target: THREE.Vector3, debug: PivotDebug): boolean {
+  if (!stream) { debug.reason = 'no stream'; return false }
   worldToEnu(camera.position, pivotCamEnu)
   worldToEnu(pivotWorld, pivotEnu)
   pivotDirEnu.copy(pivotEnu).sub(pivotCamEnu)
@@ -1920,6 +1950,86 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   debug.pivotRoseM = +(pivotStepEnu.z - pivotEnu.z).toFixed(2)
   debug.camAbovePivotM = +(pivotCamEnu.z - pivotStepEnu.z).toFixed(2)
   return true
+}
+
+const pickTiles: PickTile[] = []
+const pickRayDir = new THREE.Vector3()
+const pickCursor = new THREE.Vector3()
+const pickDome: PickDome = {
+  centreEnu: uniforms.sphereFadeCentre.value, radius: 1e9, rampInset: 0, fadeIn: 1, fadeOut: 1,
+  upWorld: uniforms.sphereFadeUpWorld.value, enuInverse: uniforms.enuInverse.value,
+}
+
+/**
+ * Put the pivot on the first drawn dot along the cursor ray — see cloud-pick.ts.
+ *
+ * The ray is the one the controls cast: camera through their hit on the map, which lies on
+ * it. Nothing behind that hit is on screen, since the map occludes it, so the pick stops
+ * there (plus a little, for ground points that sit a hair under the drape).
+ *
+ * The dots are sized by the same rule as the shader (dot-size.ts, from the live uniforms),
+ * at each dot's own depth, and the dome's melt and shrink come from the very uniforms the
+ * shader reads. So the pivot lands on the dot that is drawn under the cursor, not on a
+ * height statistic of the ground around it.
+ *
+ * `miss` means the cloud is drawn but no dot is under the cursor — the ground shows
+ * through there — and `unavailable` that there is no drawn cloud to pick from.
+ */
+function pickPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3, debug: PivotDebug): 'hit' | 'miss' | 'unavailable' {
+  if (!stream || !stream.group.visible) return 'unavailable'
+  pickRayDir.copy(pivotWorld).sub(camera.position)
+  const hitDistance = pickRayDir.length()
+  if (!(hitDistance > 1e-3)) return 'unavailable'
+  pickRayDir.divideScalar(hitDistance)
+
+  const started = performance.now()
+  camera.updateMatrixWorld()
+  pickCursor.copy(pivotWorld).project(camera)
+  const element = renderer.domElement
+  const screen: PickScreen = {
+    worldToView: camera.matrixWorldInverse, projection: camera.projectionMatrix,
+    cursorX: pickCursor.x, cursorY: pickCursor.y,
+    halfWidthPx: Math.max(element.clientWidth, 1) / 2, halfHeightPx: Math.max(element.clientHeight, 1) / 2,
+    pxAngle: 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / Math.max(element.clientHeight, 1),
+  }
+  pickTiles.length = 0
+  for (const tile of stream.tiles.visibleTiles as Set<any>) {
+    const carrier = tile?.engineData?.scene
+    if (!carrier?.isPoints) continue
+    for (const child of carrier.children) {
+      if (!isDotMesh(child) || !child.visible) continue
+      const drawn = drawnPoints(child)
+      if (drawn <= 0) continue
+      const userData = (child.material as any)?.userData ?? {}
+      const spacingM = userData.effectiveSpacingM ?? userData.pointSpacingM
+      pickTiles.push({
+        carrier, drawn,
+        spacingM: spacingM > 0 ? spacingM : 0,
+        thinScale: userData.thinScale?.value ?? 1,
+      })
+    }
+  }
+
+  // The dome as the shader has it this frame; parked (radius 1e9) means no melt anywhere.
+  const domeLive = sphereFadeSettings.enabled && uniforms.sphereFadeRadius.value < 1e8
+  if (domeLive) {
+    pickDome.radius = uniforms.sphereFadeRadius.value
+    pickDome.rampInset = uniforms.sphereFadeRampInset.value
+    pickDome.fadeIn = uniforms.sphereFadeIn.value
+    pickDome.fadeOut = uniforms.sphereFadeOut.value
+  }
+  const hit = pickFirstPoint(
+    pickTiles, camera.position, pickRayDir, dotSizeRule(), screen,
+    domeLive ? pickDome : null, camera.near, hitDistance * 1.02 + 2,
+  )
+  debug.pickMs = +(performance.now() - started).toFixed(2)
+  if (!hit) return 'miss'
+  debug.pickTiles = hit.tilesWalked
+  debug.pickPoints = hit.pointsWalked
+  target.copy(hit.point)
+  debug.reason = 'picked'
+  debug.movedM = +hit.point.distanceTo(pivotWorld).toFixed(2)
+  return 'hit'
 }
 
 function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
@@ -4026,23 +4136,23 @@ if (showDiagnostics) diagStatsEl.hidden = false
  * the readout measuring a size the shader was not using is precisely the fault this
  * replaced.
  */
+const liveDotSizeRule: DotSizeRule = {
+  pointSizePx: 0, spacingMix: 0, requestedPx: 0, pxPerMetre: 0, minPx: 0, maxPx: 0,
+}
+/** The size rule as the uniforms have it right now — see dot-size.ts. */
+function dotSizeRule(): DotSizeRule {
+  liveDotSizeRule.pointSizePx = uniforms.pointSize.value
+  liveDotSizeRule.spacingMix = uniforms.sizeSpacingMix.value
+  liveDotSizeRule.requestedPx = uniforms.sizeRequestedPx.value
+  liveDotSizeRule.pxPerMetre = uniforms.sizePxPerMetre.value
+  liveDotSizeRule.minPx = uniforms.sizeMinPx.value
+  liveDotSizeRule.maxPx = uniforms.sizeMaxPx.value
+  return liveDotSizeRule
+}
+
+/** The drawn diameter in CSS pixels of a dot at this spacing and view depth. */
 function drawnDiameterCssPx(spacingM: number, viewDepthM: number, thinScale = 1): number {
-  // `thinScale` has to appear in BOTH branches and in the same places the shader puts it
-  // (point-cloud.ts: inside `spacingPx` before the clamp, and on `pointSize` in the fixed
-  // branch, which is deliberately left unclamped). Without it this mirror billed the
-  // thinned instance count at the unwidened diameter, so Overdraw reported a saving the
-  // widening had already given back: at the shipped preset it claimed a 44% drop in
-  // painted area where the true figure is 0%.
-  const deliveredPx = spacingM * thinScale * uniforms.sizePxPerMetre.value
-    / Math.max(viewDepthM, 0.001)
-  const shortfall = Math.max(1, deliveredPx / Math.max(uniforms.sizeRequestedPx.value, 0.001))
-  return THREE.MathUtils.lerp(
-    uniforms.pointSize.value * thinScale,
-    THREE.MathUtils.clamp(
-      uniforms.pointSize.value * shortfall, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value,
-    ),
-    uniforms.sizeSpacingMix.value,
-  )
+  return drawnDotDiameterPx(dotSizeRule(), spacingM, viewDepthM, thinScale)
 }
 
 /**
@@ -4776,6 +4886,29 @@ async function main(): Promise<void> {
      * the other arm of a pixel or GPU-time A/B — and `force(name, false)` lets it go again.
      * `.state` says which are forced and which effect version the shaders are on.
      */
+    /**
+     * Where a rotation pressed at (ndcX, ndcY) would pivot (`pivotM`, a distance along the
+     * cursor ray), with its parts: the dot the cursor is on (`picked`), the map hit the
+     * controls start from (`mapM`), and for comparison the old canopy lift (`lifted`, whose
+     * time is in `lift.pickMs`). For checking the pivot against what is on screen; it moves
+     * nothing.
+     */
+    pivotProbe(ndcX = 0, ndcY = 0) {
+      const map = new THREE.Vector3()
+      if (!screenPivot(ndcX, ndcY, map)) return { reason: 'no ground under that point' }
+      const out = new THREE.Vector3()
+      const pickDebug: PivotDebug = { reason: null, passes: [] }
+      const liftDebug: PivotDebug = { reason: null, passes: [] }
+      const pickOutcome = pickPivot(map, out, pickDebug)
+      const picked = pickOutcome === 'hit' ? out.distanceTo(camera.position) : null
+      const liftStarted = performance.now()
+      const lifted = liftToCanopy(map, out, liftDebug) ? out.distanceTo(camera.position) : null
+      liftDebug.pickMs = +(performance.now() - liftStarted).toFixed(2)
+      const mapM = map.distanceTo(camera.position)
+      // What a press there would pivot on now: the dot, or the map through a gap.
+      const pivotM = picked ?? (pickOutcome === 'miss' ? mapM : lifted ?? mapM)
+      return { mapM, picked, lifted, pivotM, pickOutcome, pick: pickDebug, lift: liftDebug }
+    },
     shaderTerms: {
       force(name: CompiledTerm, on: boolean) {
         if (!COMPILED_TERMS.includes(name)) throw new Error(`expected one of ${COMPILED_TERMS.join(', ')}, got ${name}`)

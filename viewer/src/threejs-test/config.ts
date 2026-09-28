@@ -410,17 +410,22 @@ export const EXPERIENCE_CONFIG = {
      * about a point that far below what you see sweeps the view out from under the
      * cursor. Measured at 18 degrees of pitch: 330 px of slide for a 48 px drag, against
      * 7 px at 70 degrees. It is parallax, and it scales as 1/sin(pitch).
+     *
+     * On means: the pivot goes on the first drawn dot under the cursor, or stays on the
+     * map where the ground shows through a gap (cloud-pick.ts). The canopy lift the two
+     * settings below tune is only the fallback for when no drawn cloud is there to pick.
      */
     pivotOnCanopy: true,
     /**
-     * Footprint radius for the canopy height sample under the pivot, in metres. Small
+     * Footprint radius for the fallback lift's canopy height sample, in metres. Small
      * enough to follow a clearing edge, large enough that the percentile has support —
      * sampleGroundZ reports how many cells backed the answer.
      */
     pivotSampleRadiusM: 20,
     /**
      * Least steeply the click ray may descend, as a dot product against local up, for the
-     * canopy lift to run at all. Below this the pivot stays on the terrain hit.
+     * fallback canopy lift to run at all. Below this the pivot stays on the terrain hit.
+     * The pick has no such limit: it meets the dot on the ray itself, at any angle.
      *
      * A shallow ray gains height only by travelling: recorded at 4.7 degrees, reaching a
      * canopy 65 m up took 793 m along the ray. The pivot then sat hundreds of metres
