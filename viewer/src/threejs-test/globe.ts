@@ -116,6 +116,9 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   // cloud there is no map to give atmosphere to. Applying the patch after them is what
   // makes the chosen colour or brightness the thing you actually see — see applyGroundPatch.
   const node = applyGroundPatch(uniforms, atmospheric, raw)
+  // Versions only grow, so an older graph is never looked up again; dropping it lets go of
+  // the last material and texture its reference nodes still point at.
+  imageryGraphCache.clear()
   imageryGraphCache.set(key, node)
   return node
 }

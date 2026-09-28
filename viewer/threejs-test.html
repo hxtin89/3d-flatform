@@ -1250,6 +1250,11 @@
         <details class="design-section">
           <summary>Tone &amp; colour</summary>
           <div class="row">
+            <label class="h" for="toneStageToggle">Stage</label>
+            <button class="act on" id="toneStageToggle" type="button" aria-pressed="true" aria-describedby="toneStageNote">◐ Tone &amp; colour · On</button>
+            <span class="weather-note" id="toneStageNote">Off takes the whole stage out as if it had never been added — no curve, no point grade, the old decode — so the shader is exactly the pre-tone-mapping one. Use it to read off what the stage costs in fps. <code>?tonemap=off</code> boots with it off</span>
+          </div>
+          <div class="row">
             <label class="h">Tone curve</label>
             <div class="seg" id="toneMappingSeg">
               <button data-tone-mapping="0">None</button>
@@ -1476,12 +1481,30 @@
         </details>
 
         <details class="design-section">
+          <summary>Eye-dome lighting</summary>
+          <div class="row">
+            <label class="h" for="eyeDomeToggle">Effect</label>
+            <button class="act" id="eyeDomeToggle" type="button" aria-pressed="false" aria-describedby="eyeDomeNote">◒ Eye-dome lighting · Off</button>
+            <span class="weather-note" id="eyeDomeNote">Darkens what lies just behind each crown's silhouette, read from depth alone — the standard point-cloud aid, since points have no normals to light. A screen pass sharing the depth-of-field pipeline (+0.2 ms measured). Off drops it from the pipeline, and with depth of field also off the frame is drawn straight to the canvas, so it costs nothing at all. Overlays without depth (the parcel glow, rain) are shaded too. <code>?edl=1</code> boots with it on</span>
+          </div>
+          <div class="row">
+            <label class="h" for="eyeDomeStrength">Strength · <span class="val" id="eyeDomeStrengthVal">—</span></label>
+            <input type="range" id="eyeDomeStrength" min="0" max="2" step="0.05" />
+          </div>
+          <div class="row">
+            <label class="h" for="eyeDomeRadius">Radius · <span class="val" id="eyeDomeRadiusVal">—</span></label>
+            <input type="range" id="eyeDomeRadius" min="1" max="4" step="1" />
+            <span class="weather-note">Neighbour distance in whole backbuffer pixels (CSS pixels × render pixel ratio). Larger gives wider rims</span>
+          </div>
+        </details>
+
+        <details class="design-section">
           <summary>Depth of Field</summary>
           <div class="row">
             <label class="h" for="dofToggle">Effect</label>
             <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofOffNote">◉ Depth of field · On</button>
             <span class="weather-note" id="dofOffNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
-            <span class="weather-note" id="dofNote">A real post pass with a blur pyramid — the only effect that does not run in the shader. Off = no cost</span>
+            <span class="weather-note" id="dofNote">A real post pass with a blur pyramid — with eye-dome lighting, one of the two effects that do not run in the shader. Off = no cost</span>
           </div>
           <div class="row">
             <label class="h" for="dofAutoFocus">Focus mode</label>

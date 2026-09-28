@@ -699,6 +699,12 @@ const effects = {
    * per-point work, so off has to mean absent.
    */
   sphereFade: EXPERIENCE_CONFIG.lod.sphereFade.enabled as boolean,
+  /** Exact sRGB decode of the point colour; off is the old pow(2.2). Driven by the tone
+   *  stage's master switch together with the curve, so off is the pre-tone-mapping shader. */
+  exactDecode: EXPERIENCE_CONFIG.toneMapping.enabled as boolean,
+  /** gradePointNode. Compiled in only while contrast or saturation is off 1 — at 1 / 1 the
+   *  uniforms would still pay a pow and two divisions per fragment to change nothing. */
+  pointGrade: false,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -1175,9 +1181,12 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
     // PNTS RGB is sRGB encoded. Decoded with the exact curve the sampler applies to the
-    // basemap, so cloud and map match in the darks. Per fragment rather than per vertex:
-    // the frame cost tracks the per-point vertex work, not the painted area.
-    const graded = gradePointNode(u, sRGBTransferEOTF(pointColor))
+    // basemap, so cloud and map match in the darks; with the tone stage switched off it is
+    // the old pow(2.2), so off compiles the very shader sbb-main ran. Per fragment, the
+    // stage the old decode used — a per-vertex decode measured no different in a GPU-time A/B.
+    const decoded = effects.exactDecode ? sRGBTransferEOTF(pointColor) : pointColor.pow(2.2)
+    const linear = effects.pointGrade ? gradePointNode(u, decoded) : decoded
+    const graded = linear
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)
       .mul(cloudShadow)

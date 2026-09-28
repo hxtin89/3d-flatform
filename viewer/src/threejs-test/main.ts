@@ -3363,14 +3363,39 @@ function bindDesignColor(id: string, initial: number, apply: (hex: string) => vo
 const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
-bindDesignSlider('pointContrast', DESIGN.pointContrast, asFactor, (v) => { uniforms.pointContrast.value = v })
-bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => { uniforms.pointSaturation.value = v })
+// Tone & colour. The master switch takes the whole stage out — curve, point grade and the
+// exact decode — so off compiles the shader sbb-main ran and an fps A/B against it is
+// fair; the curve buttons keep their pick while it is off. The grade is compiled in only
+// while it would change something, so sliders at 1× / 100 % cost nothing either.
+let toneStageOn: boolean = EXPERIENCE_CONFIG.toneMapping.enabled && params.get('tonemap') !== 'off'
+let pickedToneMapping: THREE.ToneMapping = renderer.toneMapping
+function syncToneStage(): void {
+  renderer.toneMapping = toneStageOn ? pickedToneMapping : THREE.NoToneMapping
+  const grading = toneStageOn && (uniforms.pointContrast.value !== 1 || uniforms.pointSaturation.value !== 1)
+  const decodeChanged = setCloudEffectEnabled('exactDecode', toneStageOn)
+  const gradeChanged = setCloudEffectEnabled('pointGrade', grading)
+  // Point tiles only: neither flag reaches the basemap's graph, so rebuilding every
+  // imagery material here would be a hitch for an identical shader.
+  if (decodeChanged || gradeChanged) stream?.refreshEffects()
+}
+bindEffectToggle('toneStageToggle', '◐ Tone & colour', toneStageOn, (on) => { toneStageOn = on; syncToneStage() })
+bindDesignSlider('pointContrast', DESIGN.pointContrast, asFactor, (v) => {
+  uniforms.pointContrast.value = v
+  syncToneStage()
+})
+bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => {
+  uniforms.pointSaturation.value = v
+  syncToneStage()
+})
 // The curve lives on the renderer, so switching it rebuilds only the output pass, never a
 // tile material. The markup's `on` is overwritten first so a ?tonemap= override shows.
 for (const button of $<HTMLDivElement>('#toneMappingSeg').querySelectorAll<HTMLButtonElement>('button')) {
-  button.classList.toggle('on', Number(button.dataset.toneMapping) === renderer.toneMapping)
+  button.classList.toggle('on', Number(button.dataset.toneMapping) === pickedToneMapping)
 }
-bindSeg('toneMappingSeg', 'toneMapping', (v) => { renderer.toneMapping = v as THREE.ToneMapping })
+bindSeg('toneMappingSeg', 'toneMapping', (v) => {
+  pickedToneMapping = v as THREE.ToneMapping
+  syncToneStage()
+})
 bindDesignSlider('toneExposure', EXPERIENCE_CONFIG.toneMapping.exposure, asFactor, (v) => {
   renderer.toneMappingExposure = v
 })
@@ -3654,6 +3679,14 @@ bindDesignSlider('dofFocalLength', DOF.focalLengthM, asMetres, (v) => depthOfFie
 bindDesignSlider('dofBokehScale', DOF.bokehScale, asFactor, (v) => depthOfField.setBokehScale(v))
 bindDesignSlider('dofFocusSmoothing', DOF.focusSmoothing, asPercent, (v) => depthOfField.setFocusSmoothing(v))
 
+// Eye-dome lighting shares the DoF pipeline; with both off the frame skips it entirely.
+const EDL = EXPERIENCE_CONFIG.eyeDomeLighting
+bindEffectToggle('eyeDomeToggle', '◒ Eye-dome lighting', EDL.enabled || params.get('edl') === '1', (on) => {
+  depthOfField.setEyeDome(on)
+})
+bindDesignSlider('eyeDomeStrength', EDL.strength, asFactor, (v) => depthOfField.setEyeDomeStrength(v))
+bindDesignSlider('eyeDomeRadius', EDL.radiusPx, asPixels, (v) => depthOfField.setEyeDomeRadius(v))
+
 // Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
 // through the environment layer, which rewrites that uniform from the daylight
 // ramp on every pass and would otherwise overwrite the slider immediately.
@@ -3747,9 +3780,15 @@ atmosphere: ${JSON.stringify({
     fogFarFactor: distanceFogFarFactor,
   }, null, 2)}
 toneMapping: ${JSON.stringify({
-    mode: toneMappingModeOf(renderer.toneMapping),
+    enabled: toneStageOn,
+    mode: toneMappingModeOf(pickedToneMapping),
     exposure: renderer.toneMappingExposure,
     whitePoint: toneWhitePoint.value,
+  }, null, 2)}
+eyeDomeLighting: ${JSON.stringify({
+    enabled: depthOfField.isEyeDome(),
+    strength: Number($<HTMLInputElement>('#eyeDomeStrength').value),
+    radiusPx: Number($<HTMLInputElement>('#eyeDomeRadius').value),
   }, null, 2)}
 depthOfField: ${JSON.stringify({
     enabled: depthOfField.isEnabled(),
@@ -5062,7 +5101,7 @@ async function main(): Promise<void> {
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-    groundPatchMask,
+    groundPatchMask, depthOfField,
   }
   /**
    * Where the drawn point size comes from, per band: the spacing read off the tiles, the

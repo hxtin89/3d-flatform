@@ -1128,6 +1128,12 @@ export const EXPERIENCE_CONFIG = {
   // sees the whole frame, sky and clouds included (see tone-mapping.ts).
   toneMapping: {
     /**
+     * Master switch for the whole stage. Off removes it as if it had never been added —
+     * no curve, no point grade, and the old pow(2.2) decode — so the shader is the one
+     * sbb-main ran and an fps A/B against it is fair. `?tonemap=off` boots with it off.
+     */
+    enabled: true,
+    /**
      * `shoulder` shares Khronos PBR Neutral's knee, hue-preserving peak scaling and pull
      * toward white, but drops its 0.04 dark offset and uses its own power curve that
      * reaches white exactly at `whitePoint`. It is the exact identity (at exposure 1)
@@ -1154,8 +1160,22 @@ export const EXPERIENCE_CONFIG = {
      * of up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
     whitePoint: 1.5,
   },
-  // The one effect that cannot live inside a colour node: a circle of confusion
-  // has to read neighbouring pixels, so DoF is a real post pass (see
+  // Eye-dome lighting (eye-dome-lighting.ts): depth-edge shading, the standard point-cloud
+  // aid for reading shape without normals. A screen pass like DoF and shares its pipeline;
+  // off drops it from that pipeline, and with DoF also off the frame is drawn straight to
+  // the canvas and no pass runs. Measured on: +0.2 ms at 1600×900.
+  eyeDomeLighting: {
+    /** Off at startup; `?edl=1` boots with it on. */
+    enabled: false,
+    /** Potree's response scale, applied to linear colour, so it reads about half as strong
+     *  as the same Potree value. At 0.4 a dense canopy frame comes out ~9 % darker. */
+    strength: 0.4,
+    /** Neighbour distance in whole backbuffer pixels (CSS px × render pixel ratio);
+     *  rounded, minimum 1. Larger = wider rims. */
+    radiusPx: 1,
+  },
+  // One of the two effects that cannot live inside a colour node (with eye-dome
+  // lighting): a circle of confusion has to read neighbouring pixels, so DoF is a real post pass (see
   // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel
   // toggle exists so it can be dropped on weak hardware.
   depthOfField: {
