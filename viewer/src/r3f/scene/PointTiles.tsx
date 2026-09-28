@@ -7,6 +7,8 @@ import { EXPERIENCE_CONFIG } from '../../threejs-test/config'
 import { flightSseFloor } from '../../threejs-test/flight-quality'
 import { AUTO, ZOOM_BAND_ROWS, type ResolvedSource, type ZoomBand } from '../../threejs-test/point-source'
 import { createStreamingBudget } from '../../threejs-test/streaming-budget'
+import { renderToEcef } from '../../threejs-test/origin'
+import { APP_PARAMS } from '../params'
 import { PHASE } from '../frame-phases'
 import { frame } from '../state/frame'
 import { isBootLoading, useBootStore } from '../state/boot-store'
@@ -15,10 +17,11 @@ import { uiState, useUiStore } from '../state/ui-store'
 import { worldToEnu } from '../state/survey-frames'
 import { applyPointSize, effectiveOptions, setPointCloudRevealed } from '../state/actions'
 import { perfSseFactor } from '../state/perf-governor'
-import type { WorldDatasetId } from '../world-datasets'
+import { coverageDatasetIds, type WorldDatasetId } from '../world-datasets'
 import { DatasetPointTiles } from './DatasetPointTiles'
-import { navigateToDataset } from './world-navigation'
-import { syncDatasetUniforms } from '../state/world-stream-uniforms'
+import { activateDatasetInPlace, navigateToDataset } from './world-navigation'
+import { HandoffDwell, handoffCandidate } from './world-handoff'
+import { BACKGROUND_OVERVIEW_CUTOFF_M, syncDatasetUniforms } from '../state/world-stream-uniforms'
 
 const SWAP_DWELL_MS = 900
 const SWAP_COOLDOWN_MS = 2_500
@@ -27,6 +30,8 @@ let previousFrameAt = 0
 let streamingBudget: ReturnType<typeof createStreamingBudget> | null = null
 const cameraEnu = { x: 0, y: 0 }
 const scratch = new THREE.Vector3()
+const cameraEcef = new THREE.Vector3()
+const handoffDwell = new HandoffDwell()
 function onStreamRootError(id: WorldDatasetId, source: ResolvedSource, url: string, error: unknown): void {
   console.warn(`[point-source:${id}] tileset root unavailable`, url, error)
   const runtime = sceneState().datasets[id]
@@ -70,11 +75,16 @@ export function PointTiles() {
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera
   const datasets = useSceneStore((state) => state.datasets)
   const activeDatasetId = useSceneStore((state) => state.activeDatasetId)
-  const ids = Object.keys(datasets) as WorldDatasetId[]
+  const navigationRequestId = useSceneStore((state) => state.navigationRequestId)
+  const ids = coverageDatasetIds(APP_PARAMS.worldDatasets, activeDatasetId, APP_PARAMS.pointTree)
+    .filter((id) => datasets[id]?.status === 'ready')
 
   useEffect(() => {
-    navigateToDataset(activeDatasetId, camera)
-  }, [activeDatasetId, camera])
+    if (!navigationRequestId) return
+    if (navigateToDataset(navigationRequestId, camera)) {
+      useSceneStore.setState({ navigationRequestId: null })
+    }
+  }, [navigationRequestId, camera])
 
   useEffect(() => {
     const streams = Object.values(datasets).flatMap((runtime) => runtime?.stream ? [runtime.stream] : [])
@@ -99,6 +109,12 @@ export function PointTiles() {
     previousFrameAt = now
     if (frame.wasFlying && !frame.cameraBusy) frame.flightEndedAt = now
     frame.wasFlying = frame.cameraBusy
+    if (isBootLoading() || frame.cameraBusy) handoffDwell.reset()
+    else {
+      const candidate = handoffCandidate(active, scene.datasets, renderToEcef(camera.position, cameraEcef))
+      const handoff = handoffDwell.update(candidate, now)
+      if (handoff && activateDatasetInPlace(handoff)) return
+    }
     const options = effectiveOptions()
     const wantPrecision = uiState().highPrecision && !isBootLoading()
       && !(options.flightPrecisionDrop && frame.cameraBusy)
@@ -143,13 +159,22 @@ export function PointTiles() {
 
     for (const [id, runtime] of Object.entries(scene.datasets) as [WorldDatasetId, NonNullable<typeof active>][]) {
       if (!runtime.stream || !runtime.uniforms) continue
-      syncDatasetUniforms(runtime.uniforms, id)
+      const policy = id === scene.activeDatasetId ? 'active' : 'aph-overview-background'
+      syncDatasetUniforms(runtime.uniforms, id, policy)
       if (runtime.appliedHighPrecision !== wantPrecision) {
         runtime.appliedHighPrecision = wantPrecision
         runtime.stream.setHighPrecision(wantPrecision)
       }
       runtime.stream.group.visible = frame.pointCloudRevealed
-      runtime.stream.setDensityCeiling(id === scene.activeDatasetId && !isBootLoading() ? 2 - quality.band : 0)
+      runtime.stream.setTraversalPolicy(policy)
+      if (policy === 'aph-overview-background') {
+        runtime.stream.setErrorTarget(runtime.activeSource?.ladder[2] ?? 16)
+        runtime.stream.setNearDetail(null)
+        runtime.stream.setDensityCeiling(0)
+        runtime.stream.setDistanceCutoff(BACKGROUND_OVERVIEW_CUTOFF_M, BACKGROUND_OVERVIEW_CUTOFF_M)
+      } else {
+        runtime.stream.setDensityCeiling(!isBootLoading() ? 2 - quality.band : 0)
+      }
       runtime.stream.setMaskSphere(
         id === scene.activeDatasetId && frame.maskWorldActive ? frame.maskSphereWorld : null,
         frame.maskWorldRadius,
@@ -160,5 +185,12 @@ export function PointTiles() {
     frame.lastStreamStats = active.stats
   }, PHASE.STREAM)
 
-  return <>{ids.map((id) => <DatasetPointTiles key={id} id={id} onRootError={onStreamRootError} />)}</>
+  return <>{ids.map((id) => (
+    <DatasetPointTiles
+      key={id}
+      id={id}
+      policy={id === activeDatasetId ? 'active' : 'aph-overview-background'}
+      onRootError={onStreamRootError}
+    />
+  ))}</>
 }

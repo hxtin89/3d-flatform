@@ -23,6 +23,9 @@ export interface SurveyFrame {
   navigationFloorZ: number
   navigationBoundsRadius: number
   canopyHeightM: number
+  /** Immutable local-ENU footprint used for cross-site ownership handoff. */
+  surveyBbox: readonly [number, number, number, number, number, number] | null
+  surveyFootprintArea: number
 }
 
 export const geo = {
@@ -100,7 +103,10 @@ export function createSurveyFrame(manifest: GlobeManifest): SurveyFrame {
     navigationFloorZ = minZ + navigationClearance
   }
 
-  const surveyBbox = manifest.surveyBbox ?? manifest.areaBbox
+  const rawSurveyBbox = manifest.surveyBbox ?? manifest.areaBbox
+  const surveyBbox = Array.isArray(rawSurveyBbox) && rawSurveyBbox.length === 6
+    ? rawSurveyBbox.map(Number) as [number, number, number, number, number, number]
+    : null
   const cloudCenterEnu = new THREE.Vector3()
   let navigationBoundsRadius = 2500
   if (surveyBbox) {
@@ -114,6 +120,10 @@ export function createSurveyFrame(manifest: GlobeManifest): SurveyFrame {
   return {
     enuFrame, enuInverse, enuUp, cloudCenterEnu, zOffset, areaMinZ,
     navigationClearance, navigationFloorZ, navigationBoundsRadius, canopyHeightM,
+    surveyBbox,
+    surveyFootprintArea: surveyBbox
+      ? Math.max(0, surveyBbox[3] - surveyBbox[0]) * Math.max(0, surveyBbox[4] - surveyBbox[1])
+      : Infinity,
   }
 }
 

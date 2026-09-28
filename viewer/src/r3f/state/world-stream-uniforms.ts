@@ -6,10 +6,13 @@ import { frame } from './frame'
 import { sceneState } from './scene-store'
 import { uiState } from './ui-store'
 
+export const BACKGROUND_OVERVIEW_CUTOFF_M = 20_000
+const BACKGROUND_OVERVIEW_FADE_M = BACKGROUND_OVERVIEW_CUTOFF_M * 0.6
+
 const SHARED_UNIFORMS = [
   'maskRadius', 'pointSize', 'daylightColor', 'daylightIntensity', 'sunDirectionEnu',
   'cloudShadowOffset', 'cloudShadowStrength', 'cloudShadowScale', 'goldenFactor',
-  'warmRimColor', 'cutoffDistance', 'fadeDistance',
+  'warmRimColor',
 ] as const
 
 function copyUniform(target: any, source: any): void {
@@ -18,7 +21,11 @@ function copyUniform(target: any, source: any): void {
 }
 
 /** Copy global visuals but retain the runtime's local ENU and height frame. */
-export function syncDatasetUniforms(uniforms: CloudUniforms, id: WorldDatasetId): void {
+export function syncDatasetUniforms(
+  uniforms: CloudUniforms,
+  id: WorldDatasetId,
+  policy: 'active' | 'aph-overview-background' = 'active',
+): void {
   const runtime = sceneState().datasets[id]
   if (!runtime?.frame) return
   for (const key of SHARED_UNIFORMS) copyUniform(uniforms[key], frame.uniforms[key])
@@ -26,6 +33,15 @@ export function syncDatasetUniforms(uniforms: CloudUniforms, id: WorldDatasetId)
   uniforms.canopyBaseZ.value = runtime.frame.areaMinZ + runtime.frame.zOffset + 8
   uniforms.canopyTopZ.value = runtime.frame.areaMinZ + runtime.frame.zOffset + runtime.frame.canopyHeightM
   uniforms.cloudDeckHeight.value = runtime.frame.areaMinZ + runtime.frame.zOffset + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+  if (policy === 'aph-overview-background') {
+    uniforms.cutoffDistance.value = BACKGROUND_OVERVIEW_CUTOFF_M
+    uniforms.fadeDistance.value = BACKGROUND_OVERVIEW_FADE_M
+    uniforms.cutoffUsesEuclidean.value = 1
+  } else {
+    copyUniform(uniforms.cutoffDistance, frame.uniforms.cutoffDistance)
+    copyUniform(uniforms.fadeDistance, frame.uniforms.fadeDistance)
+    uniforms.cutoffUsesEuclidean.value = 0
+  }
   if (id === sceneState().activeDatasetId) {
     copyUniform(uniforms.maskCenter, frame.uniforms.maskCenter)
     uniforms.maskMode.value = frame.uniforms.maskMode.value

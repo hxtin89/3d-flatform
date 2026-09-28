@@ -12,6 +12,7 @@ import { useUiStore } from '../state/ui-store'
 import { setMaskMode, setPointSizeScale } from '../state/actions'
 import { setCompareMode, setOption } from '../state/render-options-bridge'
 import { setRainCycleEnabled } from '../scene/Rain'
+import { requestDatasetNavigation } from '../scene/world-navigation'
 import type { WorldDatasetId } from '../world-datasets'
 
 const fmtInt = (value: number) => Math.round(value).toLocaleString('en-US')
@@ -101,7 +102,7 @@ export function SettingsPanel() {
           className="act primary"
           id="flyToLocation"
           disabled={selectedRuntime?.status !== 'ready' || selectedDatasetId === activeDatasetId}
-          onClick={() => useSceneStore.setState({ activeDatasetId: selectedDatasetId })}
+          onClick={() => requestDatasetNavigation(selectedDatasetId)}
         >✈ Fly</button>
         <span className="weather-note" id="locationStatus">{activeRuntime ? `Active · ${activeRuntime.definition.label}` : 'Loading locations…'}</span>
       </div>

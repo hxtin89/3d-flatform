@@ -12,15 +12,20 @@ import { useUiStore } from '../state/ui-store'
 import { applyStreamMemoryBudget } from '../state/actions'
 import { useResolutionSync } from '../hooks/useResolutionSync'
 import type { WorldDatasetId } from '../world-datasets'
-import { applyDatasetHeightOffset, syncDatasetUniforms } from '../state/world-stream-uniforms'
+import {
+  BACKGROUND_OVERVIEW_CUTOFF_M,
+  applyDatasetHeightOffset,
+  syncDatasetUniforms,
+} from '../state/world-stream-uniforms'
 
 export interface DatasetPointTilesProps {
   id: WorldDatasetId
+  policy: 'active' | 'aph-overview-background'
   onRootError(id: WorldDatasetId, source: ResolvedSource, url: string, error: unknown): void
 }
 
 /** Owns exactly one TilesRenderer's mount/dispose lifecycle. */
-export function DatasetPointTiles({ id, onRootError }: DatasetPointTilesProps) {
+export function DatasetPointTiles({ id, policy, onRootError }: DatasetPointTilesProps) {
   const gl = useThree((state) => state.gl)
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera
   const source = useSceneStore((state) => state.datasets[id]?.activeSource)
@@ -29,7 +34,7 @@ export function DatasetPointTiles({ id, onRootError }: DatasetPointTilesProps) {
   useEffect(() => {
     const runtime = sceneState().datasets[id]
     if (!source || runtime?.status !== 'ready' || !runtime.frame || !runtime.uniforms) return
-    syncDatasetUniforms(runtime.uniforms, id)
+    syncDatasetUniforms(runtime.uniforms, id, policy)
     const stream = createStreamingCloud({
       tilesetUrl: source.url,
       requestVolumes: source.requestVolumes,
@@ -45,6 +50,10 @@ export function DatasetPointTiles({ id, onRootError }: DatasetPointTilesProps) {
     updateDatasetRuntime(id, { stream, appliedHighPrecision: null })
     applyDatasetHeightOffset(id)
     stream.group.visible = frame.pointCloudRevealed
+    stream.setTraversalPolicy(policy)
+    if (policy === 'aph-overview-background') {
+      stream.setDistanceCutoff(BACKGROUND_OVERVIEW_CUTOFF_M, BACKGROUND_OVERVIEW_CUTOFF_M)
+    }
     stream.setDensityCeiling(id === sceneState().activeDatasetId && !isBootLoading() ? 2 - frame.band : 0)
     applyStreamMemoryBudget()
     return () => {

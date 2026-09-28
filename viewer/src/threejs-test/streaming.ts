@@ -44,6 +44,7 @@ export interface StreamingCloud {
   /** Tiles farther than this (metres) are neither fetched nor drawn; Infinity = off. */
   setDistanceCutoff(cutoffM: number, detailRangeM: number): void
   setNearDetail(policy: NearDetailPolicy | null): void
+  setTraversalPolicy(policy: 'active' | 'aph-overview-background'): void
   /** Scale CPU cache and GPU residency to the measured device tier. Small
    * budgets on strong hardware cause unload thrashing: every camera move
    * evicts tiles that immediately have to be re-fetched. */
@@ -358,6 +359,7 @@ export function createStreamingCloud(opts: {
       distanceLod.setCutoff(cutoffM, detailRangeM)
     },
     setNearDetail(policy) { distanceLod.setNearDetail(policy) },
+    setTraversalPolicy(policy) { distanceLod.setTraversalPolicy(policy) },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
       tiles.lruCache.maxBytesSize = cacheMaxBytes
       tiles.lruCache.minBytesSize = Math.min(tiles.lruCache.minBytesSize, cacheMaxBytes)

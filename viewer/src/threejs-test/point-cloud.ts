@@ -6,7 +6,7 @@ import { PointsNodeMaterial } from 'three/webgpu'
 import {
   Fn, If, Discard, uniform, attribute, positionWorld, texture3D, uv,
   vec2, vec3, vec4, float, mix, smoothstep, length, max,
-  context, highpModelViewMatrix, positionView, varying,
+  cameraPosition, context, highpModelViewMatrix, positionView, varying,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 
@@ -38,6 +38,9 @@ export interface CloudUniforms {
   cutoffDistance: any
   /** Point size starts shrinking here and reaches zero at cutoffDistance. */
   fadeDistance: any
+  /** Background APH context uses camera-to-point Euclidean distance, matching
+   * TilesRenderer's camera-to-bounding-volume traversal metric. */
+  cutoffUsesEuclidean: any
   canopyTopZ: any
 }
 
@@ -70,6 +73,7 @@ export function createUniforms(maskMode = 2): CloudUniforms {
     canopyTopZ: uniform(140),
     cutoffDistance: uniform(1e9),
     fadeDistance: uniform(1e9),
+    cutoffUsesEuclidean: uniform(0),
   }
 }
 
@@ -150,9 +154,13 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
   material.transparent = false
   material.depthWrite = true
   material.sizeAttenuation = false
+  const cutoffRange = u.cutoffUsesEuclidean.greaterThan(0.5).select(
+    length(positionWorld.sub(cameraPosition)),
+    positionView.z.negate(),
+  )
   // Distance fade: sprites shrink to nothing towards the cutoff instead of
   // blending to a fog colour that would not match what lies behind them.
-  material.sizeNode = u.pointSize.mul(smoothstep(u.cutoffDistance, u.fadeDistance, positionView.z.negate()))
+  material.sizeNode = u.pointSize.mul(smoothstep(u.cutoffDistance, u.fadeDistance, cutoffRange))
   // Drives positionLocal, so positionWorld below stays the point centre rather
   // than a quad corner — the mask, cloud shadow and height grading keep working.
   material.positionNode = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
@@ -201,7 +209,7 @@ export function createCloudMaterial(u: CloudUniforms, colorItemSize = 3): Points
 
   material.colorNode = Fn(() => {
     If(uv().sub(vec2(0.5)).dot(uv().sub(vec2(0.5))).greaterThan(0.25), () => Discard())
-    If(positionView.z.negate().greaterThan(u.cutoffDistance), () => Discard())
+    If(cutoffRange.greaterThan(u.cutoffDistance), () => Discard())
     If(u.maskMode.greaterThan(1.5).and(u.vignetteStrength.greaterThan(0.95))
       .and(pointShading.w.greaterThan(u.maskRadius)), () => Discard())
     return pointShading.xyz

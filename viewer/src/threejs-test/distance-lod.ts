@@ -20,6 +20,8 @@ export interface DistanceLod {
   setCutoff(cutoffM: number, detailRangeM: number): void
   cutoff(): number
   setNearDetail(policy: NearDetailPolicy | null): void
+  /** APH background context may load z0 p001 but never adaptive residual nodes. */
+  setTraversalPolicy(policy: 'active' | 'aph-overview-background'): void
   dispose(): void
 }
 
@@ -31,14 +33,33 @@ export interface NearDetailPolicy {
 
 type ViewErrorTarget = { inView: boolean; error: number; distanceFromCamera: number }
 
+/** External z0 JSON and p001 contents are the only legal APH background path. */
+export function isAphOverviewBackgroundUriAllowed(uri: string | undefined): boolean {
+  if (!uri) return true
+  const clean = uri.replace(/\\/g, '/')
+  const isZ0 = /(?:^|\/)z0\//.test(clean)
+  return isZ0 && (/\.json(?:$|[?#])/i.test(clean) || /(?:^|\/)points\/z0\//.test(clean))
+}
+
+function tileContentUri(tile: any): string | undefined {
+  return tile?.content?.uri ?? tile?.content?.url
+}
+
 export function installDistanceLod(tiles: any): DistanceLod {
   let cutoff = Infinity
   let detailRange = Infinity
   let near: NearDetailPolicy | null = null
+  let traversalPolicy: 'active' | 'aph-overview-background' = 'active'
   const base = tiles.calculateTileViewError as (tile: any, target: ViewErrorTarget) => void
   const wrapped = (tile: any, target: ViewErrorTarget) => {
     base.call(tiles, tile, target)
     if (!target.inView) return
+    if (traversalPolicy === 'aph-overview-background'
+      && !isAphOverviewBackgroundUriAllowed(tileContentUri(tile))) {
+      target.inView = false
+      target.error = 0
+      return
+    }
     const d = target.distanceFromCamera
     if (d >= cutoff) {
       target.inView = false
@@ -70,6 +91,7 @@ export function installDistanceLod(tiles: any): DistanceLod {
       near = policy && policy.rangeM > 0 && policy.sse > 0 && policy.farFactor >= 1
         ? { ...policy } : null
     },
+    setTraversalPolicy(policy) { traversalPolicy = policy },
     dispose() {
       if (tiles.calculateTileViewError === wrapped) tiles.calculateTileViewError = base
     },

@@ -38,6 +38,8 @@ export interface DatasetRuntime {
 interface SceneState {
   datasets: Partial<Record<WorldDatasetId, DatasetRuntime>>
   activeDatasetId: WorldDatasetId
+  /** User-requested teleport. Auto handoff updates activeDatasetId directly. */
+  navigationRequestId: WorldDatasetId | null
   stream: StreamingCloud | null
   globe: Globe | null
   keyboard: KeyboardNavigation | null
@@ -60,6 +62,7 @@ interface SceneState {
 export const useSceneStore = create<SceneState>(() => ({
   datasets: {},
   activeDatasetId: APP_PARAMS.initialDatasetId,
+  navigationRequestId: null,
   stream: null,
   globe: null,
   keyboard: null,
