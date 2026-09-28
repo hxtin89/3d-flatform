@@ -1176,6 +1176,10 @@ export const EXPERIENCE_CONFIG = {
     /** Neighbour distance in whole backbuffer pixels (CSS px × render pixel ratio);
      *  rounded, minimum 1. Larger = wider rims. */
     radiusPx: 1,
+    /** Darkest shade EDL may apply, as a fraction of the original brightness. 0.6 keeps
+     *  the crown rims but stops the gaps between points going black; 0 is Potree's
+     *  unbounded behaviour. */
+    floor: 0.6,
   },
   // One of the two effects that cannot live inside a colour node (with eye-dome
   // lighting): a circle of confusion has to read neighbouring pixels, so DoF is a real post pass (see

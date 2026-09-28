@@ -35,9 +35,13 @@ const RESPONSE_SCALE = 300
  * because the depth texture is read unfiltered and a fractional offset would snap to
  * whichever texel it happened to round into. Near and far follow `camera` every render,
  * because the far plane eases with the view.
+ *
+ * `floor` is the darkest the shade may go. Without it the gaps between points — a pixel
+ * of far ground next to a near crown — saturate to black at any strength and read as
+ * speckle; the rims themselves need far less than that.
  */
 export function eyeDomeLighting(
-  color: any, depth: any, camera: THREE.PerspectiveCamera, strength: any, radiusPx: any,
+  color: any, depth: any, camera: THREE.PerspectiveCamera, strength: any, radiusPx: any, floor01: any,
 ): any {
   const near = uniform(camera.near).onRenderUpdate(() => camera.near)
   const far = uniform(camera.far).onRenderUpdate(() => camera.far)
@@ -55,7 +59,7 @@ export function eyeDomeLighting(
       const behind = max(centre.sub(logDistance(neighbourDepth)), 0)
       sum = sum.add(select(neighbourDepth.lessThan(1), behind, float(0)))
     }
-    const shade = exp(sum.div(NEIGHBOURS.length).mul(-RESPONSE_SCALE).mul(strength))
+    const shade = max(exp(sum.div(NEIGHBOURS.length).mul(-RESPONSE_SCALE).mul(strength)), floor01)
     return vec4(color.rgb.mul(select(centreDepth.lessThan(1), shade, float(1))), color.a)
   })()
 }

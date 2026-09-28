@@ -1496,6 +1496,11 @@
             <input type="range" id="eyeDomeRadius" min="1" max="4" step="1" />
             <span class="weather-note">Neighbour distance in whole backbuffer pixels (CSS pixels × render pixel ratio). Larger gives wider rims</span>
           </div>
+          <div class="row">
+            <label class="h" for="eyeDomeFloor">Darkest shade · <span class="val" id="eyeDomeFloorVal">—</span></label>
+            <input type="range" id="eyeDomeFloor" min="0" max="1" step="0.05" />
+            <span class="weather-note">The darkest EDL may make any pixel. Keeps the crown rims but stops the gaps between points turning into black speckle; 0 % is unbounded</span>
+          </div>
         </details>
 
         <details class="design-section">

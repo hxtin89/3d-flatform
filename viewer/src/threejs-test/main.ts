@@ -3686,6 +3686,7 @@ bindEffectToggle('eyeDomeToggle', '◒ Eye-dome lighting', EDL.enabled || params
 })
 bindDesignSlider('eyeDomeStrength', EDL.strength, asFactor, (v) => depthOfField.setEyeDomeStrength(v))
 bindDesignSlider('eyeDomeRadius', EDL.radiusPx, asPixels, (v) => depthOfField.setEyeDomeRadius(v))
+bindDesignSlider('eyeDomeFloor', EDL.floor, asPercent, (v) => depthOfField.setEyeDomeFloor(v))
 
 // Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
 // through the environment layer, which rewrites that uniform from the daylight
@@ -3789,6 +3790,7 @@ eyeDomeLighting: ${JSON.stringify({
     enabled: depthOfField.isEyeDome(),
     strength: Number($<HTMLInputElement>('#eyeDomeStrength').value),
     radiusPx: Number($<HTMLInputElement>('#eyeDomeRadius').value),
+    floor: Number($<HTMLInputElement>('#eyeDomeFloor').value),
   }, null, 2)}
 depthOfField: ${JSON.stringify({
     enabled: depthOfField.isEnabled(),

@@ -46,6 +46,8 @@ export interface DepthOfFieldLayer {
   isEyeDome(): boolean
   setEyeDomeStrength(strength: number): void
   setEyeDomeRadius(pixels: number): void
+  /** Darkest shade EDL may apply, 0–1 of the original brightness. */
+  setEyeDomeFloor(fraction: number): void
   dispose(): void
 }
 
@@ -79,6 +81,7 @@ export function createDepthOfFieldLayer(opts: {
   let eyeDome: boolean = EDL.enabled
   const eyeDomeStrength = uniform(EDL.strength)
   const eyeDomeRadius = uniform(Math.max(Math.round(EDL.radiusPx), 1))
+  const eyeDomeFloor = uniform(EDL.floor)
 
   const postProcessing = new PostProcessing(renderer)
   // What the current graph owns and nothing else frees. A DoF node carries six render
@@ -109,7 +112,7 @@ export function createDepthOfFieldLayer(opts: {
     release()
     let node: any = scenePass.getTextureNode()
     if (eyeDome) {
-      node = eyeDomeLighting(node, scenePass.getTextureNode('depth'), camera, eyeDomeStrength, eyeDomeRadius)
+      node = eyeDomeLighting(node, scenePass.getTextureNode('depth'), camera, eyeDomeStrength, eyeDomeRadius, eyeDomeFloor)
       if (enabled) {
         // DoF samples its input from three separate draws. Left to dof()'s own
         // convertToTexture, the EDL quad re-rendered for each of them; an explicit target
@@ -176,6 +179,7 @@ export function createDepthOfFieldLayer(opts: {
     isEyeDome() { return eyeDome },
     setEyeDomeStrength(strength) { eyeDomeStrength.value = Math.max(strength, 0) },
     setEyeDomeRadius(pixels) { eyeDomeRadius.value = Math.max(Math.round(pixels), 1) },
+    setEyeDomeFloor(fraction) { eyeDomeFloor.value = THREE.MathUtils.clamp(fraction, 0, 1) },
     dispose() {
       release()
       postProcessing.dispose?.()
