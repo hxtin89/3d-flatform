@@ -974,11 +974,12 @@ export const EXPERIENCE_CONFIG = {
      * Pushed above 1 so the map reads as daylight ground where it shows through: the
      * river and the survey gaps are the whole point of the ground patch, and at the
      * old 0.1 they sat as near-black holes rather than as water and sand.
-     * Rechecked under the `shoulder` tone curve: forest, river and sand stay under its
-     * knee and render exactly as before. Only sandbars and bright roofs (raw sRGB 199+,
-     * in full daylight) cross it and are gently compressed; of those, raw 220+ used to
-     * clip under `none` and now rolls off instead, so 1.4 stays. The panel slider runs
-     * to 2 now that overshoot rolls off rather than clips. */
+     * Rechecked under the `shoulder` tone curve: forest, river and sand render exactly
+     * as before. At the default white point 1 everything up to full white does; only
+     * sandbars and bright roofs (raw sRGB 220+ in full daylight) go past 1 and are scaled
+     * down with their hue kept rather than clipped per channel, so 1.4 stays. With a
+     * higher white point they roll off instead, from raw sRGB 199 up. The panel slider
+     * runs to 2 for that case. */
     mapBrightness: 1.4,
     /**
      * Point-cloud grade, applied to the decoded linear colour before daylight, shadow and
@@ -1138,12 +1139,12 @@ export const EXPERIENCE_CONFIG = {
      * toward white, but drops its 0.04 dark offset and uses its own power curve that
      * reaches white exactly at `whitePoint`. It is the exact identity (at exposure 1)
      * while the brightest channel stays at or under 0.8 linear (sRGB 231), so captured
-     * point RGB, satellite colour and picked panel colours render as authored. From the
-     * knee up everything is compressed so that `whitePoint`, not 1, reaches white: that
-     * includes in-range highlights (at 1.5, sRGB 255 renders as 248 and the fog colour
-     * 0xfff2e0 as about (248, 235, 218)) as well as the overbright basemap, lit cloud tops
-     * and additive overlays such as the donation parcel's sonar ring, which roll off
-     * instead of clipping. On a measured frame 0.04 % of pixels sat above the knee.
+     * point RGB, satellite colour and picked panel colours render as authored. With
+     * `whitePoint` above 1, everything from the knee up is compressed so the white point,
+     * not 1, reaches white: in-range highlights too (at 1.5, sRGB 255 renders as 248 and
+     * the fog colour 0xfff2e0 as about (248, 235, 218)), while the overbright basemap, lit
+     * cloud tops and the donation parcel's additive overlays roll off instead of clipping.
+     * On a measured frame 0.04 % of pixels sat above the knee.
      * Stock `neutral` darkens every unlit colour by that offset (all pixels, −16 levels
      * on average) and crushes the darks; `none` is the hard clip; `agx` greys and `aces`
      * yellows photo colour. Kept for comparison only. `?tonemap=` overrides this for an A/B.
@@ -1153,12 +1154,12 @@ export const EXPERIENCE_CONFIG = {
      * 0.25–2; a config value outside it is clamped at boot. */
     exposure: 1,
     /** `shoulder` only: the linear peak that reaches full output (white for a grey).
-     * 1 means no roll-off: everything up to 1 passes unchanged (to float precision above
-     * the knee), and brighter colours are
-     * scaled down until their brightest channel is 1, keeping their hue, instead of being
-     * clipped per channel. 1.5 keeps lit cloud tops and 1.4× sandbars graded at the cost
-     * of up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
-    whitePoint: 1.5,
+     * 1, the default, means no roll-off and fidelity first: everything up to 1 passes
+     * unchanged (to float precision above the knee), and brighter colours are scaled down
+     * until their brightest channel is 1, keeping their hue, instead of being clipped per
+     * channel. 1.5 keeps lit cloud tops and 1.4× sandbars graded instead, at the cost of
+     * up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
+    whitePoint: 1,
   },
   // Eye-dome lighting (eye-dome-lighting.ts): depth-edge shading, the standard point-cloud
   // aid for reading shape without normals. A screen pass like DoF and shares its pipeline;
@@ -1168,8 +1169,10 @@ export const EXPERIENCE_CONFIG = {
     /** Off at startup; `?edl=1` boots with it on. */
     enabled: false,
     /** Potree's response scale, applied to linear colour, so it reads about half as strong
-     *  as the same Potree value. At 0.4 a dense canopy frame comes out ~9 % darker. */
-    strength: 0.4,
+     *  as the same Potree value. Measured on a dense canopy frame: 0.25 darkens it 12 %,
+     *  0.4 by 13.5 % — most of it from the 6.5 % of pixels in the gaps between points,
+     *  which go near-black at any strength, so lowering this changes little. */
+    strength: 0.25,
     /** Neighbour distance in whole backbuffer pixels (CSS px × render pixel ratio);
      *  rounded, minimum 1. Larger = wider rims. */
     radiusPx: 1,
