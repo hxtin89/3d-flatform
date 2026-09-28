@@ -11,7 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion,
+  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, imageryEffectsKey,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -95,17 +95,18 @@ export interface Globe {
  * currently being drawn, so one node reads each tile's own `map`. That is why `mat.map`
  * has to keep being set; it was previously kept only for the disposal path.
  *
- * Keyed on the cloud's effect version because the effect switches compile their code out
- * entirely rather than turning it down, so a flag flip has to produce a different graph.
+ * Keyed on the effect flags the map graph reads, because the effect switches compile their
+ * code out entirely rather than turning it down: a flip of one of those has to produce a
+ * different graph, and a flip of any other must not cost the map a build.
  */
-const imageryGraphCache = new Map<number, any>()
+const imageryGraphCache = new Map<string, any>()
 
 function imageryColorNode(uniforms: CloudUniforms): any {
-  const key = cloudEffectsVersion()
+  const key = imageryEffectsKey()
   const cached = imageryGraphCache.get(key)
   if (cached) return cached
-  // A new version means every older graph is dead to later lookups. Dropped rather than
-  // kept, because each one's map reference still holds the last tile material it drew.
+  // Any older graph is for a flag set that no longer holds. Dropped rather than kept,
+  // because each one's map reference still holds the last tile material it drew.
   imageryGraphCache.clear()
 
   const raw = (materialReference('map', 'texture') as any).rgb

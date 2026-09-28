@@ -822,6 +822,13 @@ export function cloudEffectsVersion(): number {
   return effectsVersion
 }
 
+/** The effect flags the basemap's colour graph reads — groundFogNode, applyMaskSurround and
+ *  applyGroundPatch, which also reads sphereFade. A switch the map never reads, such as the
+ *  fovea bend or the inspector's terms, must not hand it a new graph and a new build. */
+export function imageryEffectsKey(): string {
+  return `${effects.groundFog}|${effects.groundPatch}|${effects.sphereFade}|${effects.vignette}`
+}
+
 export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): boolean {
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
