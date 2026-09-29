@@ -27,12 +27,15 @@ import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
+import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
 import { EXPERIENCE_CONFIG } from './config'
 import {
-  installToneMapping, parseToneMappingMode, toneMappingModeOf, toneWhitePoint,
+  installToneMapping, parseToneMappingMode, toneMappingModeOf, toneWhitePoint, TONE_MAPPINGS,
+  resolveToneMapping, setFilmPart, isFilmPart, filmContrast, filmSaturation, filmSplit, filmLift,
+  filmVignette,
 } from './tone-mapping'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -976,6 +979,7 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         break
       case 'daylightGrading':
         environmentLayer?.setGradingEnabled(effective.daylightGrading)
+        hazeLayer.setNeutral(!effective.daylightGrading)
         break
       case 'fieldModels':
         fieldModelLayer?.setVisible(effective.fieldModels)
@@ -1183,6 +1187,8 @@ onRebase((delta) => {
 const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
+/** Distance haze and the graded sky; reads enuUp live, so it can exist before the frame does. */
+const hazeLayer: HazeLayer = createHazeLayer({ scene, up: enuUp })
 let zOffset = 0
 
 /** Lift the streamed cloud off the draped imagery. Diagnostic only when off:
@@ -1458,6 +1464,8 @@ function buildPivotMarker(): THREE.Group {
   material.depthWrite = false
   material.transparent = true
   material.toneMapped = false
+  // A navigation aid keeps its signal colour at any distance; see atmosphere-haze.ts.
+  material.userData.noHaze = true
   pivotMarkerMaterial = material
 
   const group = new THREE.Group()
@@ -3368,10 +3376,13 @@ bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { unif
 // fair; the curve buttons keep their pick while it is off. The grade is compiled in only
 // while it would change something, so sliders at 1× / 100 % cost nothing either.
 let toneStageOn: boolean = EXPERIENCE_CONFIG.toneMapping.enabled && params.get('tonemap') !== 'off'
-let pickedToneMapping: THREE.ToneMapping = renderer.toneMapping
+let pointGradeOn: boolean = EXPERIENCE_CONFIG.design.pointGradeEnabled
+// The curve as picked (film is its base slot); the renderer carries the resolved variant.
+let pickedToneMapping: THREE.ToneMapping = TONE_MAPPINGS[toneMappingModeOf(renderer.toneMapping)]
 function syncToneStage(): void {
-  renderer.toneMapping = toneStageOn ? pickedToneMapping : THREE.NoToneMapping
-  const grading = toneStageOn && (uniforms.pointContrast.value !== 1 || uniforms.pointSaturation.value !== 1)
+  renderer.toneMapping = toneStageOn ? resolveToneMapping(pickedToneMapping) : THREE.NoToneMapping
+  const grading = toneStageOn && pointGradeOn
+    && (uniforms.pointContrast.value !== 1 || uniforms.pointSaturation.value !== 1)
   const decodeChanged = setCloudEffectEnabled('exactDecode', toneStageOn)
   const gradeChanged = setCloudEffectEnabled('pointGrade', grading)
   // Point tiles only: neither flag reaches the basemap's graph, so rebuilding every
@@ -3379,6 +3390,7 @@ function syncToneStage(): void {
   if (decodeChanged || gradeChanged) stream?.refreshEffects()
 }
 bindEffectToggle('toneStageToggle', '◐ Tone & colour', toneStageOn, (on) => { toneStageOn = on; syncToneStage() })
+bindEffectToggle('pointGradeToggle', '◇ Point grade', pointGradeOn, (on) => { pointGradeOn = on; syncToneStage() })
 bindDesignSlider('pointContrast', DESIGN.pointContrast, asFactor, (v) => {
   uniforms.pointContrast.value = v
   syncToneStage()
@@ -3402,6 +3414,19 @@ bindDesignSlider('toneExposure', EXPERIENCE_CONFIG.toneMapping.exposure, asFacto
 bindDesignSlider('toneWhitePoint', EXPERIENCE_CONFIG.toneMapping.whitePoint, asFactor, (v) => {
   toneWhitePoint.value = v
 })
+// Film grade. Its sliders are uniforms; the two switches compile a part in or out, which
+// moves the renderer to another film variant and rebuilds only the output pass.
+const FILM = EXPERIENCE_CONFIG.toneMapping.film
+// Every slider re-resolves too: a part at its neutral value is compiled out as well.
+bindEffectToggle('filmToneToggle', '◐ Film tone', FILM.toneEnabled, (on) => { setFilmPart('tone', on); syncToneStage() })
+bindDesignSlider('filmContrast', FILM.contrast, asFactor, (v) => { filmContrast.value = v; syncToneStage() })
+bindDesignSlider('filmSaturation', FILM.saturation, asPercent, (v) => { filmSaturation.value = v; syncToneStage() })
+bindEffectToggle('filmLiftToggle', '▁ Black lift', FILM.liftEnabled, (on) => { setFilmPart('lift', on); syncToneStage() })
+bindDesignSlider('filmLift', FILM.lift, (v) => `${(v * 100).toFixed(1)}%`, (v) => { filmLift.value = v; syncToneStage() })
+bindEffectToggle('filmSplitToggle', '◑ Warm/cool split', FILM.splitEnabled, (on) => { setFilmPart('split', on); syncToneStage() })
+bindDesignSlider('filmSplit', FILM.split, asFactor, (v) => { filmSplit.value = v; syncToneStage() })
+bindEffectToggle('filmVignetteToggle', '◎ Vignette', FILM.vignetteEnabled, (on) => { setFilmPart('vignette', on); syncToneStage() })
+bindDesignSlider('filmVignette', FILM.vignette, asPercent, (v) => { filmVignette.value = v; syncToneStage() })
 // Goes through the globe because changing it has to force a re-traversal; see
 // Globe.setErrorTarget. Higher = fewer tiles per view = softer imagery.
 bindDesignSlider('basemapErrorTarget', DESIGN.basemapErrorTarget, asPixels, (v) => {
@@ -3481,6 +3506,17 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
   scene.fog = enabled && distanceFogAllowedByTier ? distanceFog : null
   refreshEffectShaders()
 })
+// Distance haze and sky gradient (atmosphere-haze.ts). While the haze is on its fog node
+// takes precedence over the distance fog above; off takes the node off the scene.
+const HAZE = EXPERIENCE_CONFIG.atmosphere.haze
+bindEffectToggle('hazeToggle', '≈ Distance haze', HAZE.enabled, (enabled) => {
+  if (hazeLayer.setHaze(enabled)) refreshEffectShaders()
+})
+bindEffectToggle('skyGradientToggle', '◠ Sky gradient', HAZE.skyGradient, (enabled) => hazeLayer.setSky(enabled))
+bindDesignSlider('hazeStart', HAZE.startM, asMetres, (v) => hazeLayer.setStartM(v))
+bindDesignSlider('hazeDistance', HAZE.distanceM, (v) => `${(v / 1000).toFixed(1)} km`, (v) => hazeLayer.setDistanceM(v))
+bindDesignSlider('hazeStrength', HAZE.strength, asPercent, (v) => hazeLayer.setStrength(v))
+bindDesignSlider('hazeHorizonBlend', HAZE.horizonBlend, asPercent, (v) => hazeLayer.setHorizonBlend(v))
 
 // Pointer smoothing. Covers panning as well as rotation: EnvironmentControls derives
 // both from the same pointerTracker (_updatePosition and _updateRotation, :959 and
@@ -3738,6 +3774,7 @@ designCopyEl.addEventListener('click', async () => {
     mapBrightness: uniforms.mapBrightness.value,
     pointContrast: uniforms.pointContrast.value,
     pointSaturation: uniforms.pointSaturation.value,
+    pointGradeEnabled: pointGradeOn,
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -3779,12 +3816,35 @@ pointLighting: ${JSON.stringify({
 atmosphere: ${JSON.stringify({
     fogNearFactor: distanceFogNearFactor,
     fogFarFactor: distanceFogFarFactor,
+    haze: {
+      enabled: hazeLayer.isHaze(),
+      skyGradient: hazeLayer.isSky(),
+      startM: Number($<HTMLInputElement>('#hazeStart').value),
+      distanceM: Number($<HTMLInputElement>('#hazeDistance').value),
+      strength: Number($<HTMLInputElement>('#hazeStrength').value),
+      horizonBlend: Number($<HTMLInputElement>('#hazeHorizonBlend').value),
+      zenithElevation: HAZE.zenithElevation,
+    },
   }, null, 2)}
 toneMapping: ${JSON.stringify({
     enabled: toneStageOn,
     mode: toneMappingModeOf(pickedToneMapping),
     exposure: renderer.toneMappingExposure,
     whitePoint: toneWhitePoint.value,
+    film: {
+      toneEnabled: isFilmPart('tone'),
+      contrast: filmContrast.value,
+      saturation: filmSaturation.value,
+      split: filmSplit.value,
+      splitEnabled: isFilmPart('split'),
+      shadowTint: [...FILM.shadowTint],
+      highlightTint: [...FILM.highlightTint],
+      liftEnabled: isFilmPart('lift'),
+      lift: filmLift.value,
+      vignette: filmVignette.value,
+      vignetteEnabled: isFilmPart('vignette'),
+      whitePoint: FILM.whitePoint,
+    },
   }, null, 2)}
 eyeDomeLighting: ${JSON.stringify({
     enabled: depthOfField.isEyeDome(),
@@ -4526,6 +4586,7 @@ function loop(now: number): void {
   updateDomePin()
   sphereFade?.update()
   updateAtmosphere(now)
+  hazeLayer.update(camera, environmentLayer?.getDaylightState() ?? null, rangeDebug?.altitude ?? 300)
   const stats = updateStreaming(now)
   const daylightState = environmentLayer?.update(
     now,
@@ -5263,6 +5324,7 @@ function dispose(): void {
   stream?.dispose()
   globe?.dispose()
   depthOfField.dispose()
+  hazeLayer.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()

@@ -805,8 +805,10 @@ export const EXPERIENCE_CONFIG = {
     basemapGraceMs: 12_000,
   },
   atmosphere: {
-    /** Distance haze on at startup. Off while the level-of-detail work is being
-     * judged: the haze hides exactly the far-field density the sliders change. */
+    /** Distance fog (three's THREE.Fog) on at startup. Off while the level-of-detail
+     * work is being judged: fog hides exactly the far-field density the sliders change.
+     * The newer `haze` below ships on for the cinematic look; its 400 m clear zone keeps
+     * the judged near tiles clear, and its switch takes it out for LOD A/Bs. */
     distanceFogEnabled: false,
     // Bring humid tropical and boreal haze into the mid-distance.
     minimumFarM: 24_000,
@@ -827,6 +829,29 @@ export const EXPERIENCE_CONFIG = {
     // shortening the view instead: the far plane shrinks and the fog closes in,
     // which culls distant tiles and shrinks the drawn set.
     farScaleByPreset: { strong: 1, medium: 0.72, constrained: 0.5 },
+    /**
+     * Aerial perspective (atmosphere-haze.ts): distance haze plus a graded sky, the
+     * cinematic replacement for the flat sky band and the hard clipped horizon. While the
+     * haze is on it takes over from the distance fog above; with both switches off
+     * neither node exists and the frame is what it was before.
+     */
+    haze: {
+      enabled: true,
+      skyGradient: true,
+      /** Metres from the camera before any haze: the near canopy stays clear. */
+      startM: 400,
+      /** e-folding distance beyond the start: at this distance the haze is ~63 % of
+       *  `strength`. 9 km reads as humid rainforest air. */
+      distanceM: 9_000,
+      /** The most the haze covers before the far-plane wall takes over. */
+      strength: 0.85,
+      /** How far the horizon colour is pulled from the sky toward the sunlight: pale
+       *  at noon, warm at golden hour. */
+      horizonBlend: 0.55,
+      /** Elevation (sine of the angle above the horizon) at which the sky reaches its
+       *  zenith colour. 0.45 ≈ 27°. */
+      zenithElevation: 0.45,
+    },
   },
   // Look grading exposed live by the DESIGN section of the panel. These are the
   // shipped defaults; the sliders write the same uniforms, so anything dialled in
@@ -991,6 +1016,8 @@ export const EXPERIENCE_CONFIG = {
     pointContrast: 1,
     /** 1 = captured saturation, 0 = grey, above 1 = more vivid. Panel range 0–2. */
     pointSaturation: 1,
+    /** Off compiles the point grade out of the tile shaders whatever the sliders say. */
+    pointGradeEnabled: true,
     /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
@@ -1135,6 +1162,10 @@ export const EXPERIENCE_CONFIG = {
      */
     enabled: true,
     /**
+     * `film` is the default since the brief became cinematic rather than documentary: the
+     * Film Warm grade picked on the Canopy Look Board, see `film` below. `shoulder` is the
+     * faithful curve it grades into, kept for when captured colour must be exact.
+     *
      * `shoulder` shares Khronos PBR Neutral's knee, hue-preserving peak scaling and pull
      * toward white, but drops its 0.04 dark offset and uses its own power curve that
      * reaches white exactly at `whitePoint`. It is the exact identity (at exposure 1)
@@ -1149,7 +1180,7 @@ export const EXPERIENCE_CONFIG = {
      * on average) and crushes the darks; `none` is the hard clip; `agx` greys and `aces`
      * yellows photo colour. Kept for comparison only. `?tonemap=` overrides this for an A/B.
      */
-    mode: 'shoulder' as 'none' | 'shoulder' | 'neutral' | 'agx' | 'aces',
+    mode: 'film' as 'none' | 'film' | 'shoulder' | 'neutral' | 'agx' | 'aces',
     /** Linear multiplier applied before the curve. Ignored by `none`. Panel range
      * 0.25–2; a config value outside it is clamped at boot. */
     exposure: 1,
@@ -1160,6 +1191,30 @@ export const EXPERIENCE_CONFIG = {
      * channel. 1.5 keeps lit cloud tops and 1.4× sandbars graded instead, at the cost of
      * up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
     whitePoint: 1,
+    /**
+     * `film` mode: Film Warm from the Look Board. Contrast is a power on luma in log space
+     * around 18 % grey (1 = none); saturation mixes toward luma (1 = captured). The split
+     * tints shadows cool and highlights warm (`split` 0–2 scales them); `lift` raises black
+     * like a print stock; `vignette` darkens the corners by that fraction. `whitePoint` is
+     * its own shoulder's: 2, so sand and cloud tops roll off softly — this is a look, not
+     * a measurement. Each part (tone = contrast + saturation, split, lift, vignette) is a
+     * build-time switch: off, or at its neutral value, compiles it out of the output pass
+     * rather than running it at zero.
+     */
+    film: {
+      toneEnabled: true,
+      contrast: 1.25,
+      saturation: 0.9,
+      split: 1,
+      splitEnabled: true,
+      shadowTint: [0.93, 1, 1.08],
+      highlightTint: [1.07, 1, 0.9],
+      liftEnabled: true,
+      lift: 0.012,
+      vignette: 0.3,
+      vignetteEnabled: true,
+      whitePoint: 2,
+    },
   },
   // Eye-dome lighting (eye-dome-lighting.ts): depth-edge shading, the standard point-cloud
   // aid for reading shape without normals. A screen pass like DoF and shares its pipeline;
@@ -1180,6 +1235,11 @@ export const EXPERIENCE_CONFIG = {
      *  the crown rims but stops the gaps between points going black; 0 is Potree's
      *  unbounded behaviour. */
     floor: 0.6,
+    /** EDL fades out between these view distances (metres). Beyond a few kilometres the
+     *  smooth ground's pixel-to-pixel depth steps read as edges and it would only darken
+     *  the distance haze. */
+    fadeStartM: 1_500,
+    fadeEndM: 5_000,
   },
   // One of the two effects that cannot live inside a colour node (with eye-dome
   // lighting): a circle of confusion has to read neighbouring pixels, so DoF is a real post pass (see

@@ -210,6 +210,8 @@ export function createSphereFade(opts: {
     material.depthWrite = false
     material.side = THREE.DoubleSide
     material.toneMapped = false
+    // Debug geometry: the distance haze leaves it alone (atmosphere-haze.ts).
+    material.userData.noHaze = true
     const mesh = new THREE.Mesh(shellGeometry, material)
     mesh.frustumCulled = false
     mesh.renderOrder = renderOrder

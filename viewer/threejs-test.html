@@ -1257,13 +1257,14 @@
           <div class="row">
             <label class="h">Tone curve</label>
             <div class="seg" id="toneMappingSeg">
+              <button data-tone-mapping="100" class="on">Film</button>
+              <button data-tone-mapping="5">Shoulder</button>
               <button data-tone-mapping="0">None</button>
-              <button data-tone-mapping="5" class="on">Shoulder</button>
               <button data-tone-mapping="7">Neutral</button>
               <button data-tone-mapping="6">AgX</button>
               <button data-tone-mapping="4">ACES</button>
             </div>
-            <span class="weather-note"><em>Shoulder</em> passes captured colour through exactly. At white point 1× it only changes what goes past full brightness — scaled down with its hue kept instead of clipped per channel; a higher white point rolls those highlights off softly, at the cost of a few levels off the brightest whites. <em>None</em> clips. Stock <em>Neutral</em> darkens all unlit colour and crushes the darks; <em>AgX</em> greys and <em>ACES</em> yellows it — kept for comparison. Applies to the whole frame, sky and clouds included, in the output pass that already runs, so no curve costs a pass</span>
+            <span class="weather-note"><em>Film</em> is the cinematic grade the experience ships with (settings below). <em>Shoulder</em> passes captured colour through exactly. At white point 1× it only changes what goes past full brightness — scaled down with its hue kept instead of clipped per channel; a higher white point rolls those highlights off softly, at the cost of a few levels off the brightest whites. <em>None</em> clips. Stock <em>Neutral</em> darkens all unlit colour and crushes the darks; <em>AgX</em> greys and <em>ACES</em> yellows it — kept for comparison. Applies to the whole frame, sky and clouds included, in the output pass that already runs, so no curve costs a pass</span>
           </div>
           <div class="row">
             <label class="h" for="toneExposure">Exposure · <span class="val" id="toneExposureVal">—</span></label>
@@ -1274,6 +1275,52 @@
             <label class="h" for="toneWhitePoint">White point · <span class="val" id="toneWhitePointVal">—</span></label>
             <input type="range" id="toneWhitePoint" min="1" max="3" step="0.05" />
             <span class="weather-note"><em>Shoulder</em> only: the brightness that reaches full output. 1× means no roll-off — everything up to 100 % passes unchanged and anything brighter is scaled down until its brightest channel is full, hue kept, instead of clipped per channel. Higher keeps more gradation in lit cloud tops and bright sand at the cost of a softer top end</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmToneToggle">Film tone</label>
+            <button class="act on" id="filmToneToggle" type="button" aria-pressed="true">◐ Film tone · On</button>
+            <span class="weather-note"><em>Film</em> only, like every row down to Vignette strength. Each Film switch compiles its part out of the output pass when off — and so does a slider at its neutral value</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmContrast">Film contrast · <span class="val" id="filmContrastVal">—</span></label>
+            <input type="range" id="filmContrast" min="1" max="1.6" step="0.01" />
+            <span class="weather-note">An S-curve around mid-grey: deeper shadows, brighter highlights. 1× is none</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmSaturation">Film saturation · <span class="val" id="filmSaturationVal">—</span></label>
+            <input type="range" id="filmSaturation" min="0.5" max="1.2" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="filmLiftToggle">Black lift</label>
+            <button class="act on" id="filmLiftToggle" type="button" aria-pressed="true">▁ Black lift · On</button>
+          </div>
+          <div class="row">
+            <label class="h" for="filmLift">Black lift · <span class="val" id="filmLiftVal">—</span></label>
+            <input type="range" id="filmLift" min="0" max="0.04" step="0.001" />
+            <span class="weather-note">Raises black slightly, like a print stock, so shadows read as film rather than as a screen's black</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmSplitToggle">Split toning</label>
+            <button class="act on" id="filmSplitToggle" type="button" aria-pressed="true">◑ Warm/cool split · On</button>
+            <span class="weather-note">Cool shadows against warm highlights. Off compiles it out of the output pass</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmSplit">Split strength · <span class="val" id="filmSplitVal">—</span></label>
+            <input type="range" id="filmSplit" min="0" max="2" step="0.05" />
+          </div>
+          <div class="row">
+            <label class="h" for="filmVignetteToggle">Vignette</label>
+            <button class="act on" id="filmVignetteToggle" type="button" aria-pressed="true">◎ Vignette · On</button>
+            <span class="weather-note">Darkens the corners of the frame. Off compiles it out of the output pass</span>
+          </div>
+          <div class="row">
+            <label class="h" for="filmVignette">Vignette strength · <span class="val" id="filmVignetteVal">—</span></label>
+            <input type="range" id="filmVignette" min="0" max="0.6" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="pointGradeToggle">Point grade</label>
+            <button class="act on" id="pointGradeToggle" type="button" aria-pressed="true">◇ Point grade · On</button>
+            <span class="weather-note">Contrast and saturation for the point cloud only. Off compiles it out of the tile shaders whatever the sliders say; at 1× / 100 % it is compiled out anyway</span>
           </div>
           <div class="row">
             <label class="h" for="pointContrast">Point contrast · <span class="val" id="pointContrastVal">—</span></label>
@@ -1375,6 +1422,39 @@
             <label class="h" for="groundPatchThreshold">Threshold · <span class="val" id="groundPatchThresholdVal">—</span></label>
             <input type="range" id="groundPatchThreshold" min="0.02" max="0.98" step="0.01" />
             <span class="weather-note">Where to cut the blurred coverage. 50% sits on the outline, higher pulls the edge inward, lower pushes it out</span>
+          </div>
+        </details>
+
+        <details class="design-section">
+          <summary>Haze &amp; sky</summary>
+          <div class="row">
+            <label class="h" for="hazeToggle">Distance haze</label>
+            <button class="act on" id="hazeToggle" type="button" aria-pressed="true">≈ Distance haze · On</button>
+            <span class="weather-note">Aerial perspective: distance fades into the horizon colour, and the cut edge of the map disappears into it (with the sky gradient off, into the flat sky colour). Takes over from the distance fog below while on. Off removes it from every shader, as if it were not there. Turn it off for level-of-detail A/Bs — it fades the far field</span>
+          </div>
+          <div class="row">
+            <label class="h" for="skyGradientToggle">Sky</label>
+            <button class="act on" id="skyGradientToggle" type="button" aria-pressed="true">◠ Sky gradient · On</button>
+            <span class="weather-note">Hazy horizon to deep zenith, following the time of day. Off brings back the flat sky colour</span>
+          </div>
+          <div class="row">
+            <label class="h" for="hazeStart">Clear zone · <span class="val" id="hazeStartVal">—</span></label>
+            <input type="range" id="hazeStart" min="0" max="3000" step="50" />
+            <span class="weather-note">Distance from the camera before any haze — keeps the near canopy clear</span>
+          </div>
+          <div class="row">
+            <label class="h" for="hazeDistance">Haze distance · <span class="val" id="hazeDistanceVal">—</span></label>
+            <input type="range" id="hazeDistance" min="1000" max="40000" step="500" />
+            <span class="weather-note">How quickly the air thickens beyond the clear zone. Shorter = denser air</span>
+          </div>
+          <div class="row">
+            <label class="h" for="hazeStrength">Haze strength · <span class="val" id="hazeStrengthVal">—</span></label>
+            <input type="range" id="hazeStrength" min="0" max="1" step="0.01" />
+          </div>
+          <div class="row">
+            <label class="h" for="hazeHorizonBlend">Sunlit horizon · <span class="val" id="hazeHorizonBlendVal">—</span></label>
+            <input type="range" id="hazeHorizonBlend" min="0" max="1" step="0.01" />
+            <span class="weather-note">How much the horizon takes the sunlight's colour: pale at noon, warm at golden hour</span>
           </div>
         </details>
 

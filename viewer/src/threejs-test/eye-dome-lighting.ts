@@ -16,7 +16,12 @@
 // them. Potree avoids that by drawing overlays after EDL; here that would take a second
 // scene render on a separate layer, so it is left as a known limit of the effect.
 import * as THREE from 'three'
-import { Fn, exp, float, floor, log2, max, perspectiveDepthToViewZ, screenSize, select, uniform, uv, vec2, vec4 } from 'three/tsl'
+import {
+  Fn, exp, float, floor, log2, max, mix, perspectiveDepthToViewZ, screenSize, select, smoothstep, uniform, uv, vec2, vec4,
+} from 'three/tsl'
+import { EXPERIENCE_CONFIG } from './config'
+
+const FADE = EXPERIENCE_CONFIG.eyeDomeLighting
 
 /** Eight directions on the unit circle. Four is cheaper but leaves the diagonals blind. */
 const NEIGHBOURS: ReadonlyArray<readonly [number, number]> = [
@@ -59,7 +64,12 @@ export function eyeDomeLighting(
       const behind = max(centre.sub(logDistance(neighbourDepth)), 0)
       sum = sum.add(select(neighbourDepth.lessThan(1), behind, float(0)))
     }
-    const shade = max(exp(sum.div(NEIGHBOURS.length).mul(-RESPONSE_SCALE).mul(strength)), floor01)
+    const rawShade = max(exp(sum.div(NEIGHBOURS.length).mul(-RESPONSE_SCALE).mul(strength)), floor01)
+    // Faded out with distance: at grazing angles the far ground's depth steps from pixel to
+    // pixel read as edges, and there the shading would only darken the distance haze and
+    // bring the clipped map edge back.
+    const viewDistance = perspectiveDepthToViewZ(centreDepth, near, far).negate()
+    const shade = mix(rawShade, float(1), smoothstep(float(FADE.fadeStartM), float(FADE.fadeEndM), viewDistance))
     return vec4(color.rgb.mul(select(centreDepth.lessThan(1), shade, float(1))), color.a)
   })()
 }
