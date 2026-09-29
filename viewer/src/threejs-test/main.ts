@@ -2708,7 +2708,8 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  *
  * Frame cost was measured to track point count almost exactly and to be indifferent to
  * painted area, so the only thing that moves it is drawing fewer points. These settings
- * feed `stream.applyThinning`, which lowers each tile's instance count.
+ * feed `stream.applyThinning`, which lowers each tile's drawn point count (the draw range
+ * when pulled, the instance count when instanced).
  *
  * `thinTargetScale` multiplies the spacing the error target already asks for: 1 means
  * "thin anything finer than the target", above 1 asks for coarser than the target and is
@@ -3032,8 +3033,9 @@ syncRoundDotsToggle()
  *
  * - **shape** (step 1): every point drawn as a quad (4 vertices, 2 triangles) or a
  *   triangle (3 vertices, 1 triangle) around the same round dot.
- * - **feed** (step 2): instanced, as today, or pulled — no instancing, each tile drawn as
- *   `k × points` vertices that read their point from a per-tile data texture.
+ * - **feed** (step 2): pulled, the default — no instancing, each tile drawn as
+ *   `k × points` vertices that read their point from a per-tile data texture — or
+ *   instanced, the older path kept for the A/B.
  *
  * `?dot=tri|quad` and `?feed=pull|inst` are the boot state; the buttons rebuild every
  * loaded tile in place from its own point arrays, so all four arms are measured on the same
@@ -4197,7 +4199,7 @@ function errorTargetLabel(): string {
 /**
  * Two numbers that the point count alone hides.
  *
- * `Overdraw` is fragments shaded per screen pixel: the quad areas of every drawn point,
+ * `Overdraw` is fragments shaded per screen pixel: the primitive areas of every drawn point,
  * summed over the visible tiles and divided by the backbuffer. Summed rather than taken
  * from one nominal diameter because the size is per tile — under tilt the near and far
  * halves of the frame sit at opposite ends of the min/max clamp, and a single figure for

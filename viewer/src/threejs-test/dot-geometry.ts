@@ -36,10 +36,11 @@ export type DotShape = 'quad' | 'triangle'
  * How the GPU is handed the points — step 2 of plans/plan-dot-geometry-ab.md.
  *
  * - **instanced**: one hardware instance per point, the corners in a tiny per-vertex
- *   buffer and the point in per-instance attributes. Today's path. Measured: the cost is
- *   per instance, because a 3- or 4-vertex instance fills a whole vertex batch.
- * - **pulled**: no instancing and no per-vertex attributes at all. Each tile draws
- *   `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
+ *   buffer and the point in per-instance attributes. The older path, kept for the A/B
+ *   (`?feed=inst`). Measured: the cost is per instance, because a 3- or 4-vertex instance
+ *   fills a whole vertex batch.
+ * - **pulled**, the default since 2026-09-29: no instancing and no per-vertex attributes
+ *   at all. Each tile draws `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
  *   the shader derives the point from the vertex index and reads it from a per-tile data
  *   texture, so vertices of many points share a batch. Same 16 bytes per point on the GPU.
  */

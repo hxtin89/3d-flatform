@@ -1,6 +1,7 @@
 // Point-cloud material for the streamed tiles. The geometry itself stays
 // tile-owned so Three can release CPU and GPU resources as the camera moves.
-// Points are drawn as instanced quads — see createCloudMaterial for why.
+// Points are drawn as camera-facing triangles or quads, pulled from a per-tile texture by
+// default and instanced for the A/B — see createCloudMaterial for why not THREE.Points.
 import * as THREE from 'three'
 import { MaterialReferenceNode, PointsNodeMaterial } from 'three/webgpu'
 import {
@@ -641,8 +642,9 @@ export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
 // Applied per material rather than through `renderer.highPrecision`, which is
 // documented as incompatible with InstancedMesh and SkinnedMesh; this scene has
 // both (cloud puffs in environment-layer, the rigged parrots in
-// field-model-layer). Our tiles are plain Meshes with an InstancedBufferGeometry,
-// whose per-instance attributes feed positionLocal before the matrix is applied.
+// field-model-layer). Our tiles are plain Meshes — a pulled BufferGeometry by default,
+// an InstancedBufferGeometry in the A/B arm — whose point feeds positionLocal before the
+// matrix is applied.
 const HIGH_PRECISION_CONTEXT = context({ modelViewMatrix: highpModelViewMatrix })
 let highPrecisionMatrices = true
 
@@ -1257,7 +1259,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
 /** Create a material for exactly one streamed tile. Never share it across tiles:
  * UnloadTilesPlugin disposes hidden tile materials independently.
  *
- * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
+ * The tile is drawn as camera-facing triangles or quads (dot-geometry.ts), not as THREE.Points:
  * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
  * backends pin a real point primitive to one pixel (WebGPU has no point-size
  * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at
