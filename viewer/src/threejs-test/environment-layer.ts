@@ -2,13 +2,14 @@ import * as THREE from 'three'
 import { MeshBasicNodeMaterial, NodeMaterial } from 'three/webgpu'
 import {
   Break, Fn, If, Loop, float, smoothstep, texture3D, uniform, vec3, vec4,
-  exp, pow, dot, normalize, hash, screenCoordinate,
-  modelWorldMatrixInverse, positionWorld, cameraPosition,
+  exp, pow, dot, normalize, hash, screenCoordinate, length, max, mix,
+  modelWorldMatrix, modelWorldMatrixInverse, positionWorld, cameraPosition,
 } from 'three/tsl'
 import { JitteredRaymarchingBox } from './tsl-raymarch'
 import { EXPERIENCE_CONFIG } from './config'
 import { originVersion } from './origin'
 import type { CloudUniforms } from './point-cloud'
+import type { CloudHaze } from './atmosphere-haze'
 
 export type CloudMode = 'off' | 'soft' | 'volume'
 export type PerformanceTier = 'constrained' | 'balanced' | 'strong'
@@ -53,6 +54,9 @@ export interface EnvironmentLayer {
    * because the shadow uniform is rewritten every frame from the daylight ramp,
    * so a panel writing the uniform directly would be overwritten immediately. */
   setCloudShadowStrength(strength: number): void
+  /** Distance haze for the ray-marched clouds, or null while the haze is off; see
+   *  buildVolumeMaterial. */
+  setCloudHaze(haze: CloudHaze | null): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -166,6 +170,8 @@ interface VolumeMaterialHandle {
   sunColor: any
   ambientColor: any
   sunDir: any
+  /** Swap between the plain shader (scene fog as before) and the self-hazed one. */
+  setHaze(haze: CloudHaze | null): void
 }
 
 interface NearCloud {
@@ -189,6 +195,10 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let cloudIntent = storedPreference === null ? tier !== 'constrained' : storedPreference === 'on'
   let cloudMode: CloudMode = 'off'
   let cloudReason = cloudIntent ? 'Adaptive cloud quality' : 'Clouds are off'
+  /** The distance haze the volume clouds evaluate themselves, null while it is off. Kept
+   *  here because the cloud resources are rebuilt whenever the cloud mode changes. */
+  let cloudHaze: CloudHaze | null = null
+  const volumeHandles = new Set<VolumeMaterialHandle>()
   let lowFpsSince = 0
   // Guard-demotion bookkeeping: only demotions by the fps guard earn a
   // recovery attempt — a measured 'medium' bench verdict stays authoritative.
@@ -285,6 +295,8 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     if (resources.nearClouds) {
       for (const cloud of resources.nearClouds) cloud.handle.material.dispose()
     }
+    // Every volume handle belongs to the resources just released.
+    volumeHandles.clear()
     resources = null
   }
 
@@ -354,8 +366,17 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     const cloudTexture = texture3D(cloudNoiseTexture, null, 0)
     const coverageLow = float(cfg.coverage[0])
     const coverageHigh = float(cfg.coverage[1])
-    const volumeNode = Fn(() => {
+    // Built twice at most: plain, and self-hazed while the distance haze is on. The scene
+    // fog lands on a fragment's own position, which for this BackSide box is where the ray
+    // leaves it — 6–11 km behind the front of a far field — so it over-hazed the whole
+    // cloud. The hazed variant instead weighs each step's distance by what that step adds
+    // to the pixel and hazes by that average, and turns the scene fog off for the material.
+    // The far-plane wall still uses the exit distance, so a box the far plane is about to
+    // clip is already fully hazed to the horizon colour first, as with the scene fog before.
+    // With the haze off the plain variant is used unchanged.
+    const makeVolumeNode = (haze: CloudHaze | null) => Fn(() => {
       const finalColor = vec4(0).toVar()
+      const weightedDistance = haze ? float(0).toVar() : null
       // World sun direction bent into each field's box-local space; w = 0 keeps
       // it a direction and modelWorldMatrixInverse absorbs the non-uniform scale.
       const sunLocal = normalize(modelWorldMatrixInverse.mul(vec4(sunDirWorld, 0)).xyz)
@@ -393,22 +414,40 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
             .add(vec3(ambientColor as any).mul(cfg.ambientAmount))
           const alpha = density.mul(cfg.stepAlpha)
           finalColor.rgb.addAssign(finalColor.a.oneMinus().mul(alpha).mul(lit))
+          if (weightedDistance) {
+            const sampleWorld = modelWorldMatrix.mul(vec4(positionRay, 1)).xyz
+            weightedDistance.addAssign(finalColor.a.oneMinus().mul(alpha).mul(length(sampleWorld.sub(cameraPosition))))
+          }
           finalColor.a.addAssign(finalColor.a.oneMinus().mul(alpha))
         })
         If(finalColor.a.greaterThanEqual(0.95), () => Break())
       })
-      return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity))
+      if (!haze || !weightedDistance) return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity))
+      const cloudDistance = weightedDistance.div(max(finalColor.a, 1e-4))
+      const exitDistance = length(positionWorld.sub(cameraPosition))
+      const hazed = mix(finalColor.rgb, haze.color, max(haze.amount(cloudDistance), haze.wall(exitDistance)))
+      return vec4(hazed, finalColor.a.mul(cloudOpacity))
     })()
+    const plainNode = makeVolumeNode(null)
+    let hazedNode: any = null
     const material = new NodeMaterial()
-    material.colorNode = volumeNode
+    material.colorNode = plainNode
     material.side = THREE.BackSide
     material.transparent = true
     material.depthWrite = false
-    return {
+    const handle: VolumeMaterialHandle = {
       material,
       opacity: cloudOpacity, wind: windOffset,
       sunColor, ambientColor, sunDir: sunDirWorld,
+      setHaze(haze) {
+        material.colorNode = haze ? (hazedNode ??= makeVolumeNode(haze)) : plainNode
+        material.fog = !haze
+        material.needsUpdate = true
+      },
     }
+    volumeHandles.add(handle)
+    if (cloudHaze) handle.setHaze(cloudHaze)
+    return handle
   }
 
   function respawnNearCloud(cloud: NearCloud, now: number, initial = false): void {
@@ -662,6 +701,11 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       // waiting out the 250 ms update interval.
       lastDaylightUpdate = -Infinity
       updateDaylight(performance.now())
+    },
+    setCloudHaze(haze) {
+      if (haze === cloudHaze) return
+      cloudHaze = haze
+      for (const handle of volumeHandles) handle.setHaze(haze)
     },
     setCloudShadowStrength(strength) {
       cloudShadowStrengthBase = THREE.MathUtils.clamp(strength, 0, 1)

@@ -1,7 +1,11 @@
 // Distance haze and a graded sky — aerial perspective, the cue that reads as "filmed".
 //
 // Haze is one TSL fog node on the scene, so every node material picks it up after its
-// colour node: points, basemap, clouds, props. It works on the true distance from the
+// colour node: points, basemap, soft clouds, props. The ray-marched volume clouds are the
+// exception while the haze is on: their fragment sits on the far face of their box, so
+// they turn material.fog off and apply the same curve themselves through `cloudHaze`, at
+// a transmittance-weighted distance (environment-layer.ts buildVolumeMaterial); with the
+// haze off they take the fog path like everything else. It works on the true distance from the
 // camera (the floating origin keeps positionWorld precise), stays near zero over the
 // canopy close by, builds with distance and saturates just before the far plane — the
 // globe is clipped at camera.far, and the haze is what hides that edge.
@@ -43,7 +47,20 @@ export interface HazeLayer {
   setHorizonBlend(amount: number): void
   /** Neutral light (Daylight grading off): day sky and white sunlight, whatever the clock. */
   setNeutral(neutral: boolean): void
+  /** The haze as parts, for a material that has to evaluate it itself — the ray-marched
+   *  clouds, whose fragment sits on the far side of their box. */
+  readonly cloudHaze: CloudHaze
   dispose(): void
+}
+
+/** The haze curve, split so a caller can feed its own distances into it. */
+export interface CloudHaze {
+  /** Coverage 0..1 at `distance` metres from the camera, before the far-plane wall. */
+  amount(distance: any): any
+  /** The far-plane wall 0..1 at `distance`: 1 just before camera.far clips. */
+  wall(distance: any): any
+  /** The horizon colour the haze mixes toward. */
+  color: any
 }
 
 const EARTH_RADIUS_M = 6_371_000
@@ -69,10 +86,10 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
   // 1 − e^(−(d − start)/distance), scaled by strength, then forced to 1 over the last
   // stretch before the far plane. Clipping is by view depth and the radial distance is
   // never shorter, so the wall is always reached before anything is cut.
+  const hazeAmount = (d: any) => float(1).sub(exp(max(d.sub(startM), 0).div(distanceM).negate())).mul(strength)
+  const hazeWall = (d: any) => smoothstep(farM.mul(0.8), farM.mul(0.97), d)
   const distance = length(positionWorld.sub(cameraPosition))
-  const amount = float(1).sub(exp(max(distance.sub(startM), 0).div(distanceM).negate())).mul(strength)
-  const wall = smoothstep(farM.mul(0.8), farM.mul(0.97), distance)
-  const factor = max(amount, wall)
+  const factor = max(hazeAmount(distance), hazeWall(distance))
   const hazeNode = Fn((_inputs: unknown, builder: any) => {
     const material = builder.material
     if (material?.userData?.noHaze) return output
@@ -121,6 +138,7 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
       }
     },
     setNeutral(next) { neutral = next },
+    cloudHaze: { amount: hazeAmount, wall: hazeWall, color: horizonColor },
     setHaze(next) {
       if (next === haze) return false
       haze = next

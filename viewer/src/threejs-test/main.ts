@@ -3516,6 +3516,8 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
 const HAZE = EXPERIENCE_CONFIG.atmosphere.haze
 bindEffectToggle('hazeToggle', '≈ Distance haze', HAZE.enabled, (enabled) => {
   if (hazeLayer.setHaze(enabled)) refreshEffectShaders()
+  // The ray-marched clouds haze themselves while it is on; see environment-layer.ts.
+  environmentLayer?.setCloudHaze(enabled ? hazeLayer.cloudHaze : null)
 })
 bindEffectToggle('skyGradientToggle', '◠ Sky gradient', HAZE.skyGradient, (enabled) => hazeLayer.setSky(enabled))
 bindDesignSlider('hazeStart', HAZE.startM, asMetres, (v) => hazeLayer.setStartM(v))
@@ -5006,6 +5008,7 @@ async function main(): Promise<void> {
     reducedMotion,
     onCloudStateChange: updateCloudControls,
   })
+  environmentLayer.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
   // Hand over anything dialled in while the layer did not exist yet — both of
