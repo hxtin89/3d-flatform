@@ -1,5 +1,10 @@
 import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { dashboardBase } from './dashboard-base.mjs'
+
+// The path the bundle was built for, handed over by build-livingdashboard.mjs.
+const base = dashboardBase(process.argv[2])
+const baseName = base.slice(1) // "livingdashboard/": the regexes below already match the leading /
 
 const output = resolve('dist')
 const viewerEntry = resolve(output, 'threejs-test.html')
@@ -12,8 +17,8 @@ await copyFile(viewerEntry, indexEntry)
 
 for (const entry of ['index.html', 'threejs-test.html']) {
   const html = await readFile(resolve(output, entry), 'utf8')
-  const invalidRootPath = /(?:src|href)=["']\/(?!livingdashboard\/)/.exec(html)
-    ?? /url\(["']?\/(?!livingdashboard\/|\/)/.exec(html)
+  const invalidRootPath = new RegExp(`(?:src|href)=["']/(?!${baseName})`).exec(html)
+    ?? new RegExp(`url\\(["']?/(?!${baseName}|/)`).exec(html)
   if (invalidRootPath) {
     throw new Error(`${entry} still contains a root-relative asset: ${invalidRootPath[0]}`)
   }
@@ -48,4 +53,4 @@ AddType application/octet-stream .bin
 `
 
 await writeFile(resolve(output, '.htaccess'), htaccess, 'utf8')
-console.log('Living Dashboard ready at /livingdashboard/')
+console.log(`Living Dashboard ready at ${base}`)

@@ -8,8 +8,8 @@
     "dev:https": "VITE_HTTPS=1 vite --host",
     "audio:prepare": "node scripts/prepare-sounds.mjs",
     "bench:verify": "node --experimental-strip-types --test src/threejs-test/*.test.ts",
-    "build": "tsc && vite build --base=/livingdashboard/ && node scripts/prepare-livingdashboard.mjs",
-    "preview": "vite preview --base=/livingdashboard/"
+    "build": "node scripts/build-livingdashboard.mjs",
+    "preview": "node scripts/preview-livingdashboard.mjs"
   },
   "dependencies": {
     "@sparkjsdev/spark": "^2.1.0",

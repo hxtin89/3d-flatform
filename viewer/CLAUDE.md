@@ -16,7 +16,8 @@ A CesiumJS viewer used to share this project at `index.html`, with its own copy 
 npm run dev            # Vite dev server on :5177, all interfaces, opens threejs-test.html
 npm run dev:https      # same but HTTPS (self-signed) — WebGPU on a phone needs a secure context
 npm run build          # tsc (typecheck, noEmit) + vite build --base=/livingdashboard/ + prepare-livingdashboard.mjs
-npm run preview        # preview the livingdashboard build
+npm run build -- livingdashboard-sbb                  # same, built for /livingdashboard-sbb/ instead
+npm run preview -- livingdashboard-sbb --port 5177    # preview a build; give the path it was built for
 npm run audio:prepare  # regenerate browser audio loops from source-assets/ (writes to public/sounds/)
 ```
 
@@ -62,4 +63,4 @@ URL query params (parsed at top of `main.ts`): `?dataset=` (default `peru-b2-glo
 
 ## Deployment
 
-`npm run build` targets an Apache mount at base `/livingdashboard/`. Vite builds the single `threejs-test.html` entry; `scripts/prepare-livingdashboard.mjs` then copies it over `index.html` so the app is the default page, checks both files for root-relative asset paths that would escape the base, and writes the `.htaccess`. Keep that base behaviour intact if you touch the build.
+`npm run build` targets an Apache mount at base `/livingdashboard/`; an argument (`npm run build -- <path>`) builds for another path on the same domain, so copies can be deployed side by side. `scripts/dashboard-base.mjs` holds the path for build, preview and the check alike. Vite builds the single `threejs-test.html` entry; `scripts/prepare-livingdashboard.mjs` then copies it over `index.html` so the app is the default page, checks both files for root-relative asset paths that would escape the base, and writes the `.htaccess`. Keep that base behaviour intact if you touch the build.
