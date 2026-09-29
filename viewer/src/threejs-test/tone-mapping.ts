@@ -17,9 +17,11 @@
 // Everything below the knee is passed through exactly: 0 of 921 217 such pixels changed.
 //
 // `film` is the look the experience ships with: the brief is cinematic, not documentary.
-// It grades before the same shoulder — a log-space S-curve around 18 % grey, restrained
-// saturation, cool shadows against warm highlights, print-film black lift and a vignette —
-// chosen against six alternatives on identical frames (the Canopy Look Board artifact).
+// It grades before the same shoulder — a log-space S-curve around 18 % grey, saturation,
+// cool shadows against warm highlights, print-film black lift and a vignette. Film Warm was
+// chosen against six alternatives on identical frames (the Canopy Look Board artifact) and
+// then retuned by eye: the shipped values in config.ts drop the S-curve, raise saturation
+// and run the split at full strength.
 import * as THREE from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 import {

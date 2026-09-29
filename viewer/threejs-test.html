@@ -1565,7 +1565,7 @@
           <div class="row">
             <label class="h" for="eyeDomeToggle">Effect</label>
             <button class="act" id="eyeDomeToggle" type="button" aria-pressed="false" aria-describedby="eyeDomeNote">◒ Eye-dome lighting · Off</button>
-            <span class="weather-note" id="eyeDomeNote">Darkens what lies just behind each crown's silhouette, read from depth alone — the standard point-cloud aid, since points have no normals to light. A screen pass sharing the depth-of-field pipeline (+0.2 ms measured). Off drops it from the pipeline, and with depth of field also off the frame is drawn straight to the canvas, so it costs nothing at all. Overlays without depth (the parcel glow, rain) are shaded too. <code>?edl=1</code> boots with it on</span>
+            <span class="weather-note" id="eyeDomeNote">Darkens what lies just behind each crown's silhouette, read from depth alone — the standard point-cloud aid, since points have no normals to light. A screen pass sharing the depth-of-field pipeline (+0.2 ms measured). Off drops it from the pipeline, and with depth of field also off the frame is drawn straight to the canvas, so it costs nothing at all. Overlays without depth (the parcel glow, rain) are shaded too. <code>?edl=0</code> boots with it off, <code>?edl=1</code> on</span>
           </div>
           <div class="row">
             <label class="h" for="eyeDomeStrength">Strength · <span class="val" id="eyeDomeStrengthVal">—</span></label>
@@ -1589,7 +1589,7 @@
             <label class="h" for="dofToggle">Effect</label>
             <button class="act on" id="dofToggle" type="button" aria-pressed="true" aria-describedby="dofOffNote">◉ Depth of field · On</button>
             <span class="weather-note" id="dofOffNote">Off removes the effect from the shader entirely rather than turning it down, so it costs nothing at all — use it to read off what it is worth in fps</span>
-            <span class="weather-note" id="dofNote">A real post pass with a blur pyramid — with eye-dome lighting, one of the two effects that do not run in the shader. Off = no cost</span>
+            <span class="weather-note" id="dofNote">A real post pass, nine blur and composite draws — with eye-dome lighting, one of the two effects that do not run in the shader. Off = no cost</span>
           </div>
           <div class="row">
             <label class="h" for="dofAutoFocus">Focus mode</label>
@@ -1609,7 +1609,7 @@
           <div class="row">
             <label class="h" for="dofBokehScale">Bokeh size · <span class="val" id="dofBokehScaleVal">—</span></label>
             <input type="range" id="dofBokehScale" min="0" max="8" step="0.1" />
-            <span class="weather-note">Width of the blur kernel — also the main cost driver</span>
+            <span class="weather-note">Largest blur radius, about this many backbuffer pixels. The tap count is fixed whatever the size</span>
           </div>
           <div class="row">
             <label class="h" for="dofFocusSmoothing">Focus inertia · <span class="val" id="dofFocusSmoothingVal">—</span></label>

@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
   createUniforms, setCloudShadowTexture, setGroundPatchMask,
-  setCloudEffectEnabled, type CloudEffect,
+  isCloudEffectEnabled, setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
@@ -3712,6 +3712,13 @@ const syncDofToggles = () => {
   // "absolute distance" with it off. Relabel rather than offer two sliders.
   dofFocusRowEl.dataset.mode = auto ? 'offset' : 'absolute'
 }
+// `?dof=0|1` and `?edl=0|1` boot with that pass off or on whatever the config says: both
+// ship on, and the no-pass frame is the baseline an fps A/B needs.
+const bootSwitch = (name: string, fallback: boolean): boolean => {
+  const value = params.get(name)
+  return value === '0' ? false : value === '1' ? true : fallback
+}
+depthOfField.setEnabled(bootSwitch('dof', DOF.enabled))
 const onDofToggle = () => { depthOfField.setEnabled(!depthOfField.isEnabled()); syncDofToggles() }
 const onDofAutoFocus = () => { depthOfField.setAutoFocus(!depthOfField.isAutoFocus()); syncDofToggles() }
 dofToggleEl.addEventListener('click', onDofToggle)
@@ -3724,7 +3731,7 @@ bindDesignSlider('dofFocusSmoothing', DOF.focusSmoothing, asPercent, (v) => dept
 
 // Eye-dome lighting shares the DoF pipeline; with both off the frame skips it entirely.
 const EDL = EXPERIENCE_CONFIG.eyeDomeLighting
-bindEffectToggle('eyeDomeToggle', '◒ Eye-dome lighting', EDL.enabled || params.get('edl') === '1', (on) => {
+bindEffectToggle('eyeDomeToggle', '◒ Eye-dome lighting', bootSwitch('edl', EDL.enabled), (on) => {
   depthOfField.setEyeDome(on)
 })
 bindDesignSlider('eyeDomeStrength', EDL.strength, asFactor, (v) => depthOfField.setEyeDomeStrength(v))
@@ -3805,6 +3812,7 @@ designCopyEl.addEventListener('click', async () => {
       sideMaxVignetteStrength: vignetteSideMaxStrength,
     },
     groundFog: {
+      enabled: isCloudEffectEnabled('groundFog'),
       strength: uniforms.groundFogStrength.value,
       baseOffsetM: groundFogBaseOffset,
       heightM: uniforms.groundFogHeight.value,
@@ -3816,11 +3824,13 @@ designCopyEl.addEventListener('click', async () => {
     },
   }, null, 2)}
 pointLighting: ${JSON.stringify({
+    cloudShadowsEnabled: isCloudEffectEnabled('cloudShadows'),
     cloudShadowStrength: Number($<HTMLInputElement>('#cloudShadowStrength').value),
     cloudShadowScaleM: Number($<HTMLInputElement>('#cloudShadowScale').value),
     cloudShadowContrast: uniforms.cloudShadowContrast.value,
   }, null, 2)}
 atmosphere: ${JSON.stringify({
+    distanceFogEnabled,
     fogNearFactor: distanceFogNearFactor,
     fogFarFactor: distanceFogFarFactor,
     haze: {

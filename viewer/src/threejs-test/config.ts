@@ -763,19 +763,21 @@ export const EXPERIENCE_CONFIG = {
     // Directional daylight cues for the (normal-less) point cloud. All three
     // cloud-shadow values are live in the design panel; strength goes through
     // the environment layer because it rides the daylight ramp there.
+    /** Canopy cloud shadows on at startup — part of the look dialled in on 2026-09-29.
+     * Off compiles them out of the point shader. The ground patch draws dark shapes
+     * too; its mask-debug toggle shows which is which. */
+    cloudShadowsEnabled: true,
     /** Base depth of the drifting canopy shadows, before the layer multiplies it
-     * by daylight and halves it when the visible clouds are off. */
-    /** Canopy cloud shadows on at startup. Off while the ground patch is being judged:
-     * both draw dark shapes on the ground and they are easy to mistake for each other. */
-    cloudShadowsEnabled: false,
+     * by daylight and halves it when the visible clouds are off. At 1 in full
+     * daylight a shadow's core takes the canopy all the way to black. */
     cloudShadowStrength: 1,
     /** Metres per period of the shadow noise — the grain size. Smaller means
      * finer, busier dappling; larger means broad continental shadows. */
-    cloudShadowScaleM: 1_700,
+    cloudShadowScaleM: 2_700,
     /** Tightens the noise-to-shadow ramp around its midpoint. 0 is the original
      * wide 0.32–0.62 window (soft, washed); 1 is a near-binary edge, which reads
      * as hard-edged cloud gaps. */
-    cloudShadowContrast: 0.63,
+    cloudShadowContrast: 0.76,
     cloudDeckHeightM: 3_600,
     goldenRimStrength: 0.5,
     warmRim: 0xffb268,
@@ -1109,33 +1111,36 @@ export const EXPERIENCE_CONFIG = {
     // Analytic exponential height fog: no raymarch, no extra pass, no texture —
     // a handful of ALU ops folded into the existing point and imagery colour
     // nodes. Nothing animates, so there is nothing to sample per frame.
-    // The dialled-in look is a warm haze band sitting in the canopy rather than
-    // the wide neutral slab this started as. Note how the values work together:
-    // a very short density distance (25 m) would normally fog the near field
-    // solid, but curve 4 pushes almost all of that density out into the distance,
-    // and the 170 m lower fade keeps the air under the band clear. Pinned to a
-    // warm cream instead of following the daylight ramp.
+    // The look dialled in on 2026-09-29 is a low warm mist rather than the wide
+    // neutral slab this started as: it peaks 15 m above the area floor, below most
+    // of the crowns, so it lies in the gaps and on low ground and leaves the crown
+    // tops nearly clear. Note how the values work together: a very short density
+    // distance (25 m) would normally fog the near field solid, but curve 4 pushes
+    // almost all of that density out into the distance, and the 45 m lower fade
+    // ends the band 30 m under the floor. Pinned to a warm cream instead of
+    // following the daylight ramp, so it stays cream at night too.
     groundFog: {
-      /** Ground haze on at startup. Off for the same reason as the distance fog:
-       * it sits over the canopy the density settings are being read from. */
-      enabled: false,
+      /** Ground mist on at startup. Off compiles it out of the point and imagery
+       * shaders; the panel switch takes it out for density A/Bs. */
+      enabled: true,
       /** Final multiplier, so 0 is reliably off regardless of the other values.
        * The panel allows up to 3; the resulting coverage is clamped to 1, so past
        * 100% the fog saturates earlier rather than overshooting its colour. */
-      strength: 0.75,
-      /** Fog floor relative to the survey's lowest point. Also the height the
+      strength: 1,
+      /** Fog floor relative to the default area's bbox floor (not the terrain: the
+       * river bend dips below it). Also the height the
        * band peaks at, since density decays upward from here and fadeBelowM
        * fades it out downward. */
-      baseOffsetM: 35,
+      baseOffsetM: 15,
       /** e-folding height of the slab: density falls to 1/e at this height. */
       heightM: 10,
       /** Metres below the base over which the fog fades out downward. 0 is the
        * original one-sided slab that extends to the ground at full density; any
-       * positive value turns it into a band — a layer hanging in the canopy with
-       * clear air underneath. Together with heightM this sets the band's total
-       * thickness: roughly fadeBelowM below the base, ~2x heightM above it, so
-       * this band is deliberately lopsided — a soft underside, a tight top. */
-      fadeBelowM: 170,
+       * positive value turns it into a band with clear air underneath. Together
+       * with heightM this sets the band's total thickness: roughly fadeBelowM below
+       * the base, ~2x heightM above it — about 65 m here, a softer underside than
+       * top. */
+      fadeBelowM: 45,
       /** e-folding distance for a ray travelling along the fog base — smaller
        * values thicken the fog. Not a cutoff: opacity approaches 1 asymptotically.
        * Only this low because curve below banks the density into the distance. */
@@ -1163,8 +1168,9 @@ export const EXPERIENCE_CONFIG = {
     enabled: true,
     /**
      * `film` is the default since the brief became cinematic rather than documentary: the
-     * Film Warm grade picked on the Canopy Look Board, see `film` below. `shoulder` is the
-     * faithful curve it grades into, kept for when captured colour must be exact.
+     * Film Warm grade picked on the Canopy Look Board, retuned by eye, see `film` below.
+     * `shoulder` is the faithful curve it grades into, kept for when captured colour must be
+     * exact — at exposure 1, see below.
      *
      * `shoulder` shares Khronos PBR Neutral's knee, hue-preserving peak scaling and pull
      * toward white, but drops its 0.04 dark offset and uses its own power curve that
@@ -1182,8 +1188,10 @@ export const EXPERIENCE_CONFIG = {
      */
     mode: 'film' as 'none' | 'film' | 'shoulder' | 'neutral' | 'agx' | 'aces',
     /** Linear multiplier applied before the curve. Ignored by `none`. Panel range
-     * 0.25–2; a config value outside it is clamped at boot. */
-    exposure: 1,
+     * 0.25–2; a config value outside it is clamped at boot. Shared by every curve, so
+     * at the film look's 0.94 a `shoulder` A/B renders 6 % darker than captured (sRGB 128
+     * as 124): set 1 for the exact reference. */
+    exposure: 0.94,
     /** `shoulder` only: the linear peak that reaches full output (white for a grey).
      * 1, the default, means no roll-off and fidelity first: everything up to 1 passes
      * unchanged (to float precision above the knee), and brighter colours are scaled down
@@ -1192,7 +1200,12 @@ export const EXPERIENCE_CONFIG = {
      * up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
     whitePoint: 1,
     /**
-     * `film` mode: Film Warm from the Look Board. Contrast is a power on luma in log space
+     * `film` mode: Film Warm from the Look Board (contrast 1.25, saturation 0.9, split 1,
+     * lift 0.012 at exposure 1), retuned by eye on 2026-09-29: no S-curve, more colour and
+     * the split at full strength, so there is no neutral white — white renders as about
+     * (250, 236, 214) and the ground-fog cream as (251, 223, 185). The 3D marker and parcel
+     * colours are graded too and drift from the same hex in the DOM labels (lime #d9f99d
+     * renders as (218, 242, 121)). Contrast is a power on luma in log space
      * around 18 % grey (1 = none); saturation mixes toward luma (1 = captured). The split
      * tints shadows cool and highlights warm (`split` 0–2 scales them); `lift` raises black
      * like a print stock; `vignette` darkens the corners by that fraction. `whitePoint` is
@@ -1203,14 +1216,14 @@ export const EXPERIENCE_CONFIG = {
      */
     film: {
       toneEnabled: true,
-      contrast: 1.25,
-      saturation: 0.9,
-      split: 1,
+      contrast: 1,
+      saturation: 1.17,
+      split: 2,
       splitEnabled: true,
       shadowTint: [0.93, 1, 1.08],
       highlightTint: [1.07, 1, 0.9],
       liftEnabled: true,
-      lift: 0.012,
+      lift: 0.01,
       vignette: 0.3,
       vignetteEnabled: true,
       whitePoint: 2,
@@ -1221,20 +1234,23 @@ export const EXPERIENCE_CONFIG = {
   // off drops it from that pipeline, and with DoF also off the frame is drawn straight to
   // the canvas and no pass runs. Measured on: +0.2 ms at 1600×900.
   eyeDomeLighting: {
-    /** Off at startup; `?edl=1` boots with it on. */
-    enabled: false,
+    /** On at startup, part of the look dialled in on 2026-09-29; `?edl=0` boots with it
+     *  off, `?edl=1` on. Not gated by tier: every device pays it, the loader benchmark too. */
+    enabled: true,
     /** Potree's response scale, applied to linear colour, so it reads about half as strong
-     *  as the same Potree value. Measured on a dense canopy frame: 0.25 darkens it 12 %,
-     *  0.4 by 13.5 % — most of it from the 6.5 % of pixels in the gaps between points,
-     *  which go near-black at any strength, so lowering this changes little. */
-    strength: 0.25,
+     *  as the same Potree value. At 1 with the 0.8 floor almost every depth step reaches the
+     *  floor — a sub-metre step at 300 m does — so the floor sets the look: crown rims, gaps
+     *  and sprite edges inside a crown all get the same ×0.8, and strength only still grades
+     *  the smallest steps. 0.5 floors the same rims and gaps but keeps some of that grading. */
+    strength: 1,
     /** Neighbour distance in whole backbuffer pixels (CSS px × render pixel ratio);
      *  rounded, minimum 1. Larger = wider rims. */
     radiusPx: 1,
-    /** Darkest shade EDL may apply, as a fraction of the original brightness. 0.6 keeps
-     *  the crown rims but stops the gaps between points going black; 0 is Potree's
+    /** Darkest shade EDL may apply, as a fraction of the original brightness: 0.8 linear is
+     *  about −9 % on screen. It stops the gaps between points going black (without a floor
+     *  6.5 % of a dense canopy frame went near-black at any strength); 0 is Potree's
      *  unbounded behaviour. */
-    floor: 0.6,
+    floor: 0.8,
     /** EDL fades out between these view distances (metres). Beyond a few kilometres the
      *  smooth ground's pixel-to-pixel depth steps read as edges and it would only darken
      *  the distance haze. */
@@ -1243,31 +1259,38 @@ export const EXPERIENCE_CONFIG = {
   },
   // One of the two effects that cannot live inside a colour node (with eye-dome
   // lighting): a circle of confusion has to read neighbouring pixels, so DoF is a real post pass (see
-  // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel
-  // toggle exists so it can be dropped on weak hardware.
+  // depth-of-field.ts). Costs nine full- and half-resolution draws per frame, not yet
+  // measured on this branch; nothing drops it on weak hardware automatically — the panel
+  // toggle and `?dof=0` do.
   depthOfField: {
-    /** Off at startup: the blur makes the peripheral point density impossible to
-     * judge, which is precisely what the foveation sliders are for. */
-    enabled: false,
+    /** On at startup, part of the look dialled in on 2026-09-29. With the values below it
+     * is a distance blur: the canopy within ~500 m stays sharp, so point density there can
+     * still be judged; switch it off to judge the far field. `?dof=0|1` overrides this. */
+    enabled: true,
     /** Pin the focal plane to whatever the screen centre is aimed at, so the
      * near canopy stays sharp while the background falls away. With this off,
      * focusDistanceM becomes an absolute distance from the camera. */
     autoFocus: true,
     /** With autoFocus on: metres added to the measured ground range — negative
      * pulls focus in front of the aimed point. Off: the absolute distance.
-     * Pulled 120 m forward so the near canopy, not the aimed ground point,
-     * carries the sharp plane. */
-    focusDistanceM: -120,
-    /** Metres past the focal plane at which content is fully out of focus.
-     * Small values give a shallow, cinematic band; large values keep almost
-     * everything sharp. */
-    focalLengthM: 1_075,
-    /** Unitless bokeh size. Drives how wide the blur kernel spreads, so it is
-     * also the main cost knob. */
-    bokehScale: 2.5,
-    /** Per-frame lerp factor for the auto-focus. Low values keep the focal
-     * plane from snapping while the camera moves. */
-    focusSmoothing: 0.08,
+     * The focus is clamped at 1 m, so −500 pins it there whenever the aimed point
+     * is under ~500 m away — every close-up — and the effect is a pure distance
+     * blur rather than a focal plane. Only wider views focus on the ground ahead. */
+    focusDistanceM: -500,
+    /** Metres either side of the focal plane at which content is fully out of
+     * focus; the blur's blend is already full at half of it. At 4 km and a 1 m
+     * focus: 0.3 px at 460 m, 1.25 px at 1 km, 4 px at 2 km, the full radius
+     * from 4 km — the basemap softens, the canopy does not. */
+    focalLengthM: 4_000,
+    /** Largest blur radius, roughly in backbuffer pixels. The tap count is fixed
+     * whatever the size, so it is not what the cost scales with; beyond ~8 the
+     * bokeh disc undersamples. */
+    bokehScale: 8,
+    /** Per-frame lerp factor for the auto-focus. 1 is no smoothing: the focal plane
+     * follows the aimed range every frame, which is stable over the canopy (the range
+     * comes from a flat plane, not the points) but jumps in low side views near the
+     * horizon, where the range changes by kilometres per degree. */
+    focusSmoothing: 1,
   },
   rain: {
     dryDurationMs: 10_000,

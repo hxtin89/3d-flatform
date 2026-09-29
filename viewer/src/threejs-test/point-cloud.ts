@@ -839,6 +839,10 @@ export function cloudEffectsVersion(): number {
   return effectsVersion
 }
 
+export function isCloudEffectEnabled(effect: CloudEffect): boolean {
+  return effects[effect]
+}
+
 export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): boolean {
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
