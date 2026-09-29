@@ -768,6 +768,16 @@ export const EXPERIENCE_CONFIG = {
     strongMinPoints: 2_400_000,
     minSamples: 60,
     pointSizePx: 2,
+    /**
+     * The primitive the hidden stress mass is drawn as. 'instanced-quad' is what the bars
+     * above were tuned on (2026-07-21); 'pulled-triangle' is what the streamed tiles draw
+     * by default since 2026-09-29 (lod.dotGeometry), built the same way. It stays on the
+     * old one until those bars are re-measured against the new one on devices: pulled
+     * triangles cost several times less per point, so switching alone would raise tiers
+     * nobody has checked. `?benchstress=pulled|instanced` picks it for a calibration run,
+     * and the console logs every stage's frame time at Start (applyBenchPreset).
+     */
+    stress: 'instanced-quad' as 'instanced-quad' | 'pulled-triangle',
   },
   pointLighting: {
     // Directional daylight cues for the (normal-less) point cloud. All three

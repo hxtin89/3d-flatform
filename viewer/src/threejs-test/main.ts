@@ -50,7 +50,7 @@ import {
 } from './environment-layer'
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 import { createAudioLayer, type AudioLayer } from './audio-layer'
-import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-bench'
+import { createEagleBench, type BenchPreset, type BenchStress, type EagleBench } from './eagle-bench'
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
@@ -216,7 +216,12 @@ function exposeBenchDebugState(): void {
 
 // The eagle is a real point cloud whose density follows the load progress —
 // the loading animation quietly benchmarks the device's point pipeline.
-void createEagleBench(loaderEagleCanvasEl, { forceWebGL, onSettled: onBenchSettled }).then((bench) => {
+// `?benchstress=pulled|instanced`: the stress primitive for a calibration run (config.ts
+// eagleBench.stress). Anything else leaves the configured one.
+const benchStressParam = params.get('benchstress')
+const benchStress: BenchStress | undefined = benchStressParam === 'pulled' ? 'pulled-triangle'
+  : benchStressParam === 'instanced' ? 'instanced-quad' : undefined
+void createEagleBench(loaderEagleCanvasEl, { forceWebGL, onSettled: onBenchSettled, stress: benchStress }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
@@ -410,6 +415,21 @@ function applyBenchPreset(): void {
       : 'no measurement (heuristic fallback)'} → preset ${preset}${
       presetOverride ? ' (forced by ?preset)' : ''}`,
   )
+  // Every stage's median frame, for re-tuning the bars per device: the verdict only says
+  // which stages held the target. On window as well, so a phone's figures can be read
+  // over remote debugging. A stage reads "—" until it has frames.
+  if (measured) {
+    const stages = measured.stages
+      .map((stage) => `${Math.round(stage.points / 1000)}k ${stage.medianMs === null ? '—' : `${stage.medianMs.toFixed(1)}ms×${stage.samples}`}`)
+      .join(' · ')
+    console.info(`[eagle-bench] stages (${measured.stress}, ${forceWebGL ? 'WebGL2' : renderer.backend?.constructor?.name ?? '?'}, dpr ${window.devicePixelRatio}): ${stages}`)
+  }
+  ;(window as any).__benchReport = {
+    preset, forced: Boolean(presetOverride), measured,
+    backend: (renderer as any).backend?.constructor?.name ?? null,
+    devicePixelRatio: window.devicePixelRatio,
+    settledOnStartScreen: eagleBench?.settled() ?? false,
+  }
   // Every preset write below routes through the render-options flags so a
   // toggled-off optimisation (or active compare mode) is never re-applied.
   //

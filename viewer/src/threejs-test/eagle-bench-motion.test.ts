@@ -17,6 +17,7 @@ import {
   BENCH_QUIET_MS,
   benchVerdict,
   benchVerdictSettled,
+  benchStageSummary,
 } from './eagle-bench-motion.ts'
 
 const checkpoints = [0, 0.25, 0.5, 0.75, 1]
@@ -104,4 +105,14 @@ test('the verdict settles once the full bucket holds a whole quiet window', () =
   assert.equal(benchVerdictSettled(BENCH_BUCKET_WINDOW, 59, 60), false)
   // Past the Start screen's CSS animations (loader-pulse ends at 5.95 s).
   assert.ok(BENCH_QUIET_MS >= 5950)
+})
+
+test('the stage summary reports each stage: its points, median frame and sample count', () => {
+  const buckets = Array.from({ length: 13 }, (_, b) => (b === 0 ? [] : b === 12 ? [20, 14, 16] : [15, 17]))
+  const stages = benchStageSummary(buckets, 2_400_000)
+  assert.equal(stages.length, 13)
+  assert.deepEqual(stages[0], { points: 0, medianMs: null, samples: 0 })
+  assert.deepEqual(stages[6], { points: 1_200_000, medianMs: 17, samples: 2 })
+  // The same median the verdict reads: the upper middle of the sorted frames.
+  assert.deepEqual(stages[12], { points: 2_400_000, medianMs: 16, samples: 3 })
 })

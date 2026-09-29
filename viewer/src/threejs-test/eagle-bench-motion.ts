@@ -196,3 +196,25 @@ export function benchVerdictSettled(
 ): boolean {
   return quietFullSamples >= window && totalSamples >= minSamples
 }
+
+export interface BenchStage {
+  /** Stress points drawn in this stage. */
+  points: number
+  /** Median frame time of its kept frames, in ms; null while it has none. */
+  medianMs: number | null
+  samples: number
+}
+
+/**
+ * One line per stage — the stress point count, the median frame and how many frames it
+ * holds — for the log a calibration run reads. The verdict only asks which stages held
+ * the target; re-tuning its bars needs the times themselves, per device.
+ */
+export function benchStageSummary(buckets: readonly (readonly number[])[], maxPoints: number): BenchStage[] {
+  const densityBuckets = buckets.length - 1
+  return buckets.map((samples, bucket) => ({
+    points: Math.round((bucket / densityBuckets) * maxPoints),
+    medianMs: samples.length ? medianOf(samples) : null,
+    samples: samples.length,
+  }))
+}
