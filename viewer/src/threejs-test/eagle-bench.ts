@@ -13,6 +13,11 @@
 // the same renderer additionally pushes a growing mass of clipped-away
 // stress points (full vertex cost, zero pixels). Frame times per density
 // level yield the device's point budget before the experience starts.
+//
+// Once that verdict can no longer change — the Start screen has shown a whole
+// window of steady frames at full stress — it is taken and kept, the stress
+// mass goes, and the bird is only redrawn when the layout moves: the wait on
+// the Start screen then costs almost nothing (see benchVerdictSettled).
 import * as THREE from 'three'
 import { WebGPURenderer, PointsNodeMaterial } from 'three/webgpu'
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js'
@@ -23,11 +28,15 @@ import {
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import {
+  BENCH_BUCKET_WINDOW,
+  BENCH_QUIET_MS,
   EAGLE_FADE_FLIGHT_FRACTION,
   EAGLE_FLIGHT_PROGRESS_SPAN,
   EAGLE_RANDOM_SEED,
   arrivalProgress,
   assemblyProgressForLoad,
+  benchVerdict,
+  benchVerdictSettled,
   checksumFloat32Arrays,
   completedPointCount,
   createSeededRandom,
@@ -63,7 +72,10 @@ export interface EagleBenchDebugState {
 
 export interface EagleBench {
   setProgress(progress: number): void
+  /** The verdict: the kept one once settled, otherwise from the frames so far. */
   result(): EagleBenchResult
+  /** Whether the verdict has been taken and the measurement stopped. */
+  settled(): boolean
   debugState(): EagleBenchDebugState
   dispose(): void
 }
@@ -147,7 +159,11 @@ function isCoarseDevice(): boolean {
 
 export async function createEagleBench(
   canvas: HTMLCanvasElement,
-  options: { forceWebGL: boolean },
+  options: {
+    forceWebGL: boolean
+    /** Called once, in the frame the verdict settles, with the verdict that is kept. */
+    onSettled?: (result: EagleBenchResult) => void
+  },
 ): Promise<EagleBench> {
   const cfg = EXPERIENCE_CONFIG.eagleBench
   const coarse = isCoarseDevice()
@@ -297,7 +313,13 @@ export async function createEagleBench(
   const frameElement = document.querySelector<HTMLElement>('.loader-eagle-frame')
   let layoutWidth = 0
   let layoutHeight = 0
-  function syncLayout(): void {
+  let placedX = Number.NaN
+  let placedY = Number.NaN
+  let placedScale = Number.NaN
+  /** Follow the DOM frame. Returns whether anything moved, so a settled bench knows
+   *  when its last frame is out of date. */
+  function syncLayout(): boolean {
+    let changed = false
     const hostWidth = Math.max(320, host?.clientWidth ?? window.innerWidth)
     const hostHeight = Math.max(240, host?.clientHeight ?? window.innerHeight)
     if (hostWidth !== layoutWidth || hostHeight !== layoutHeight) {
@@ -306,6 +328,7 @@ export async function createEagleBench(
       renderer.setSize(hostWidth, hostHeight)
       camera.aspect = hostWidth / hostHeight
       camera.updateProjectionMatrix()
+      changed = true
     }
     const worldPerPx = (2 * Math.tan(THREE.MathUtils.degToRad(16)) * camera.position.z) / hostHeight
     const frameRect = frameElement?.getBoundingClientRect()
@@ -321,6 +344,13 @@ export async function createEagleBench(
       )
     }
     pivot.scale.setScalar(eagleScale)
+    if (pivot.position.x !== placedX || pivot.position.y !== placedY || eagleScale !== placedScale) {
+      placedX = pivot.position.x
+      placedY = pivot.position.y
+      placedScale = eagleScale
+      changed = true
+    }
+    return changed
   }
   syncLayout()
 
@@ -334,11 +364,54 @@ export async function createEagleBench(
   let rafId = 0
   let disposed = false
   let totalSamples = 0
+  /** When the stress first reached its full count — the Start screen appearing. */
+  let fullSince = 0
+  /** Full-stress frames timed after the Start screen's animations (BENCH_QUIET_MS). */
+  let quietSamples = 0
+  /** The verdict once taken; from then on nothing is measured. */
+  let kept: EagleBenchResult | null = null
+  let stressReleased = false
+  let idleFrames = 0
+  let redrawWanted = false
+  const computeResult = (): EagleBenchResult => benchVerdict(buckets, maxPoints, totalSamples, cfg)
+
+  // A hidden tab keeps its canvas, but draw once more on return in case it did not.
+  const onVisibility = () => { if (document.visibilityState === 'visible') redrawWanted = true }
+  document.addEventListener('visibilitychange', onVisibility)
+
+  function releaseStress(): void {
+    if (stressReleased) return
+    stressReleased = true
+    stressPoints.removeFromParent()
+    stressGeometry.dispose()
+    stressMaterial.dispose()
+  }
+
+  /**
+   * Take the verdict and stop measuring. The stress mass goes (its ~29 MB with it); the
+   * bird stays, and since it is fully assembled it only needs drawing again when the
+   * layout moves it. The stress was clipped away, so the picture does not change.
+   */
+  function settle(): void {
+    kept = computeResult()
+    releaseStress()
+    void renderer.renderAsync(scene, camera)
+    options.onSettled?.(kept)
+  }
 
   const tick = (now: number) => {
     if (disposed) return
     rafId = requestAnimationFrame(tick)
+    if (kept) {
+      // Settled: follow the layout at a few checks a second and redraw only when it moved.
+      if (++idleFrames % 15 === 0 || redrawWanted) {
+        if (syncLayout() || redrawWanted) void renderer.renderAsync(scene, camera)
+        redrawWanted = false
+      }
+      return
+    }
     stressCount = Math.round(currentLoadProgress * maxPoints)
+    if (stressCount === maxPoints && fullSince === 0) fullSince = now
 
     syncLayout()
     stressGeometry.instanceCount = stressCount
@@ -348,18 +421,15 @@ export async function createEagleBench(
       if (frameMs > 1 && frameMs < 250) {
         const bucket = Math.min(DENSITY_BUCKETS, Math.floor((stressCount / maxPoints) * DENSITY_BUCKETS))
         buckets[bucket].push(frameMs)
-        if (buckets[bucket].length > 240) buckets[bucket].shift()
+        if (buckets[bucket].length > BENCH_BUCKET_WINDOW) buckets[bucket].shift()
         totalSamples++
+        if (bucket === DENSITY_BUCKETS && fullSince > 0 && now - fullSince >= BENCH_QUIET_MS) quietSamples++
       }
     }
     lastFrameAt = now
+    if (benchVerdictSettled(quietSamples, totalSamples, cfg.minSamples)) settle()
   }
   rafId = requestAnimationFrame(tick)
-
-  function medianOf(values: number[]): number {
-    const sorted = [...values].sort((a, b) => a - b)
-    return sorted[sorted.length >> 1]
-  }
 
   return {
     setProgress(progress) {
@@ -368,22 +438,10 @@ export async function createEagleBench(
       progressUniform.value = currentAssemblyProgress
     },
     result() {
-      const targetDelta = 1000 / cfg.targetFps * 1.06 // small tolerance around 60 fps
-      let pointsAtTarget = 0
-      for (let bucket = 0; bucket <= DENSITY_BUCKETS; bucket++) {
-        const samples = buckets[bucket]
-        if (samples.length < 8) continue
-        const bucketPoints = (bucket / DENSITY_BUCKETS) * maxPoints
-        if (medianOf(samples) <= targetDelta) pointsAtTarget = Math.max(pointsAtTarget, bucketPoints)
-      }
-      let preset: BenchPreset | null = null
-      if (totalSamples >= cfg.minSamples) {
-        const fraction = pointsAtTarget / maxPoints
-        preset = fraction >= cfg.strongFraction && pointsAtTarget >= cfg.strongMinPoints
-          ? 'strong'
-          : fraction >= cfg.mediumFraction ? 'medium' : 'constrained'
-      }
-      return { pointsAtTarget, maxPoints, samples: totalSamples, preset }
+      return kept ?? computeResult()
+    },
+    settled() {
+      return kept !== null
     },
     debugState() {
       const settledPoints = completedPointCount(currentAssemblyProgress, visualPoints)
@@ -402,7 +460,7 @@ export async function createEagleBench(
         waitingPoints,
         flyingPoints,
         settledPoints,
-        stressPoints: Math.round(currentLoadProgress * maxPoints),
+        stressPoints: kept ? 0 : Math.round(currentLoadProgress * maxPoints),
         maxStressPoints: maxPoints,
         seed: EAGLE_RANDOM_SEED,
         checksum: deterministicChecksum,
@@ -412,9 +470,9 @@ export async function createEagleBench(
     dispose() {
       disposed = true
       cancelAnimationFrame(rafId)
+      document.removeEventListener('visibilitychange', onVisibility)
       material.dispose()
-      stressGeometry.dispose()
-      stressMaterial.dispose()
+      releaseStress()
       renderer.dispose()
     },
   }

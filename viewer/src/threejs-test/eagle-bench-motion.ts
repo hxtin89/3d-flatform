@@ -115,3 +115,84 @@ export function checksumFloat32Arrays(...arrays: Float32Array[]): string {
   }
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
+
+/** How many frame times each density bucket keeps: the last this many. */
+export const BENCH_BUCKET_WINDOW = 240
+
+/**
+ * How long after full stress is reached before its frame times count towards the freeze.
+ * Full stress coincides with the Start screen appearing, which plays two CSS animations on
+ * top of the measurement: loader-rise (.55 s) and loader-pulse (2.6 s twice after .75 s,
+ * so over at 5.95 s) — threejs-test.html. A visitor who waits longer than that is measured
+ * today on frames without them, so the frozen verdict is taken from frames without them too.
+ */
+export const BENCH_QUIET_MS = 6000
+
+export type BenchPresetName = 'strong' | 'medium' | 'constrained'
+
+export interface BenchVerdictSettings {
+  targetFps: number
+  minSamples: number
+  strongFraction: number
+  strongMinPoints: number
+  mediumFraction: number
+}
+
+export interface BenchVerdict {
+  /** Highest sampled point count whose median frame rate held the target. */
+  pointsAtTarget: number
+  maxPoints: number
+  samples: number
+  preset: BenchPresetName | null
+}
+
+function medianOf(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[sorted.length >> 1]
+}
+
+/**
+ * The benchmark's verdict from its frame-time buckets — bucket b holds frames sampled at
+ * b/(buckets-1) of `maxPoints`. The highest bucket whose median frame held the target
+ * (with a small tolerance) sets `pointsAtTarget`; its share of `maxPoints` picks the preset.
+ */
+export function benchVerdict(
+  buckets: readonly (readonly number[])[],
+  maxPoints: number,
+  totalSamples: number,
+  settings: BenchVerdictSettings,
+): BenchVerdict {
+  const densityBuckets = buckets.length - 1
+  const targetDelta = 1000 / settings.targetFps * 1.06 // small tolerance around 60 fps
+  let pointsAtTarget = 0
+  for (let bucket = 0; bucket <= densityBuckets; bucket++) {
+    const samples = buckets[bucket]
+    if (samples.length < 8) continue
+    const bucketPoints = (bucket / densityBuckets) * maxPoints
+    if (medianOf(samples) <= targetDelta) pointsAtTarget = Math.max(pointsAtTarget, bucketPoints)
+  }
+  let preset: BenchPresetName | null = null
+  if (totalSamples >= settings.minSamples) {
+    const fraction = pointsAtTarget / maxPoints
+    preset = fraction >= settings.strongFraction && pointsAtTarget >= settings.strongMinPoints
+      ? 'strong'
+      : fraction >= settings.mediumFraction ? 'medium' : 'constrained'
+  }
+  return { pointsAtTarget, maxPoints, samples: totalSamples, preset }
+}
+
+/**
+ * Whether the verdict can no longer change: the full-stress bucket holds a whole window
+ * of frames, every one of them taken after the Start screen's animations, and there are
+ * enough samples overall for a preset. From here each new frame only slides that window
+ * over more frames of the same steady state, so the verdict is taken now and kept — it is
+ * the one a click at this moment gets today.
+ */
+export function benchVerdictSettled(
+  quietFullSamples: number,
+  totalSamples: number,
+  minSamples: number,
+  window = BENCH_BUCKET_WINDOW,
+): boolean {
+  return quietFullSamples >= window && totalSamples >= minSamples
+}

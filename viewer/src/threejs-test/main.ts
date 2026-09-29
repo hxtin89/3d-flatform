@@ -183,8 +183,22 @@ let loaderFailed = false
 let basemapWaitStartedAt = 0
 /** True once the loader gave up on the basemap and started without it. */
 let basemapMissing = false
+/**
+ * True once the loader benchmark's verdict settled on the Start screen and its preset was
+ * applied, behind the loader, in that frame. The wait until Start is then idle time: the
+ * benchmark stops, the loader stops repainting, and the hidden scene is drawn only when
+ * something new needs uploading (drawThisFrame). Start then only starts.
+ */
+let benchPresetApplied = false
+/** Frames the hidden scene still has to be drawn for, set by anything that changed it. */
+let bootDrawFrames = 0
+let lastBootDrawAt = -Infinity
+/** Heartbeat for changes nothing announces — a ground-patch layer, a late donation shape. */
+const BOOT_DRAW_HEARTBEAT_MS = 250
+let lastPaintedLoaderProgress = -1
 
 function paintLoaderProgress(progress: number): void {
+  lastPaintedLoaderProgress = progress
   const percentage = Math.min(100, Math.floor(progress * 100))
   loaderEl.style.setProperty('--loader-progress', `${(progress * 100).toFixed(2)}%`)
   loaderEl.setAttribute('aria-valuenow', String(percentage))
@@ -202,7 +216,7 @@ function exposeBenchDebugState(): void {
 
 // The eagle is a real point cloud whose density follows the load progress —
 // the loading animation quietly benchmarks the device's point pipeline.
-void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
+void createEagleBench(loaderEagleCanvasEl, { forceWebGL, onSettled: onBenchSettled }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
@@ -253,7 +267,9 @@ function tickLoaderProgress(now: number): void {
     const maximumStep = elapsed / (EAGLE_MIN_ASSEMBLY_SECONDS * 1000)
     loaderDisplayed = Math.min(loaderTarget, loaderDisplayed + maximumStep)
   }
-  paintLoaderProgress(loaderDisplayed)
+  // Once the benchmark has settled nothing measures these frames any more, and the bar
+  // sits at 100 %: repainting the same value each frame is work for nobody.
+  if (!benchPresetApplied || loaderDisplayed !== lastPaintedLoaderProgress) paintLoaderProgress(loaderDisplayed)
   showLoaderReadyIfComplete()
   loaderProgressRaf = requestAnimationFrame(tickLoaderProgress)
 }
@@ -337,6 +353,42 @@ const onLoaderSoundOpt = () => {
 }
 loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 syncLoaderSoundOpt()
+/**
+ * The benchmark's verdict settled on the Start screen: apply its preset now, behind the
+ * loader, exactly as a click in this frame would — and with it the pixel ratio, budgets
+ * and cloud tier the flight will run with, whose rebuilds then happen while nobody watches.
+ * A click before this point takes the old path in onLoaderStart, unchanged.
+ */
+function onBenchSettled(): void {
+  if (!bootLoading || loaderFinishAt > 0 || benchPresetApplied || !loaderReadyShown) return
+  applyBenchPreset()
+  benchPresetApplied = true
+  // A few frames at the new settings, so their pipelines and buffers are made now.
+  markBootDraw(3)
+}
+
+/** Draw the hidden scene for the next `frames` frames: something in it needs uploading. */
+function markBootDraw(frames = 1): void {
+  bootDrawFrames = Math.max(bootDrawFrames, frames)
+}
+
+/**
+ * Whether this frame draws. Always, except on the Start screen once the benchmark has
+ * settled: there the scene is fully covered by the opaque loader and nothing measures the
+ * frames, so it is drawn only when a tile arrived or changed, when a hand is on the Start
+ * button, and on a heartbeat. The draws that remain are the ones that matter behind the
+ * loader — a tile's first draw is what uploads it — so the flight does not inherit them.
+ */
+function drawThisFrame(now: number): boolean {
+  if (!(bootLoading && loaderFinishAt === 0 && benchPresetApplied)) return true
+  if (bootDrawFrames > 0 || now - lastBootDrawAt >= BOOT_DRAW_HEARTBEAT_MS) {
+    bootDrawFrames = Math.max(0, bootDrawFrames - 1)
+    lastBootDrawAt = now
+    return true
+  }
+  return false
+}
+
 /** Turn the loader benchmark into start settings: strong devices skip the
  * vignette trick and render full quality; weak ones start conservative so the
  * experience never dips below the target frame rate. Runtime guards remain. */
@@ -415,7 +467,8 @@ function applyBenchPreset(): void {
 
 const onLoaderStart = () => {
   if (!loaderReadyShown || loaderFinishAt > 0 || loaderFlightStarted) return
-  applyBenchPreset()
+  // Already applied if the benchmark settled while the visitor read the Start screen.
+  if (!benchPresetApplied) applyBenchPreset()
   eagleBench?.dispose()
   eagleBench = null
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
@@ -448,6 +501,9 @@ const onLoaderStart = () => {
   )
 }
 loaderStartEl.addEventListener('click', onLoaderStart)
+// A hand on the button is the cheapest warm-up cue there is: draw the hidden scene right
+// before the click, so nothing the heartbeat has not caught yet lands in the flight.
+for (const type of ['pointerenter', 'pointerdown', 'focus']) loaderStartEl.addEventListener(type, () => markBootDraw())
 const loaderStallTimer = window.setInterval(() => {
   if (!bootLoading || loaderFailed || loaderDataReady || loaderReadyShown || loaderFinishAt > 0
     || performance.now() - loaderLastAdvance < 20_000) return
@@ -3930,6 +3986,7 @@ function applyViewportSize(): void {
   camera.aspect = width / height
   camera.updateProjectionMatrix()
   renderer.setSize(width, height)
+  markBootDraw()
   globe?.setResolution()
   // Resolution feeds the SSE pixel measure, so refinement targets would otherwise be
   // computed against a stale backbuffer. Same measure drives the drawn point size.
@@ -4653,11 +4710,13 @@ function loop(now: number): void {
   // seconds after a tile loads.
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
-  depthOfField.render()
-  // Taken here, after the draw, and shown on the next frame. The animation loop resets
-  // renderer.info immediately before calling this function, so anything read further up
-  // — updateHud included — sees a counter that has just been zeroed.
-  lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
+  if (drawThisFrame(now)) {
+    depthOfField.render()
+    // Taken here, after the draw, and shown on the next frame. The animation loop resets
+    // renderer.info immediately before calling this function, so anything read further up
+    // — updateHud included — sees a counter that has just been zeroed.
+    lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
+  }
 }
 
 // ---------------------------------------------------------------- boot
@@ -4823,6 +4882,12 @@ async function main(): Promise<void> {
   stream.setParseBudget(maxParses)
   // Internals, so it is allowed to fail: the row simply reads installed:false.
   installUploadProbe(renderer)
+  // Behind the loader a tile joining the drawn set has its upload and maybe a pipeline
+  // waiting, and that is the one reason to draw there once the benchmark has settled.
+  for (const tiles of [stream.tiles, globe.tiles] as any[]) {
+    tiles.addEventListener('load-model', () => markBootDraw())
+    tiles.addEventListener('tile-visibility-change', ({ visible }: any) => { if (visible) markBootDraw() })
+  }
   // Same reason the settings object lives outside: the panel is bound long before
   // this point, so foveation adopts the values already on the sliders.
   foveation = createFoveation(stream.tiles, camera, foveationSettings)
