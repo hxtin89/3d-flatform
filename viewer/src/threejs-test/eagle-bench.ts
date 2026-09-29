@@ -217,9 +217,11 @@ export async function createEagleBench(
 
   // One coherent bottom-to-top gradient across the bird (deep forest → leaf
   // green → soft lime), the point-cloud classic. Round dots via UV discard.
-  const deep = new THREE.Color(0x0b4a38).convertSRGBToLinear()
-  const leaf = new THREE.Color(0x2e9066).convertSRGBToLinear()
-  const lime = new THREE.Color(0xa9d977).convertSRGBToLinear()
+  // Color already decodes a hex from sRGB into the linear working space, so a
+  // further convertSRGBToLinear() would decode twice and darken every stop.
+  const deep = new THREE.Color(0x0b4a38)
+  const leaf = new THREE.Color(0x2e9066)
+  const lime = new THREE.Color(0xa9d977)
   const heightMix = targetPosition.y.mul(0.5).add(0.5)
   const gradient = mix(
     mix(vec3(deep.r, deep.g, deep.b), vec3(leaf.r, leaf.g, leaf.b), smoothstep(float(0), float(0.62), heightMix)),
