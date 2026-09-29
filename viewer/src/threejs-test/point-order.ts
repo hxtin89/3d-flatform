@@ -167,7 +167,7 @@ export function reorderAccepts(
 /**
  * Rewrite a tile so that *any prefix of it is an evenly spread sample of the whole tile*.
  *
- * Thinning draws a prefix via `instanceCount`, which is a fair sample only if the order
+ * Thinning draws a prefix (the draw range, or `instanceCount`), which is a fair sample only if the order
  * carries no large-scale spatial structure. The packs come from a COPC octree, so a
  * prefix is a crop — but measuring four real tiles showed consecutive points sit 10-22x
  * closer together than random pairs, which means the order is *smoothly* spatial: a

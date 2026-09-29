@@ -5,6 +5,13 @@ built and verified on 2026-09-23; results under "Step 2 results" below. The arri
 was fixed the same day by packing during the reorder. Open: the protocol's visible-window
 and phone runs, and the triangle rims by eye.
 
+**Decided 2026-09-29 by the user:** the pulled triangle is the default (`config.ts`
+`lod.dotGeometry`, on `sbb/quick-wins`). She saw no difference in the triangle rims and finds
+the pulled feed faster on phones; the protocol's visible-window and phone runs were not done
+first and stay open as a check, along with recalibrating the loader benchmark, which still
+stresses instanced quads (conservative until then), and freeing the shared quad index, which
+now only the Square dot shape needs.
+
 ## Why
 
 Measured 2026-09-23 by swapping geometries at runtime in the live viewer (same pose,

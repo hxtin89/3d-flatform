@@ -195,8 +195,8 @@ export interface StreamingCloud {
    * total point count would report dots that had shrunk.
    */
   /**
-   * Draw fewer of each tile's points, by lowering `instanceCount` so a shorter prefix of
-   * the (shuffled) buffer is drawn.
+   * Draw fewer of each tile's points, by drawing a shorter prefix of the reordered buffer
+   * (setDrawnPoints: the draw range when pulled, `instanceCount` when instanced).
    *
    * This removes primitives, which is the only thing that has been measured to move the
    * frame cost — shrinking points instead saves fragments, and fragments turned out to be
@@ -702,11 +702,11 @@ export function createStreamingCloud(opts: {
    */
   let fairOrderWanted = true
 
-  // One camera-facing primitive per point, instanced. Its corner offsets live in the
-  // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
-  // the point size, and `uv` gives the round-dot cutout. Quad or triangle — see
-  // dot-geometry.ts, which owns both, and setDotMode below — which can also drop the
-  // instancing and draw the tile from a data texture instead.
+  // One camera-facing primitive per point: by default a pulled triangle, which has no
+  // per-vertex attributes and reads its point from the tile's data texture by vertex
+  // index. The instanced arm keeps its corner offsets in `position`, which is what
+  // PointsNodeMaterial's sprite path scales by the point size, and `uv` for the round-dot
+  // cutout. Both shapes and both feeds live in dot-geometry.ts; setDotMode switches.
   let dotMode: DotMode = { ...(opts.dotMode ?? { shape: 'quad', feed: 'instanced' }) }
   if (dotMode.feed === 'pulled' && dotMode.shape === 'quad') prepareSharedQuadIndex()
 

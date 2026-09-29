@@ -268,9 +268,13 @@ export async function createEagleBench(
   // so a growing block of points is processed alongside it but placed outside
   // the clip volume — full vertex cost, zero pixels.
   //
-  // It uses the same instanced-quad primitive as the streamed tiles: a real
-  // point costs four vertices there, not one, so a stress mass of plain
-  // THREE.Points would overstate the device by roughly that factor.
+  // It draws instanced quads, four vertices a point, which the streamed tiles drew
+  // until 2026-09-29 and on which strongFraction and strongMinPoints were tuned. The
+  // tiles now default to pulled triangles (config.ts lod.dotGeometry), which cost far
+  // less per point on desktop, so the verdict errs on the conservative side there;
+  // phones are unmeasured on pulled. Move this mass to the tiles' primitive only
+  // together with re-measuring those two bars. A stress mass of plain THREE.Points,
+  // one vertex a point, would err the other way.
   const stressPositions = new Float32Array(maxPoints * 3)
   for (let index = 0; index < maxPoints; index++) {
     stressPositions[index * 3] = 50 + (index % 97) * 0.01
