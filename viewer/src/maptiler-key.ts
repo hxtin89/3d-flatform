@@ -8,8 +8,16 @@ import { isDevHost } from './dev-hosts'
  * Measured against the live keys — every other combination is 403:
  *
  *     key …sma8   wi-dev.mediascenography.com   -> 200
- *     key …0nNM   localhost:<any port>          -> 200
+ *     key …0nNM   localhost:<listed ports>      -> 200
  *     both keys   dev.dev-eagles.com            -> 200   (the dev stand-in, below)
+ *
+ * The localhost key is not "localhost on any port", as was noted here on 2026-09-08.
+ * Re-measured on 2026-09-29, it answers localhost on 3000, 4177, 5173, 5174, 5177
+ * and 8000 (http or https alike) and refuses 4173, 5178, 8080, a bare `localhost`
+ * and `127.0.0.1`. Through the dev proxy this never shows, because the proxy claims
+ * the stand-in. It shows wherever the browser calls MapTiler itself: a build served
+ * by `npm run preview` on its default port 4173 renders sky instead of the map.
+ * Serve it on a listed port instead: npm run preview -- --port 5177
  *
  * So the choice is not a preference, it is dictated by the host the page is served
  * from — which is why it is read off `location.hostname` rather than configured.

@@ -207,8 +207,10 @@ export default defineConfig({
     // session). The MapTiler key is restricted to whitelisted origins, and 5177 is the
     // only one this project uses — on a *deployed* origin that is not whitelisted the
     // basemap just 403s, which reads as a broken key rather than a wrong port. In dev
-    // any port works: the localhost key covers localhost on *any* port (measured),
-    // and the /maptiler proxy sends whichever origin the request actually came in on.
+    // any port works, but only because the /maptiler proxy claims the stand-in origin
+    // for dev hosts: the localhost key itself covers a fixed list of ports, not all of
+    // them (see src/maptiler-key.ts). That matters wherever the browser talks to
+    // MapTiler directly — `npm run preview` on its default 4173 gets no basemap.
     // To run a second instance by hand: npm run dev -- --port 4177
     port: Number(process.env.PORT) || 5177,
     strictPort: !process.env.PORT,
