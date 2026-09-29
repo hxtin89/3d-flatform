@@ -159,9 +159,9 @@ export function classifyTier(isWebGPU: boolean): PerformanceTier {
   return 'balanced'
 }
 
-interface VolumeMaterialHandle {
-  material: NodeMaterial
-  opacity: any
+/** Light and wind inputs of the cloud volumes: one set, read by the far and the near
+ *  material alike. They always carried equal values; the near ones used to be copies. */
+interface VolumeLighting {
   wind: any
   sunColor: any
   ambientColor: any
@@ -169,12 +169,28 @@ interface VolumeMaterialHandle {
 }
 
 interface NearCloud {
+  /** Its opacity is `mesh.userData.cloudOpacity`, read per draw (createVolumeClouds). */
   mesh: THREE.Mesh
-  handle: VolumeMaterialHandle
   driftDirection: THREE.Vector2
   cycleStart: number
   visibleFor: number
   gapFor: number
+}
+
+interface SoftClouds {
+  group: THREE.Group
+  geometry: THREE.BufferGeometry
+  material: MeshBasicNodeMaterial
+}
+
+interface VolumeClouds {
+  group: THREE.Group
+  geometry: THREE.BufferGeometry
+  farMaterial: NodeMaterial
+  nearMaterial: NodeMaterial
+  farOpacity: any
+  lighting: VolumeLighting
+  nearClouds: NearCloud[]
 }
 
 export function createEnvironmentLayer(options: EnvironmentLayerOptions): EnvironmentLayer {
@@ -198,18 +214,12 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   let manualMinutes: number | null = EXPERIENCE_CONFIG.environment.startPeruMinutes
   let lastDaylightUpdate = -Infinity
   let lastLiveRefresh = -Infinity
-  let resources: {
-    mode: Exclude<CloudMode, 'off'>
-    group: THREE.Group
-    geometry: THREE.BufferGeometry
-    material: THREE.Material
-    opacityUniform?: any
-    windUniform?: any
-    sunColorUniform?: any
-    ambientColorUniform?: any
-    sunDirUniform?: any
-    nearClouds?: NearCloud[]
-  } | null = null
+  // Each set is built the first time its mode is shown and then kept, hidden while
+  // another mode is on: switching back costs no shader build, where a rebuild paid up
+  // to six plus the pipelines its dispose had released. Only the active mode's set is
+  // visible, updated and lit (cloudMode says which).
+  let softClouds: SoftClouds | null = null
+  let volumeClouds: VolumeClouds | null = null
 
   const root = new THREE.Group()
   root.name = 'wilderness-environment-layer'
@@ -277,18 +287,26 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     onCloudStateChange?.({ mode: cloudMode, tier: activeTier, intent: cloudIntent, reason: cloudReason })
   }
 
-  function disposeCloudResources(): void {
-    if (!resources) return
-    root.remove(resources.group)
-    resources.geometry.dispose()
-    resources.material.dispose()
-    if (resources.nearClouds) {
-      for (const cloud of resources.nearClouds) cloud.handle.material.dispose()
-    }
-    resources = null
+  function disposeVolumeClouds(): void {
+    if (!volumeClouds) return
+    root.remove(volumeClouds.group)
+    volumeClouds.geometry.dispose()
+    volumeClouds.farMaterial.dispose()
+    volumeClouds.nearMaterial.dispose()
+    volumeClouds = null
   }
 
-  function createSoftClouds(): void {
+  function disposeCloudSets(): void {
+    if (softClouds) {
+      root.remove(softClouds.group)
+      softClouds.geometry.dispose()
+      softClouds.material.dispose()
+      softClouds = null
+    }
+    disposeVolumeClouds()
+  }
+
+  function createSoftClouds(): SoftClouds {
     const group = new THREE.Group()
     group.name = 'wilderness-soft-clouds'
     const geometry = new THREE.SphereGeometry(1, 10, 7)
@@ -328,7 +346,7 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     mesh.instanceMatrix.needsUpdate = true
     group.add(mesh)
     root.add(group)
-    resources = { mode: 'soft', group, geometry, material }
+    return { group, geometry, material }
   }
 
   // Deterministic RNG for near-cloud placement so reloads look familiar.
@@ -344,13 +362,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     return range[0] + nearRandom() * (range[1] - range[0])
   }
 
-  function buildVolumeMaterial(steps: number): VolumeMaterialHandle {
+  function buildVolumeMaterial(steps: number, cloudOpacity: any, lighting: VolumeLighting): NodeMaterial {
     const cfg = EXPERIENCE_CONFIG.clouds
-    const cloudOpacity = uniform(1)
-    const windOffset = uniform(new THREE.Vector3())
-    const sunColor = uniform(new THREE.Color(0xfff4e0))
-    const ambientColor = uniform(new THREE.Color(0xa8c8dd))
-    const sunDirWorld = uniform(new THREE.Vector3(0, 0, 1))
+    const { wind: windOffset, sunColor, ambientColor, sunDir: sunDirWorld } = lighting
     const cloudTexture = texture3D(cloudNoiseTexture, null, 0)
     const coverageLow = float(cfg.coverage[0])
     const coverageHigh = float(cfg.coverage[1])
@@ -397,18 +411,14 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
         })
         If(finalColor.a.greaterThanEqual(0.95), () => Break())
       })
-      return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity))
+      return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity) as any)
     })()
     const material = new NodeMaterial()
     material.colorNode = volumeNode
     material.side = THREE.BackSide
     material.transparent = true
     material.depthWrite = false
-    return {
-      material,
-      opacity: cloudOpacity, wind: windOffset,
-      sunColor, ambientColor, sunDir: sunDirWorld,
-    }
+    return material
   }
 
   function respawnNearCloud(cloud: NearCloud, now: number, initial = false): void {
@@ -436,15 +446,33 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     cloud.cycleStart = initial ? now - nearRandom() * fullCycle * 1000 : now
   }
 
-  function createVolumeClouds(): void {
+  /** Starts every near cloud somewhere through its cycle, at opacity 0 — on creation
+   *  and each time volume mode is shown again, in the same RNG order either way. */
+  function scatterNearClouds(nearClouds: NearCloud[]): void {
+    const now = performance.now()
+    for (const cloud of nearClouds) {
+      cloud.mesh.userData.cloudOpacity = 0
+      respawnNearCloud(cloud, now, true)
+    }
+  }
+
+  function createVolumeClouds(): VolumeClouds {
     const geometry = new THREE.BoxGeometry(1, 1, 1)
     const group = new THREE.Group()
     group.name = 'wilderness-volume-clouds'
+    const lighting: VolumeLighting = {
+      wind: uniform(new THREE.Vector3()),
+      sunColor: uniform(new THREE.Color(0xfff4e0)),
+      ambientColor: uniform(new THREE.Color(0xa8c8dd)),
+      sunDir: uniform(new THREE.Vector3(0, 0, 1)),
+    }
 
     // Distant flight-path fields: one shared material, unchanged behaviour.
-    const farHandle = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.raymarchStepsStrong)
+    const farOpacity = uniform(1)
+    const farMaterial = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.raymarchStepsStrong, farOpacity, lighting)
     for (const field of EXPERIENCE_CONFIG.clouds.fields) {
-      const mesh = new THREE.Mesh(geometry, farHandle.material)
+      const mesh = new THREE.Mesh(geometry, farMaterial)
+      mesh.name = 'wilderness-far-cloud'
       mesh.position.set(
         surveyCentreEnu.x + field.offsetM[0],
         surveyCentreEnu.y + field.offsetM[1],
@@ -455,48 +483,48 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       group.add(mesh)
     }
 
-    // Sparse near clouds over the survey itself — each has its own material so
-    // it can fade in, drift and dissolve on an individual slow cycle.
+    // Sparse near clouds over the survey itself, each fading in, drifting and
+    // dissolving on its own slow cycle. They share one material, so one shader build
+    // serves all of them, and each draw reads its opacity off the mesh being drawn:
+    // three's per-object update, as the tile uniforms in point-cloud.ts use. The node
+    // must stay in the default objectGroup, which three clones per drawn object; in a
+    // shared group every cloud would draw with whichever value was written last.
+    const nearOpacity = uniform(0).onObjectUpdate(({ object }: any) => object?.userData?.cloudOpacity ?? 0)
+    const nearMaterial = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.near.raymarchSteps, nearOpacity, lighting)
     const nearClouds: NearCloud[] = []
     const now = performance.now()
     for (let index = 0; index < EXPERIENCE_CONFIG.clouds.near.count; index++) {
-      const handle = buildVolumeMaterial(EXPERIENCE_CONFIG.clouds.near.raymarchSteps)
-      handle.opacity.value = 0
-      const mesh = new THREE.Mesh(geometry, handle.material)
+      const mesh = new THREE.Mesh(geometry, nearMaterial)
+      mesh.name = 'wilderness-near-cloud'
       mesh.renderOrder = 2
-      const cloud: NearCloud = {
-        mesh, handle,
-        driftDirection: new THREE.Vector2(1, 0),
-        cycleStart: now, visibleFor: 120, gapFor: 60,
-      }
-      respawnNearCloud(cloud, now, true)
+      nearClouds.push({ mesh, driftDirection: new THREE.Vector2(1, 0), cycleStart: now, visibleFor: 120, gapFor: 60 })
       group.add(mesh)
-      nearClouds.push(cloud)
     }
+    scatterNearClouds(nearClouds)
 
     root.add(group)
-    resources = {
-      mode: 'volume', group, geometry, material: farHandle.material,
-      opacityUniform: farHandle.opacity, windUniform: farHandle.wind,
-      sunColorUniform: farHandle.sunColor, ambientColorUniform: farHandle.ambientColor,
-      sunDirUniform: farHandle.sunDir,
-      nearClouds,
-    }
+    return { group, geometry, farMaterial, nearMaterial, farOpacity, lighting, nearClouds }
   }
 
   function setMode(nextMode: CloudMode, reason: string): void {
-    if (cloudMode === nextMode && resources?.mode === nextMode) {
-      cloudReason = reason
+    cloudReason = reason
+    if (cloudMode === nextMode) {
       notifyCloudState()
       return
     }
-    disposeCloudResources()
     cloudMode = nextMode
-    cloudReason = reason
-    if (nextMode === 'soft') createSoftClouds()
-    if (nextMode === 'volume') createVolumeClouds()
-    // Freshly created materials carry default lighting uniforms until the next
-    // daylight pass; force it so mode switches never flash the wrong palette.
+    if (nextMode === 'soft' && !softClouds) softClouds = createSoftClouds()
+    if (nextMode === 'volume') {
+      // Shown again: the near clouds restart scattered through their cycles, as a
+      // rebuild used to start them.
+      if (volumeClouds) scatterNearClouds(volumeClouds.nearClouds)
+      else volumeClouds = createVolumeClouds()
+    }
+    if (softClouds) softClouds.group.visible = nextMode === 'soft'
+    if (volumeClouds) volumeClouds.group.visible = nextMode === 'volume'
+    // The set just shown holds whatever lighting it had when it was hidden (or its
+    // defaults, when new) until the next daylight pass; force one so mode switches
+    // never flash the wrong palette.
     lastDaylightUpdate = -Infinity
     notifyCloudState()
   }
@@ -590,25 +618,61 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     sunTarget.position.copy(worldCentre)
     sunlight.updateMatrixWorld()
     sunTarget.updateMatrixWorld()
-    if (resources?.mode === 'soft') {
-      const material = resources.material as THREE.Material & { color?: THREE.Color }
-      material.color?.copy(state.lightColor).lerp(state.skyColor, 0.18)
-    } else if (resources?.mode === 'volume') {
-      resources.sunColorUniform.value.copy(state.lightColor)
+    if (cloudMode === 'soft' && softClouds) {
+      softClouds.material.color.copy(state.lightColor).lerp(state.skyColor, 0.18)
+    } else if (cloudMode === 'volume' && volumeClouds) {
+      const lighting = volumeClouds.lighting
+      lighting.sunColor.value.copy(state.lightColor)
         .multiplyScalar(THREE.MathUtils.lerp(0.35, 1.6, daylight))
       // Bias the ambient well toward white so daytime clouds read bright,
       // not sky-grey; night still darkens via lightColor/ambientIntensity.
-      resources.ambientColorUniform.value.copy(state.skyColor)
+      lighting.ambientColor.value.copy(state.skyColor)
         .lerp(whiteAmbient, 0.55 * daylight + 0.1).multiplyScalar(state.ambientIntensity)
-      resources.sunDirUniform.value.copy(worldSunDirection)
-      if (resources.nearClouds) {
-        for (const cloud of resources.nearClouds) {
-          cloud.handle.sunColor.value.copy(resources.sunColorUniform.value)
-          cloud.handle.ambientColor.value.copy(resources.ambientColorUniform.value)
-          cloud.handle.sunDir.value.copy(worldSunDirection)
-        }
-      }
+      lighting.sunDir.value.copy(worldSunDirection)
     }
+  }
+
+  /** The fps guard: steps clouds down when the frame rate holds low, and back up once. */
+  function runQualityGuard(now: number, fps: number, qualityGuardEnabled: boolean): void {
+    if (qualityGuardEnabled && cloudMode !== 'off' && fps > 0) {
+      const threshold = cloudMode === 'volume'
+        ? EXPERIENCE_CONFIG.clouds.volumeFallbackFps
+        : EXPERIENCE_CONFIG.clouds.disableFps
+      if (fps < threshold) {
+        if (!lowFpsSince) lowFpsSince = now
+        if (now - lowFpsSince >= EXPERIENCE_CONFIG.clouds.lowFpsDurationMs) {
+          if (cloudMode === 'volume') {
+            activeTier = 'balanced'
+            guardDemotedFromVolume = true
+            console.info('[clouds] volumetric → soft: fps held below '
+              + `${threshold} for ${EXPERIENCE_CONFIG.clouds.lowFpsDurationMs} ms`)
+            setMode('soft', 'Cloud detail reduced to protect frame rate')
+          } else {
+            activeTier = 'constrained'
+            cloudIntent = false
+            setMode('off', 'Clouds paused to protect frame rate')
+          }
+          lowFpsSince = 0
+        }
+      } else lowFpsSince = 0
+
+      // Recovery: a guard demotion is a moment-in-time verdict (tile-upload
+      // burst, compositor hitch), not a device measurement. Once the frame
+      // rate has held comfortably, give volumetric another try — bounded, so
+      // borderline hardware settles on soft instead of ping-ponging.
+      if (guardDemotedFromVolume && cloudMode === 'soft' && promotionsLeft > 0
+        && fps >= EXPERIENCE_CONFIG.clouds.promoteFps) {
+        if (!highFpsSince) highFpsSince = now
+        if (now - highFpsSince >= EXPERIENCE_CONFIG.clouds.promoteDurationMs) {
+          promotionsLeft--
+          guardDemotedFromVolume = false
+          highFpsSince = 0
+          activeTier = 'strong'
+          console.info(`[clouds] soft → volumetric: fps recovered (${promotionsLeft} retries left)`)
+          setMode('volume', 'Volumetric clouds restored — frame rate recovered')
+        }
+      } else highFpsSince = 0
+    } else { lowFpsSince = 0; highFpsSince = 0 }
   }
 
   if (cloudIntent) setMode(preferredMode(), tier === 'strong' ? 'Volumetric WebGPU clouds' : 'Lightweight cloud volumes')
@@ -640,8 +704,8 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     applyMeasuredTier(tier) {
       activeTier = tier
       lowFpsSince = 0
-      if (!cloudIntent) { notifyCloudState(); return }
-      if (tier === 'constrained') {
+      if (!cloudIntent) notifyCloudState()
+      else if (tier === 'constrained') {
         cloudIntent = false
         setMode('off', 'Clouds disabled by device probe')
       } else {
@@ -649,6 +713,10 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
           ? 'Volumetric WebGPU clouds (probe)'
           : 'Lightweight cloud volumes (probe)')
       }
+      // Below strong, a measured tier never shows the volumes again: the guard only
+      // promotes back to them after demoting from them, and the cloud button follows the
+      // tier. So they are freed rather than kept hidden.
+      if (tier !== 'strong') disposeVolumeClouds()
     },
     setPeruMinutes(minutes) {
       manualMinutes = minutes === null ? null : Math.round(THREE.MathUtils.clamp(minutes, 0, 1_439))
@@ -671,6 +739,9 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       updateDaylight(performance.now())
     },
     update(now, camera, cameraGroundRange, fps, qualityGuardEnabled) {
+      // First, so a set the guard switches to gets this frame's light, wind and opacity
+      // before it is drawn, not the values it was hidden with.
+      runQualityGuard(now, fps, qualityGuardEnabled)
       updateDaylight(now)
       const rangeOpacity = smooth01(
         EXPERIENCE_CONFIG.clouds.closeFadeEndM,
@@ -683,97 +754,53 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       const windV = (now * 0.001 * wind[1] / 8_000) % 1
       // Canopy shadows drift with the same wind phase as the volume overhead.
       uniforms.cloudShadowOffset.value.set(windU, windV)
-      if (resources?.mode === 'soft') {
-        const material = resources.material as MeshBasicNodeMaterial
-        material.opacity = 0.16 * rangeOpacity * motionOpacity
-        resources.group.position.set(
+      if (cloudMode === 'soft' && softClouds) {
+        softClouds.material.opacity = 0.16 * rangeOpacity * motionOpacity
+        softClouds.group.position.set(
           Math.sin(now * 0.00003) * 240,
           Math.cos(now * 0.000025) * 110,
           0,
         )
-      } else if (resources?.mode === 'volume') {
-        resources.opacityUniform.value = rangeOpacity * motionOpacity
-        resources.windUniform.value.set(windU, windV, 0)
+      } else if (cloudMode === 'volume' && volumeClouds) {
+        volumeClouds.farOpacity.value = rangeOpacity * motionOpacity
+        volumeClouds.lighting.wind.value.set(windU, windV, 0)
 
         // Near clouds: individual slow life cycles (materialise → hold → dissolve
         // → pause → respawn elsewhere) plus a barely perceptible real-metre drift.
-        if (resources.nearClouds) {
-          const cfg = EXPERIENCE_CONFIG.clouds.near
-          const elapsedSeconds = Math.min(0.1, Math.max(0, now - lastNearUpdate) * 0.001)
-          lastNearUpdate = now
-          for (const cloud of resources.nearClouds) {
-            const age = (now - cloud.cycleStart) * 0.001
-            const fade = cfg.fadeSeconds
-            const fullCycle = fade * 2 + cloud.visibleFor + cloud.gapFor
-            if (age >= fullCycle) {
-              respawnNearCloud(cloud, now)
-              cloud.handle.opacity.value = 0
-              continue
-            }
-            let envelope = 0
-            if (age < fade) envelope = smooth01(0, 1, age / fade)
-            else if (age < fade + cloud.visibleFor) envelope = 1
-            else if (age < fade * 2 + cloud.visibleFor) {
-              envelope = smooth01(0, 1, 1 - (age - fade - cloud.visibleFor) / fade)
-            }
-            if (envelope > 0) {
-              cloud.mesh.position.x += cloud.driftDirection.x * cfg.driftMps * elapsedSeconds
-              cloud.mesh.position.y += cloud.driftDirection.y * cfg.driftMps * elapsedSeconds
-              // Fade out early when the camera is about to fly through the box.
-              renderToLayerEnu(camera.position, nearCameraEnu)
-              const halfDiagonal = cloud.mesh.scale.length() * 0.5
-              const distance = nearCameraEnu.distanceTo(cloud.mesh.position)
-              envelope *= smooth01(halfDiagonal * 0.8, halfDiagonal * 1.6, distance)
-            }
-            cloud.handle.opacity.value = envelope * cfg.maxOpacity * motionOpacity
-            cloud.handle.wind.value.set(windU, windV, 0)
+        const cfg = EXPERIENCE_CONFIG.clouds.near
+        const elapsedSeconds = Math.min(0.1, Math.max(0, now - lastNearUpdate) * 0.001)
+        lastNearUpdate = now
+        for (const cloud of volumeClouds.nearClouds) {
+          const age = (now - cloud.cycleStart) * 0.001
+          const fade = cfg.fadeSeconds
+          const fullCycle = fade * 2 + cloud.visibleFor + cloud.gapFor
+          if (age >= fullCycle) {
+            respawnNearCloud(cloud, now)
+            cloud.mesh.userData.cloudOpacity = 0
+            continue
           }
+          let envelope = 0
+          if (age < fade) envelope = smooth01(0, 1, age / fade)
+          else if (age < fade + cloud.visibleFor) envelope = 1
+          else if (age < fade * 2 + cloud.visibleFor) {
+            envelope = smooth01(0, 1, 1 - (age - fade - cloud.visibleFor) / fade)
+          }
+          if (envelope > 0) {
+            cloud.mesh.position.x += cloud.driftDirection.x * cfg.driftMps * elapsedSeconds
+            cloud.mesh.position.y += cloud.driftDirection.y * cfg.driftMps * elapsedSeconds
+            // Fade out early when the camera is about to fly through the box.
+            renderToLayerEnu(camera.position, nearCameraEnu)
+            const halfDiagonal = cloud.mesh.scale.length() * 0.5
+            const distance = nearCameraEnu.distanceTo(cloud.mesh.position)
+            envelope *= smooth01(halfDiagonal * 0.8, halfDiagonal * 1.6, distance)
+          }
+          cloud.mesh.userData.cloudOpacity = envelope * cfg.maxOpacity * motionOpacity
         }
       }
-
-      if (qualityGuardEnabled && cloudMode !== 'off' && fps > 0) {
-        const threshold = cloudMode === 'volume'
-          ? EXPERIENCE_CONFIG.clouds.volumeFallbackFps
-          : EXPERIENCE_CONFIG.clouds.disableFps
-        if (fps < threshold) {
-          if (!lowFpsSince) lowFpsSince = now
-          if (now - lowFpsSince >= EXPERIENCE_CONFIG.clouds.lowFpsDurationMs) {
-            if (cloudMode === 'volume') {
-              activeTier = 'balanced'
-              guardDemotedFromVolume = true
-              console.info('[clouds] volumetric → soft: fps held below '
-                + `${threshold} for ${EXPERIENCE_CONFIG.clouds.lowFpsDurationMs} ms`)
-              setMode('soft', 'Cloud detail reduced to protect frame rate')
-            } else {
-              activeTier = 'constrained'
-              cloudIntent = false
-              setMode('off', 'Clouds paused to protect frame rate')
-            }
-            lowFpsSince = 0
-          }
-        } else lowFpsSince = 0
-
-        // Recovery: a guard demotion is a moment-in-time verdict (tile-upload
-        // burst, compositor hitch), not a device measurement. Once the frame
-        // rate has held comfortably, give volumetric another try — bounded, so
-        // borderline hardware settles on soft instead of ping-ponging.
-        if (guardDemotedFromVolume && cloudMode === 'soft' && promotionsLeft > 0
-          && fps >= EXPERIENCE_CONFIG.clouds.promoteFps) {
-          if (!highFpsSince) highFpsSince = now
-          if (now - highFpsSince >= EXPERIENCE_CONFIG.clouds.promoteDurationMs) {
-            promotionsLeft--
-            guardDemotedFromVolume = false
-            highFpsSince = 0
-            activeTier = 'strong'
-            console.info(`[clouds] soft → volumetric: fps recovered (${promotionsLeft} retries left)`)
-            setMode('volume', 'Volumetric clouds restored — frame rate recovered')
-          }
-        } else highFpsSince = 0
-      } else { lowFpsSince = 0; highFpsSince = 0 }
       return state
     },
     dispose() {
-      disposeCloudResources()
+      disposeCloudSets()
       scene.remove(root, hemisphere, sunlight, sunTarget)
     },
   }
