@@ -42,7 +42,8 @@ export function createKeyboardNavigation(options: {
   const taskElements = Array.from(guide.querySelectorAll<HTMLElement>('[data-nav-task]'))
   let keyboardObserved = false
   let shortcutsEnabled = false
-  let guideOpen = finePointer.matches
+  // Starts minimized to its toggle; only the toggle opens it.
+  let guideOpen = false
   let aimActive = false
   let trainingCompleted = false
   let guideDismissTimer = 0
@@ -69,7 +70,7 @@ export function createKeyboardNavigation(options: {
     guide.classList.toggle('is-open', visible)
     guide.setAttribute('aria-hidden', String(!visible))
     guideToggle.setAttribute('aria-expanded', String(visible))
-    guideToggle.setAttribute('aria-label', visible ? 'Field Navigation ausblenden' : 'Field Navigation einblenden')
+    guideToggle.setAttribute('aria-label', visible ? 'Hide field navigation' : 'Show field navigation')
     aimToggle.setAttribute('aria-pressed', String(aimActive))
     aimToggle.classList.toggle('is-on', aimActive)
     const engaged = pressed.has('KeyW') || pressed.has('KeyA') || pressed.has('KeyS')
@@ -97,7 +98,6 @@ export function createKeyboardNavigation(options: {
   }
 
   function observeKeyboard(): void {
-    if (!keyboardObserved) guideOpen = true
     keyboardObserved = true
   }
 
