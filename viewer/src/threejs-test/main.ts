@@ -533,9 +533,7 @@ const loaderStallTimer = window.setInterval(() => {
 }, 1000)
 
 // ---------------------------------------------------------------- overlays
-const compactViewport = matchMedia('(max-width: 700px)').matches
-document.body.classList.toggle('hud-open', !compactViewport)
-document.body.classList.toggle('panel-open', !compactViewport)
+// Every overlay starts minimized to its chip, so the first view is the map alone.
 $('#hudChip').addEventListener('click', () => document.body.classList.toggle('hud-open'))
 $('#panelChip').addEventListener('click', () => document.body.classList.toggle('panel-open'))
 $('#designChip').addEventListener('click', () => document.body.classList.toggle('design-open'))
