@@ -20,10 +20,12 @@ import {
   sameDotMode, setDrawnPoints, type DotMode,
 } from './dot-geometry'
 import {
-  adoptPointData, packPointsForPulling, pointDataForCarrier, PREFIX_SAMPLE_ROUNDS,
-  reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+  adoptPointData, computeCarrierBounds, newPointBounds, packPointsForPulling, pointDataForCarrier,
+  PREFIX_SAMPLE_ROUNDS, reorderAccepts, reorderForPrefixSampling, restoreCarrierArrays,
+  setCarrierBounds,
 } from './point-order'
 import { EXPERIENCE_CONFIG } from './config'
+import { sampleGroundHeights, type GroundSample } from './ground-sample'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
 
 export interface StreamingStats {
@@ -193,8 +195,8 @@ export interface StreamingCloud {
    * total point count would report dots that had shrunk.
    */
   /**
-   * Draw fewer of each tile's points, by lowering `instanceCount` so a shorter prefix of
-   * the (shuffled) buffer is drawn.
+   * Draw fewer of each tile's points, by drawing a shorter prefix of the reordered buffer
+   * (setDrawnPoints: the draw range when pulled, `instanceCount` when instanced).
    *
    * This removes primitives, which is the only thing that has been measured to move the
    * frame cost — shrinking points instead saves fragments, and fragments turned out to be
@@ -295,15 +297,7 @@ export interface ThinningSettings {
   farM: number
 }
 
-export interface GroundSample {
-  /** Low percentile of point height — the forest floor, in raw ENU metres. */
-  groundZ: number
-  /** High percentile — the canopy top. */
-  canopyZ: number
-  samples: number
-  /** Occupied cells of the 5×5 support grid; low values mean a thin sample. */
-  support: number
-}
+export type { GroundSample }
 
 export interface StreamingLimits {
   cacheMinTiles: number
@@ -319,9 +313,6 @@ export interface StreamingLimits {
 
 const MIB = 1024 * 1024
 
-// Reused by the ground probe so a per-frame sample allocates nothing.
-const scratchMatrix = new THREE.Matrix4()
-const scratchVector = new THREE.Vector3()
 // Reused by tileSpacingMetres, which runs once per loaded tile.
 const spacingBox = new THREE.Box3()
 const spacingObb = new THREE.Matrix4()
@@ -689,6 +680,11 @@ export function createStreamingCloud(opts: {
     return pointsPreOrdered
   }
 
+  /** The scene of every tile the renderer selected this frame, for the ground probe. */
+  function* visibleTileScenes(): Generator<THREE.Object3D | undefined> {
+    for (const tile of tiles.visibleTiles) yield (tile as any)?.engineData?.scene
+  }
+
   /**
    * Whether anything currently needs a fair point order. Mirrors the thinning toggle,
    * refreshed from `applyThinning` each frame, and true initially because tiles loaded
@@ -706,11 +702,11 @@ export function createStreamingCloud(opts: {
    */
   let fairOrderWanted = true
 
-  // One camera-facing primitive per point, instanced. Its corner offsets live in the
-  // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
-  // the point size, and `uv` gives the round-dot cutout. Quad or triangle — see
-  // dot-geometry.ts, which owns both, and setDotMode below — which can also drop the
-  // instancing and draw the tile from a data texture instead.
+  // One camera-facing primitive per point: by default a pulled triangle, which has no
+  // per-vertex attributes and reads its point from the tile's data texture by vertex
+  // index. The instanced arm keeps its corner offsets in `position`, which is what
+  // PointsNodeMaterial's sprite path scales by the point size, and `uv` for the round-dot
+  // cutout. Both shapes and both feeds live in dot-geometry.ts; setDotMode switches.
   let dotMode: DotMode = { ...(opts.dotMode ?? { shape: 'quad', feed: 'instanced' }) }
   if (dotMode.feed === 'pulled' && dotMode.shape === 'quad') prepareSharedQuadIndex()
 
@@ -787,6 +783,11 @@ export function createStreamingCloud(opts: {
     let reordered = false
     let geometry: THREE.BufferGeometry
     let pointData: THREE.DataTexture | null = null
+    // The carrier's box and sphere, filled by whichever arrival pass runs — see
+    // PointBounds in point-order.ts. Only ever the carrier's: the dot geometry keeps its
+    // pinned corner sphere, which is three's sort key for the render list.
+    const bounds = newPointBounds()
+    let boundsFilled = false
 
     if (dotMode.feed === 'pulled') {
       // One pass: reorder (or keep the order, with one round) and pack the texture. The
@@ -794,17 +795,17 @@ export function createStreamingCloud(opts: {
       // held once — see point-order.ts. A layout the fast pass declines is packed by the
       // general path and keeps its arrays, drawn whole as in the instanced feed.
       const order = wantOrder && reorderAccepts(position, color)
-      pointData = packPointsForPulling(position, color, order ? PREFIX_SAMPLE_ROUNDS : 1)
+      pointData = packPointsForPulling(position, color, order ? PREFIX_SAMPLE_ROUNDS : 1, bounds)
       if (pointData) {
         reordered = order
         adoptPointData(source.geometry, pointData, points)
-        source.geometry.boundingSphere = null
+        boundsFilled = true
       } else {
         pointData = packPointData(position, color)
       }
       geometry = releaseVertexArraysOnDispose(renderer, buildPulledGeometry(dotMode.shape, points))
     } else {
-      const arrays = wantOrder ? reorderForPrefixSampling(position, color) : null
+      const arrays = wantOrder ? reorderForPrefixSampling(position, color, bounds) : null
       if (arrays) {
         reordered = true
         // Written back onto the carrier as well, so `sampleGroundZ` and the ground-patch
@@ -818,14 +819,17 @@ export function createStreamingCloud(opts: {
             'color', new THREE.BufferAttribute(arrays.color, 4, color?.normalized ?? true),
           )
         }
-        // Derived from the same points, and a permutation cannot change it — but it may
-        // already have been built against the attribute just replaced.
-        source.geometry.boundingSphere = null
+        boundsFilled = true
       }
       // Built from the carrier's arrays as they now stand — reordered or as they arrived —
       // so a later feed switch can rebuild from the same source without re-fetching.
       geometry = buildInstancedGeometry(source.geometry, dotMode.shape)
     }
+    // Set here rather than left for three to build lazily in the tile's first visible frame.
+    // The arrivals no pass covered — thinning off, pre-ordered packs, tiny tiles, declined
+    // layouts — get a standalone pass that gives the same bits.
+    if (boundsFilled) setCarrierBounds(source.geometry, bounds)
+    else computeCarrierBounds(source.geometry)
 
     const spacing = tileSpacingMetres(tile, points)
     const material = createCloudMaterial(uniforms, colorItemSize, spacing, {
@@ -1074,8 +1078,9 @@ export function createStreamingCloud(opts: {
       // a failed layers test skips only this object — the children loop sits outside that
       // branch. Nothing else in the viewer uses layers.
       //
-      // The geometry stays readable, which it has to: sampleGroundZ, shadedPixelArea and
-      // applyThinning all reach through `mesh.parent` for the tile's real point bounds.
+      // The geometry stays readable, which it has to: sampleGroundZ reads the carrier
+      // itself, and shadedPixelArea and applyThinning reach it through `mesh.parent` for
+      // the tile's real point bounds.
       source.layers.disableAll()
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
@@ -1475,78 +1480,12 @@ export function createStreamingCloud(opts: {
       // THREE.Points.raycast clamps its loop to zero vertices and the instanced
       // child only carries four corner offsets in `position` — a raycast here
       // finds nothing, silently, whatever threshold it is given. The raw tile
-      // positions do survive, as the instanced attribute the quads read, so we
-      // sample those directly.
-      const heights: number[] = []
-      // 5×5 support grid: a candidate height backed by one corner of the
-      // footprint is noise, not ground.
-      const support = new Uint8Array(25)
-      const local = scratchMatrix
-      const point = scratchVector
-
-      for (const tile of tiles.visibleTiles) {
-        const tileScene = (tile as any)?.engineData?.scene
-        if (!tileScene) continue
-        tileScene.traverse((object: any) => {
-          // A dot mesh is sampled through its instanced point attribute, which wraps the
-          // carrier's own position array. A pulled dot mesh has no attributes, so it reads
-          // that same array off its carrier directly — the carrier and the dot mesh share
-          // one world matrix — which keeps the sample set identical in both feeds.
-          const attribute = object.geometry?.getAttribute?.(POINT_POSITION_ATTRIBUTE)
-            ?? (isDotMesh(object) ? (object.parent as any)?.geometry?.getAttribute?.('position') : null)
-            ?? (object.isPoints ? object.geometry?.getAttribute?.('position') : null)
-          if (!attribute || attribute.count === 0) return
-          object.updateWorldMatrix(true, false)
-          local.multiplyMatrices(enuInverse, object.matrixWorld)
-
-          // Cheap reject: the tile's bounds in ENU versus the footprint disc. Only the
-          // carrier's sphere describes the tile; a dot mesh's describes its corner
-          // offsets. This used to tell them apart by radius alone (a real bound is over a
-          // metre, the quad's corners 0.707) — which a triangle's 1.16 would have passed,
-          // silently rejecting tiles against their local origin. So it now asks what the
-          // object is first, and keeps the radius test too: a sub-metre carrier, a
-          // one-point leaf say, was never disc-rejected and still is not. The dot mesh is
-          // sampled unbounded, as it always was, so the sample set is exactly as before.
-          const geometry = object.geometry
-          if (object.isPoints) {
-            if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-            const bounds = geometry.boundingSphere
-            if (bounds && bounds.radius > 1) {
-              point.copy(bounds.center).applyMatrix4(local)
-              const dx = point.x - centreEnu.x
-              const dy = point.y - centreEnu.y
-              if (Math.hypot(dx, dy) > radiusM + bounds.radius) return
-            }
-          }
-
-          const limit = EXPERIENCE_CONFIG.donationShape.probeMaxSamplesPerTile
-          const stride = Math.max(1, Math.floor(attribute.count / limit))
-          for (let index = 0; index < attribute.count; index += stride) {
-            point.set(attribute.getX(index), attribute.getY(index), attribute.getZ(index))
-            point.applyMatrix4(local)
-            const dx = point.x - centreEnu.x
-            const dy = point.y - centreEnu.y
-            if (Math.abs(dx) > radiusM || Math.abs(dy) > radiusM) continue
-            heights.push(point.z)
-            const column = Math.min(4, Math.max(0, Math.floor(((dx / radiusM) + 1) * 2.5)))
-            const row = Math.min(4, Math.max(0, Math.floor(((dy / radiusM) + 1) * 2.5)))
-            support[row * 5 + column] = 1
-          }
-        })
-      }
-
-      if (heights.length < EXPERIENCE_CONFIG.donationShape.probeMinSamples) return null
-      heights.sort((a, b) => a - b)
-      const at = (fraction: number): number =>
-        heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * fraction)))]
-      let occupied = 0
-      for (const cell of support) occupied += cell
-      return {
-        groundZ: at(EXPERIENCE_CONFIG.donationShape.probeGroundPercentile),
-        canopyZ: at(EXPERIENCE_CONFIG.donationShape.probeCanopyPercentile),
-        samples: heights.length,
-        support: occupied,
-      }
+      // positions do survive, on the carrier itself — its own position, a four-float
+      // view of the point texture in the pulled feed — so we sample those directly.
+      // See ground-sample.ts.
+      return sampleGroundHeights(
+        visibleTileScenes(), centreEnu, radiusM, enuInverse, EXPERIENCE_CONFIG.donationShape,
+      )
     },
     stats() {
       let points = 0
@@ -1952,15 +1891,15 @@ export function createStreamingCloud(opts: {
             ?? (mesh.material as any)?.userData?.pointSpacingM
           if (!(spacingM > 0)) continue
           // The carrier this mesh hangs under still holds the tile's real point bounds;
-          // the dot geometry's own sphere describes the corner offsets and says nothing
-          // about where the tile is (see sampleGroundZ for the same trap).
+          // the dot geometry's own sphere is pinned corner data (dot-geometry.ts) and says
+          // nothing about where the tile is.
           const carrier = mesh.parent as THREE.Object3D | null
           const geometry = carrier ? (carrier as any).geometry : null
           if (!geometry) continue
-          // Computed here rather than skipped when absent. three only builds the sphere
-          // when something asks for it, and the carrier is parked with an empty draw
-          // range, so nothing ever does — skipping meant these tiles were left out of the
-          // area for the whole session while their points stayed in the point count.
+          // buildPointQuads gives every carrier its sphere on arrival; this is the fallback
+          // for anything built another way. Computed rather than skipped when absent, since
+          // skipping once left such tiles out of the area for the whole session while their
+          // points stayed in the point count.
           if (!geometry.boundingSphere) geometry.computeBoundingSphere()
           const bounds = geometry.boundingSphere
           if (!bounds) continue

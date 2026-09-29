@@ -11,7 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion,
+  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, imageryEffectsKey,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -95,15 +95,19 @@ export interface Globe {
  * currently being drawn, so one node reads each tile's own `map`. That is why `mat.map`
  * has to keep being set; it was previously kept only for the disposal path.
  *
- * Keyed on the cloud's effect version because the effect switches compile their code out
- * entirely rather than turning it down, so a flag flip has to produce a different graph.
+ * Keyed on the effect flags the map graph reads, because the effect switches compile their
+ * code out entirely rather than turning it down: a flip of one of those has to produce a
+ * different graph, and a flip of any other must not cost the map a build.
  */
-const imageryGraphCache = new Map<number, any>()
+const imageryGraphCache = new Map<string, any>()
 
 function imageryColorNode(uniforms: CloudUniforms): any {
-  const key = cloudEffectsVersion()
+  const key = imageryEffectsKey()
   const cached = imageryGraphCache.get(key)
   if (cached) return cached
+  // Any older graph is for a flag set that no longer holds. Dropped rather than kept,
+  // because each one's map reference still holds the last tile material it drew.
+  imageryGraphCache.clear()
 
   const raw = (materialReference('map', 'texture') as any).rgb
   const graded = gradeImageryNode(uniforms, raw)
@@ -202,7 +206,7 @@ export function createGlobe(opts: {
   // Each tile also gets a node material whose colour is multiplied by the shared
   // world-anchored vignette dim — in vignette mode the imagery fades to black around
   // the mask radius, so the point-cloud cutout blends seamlessly instead of sitting
-  // as a bright hard circle on the map (dim is 1 in the other mask modes).
+  // as a bright hard circle on the map (compiled out in the other mask modes).
   //
   // And on the WebGL2 fallback each tile's vertex-array objects are deleted with its
   // geometry, which three never does — see vertex-arrays.ts. Registered here because the
@@ -226,6 +230,7 @@ export function createGlobe(opts: {
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
       mat.colorNode = imageryColorNode(uniforms)
       mat.userData.rebuildEffectGraph = () => { mat.colorNode = imageryColorNode(uniforms) }
+      mat.userData.effectsVersion = cloudEffectsVersion()
       o.material.dispose()
       o.material = mat
     })
@@ -550,7 +555,11 @@ export function createGlobe(opts: {
     },
     setResolution,
     refreshEffects() {
-      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+      // Every loaded tile, not just the ones in the scene group: a tile hidden in the cache
+      // is out of the group, and would otherwise come back with the graph it left with.
+      tiles.forEachLoadedModel((model: any) => {
+        model.traverse((object: any) => rebuildEffectMaterial(object.material))
+      })
     },
     setImageryEnabled(enabled) {
       if (enabled === imageryEnabled) return

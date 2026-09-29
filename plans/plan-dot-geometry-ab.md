@@ -5,6 +5,13 @@ built and verified on 2026-09-23; results under "Step 2 results" below. The arri
 was fixed the same day by packing during the reorder. Open: the protocol's visible-window
 and phone runs, and the triangle rims by eye.
 
+**Decided 2026-09-29 by the user:** the pulled triangle is the default (`config.ts`
+`lod.dotGeometry`, on `sbb/quick-wins`). She saw no difference in the triangle rims and finds
+the pulled feed faster on phones; the protocol's visible-window and phone runs were not done
+first and stay open as a check, along with recalibrating the loader benchmark, which still
+stresses instanced quads (conservative until then), and freeing the shared quad index, which
+now only the Square dot shape needs.
+
 ## Why
 
 Measured 2026-09-23 by swapping geometries at runtime in the live viewer (same pose,
@@ -343,6 +350,30 @@ Ship the pulled feed (instanced kept only as a temporary fallback) if:
 Pulled triangle over pulled quad only if it wins by at least 10 % at both poses and the
 rims pass by eye; otherwise the pulled quad, which is today's picture exactly and serves
 Square without a second primitive.
+
+## Recalibrating the loader benchmark for pulled triangles
+
+The loader benchmark (eagle-bench.ts) can now stress with the tiles' own primitive:
+`?benchstress=pulled` (or `instanced`), config `eagleBench.stress`, default still
+`instanced-quad` because `strongFraction`, `mediumFraction` and `strongMinPoints` were tuned
+on it. Every Start logs each stage's median frame, and `window.__benchReport` holds the
+same for remote debugging:
+
+    [eagle-bench] 2292k of 2500k pts @60fps (574 samples) → preset medium
+    [eagle-bench] stages (pulled-triangle, WebGPUBackend, dpr 1.25): 0k — · 208k 38.3ms×4 · … · 2500k 18.9ms×240
+
+Only the last stage has a full window; the loading stages hold a handful of frames each,
+taken while tiles stream in. The protocol, per device class (desktop dGPU, weak iGPU
+laptop, a mid Android, an older iPhone):
+
+1. Ground truth: boot with `?preset=constrained`, `medium` and `strong` in turn, fly in
+   and land, and note whether the landing and the flight hold about 55 fps (the HUD's
+   frame figure, in a visible window, rain cycle off). The truth is the highest preset
+   that holds.
+2. Bench: 10 cold boots with `?benchstress=pulled` and 10 with `instanced`, waiting on the
+   Start screen until the verdict settles (about 10 s). Record the two log lines each time.
+3. Pick the bars so that the pulled verdict lands on the ground-truth preset for every
+   device, and never above it. Then make `pulled-triangle` the default.
 
 ## Open question found on the way
 

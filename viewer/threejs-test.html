@@ -782,7 +782,7 @@
 
         <span class="h g-pixels">Pixels</span>
         <span class="k g-pixels" title="Points handed to the graphics card this frame. Counted per tile, so it includes points that fall outside the frame or behind the camera whenever any part of their tile is in view — it is the work submitted, not what you can see.">Points drawn</span><span class="v" id="visible">0</span>
-        <span class="k g-pixels" title="How many times an average pixel gets painted. 1 would mean every point lands on fresh ground; 18 means eighteen points are painted on top of each other and seventeen of them are wasted. Measured per tile at that tile's own dot size and summed, because under tilt the near and far halves of the frame draw very different sizes. The area counted is the square the card actually shades, not the round dot you see — the circle is cut afterwards, so its corners are paid for and thrown away.">Overdraw</span><span class="v" id="overdraw">—</span>
+        <span class="k g-pixels" title="How many times an average pixel gets painted. 1 would mean every point lands on fresh ground; 18 means eighteen points are painted on top of each other and seventeen of them are wasted. Measured per tile at that tile's own dot size and summed, because under tilt the near and far halves of the frame draw very different sizes. The area counted is the shape the card actually shades, not the round dot you see: by default a triangle of 1.325 d² per dot, or a square of 1 d² when drawing quads (see Dot geometry). The circle is cut afterwards, so its corners are paid for and thrown away.">Overdraw</span><span class="v" id="overdraw">—</span>
         <span class="k g-pixels" title="Points landing on each pixel of the frame. Related to Overdraw but independent of dot size: this counts points, Overdraw counts the paint they spread. One clean sheet of points at the current error target would read somewhere between 0.25 and 1.00 — refinement splits a tile as soon as its points would spread wider than the target, so a correct frame lands anywhere in that band. Well above it means levels are stacking, or the canopy is deep enough that many heights share one pixel.">Point density</span><span class="v" id="stacking">—</span>
 
         <span class="h g-refine">Refinement</span>
@@ -828,7 +828,7 @@
         <div class="row">
           <label class="h" for="roundDotsToggle">Dot shape · A/B</label>
           <button class="act on" id="roundDotsToggle" type="button" aria-pressed="true" aria-describedby="roundDotsNote">● Round</button>
-          <span class="weather-note" id="roundDotsNote">Square removes the shader's circular cut, which lets the card skip hidden points. Measured worth 0.8% — a look decision, not a speed one. Square also keeps Vertices per dot on quads, since an uncut triangle would change the look</span>
+          <span class="weather-note" id="roundDotsNote">Square removes the shader's circular cut, which lets the card skip hidden points; on quads the cut alone measured worth 0.8%. Square also puts Vertices per dot on quads, since an uncut triangle would change the look — and from the default triangles that rebuilds every tile and costs the quad's extra vertices, measured 14–49% more cloud GPU time. Pick it for the look, not for speed; to time the cut alone, boot with <code>?dot=quad</code></span>
         </div>
         <div class="row">
           <label class="h" for="sseTarget">Point spacing · <span class="val" id="sseTargetVal">—</span></label>
@@ -862,14 +862,14 @@
         <summary>Dot geometry (test)</summary>
         <div class="row">
           <label class="h" for="dotShapeToggle">Vertices per dot · A/B</label>
-          <button class="act" id="dotShapeToggle" type="button" aria-pressed="false" aria-describedby="dotShapeNote">■ Quad · 4 vertices</button>
-          <span class="weather-note" id="dotShapeNote">Every point is drawn as a small shape the round dot is cut out of: a square of 4 vertices and 2 triangles, or one triangle of 3 vertices around the same circle. The dot looks the same either way; the triangle is 30% larger, and those extra corner pixels are thrown away. Switching changes every loaded tile in place, so both sides compare the same tiles at the same view. With Dot shape on ■ Square it still draws quads when Triangle is picked, so this stays a pure speed test. <code>?dot=tri</code> boots on triangles</span>
+          <button class="act on" id="dotShapeToggle" type="button" aria-pressed="true" aria-describedby="dotShapeNote">▲ Triangle · 3 vertices</button>
+          <span class="weather-note" id="dotShapeNote">Every point is drawn as a small shape the round dot is cut out of: a square of 4 vertices and 2 triangles, or one triangle of 3 vertices around the same circle. The dot looks the same either way; the triangle is 30% larger, and those extra corner pixels are thrown away. Switching changes every loaded tile in place, so both sides compare the same tiles at the same view. With Dot shape on ■ Square it still draws quads when Triangle is picked, so this stays a pure speed test. Triangles are the default; <code>?dot=quad</code> boots on quads</span>
           <span class="weather-note" id="dotShapeReadout">—</span>
         </div>
         <div class="row">
           <label class="h" for="dotFeedToggle">Instancing · A/B</label>
-          <button class="act" id="dotFeedToggle" type="button" aria-pressed="false" aria-describedby="dotFeedNote">⧉ Instanced</button>
-          <span class="weather-note" id="dotFeedNote">Instanced hands the card one tiny shape per point, which it processes a point at a time. Pulled draws each tile as one long list of corners instead, and every corner looks its point up in a texture — the same data, the same 16 bytes per point, so many points share each batch of vertex work. Switching rebuilds every loaded tile in place, which costs a moment and a re-upload. <code>?feed=pull</code> boots pulled</span>
+          <button class="act on" id="dotFeedToggle" type="button" aria-pressed="true" aria-describedby="dotFeedNote">⇣ Pulled · no instancing</button>
+          <span class="weather-note" id="dotFeedNote">Instanced hands the card one tiny shape per point, which it processes a point at a time. Pulled draws each tile as one long list of corners instead, and every corner looks its point up in a texture — the same data, the same 16 bytes per point, so many points share each batch of vertex work. Switching rebuilds every loaded tile in place, which costs a moment and a re-upload. Pulled is the default; <code>?feed=inst</code> boots instanced</span>
         </div>
       </details>
       <details class="design-section" open>
@@ -1159,7 +1159,7 @@
       <div class="row">
         <label class="h" for="precisionToggle">Matrix precision</label>
         <button class="act on" id="precisionToggle" type="button" aria-pressed="true" aria-describedby="precisionNote">◈ Precision · High</button>
-        <span class="weather-note" id="precisionNote">Point cloud only. Off = model-view in the shader (float32); tiles jitter on ECEF rounding. Automatically off during loader and flight</span>
+        <span class="weather-note" id="precisionNote">Point cloud only. Off = model-view in the shader (float32); tiles jitter on ECEF rounding. Automatically off during flights while Flight drop is on</span>
       </div>
       <div class="row">
         <label class="h" for="liftToggle">Height offset</label>

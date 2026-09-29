@@ -36,10 +36,11 @@ export type DotShape = 'quad' | 'triangle'
  * How the GPU is handed the points — step 2 of plans/plan-dot-geometry-ab.md.
  *
  * - **instanced**: one hardware instance per point, the corners in a tiny per-vertex
- *   buffer and the point in per-instance attributes. Today's path. Measured: the cost is
- *   per instance, because a 3- or 4-vertex instance fills a whole vertex batch.
- * - **pulled**: no instancing and no per-vertex attributes at all. Each tile draws
- *   `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
+ *   buffer and the point in per-instance attributes. The older path, kept for the A/B
+ *   (`?feed=inst`). Measured: the cost is per instance, because a 3- or 4-vertex instance
+ *   fills a whole vertex batch.
+ * - **pulled**, the default since 2026-09-29: no instancing and no per-vertex attributes
+ *   at all. Each tile draws `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
  *   the shader derives the point from the vertex index and reads it from a per-tile data
  *   texture, so vertices of many points share a batch. Same 16 bytes per point on the GPU.
  */
@@ -119,8 +120,8 @@ const SHAPES: Record<DotShape, ShapeDefinition> = {
  * The corner sphere of every dot geometry, set by hand. three would compute it from the
  * corners — radius 0.707 for the quad but 1.16 for the triangle, centred off the origin —
  * and three's opaque sort key reads it. Pinning it to the quad's value keeps the draw
- * order identical between the two shapes. (sampleGroundZ used to read it too, to tell a
- * dot mesh from a tile bound by its radius; it now asks what the object is instead.)
+ * order identical between the two shapes. (The ground probe never reads it: it samples
+ * the carriers only.)
  */
 const CORNER_SPHERE_RADIUS = Math.SQRT1_2
 

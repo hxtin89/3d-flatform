@@ -43,3 +43,21 @@ export function flightSseFloor(params: FlightSseFloorParams): number {
   const to = Math.log(Math.max(params.targetSse, 1))
   return Math.exp(from + (to - from) * eased)
 }
+
+export interface MatrixPrecisionParams {
+  /** The panel's Precision toggle. */
+  wish: boolean
+  /** The Flight drop render option, off by default. */
+  flightDrop: boolean
+  flying: boolean
+  bootLoading: boolean
+}
+
+/**
+ * Whether the point cloud draws with the CPU-side, float64 model-view matrix. Only the
+ * Flight drop option lowers it: during flights and, because the entrance flight is set up
+ * behind the loader, during the loader as well, so that option switches once, on landing.
+ */
+export function matrixPrecisionWanted(p: MatrixPrecisionParams): boolean {
+  return p.wish && !(p.flightDrop && (p.flying || p.bootLoading))
+}

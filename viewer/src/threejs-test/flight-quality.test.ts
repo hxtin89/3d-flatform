@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { EXPERIENCE_CONFIG } from './config.ts'
-import { flightSseFloor } from './flight-quality.ts'
+import { flightSseFloor, matrixPrecisionWanted } from './flight-quality.ts'
 
 const { flightSse, flightSseRampMs, sse } = EXPERIENCE_CONFIG.lod
 const floor = (msSinceLanding: number, targetSse = sse, flying = false) =>
@@ -43,4 +43,15 @@ test('the ramp always stays between its two endpoints', () => {
       assert.ok(value >= lo - 1e-9 && value <= hi + 1e-9, `floor ${value} left [${lo}, ${hi}]`)
     }
   }
+})
+
+test('matrix precision stays high through the loader unless Flight drop is on', () => {
+  const base = { wish: true, flightDrop: false, flying: false, bootLoading: true }
+  assert.equal(matrixPrecisionWanted(base), true)
+  assert.equal(matrixPrecisionWanted({ ...base, flying: true }), true)
+  assert.equal(matrixPrecisionWanted({ ...base, bootLoading: false }), true)
+  assert.equal(matrixPrecisionWanted({ ...base, flightDrop: true }), false)
+  assert.equal(matrixPrecisionWanted({ ...base, flightDrop: true, bootLoading: false, flying: true }), false)
+  assert.equal(matrixPrecisionWanted({ ...base, flightDrop: true, bootLoading: false }), true)
+  assert.equal(matrixPrecisionWanted({ ...base, wish: false, bootLoading: false }), false)
 })

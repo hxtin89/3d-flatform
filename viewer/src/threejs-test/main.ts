@@ -4,9 +4,12 @@
 import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
-  createUniforms, setCloudShadowTexture, setGroundPatchMask,
+  cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask,
   setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
+import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
+import { pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
+import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -47,11 +50,11 @@ import {
 } from './environment-layer'
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 import { createAudioLayer, type AudioLayer } from './audio-layer'
-import { createEagleBench, type BenchPreset, type EagleBench } from './eagle-bench'
+import { createEagleBench, type BenchPreset, type BenchStress, type EagleBench } from './eagle-bench'
 import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
-import { flightSseFloor } from './flight-quality'
+import { flightSseFloor, matrixPrecisionWanted } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
 import { createGroundPatchMask } from './ground-patch-mask'
 import { createRenderBench } from './render-bench'
@@ -180,8 +183,22 @@ let loaderFailed = false
 let basemapWaitStartedAt = 0
 /** True once the loader gave up on the basemap and started without it. */
 let basemapMissing = false
+/**
+ * True once the loader benchmark's verdict settled on the Start screen and its preset was
+ * applied, behind the loader, in that frame. The wait until Start is then idle time: the
+ * benchmark stops, the loader stops repainting, and the hidden scene is drawn only when
+ * something new needs uploading (drawThisFrame). Start then only starts.
+ */
+let benchPresetApplied = false
+/** Frames the hidden scene still has to be drawn for, set by anything that changed it. */
+let bootDrawFrames = 0
+let lastBootDrawAt = -Infinity
+/** Heartbeat for changes nothing announces — a ground-patch layer, a late donation shape. */
+const BOOT_DRAW_HEARTBEAT_MS = 250
+let lastPaintedLoaderProgress = -1
 
 function paintLoaderProgress(progress: number): void {
+  lastPaintedLoaderProgress = progress
   const percentage = Math.min(100, Math.floor(progress * 100))
   loaderEl.style.setProperty('--loader-progress', `${(progress * 100).toFixed(2)}%`)
   loaderEl.setAttribute('aria-valuenow', String(percentage))
@@ -199,7 +216,12 @@ function exposeBenchDebugState(): void {
 
 // The eagle is a real point cloud whose density follows the load progress —
 // the loading animation quietly benchmarks the device's point pipeline.
-void createEagleBench(loaderEagleCanvasEl, { forceWebGL }).then((bench) => {
+// `?benchstress=pulled|instanced`: the stress primitive for a calibration run (config.ts
+// eagleBench.stress). Anything else leaves the configured one.
+const benchStressParam = params.get('benchstress')
+const benchStress: BenchStress | undefined = benchStressParam === 'pulled' ? 'pulled-triangle'
+  : benchStressParam === 'instanced' ? 'instanced-quad' : undefined
+void createEagleBench(loaderEagleCanvasEl, { forceWebGL, onSettled: onBenchSettled, stress: benchStress }).then((bench) => {
   if (!bootLoading) { bench.dispose(); return }
   eagleBench = bench
   loaderEagleCanvasEl.hidden = false
@@ -235,6 +257,9 @@ function showLoaderReadyIfComplete(): void {
   loaderEl.setAttribute('aria-busy', 'false')
   loaderActionsEl.hidden = false
   loaderStartEl.focus({ preventScroll: true })
+  // While the visitor reads the ready screen: the rotation pivot's first pick would
+  // otherwise pay for its own compilation on the first press. See warmUpPick.
+  warmUpPick(dotSizeRule())
 }
 
 function tickLoaderProgress(now: number): void {
@@ -247,7 +272,9 @@ function tickLoaderProgress(now: number): void {
     const maximumStep = elapsed / (EAGLE_MIN_ASSEMBLY_SECONDS * 1000)
     loaderDisplayed = Math.min(loaderTarget, loaderDisplayed + maximumStep)
   }
-  paintLoaderProgress(loaderDisplayed)
+  // Once the benchmark has settled nothing measures these frames any more, and the bar
+  // sits at 100 %: repainting the same value each frame is work for nobody.
+  if (!benchPresetApplied || loaderDisplayed !== lastPaintedLoaderProgress) paintLoaderProgress(loaderDisplayed)
   showLoaderReadyIfComplete()
   loaderProgressRaf = requestAnimationFrame(tickLoaderProgress)
 }
@@ -331,6 +358,42 @@ const onLoaderSoundOpt = () => {
 }
 loaderSoundOptEl.addEventListener('click', onLoaderSoundOpt)
 syncLoaderSoundOpt()
+/**
+ * The benchmark's verdict settled on the Start screen: apply its preset now, behind the
+ * loader, exactly as a click in this frame would — and with it the pixel ratio, budgets
+ * and cloud tier the flight will run with, whose rebuilds then happen while nobody watches.
+ * A click before this point takes the old path in onLoaderStart, unchanged.
+ */
+function onBenchSettled(): void {
+  if (!bootLoading || loaderFinishAt > 0 || benchPresetApplied || !loaderReadyShown) return
+  applyBenchPreset()
+  benchPresetApplied = true
+  // A few frames at the new settings, so their pipelines and buffers are made now.
+  markBootDraw(3)
+}
+
+/** Draw the hidden scene for the next `frames` frames: something in it needs uploading. */
+function markBootDraw(frames = 1): void {
+  bootDrawFrames = Math.max(bootDrawFrames, frames)
+}
+
+/**
+ * Whether this frame draws. Always, except on the Start screen once the benchmark has
+ * settled: there the scene is fully covered by the opaque loader and nothing measures the
+ * frames, so it is drawn only when a tile arrived or changed, when a hand is on the Start
+ * button, and on a heartbeat. The draws that remain are the ones that matter behind the
+ * loader — a tile's first draw is what uploads it — so the flight does not inherit them.
+ */
+function drawThisFrame(now: number): boolean {
+  if (!(bootLoading && loaderFinishAt === 0 && benchPresetApplied)) return true
+  if (bootDrawFrames > 0 || now - lastBootDrawAt >= BOOT_DRAW_HEARTBEAT_MS) {
+    bootDrawFrames = Math.max(0, bootDrawFrames - 1)
+    lastBootDrawAt = now
+    return true
+  }
+  return false
+}
+
 /** Turn the loader benchmark into start settings: strong devices skip the
  * vignette trick and render full quality; weak ones start conservative so the
  * experience never dips below the target frame rate. Runtime guards remain. */
@@ -352,6 +415,21 @@ function applyBenchPreset(): void {
       : 'no measurement (heuristic fallback)'} → preset ${preset}${
       presetOverride ? ' (forced by ?preset)' : ''}`,
   )
+  // Every stage's median frame, for re-tuning the bars per device: the verdict only says
+  // which stages held the target. On window as well, so a phone's figures can be read
+  // over remote debugging. A stage reads "—" until it has frames.
+  if (measured) {
+    const stages = measured.stages
+      .map((stage) => `${Math.round(stage.points / 1000)}k ${stage.medianMs === null ? '—' : `${stage.medianMs.toFixed(1)}ms×${stage.samples}`}`)
+      .join(' · ')
+    console.info(`[eagle-bench] stages (${measured.stress}, ${forceWebGL ? 'WebGL2' : renderer.backend?.constructor?.name ?? '?'}, dpr ${window.devicePixelRatio}): ${stages}`)
+  }
+  ;(window as any).__benchReport = {
+    preset, forced: Boolean(presetOverride), measured,
+    backend: (renderer as any).backend?.constructor?.name ?? null,
+    devicePixelRatio: window.devicePixelRatio,
+    settledOnStartScreen: eagleBench?.settled() ?? false,
+  }
   // Every preset write below routes through the render-options flags so a
   // toggled-off optimisation (or active compare mode) is never re-applied.
   //
@@ -409,7 +487,8 @@ function applyBenchPreset(): void {
 
 const onLoaderStart = () => {
   if (!loaderReadyShown || loaderFinishAt > 0 || loaderFlightStarted) return
-  applyBenchPreset()
+  // Already applied if the benchmark settled while the visitor read the Start screen.
+  if (!benchPresetApplied) applyBenchPreset()
   eagleBench?.dispose()
   eagleBench = null
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
@@ -442,6 +521,9 @@ const onLoaderStart = () => {
   )
 }
 loaderStartEl.addEventListener('click', onLoaderStart)
+// A hand on the button is the cheapest warm-up cue there is: draw the hidden scene right
+// before the click, so nothing the heartbeat has not caught yet lands in the flight.
+for (const type of ['pointerenter', 'pointerdown', 'focus']) loaderStartEl.addEventListener(type, () => markBootDraw())
 const loaderStallTimer = window.setInterval(() => {
   if (!bootLoading || loaderFailed || loaderDataReady || loaderReadyShown || loaderFinishAt > 0
     || performance.now() - loaderLastAdvance < 20_000) return
@@ -593,8 +675,9 @@ function applyPointSize(): void {
   // shortfall and tries to compensate for a decision that was deliberate.
   uniforms.sizeRequestedPx.value = targetPx
   uniforms.sizeHalfHeightPx.value = Math.max(height / 2, 1)
-  // Equal factors collapse the ramp to a constant, so an unfoveated frame pays a few ALU
-  // ops and changes nothing. The centre follows the same tilt the guides draw.
+  // Equal factors collapse the ramp to a constant; an unfoveated frame has the bend
+  // compiled out altogether (syncCompiledShaderTerms). The centre follows the same tilt
+  // the guides draw.
   const fovea = foveationSettings.enabled
   uniforms.foveaFactors.value.set(
     fovea ? foveationSettings.centreFactor : 1,
@@ -635,6 +718,10 @@ function applyPointSize(): void {
 let globe: Globe | null = null
 let stream: StreamingCloud | null = null
 const foveationSettings: FoveationSettings = { ...EXPERIENCE_CONFIG.lod.foveation }
+/** Shader terms kept in although their feature is off — `__wild.shaderTerms.force`, for
+ *  A/Bs against the old inert shader. Declared up here because the inspector's switches
+ *  run syncCompiledShaderTerms while the module is still loading. */
+const forcedShaderTerms = new Set<CompiledTerm>()
 let foveation: Foveation | null = null
 /** Same arrangement as foveation: the panel writes these before the globe exists. */
 const sphereFadeSettings: SphereFadeSettings = { ...EXPERIENCE_CONFIG.lod.sphereFade }
@@ -866,8 +953,8 @@ function setSplatSolo(on: boolean): void {
 
 const onPrecisionToggle = () => {
   highPrecisionMatrices = !highPrecisionMatrices
-  // The loop owns the actual switch — it also has to suppress it during the
-  // loader and the flight.
+  // The loop owns the actual switch — it also drops it during flights while the
+  // Flight drop option is on.
   updateMatrixPrecision(performance.now())
   syncPrecisionToggle()
 }
@@ -1505,7 +1592,10 @@ function updatePivotMarker(): void {
   pivotMarker.scale.setScalar(perPixel * PIVOT_MARKER_PX * 0.5)
   if (pivotMarkerMaterial) {
     pivotMarkerMaterial.color.copy(
-      pivotDebug.reason === 'corrected' ? pivotMarkerCorrected : pivotMarkerFallback,
+      // Green for an answer about what is on screen: a dot, the ground through a gap, or
+      // the old lift; amber when it fell back to the bare map hit for want of anything else.
+      pivotDebug.reason === 'corrected' || pivotDebug.reason === 'picked' || pivotDebug.reason === 'ground'
+        ? pivotMarkerCorrected : pivotMarkerFallback,
     )
   }
 }
@@ -1553,6 +1643,10 @@ interface PivotDebug {
   pivotRoseM?: number
   /** Camera height over the lifted pivot — small means turning almost in place. */
   camAbovePivotM?: number
+  /** The pick: how long it took, and how much of the cloud it had to look at. */
+  pickMs?: number
+  pickTiles?: number
+  pickPoints?: number
 }
 let pivotDebug: PivotDebug = { reason: null, passes: [] }
 
@@ -1847,6 +1941,24 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   if (!pivotOnCanopy) { debug.reason = 'toggle off'; return false }
   if (!stream) { debug.reason = 'no stream'; return false }
   if (!enuFrameReady) { debug.reason = 'enu frame not ready'; return false }
+  // The dot the cursor is actually on. When the cloud is drawn and the ray meets none of
+  // its dots, the cursor is on the ground showing through a gap, and the map hit the
+  // controls found is exactly that — lifting it onto a canopy plane there put the pivot
+  // 65-74 m in front of the ground on screen. The lift is left for when there is no drawn
+  // cloud to pick from at all.
+  const picked = pickPivot(pivotWorld, target, debug)
+  if (picked === 'hit') return true
+  if (picked === 'miss') { debug.reason = 'ground'; return false }
+  return liftToCanopy(pivotWorld, target, debug)
+}
+
+/**
+ * The fallback: lift the map hit up the ray to the canopy height sampled around it — a
+ * 95th-percentile height over a 40 m square, widening where the points are thin. It is
+ * not the dot under the cursor, only a plane through the canopy near it.
+ */
+function liftToCanopy(pivotWorld: THREE.Vector3, target: THREE.Vector3, debug: PivotDebug): boolean {
+  if (!stream) { debug.reason = 'no stream'; return false }
   worldToEnu(camera.position, pivotCamEnu)
   worldToEnu(pivotWorld, pivotEnu)
   pivotDirEnu.copy(pivotEnu).sub(pivotCamEnu)
@@ -1914,6 +2026,86 @@ function canopyPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3): boolean 
   debug.pivotRoseM = +(pivotStepEnu.z - pivotEnu.z).toFixed(2)
   debug.camAbovePivotM = +(pivotCamEnu.z - pivotStepEnu.z).toFixed(2)
   return true
+}
+
+const pickTiles: PickTile[] = []
+const pickRayDir = new THREE.Vector3()
+const pickCursor = new THREE.Vector3()
+const pickDome: PickDome = {
+  centreEnu: uniforms.sphereFadeCentre.value, radius: 1e9, rampInset: 0, fadeIn: 1, fadeOut: 1,
+  upWorld: uniforms.sphereFadeUpWorld.value, enuInverse: uniforms.enuInverse.value,
+}
+
+/**
+ * Put the pivot on the first drawn dot along the cursor ray — see cloud-pick.ts.
+ *
+ * The ray is the one the controls cast: camera through their hit on the map, which lies on
+ * it. Nothing behind that hit is on screen, since the map occludes it, so the pick stops
+ * there (plus a little, for ground points that sit a hair under the drape).
+ *
+ * The dots are sized by the same rule as the shader (dot-size.ts, from the live uniforms),
+ * at each dot's own depth, and the dome's melt and shrink come from the very uniforms the
+ * shader reads. So the pivot lands on the dot that is drawn under the cursor, not on a
+ * height statistic of the ground around it.
+ *
+ * `miss` means the cloud is drawn but no dot is under the cursor — the ground shows
+ * through there — and `unavailable` that there is no drawn cloud to pick from.
+ */
+function pickPivot(pivotWorld: THREE.Vector3, target: THREE.Vector3, debug: PivotDebug): 'hit' | 'miss' | 'unavailable' {
+  if (!stream || !stream.group.visible) return 'unavailable'
+  pickRayDir.copy(pivotWorld).sub(camera.position)
+  const hitDistance = pickRayDir.length()
+  if (!(hitDistance > 1e-3)) return 'unavailable'
+  pickRayDir.divideScalar(hitDistance)
+
+  const started = performance.now()
+  camera.updateMatrixWorld()
+  pickCursor.copy(pivotWorld).project(camera)
+  const element = renderer.domElement
+  const screen: PickScreen = {
+    worldToView: camera.matrixWorldInverse, projection: camera.projectionMatrix,
+    cursorX: pickCursor.x, cursorY: pickCursor.y,
+    halfWidthPx: Math.max(element.clientWidth, 1) / 2, halfHeightPx: Math.max(element.clientHeight, 1) / 2,
+    pxAngle: 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / Math.max(element.clientHeight, 1),
+  }
+  pickTiles.length = 0
+  for (const tile of stream.tiles.visibleTiles as Set<any>) {
+    const carrier = tile?.engineData?.scene
+    if (!carrier?.isPoints) continue
+    for (const child of carrier.children) {
+      if (!isDotMesh(child) || !child.visible) continue
+      const drawn = drawnPoints(child)
+      if (drawn <= 0) continue
+      const userData = (child.material as any)?.userData ?? {}
+      const spacingM = userData.effectiveSpacingM ?? userData.pointSpacingM
+      pickTiles.push({
+        carrier, drawn,
+        spacingM: spacingM > 0 ? spacingM : 0,
+        thinScale: userData.thinScale?.value ?? 1,
+      })
+    }
+  }
+
+  // The dome as the shader has it this frame; parked (radius 1e9) means no melt anywhere.
+  const domeLive = sphereFadeSettings.enabled && uniforms.sphereFadeRadius.value < 1e8
+  if (domeLive) {
+    pickDome.radius = uniforms.sphereFadeRadius.value
+    pickDome.rampInset = uniforms.sphereFadeRampInset.value
+    pickDome.fadeIn = uniforms.sphereFadeIn.value
+    pickDome.fadeOut = uniforms.sphereFadeOut.value
+  }
+  const hit = pickFirstPoint(
+    pickTiles, camera.position, pickRayDir, dotSizeRule(), screen,
+    domeLive ? pickDome : null, camera.near, hitDistance * 1.02 + 2,
+  )
+  debug.pickMs = +(performance.now() - started).toFixed(2)
+  if (!hit) return 'miss'
+  debug.pickTiles = hit.tilesWalked
+  debug.pickPoints = hit.pointsWalked
+  target.copy(hit.point)
+  debug.reason = 'picked'
+  debug.movedM = +hit.point.distanceTo(pivotWorld).toFixed(2)
+  return 'hit'
 }
 
 function worldToEnu(value: THREE.Vector3, target = new THREE.Vector3()): THREE.Vector3 {
@@ -2308,6 +2500,7 @@ function constrainControlsCamera(): void {
 
 function setMaskMode(mode: number): void {
   uniforms.maskMode.value = mode
+  syncCompiledShaderTerms()
   if (mode !== 2) {
     uniforms.vignetteStrength.value = 0
     vignetteEl.style.opacity = '0'
@@ -2694,7 +2887,8 @@ const toHex = (value: number) => `#${value.toString(16).padStart(6, '0')}`
  *
  * Frame cost was measured to track point count almost exactly and to be indifferent to
  * painted area, so the only thing that moves it is drawing fewer points. These settings
- * feed `stream.applyThinning`, which lowers each tile's instance count.
+ * feed `stream.applyThinning`, which lowers each tile's drawn point count (the draw range
+ * when pulled, the instance count when instanced).
  *
  * `thinTargetScale` multiplies the spacing the error target already asks for: 1 means
  * "thin anything finer than the target", above 1 asks for coarser than the target and is
@@ -3018,8 +3212,9 @@ syncRoundDotsToggle()
  *
  * - **shape** (step 1): every point drawn as a quad (4 vertices, 2 triangles) or a
  *   triangle (3 vertices, 1 triangle) around the same round dot.
- * - **feed** (step 2): instanced, as today, or pulled — no instancing, each tile drawn as
- *   `k × points` vertices that read their point from a per-tile data texture.
+ * - **feed** (step 2): pulled, the default — no instancing, each tile drawn as
+ *   `k × points` vertices that read their point from a per-tile data texture — or
+ *   instanced, the older path kept for the A/B.
  *
  * `?dot=tri|quad` and `?feed=pull|inst` are the boot state; the buttons rebuild every
  * loaded tile in place from its own point arrays, so all four arms are measured on the same
@@ -3078,6 +3273,7 @@ const syncFoveationToggle = () => {
 }
 foveationToggleEl.addEventListener('click', () => {
   foveationSettings.enabled = !foveationSettings.enabled
+  syncCompiledShaderTerms()
   syncFoveationToggle()
   updateFoveationGuides()
 })
@@ -3271,22 +3467,42 @@ function bindSeg(id: string, key: string, apply: (value: number) => void): void 
   select(Number(buttons.find((button) => button.classList.contains('on'))?.dataset[key] ?? 0))
 }
 
-// ---- level & error inspector. Every control here writes a uniform, so the whole
-// section costs nothing until it is switched on and needs no material rebuild when it
-// is. Mode 0 is the untouched render; see CloudUniforms.debugMode.
+// ---- level & error inspector. Switching it on or off rebuilds the tile shaders once —
+// its palette and isolate cut are only compiled in while it is on — and so does moving
+// Isolate to or from All, because the cut (a discard) is only emitted while it isolates.
+// Terminal <-> One level and the two sliders are uniform writes. Mode 0 is the untouched
+// render; see CloudUniforms.debugMode.
 const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
 /**
+ * Emit exactly the optional shader terms the current settings use — see compiled-terms.ts.
+ *
  * The isolate cut has to be emitted or not emitted, never merely skipped: it discards,
  * and a discard in the source denies the whole material the early depth test even at
- * debugMode 0. So the inspector now pays a rebuild when it is switched on, and every
- * ordinary session gets the fast path back.
+ * debugMode 0. The vignette, the fovea bend and the inspector palette are left out for
+ * the plainer reason that they cost every point or fragment their work to produce the
+ * value they were given. Each flip rebuilds the tile shaders once; the vignette also
+ * lives in the map's, so it rebuilds both layers.
+ *
+ * Called from each switch, and once a frame from the loop, so a uniform written from the
+ * console (`__three.uniforms`) brings its term in before the next draw.
  */
-const syncDebugIsolateEffect = () => {
-  const wanted = uniforms.debugMode.value > 0 && uniforms.debugIsolate.value > 0
-  if (setCloudEffectEnabled('debugIsolate', wanted)) stream?.refreshEffects()
+function syncCompiledShaderTerms(): void {
+  const wanted = compiledTermsWanted({
+    maskMode: uniforms.maskMode.value,
+    foveation: foveationSettings.enabled,
+    debugMode: uniforms.debugMode.value,
+    debugIsolate: uniforms.debugIsolate.value,
+  }, forcedShaderTerms)
+  // One const each: `a || b` would stop at the first flag that changed.
+  const vignette = setCloudEffectEnabled('vignette', wanted.vignette)
+  const fovea = setCloudEffectEnabled('foveaBend', wanted.foveaBend)
+  const palette = setCloudEffectEnabled('debugPalette', wanted.debugPalette)
+  const isolate = setCloudEffectEnabled('debugIsolate', wanted.debugIsolate)
+  if (vignette) refreshEffectShaders()
+  else if (fovea || palette || isolate) stream?.refreshEffects()
 }
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
@@ -3294,12 +3510,12 @@ bindSeg('debugModeSeg', 'debugMode', (mode) => {
   // The band key is static markup, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
-  syncDebugIsolateEffect()
+  syncCompiledShaderTerms()
 })
 bindSeg('debugIsolateSeg', 'debugIsolate', (isolate) => {
   uniforms.debugIsolate.value = isolate
   debugLevelRowEl.hidden = isolate !== 2
-  syncDebugIsolateEffect()
+  syncCompiledShaderTerms()
 })
 bindDesignSlider('debugIsolateLevel', 0, (v) => `d${Math.round(v)}`, (v) => {
   uniforms.debugIsolateLevel.value = Math.round(v)
@@ -3792,6 +4008,7 @@ function applyViewportSize(): void {
   camera.aspect = width / height
   camera.updateProjectionMatrix()
   renderer.setSize(width, height)
+  markBootDraw()
   globe?.setResolution()
   // Resolution feeds the SSE pixel measure, so refinement targets would otherwise be
   // computed against a stale backbuffer. Same measure drives the drawn point size.
@@ -3810,13 +4027,6 @@ let flightEndedAt = -Infinity
 let wasFlying = false
 let appliedHighPrecision: boolean | null = null
 
-/**
- * High-precision matrices are only worth their per-tile CPU matrix multiply
- * once the camera is close enough for the ECEF rounding to reach a pixel.
- * Held off through the loader as well as the flight, so the material rebuild
- * the switch triggers happens exactly once — on arrival, while flightSseFloor
- * still keeps the tile count down — instead of once at each end of the flight.
- */
 function setPointCloudRevealed(revealed: boolean): void {
   pointCloudRevealed = revealed
   if (stream) stream.group.visible = revealed
@@ -3840,15 +4050,28 @@ function updateCloudReveal(): void {
   }
 }
 
+/**
+ * Apply the precision the panel asks for. The point cloud uses the CPU-side model-view
+ * matrix from its first tile, as the basemap always has: that costs one matrix multiply
+ * per drawn tile, where every switch costs a shader build and a new render object for
+ * every loaded tile — a 10-35 ms hitch when it landed 1.2 s into the entrance flight.
+ * Only the Flight drop option (off by default) lowers it; see matrixPrecisionWanted.
+ */
 function updateMatrixPrecision(now: number): void {
   if (wasFlying && !cameraFlight.active) flightEndedAt = now
   wasFlying = cameraFlight.active
 
-  const flightSuppressed = renderOptions.effective().flightPrecisionDrop && cameraFlight.active
-  const want = highPrecisionMatrices && !bootLoading && !flightSuppressed
-  if (want === appliedHighPrecision) return
+  const want = matrixPrecisionWanted({
+    wish: highPrecisionMatrices,
+    flightDrop: renderOptions.effective().flightPrecisionDrop,
+    flying: cameraFlight.active,
+    bootLoading,
+  })
+  // Not latched before the stream exists, or a toggle during boot would be recorded as
+  // applied without ever reaching a material.
+  if (want === appliedHighPrecision || !stream) return
   appliedHighPrecision = want
-  stream?.setHighPrecision(want)
+  stream.setHighPrecision(want)
 }
 
 function updateStreaming(now: number): StreamingStats | null {
@@ -3992,23 +4215,23 @@ if (showDiagnostics) diagStatsEl.hidden = false
  * the readout measuring a size the shader was not using is precisely the fault this
  * replaced.
  */
+const liveDotSizeRule: DotSizeRule = {
+  pointSizePx: 0, spacingMix: 0, requestedPx: 0, pxPerMetre: 0, minPx: 0, maxPx: 0,
+}
+/** The size rule as the uniforms have it right now — see dot-size.ts. */
+function dotSizeRule(): DotSizeRule {
+  liveDotSizeRule.pointSizePx = uniforms.pointSize.value
+  liveDotSizeRule.spacingMix = uniforms.sizeSpacingMix.value
+  liveDotSizeRule.requestedPx = uniforms.sizeRequestedPx.value
+  liveDotSizeRule.pxPerMetre = uniforms.sizePxPerMetre.value
+  liveDotSizeRule.minPx = uniforms.sizeMinPx.value
+  liveDotSizeRule.maxPx = uniforms.sizeMaxPx.value
+  return liveDotSizeRule
+}
+
+/** The drawn diameter in CSS pixels of a dot at this spacing and view depth. */
 function drawnDiameterCssPx(spacingM: number, viewDepthM: number, thinScale = 1): number {
-  // `thinScale` has to appear in BOTH branches and in the same places the shader puts it
-  // (point-cloud.ts: inside `spacingPx` before the clamp, and on `pointSize` in the fixed
-  // branch, which is deliberately left unclamped). Without it this mirror billed the
-  // thinned instance count at the unwidened diameter, so Overdraw reported a saving the
-  // widening had already given back: at the shipped preset it claimed a 44% drop in
-  // painted area where the true figure is 0%.
-  const deliveredPx = spacingM * thinScale * uniforms.sizePxPerMetre.value
-    / Math.max(viewDepthM, 0.001)
-  const shortfall = Math.max(1, deliveredPx / Math.max(uniforms.sizeRequestedPx.value, 0.001))
-  return THREE.MathUtils.lerp(
-    uniforms.pointSize.value * thinScale,
-    THREE.MathUtils.clamp(
-      uniforms.pointSize.value * shortfall, uniforms.sizeMinPx.value, uniforms.sizeMaxPx.value,
-    ),
-    uniforms.sizeSpacingMix.value,
-  )
+  return drawnDotDiameterPx(dotSizeRule(), spacingM, viewDepthM, thinScale)
 }
 
 /**
@@ -4052,7 +4275,7 @@ function errorTargetLabel(): string {
 /**
  * Two numbers that the point count alone hides.
  *
- * `Overdraw` is fragments shaded per screen pixel: the quad areas of every drawn point,
+ * `Overdraw` is fragments shaded per screen pixel: the primitive areas of every drawn point,
  * summed over the visible tiles and divided by the backbuffer. Summed rather than taken
  * from one nominal diameter because the size is per tile — under tilt the near and far
  * halves of the frame sit at opposite ends of the min/max clamp, and a single figure for
@@ -4426,6 +4649,7 @@ function loop(now: number): void {
   // never a shift in the middle of it.
   updateOrigin()
   nanWatch('updateOrigin')
+  syncCompiledShaderTerms()
   cameraFlight.update(now)
   nanWatch('cameraFlight')
   updateCloudReveal()
@@ -4508,11 +4732,13 @@ function loop(now: number): void {
   // seconds after a tile loads.
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
-  depthOfField.render()
-  // Taken here, after the draw, and shown on the next frame. The animation loop resets
-  // renderer.info immediately before calling this function, so anything read further up
-  // — updateHud included — sees a counter that has just been zeroed.
-  lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
+  if (drawThisFrame(now)) {
+    depthOfField.render()
+    // Taken here, after the draw, and shown on the next frame. The animation loop resets
+    // renderer.info immediately before calling this function, so anything read further up
+    // — updateHud included — sees a counter that has just been zeroed.
+    lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
+  }
 }
 
 // ---------------------------------------------------------------- boot
@@ -4678,6 +4904,12 @@ async function main(): Promise<void> {
   stream.setParseBudget(maxParses)
   // Internals, so it is allowed to fail: the row simply reads installed:false.
   installUploadProbe(renderer)
+  // Behind the loader a tile joining the drawn set has its upload and maybe a pipeline
+  // waiting, and that is the one reason to draw there once the benchmark has settled.
+  for (const tiles of [stream.tiles, globe.tiles] as any[]) {
+    tiles.addEventListener('load-model', () => markBootDraw())
+    tiles.addEventListener('tile-visibility-change', ({ visible }: any) => { if (visible) markBootDraw() })
+  }
   // Same reason the settings object lives outside: the panel is bound long before
   // this point, so foveation adopts the values already on the sliders.
   foveation = createFoveation(stream.tiles, camera, foveationSettings)
@@ -4735,6 +4967,47 @@ async function main(): Promise<void> {
     get sphereFade() { return sphereFade },
     /** Whether the streamer is still refining the landing view from its own eye. */
     get initialPov() { return initialPovActive() },
+    /**
+     * Optional shader terms (compiled-terms.ts). `force('vignette' | 'foveaBend' |
+     * 'debugPalette', true)` keeps one in while its feature is off — the old inert shader,
+     * the other arm of a pixel or GPU-time A/B — and `force(name, false)` lets it go again.
+     * `.state` says which are forced and which effect version the shaders are on.
+     */
+    /**
+     * Where a rotation pressed at (ndcX, ndcY) would pivot (`pivotM`, a distance along the
+     * cursor ray), with its parts: the dot the cursor is on (`picked`), the map hit the
+     * controls start from (`mapM`), and for comparison the old canopy lift (`lifted`, whose
+     * time is in `lift.pickMs`). For checking the pivot against what is on screen; it moves
+     * nothing.
+     */
+    pivotProbe(ndcX = 0, ndcY = 0) {
+      const map = new THREE.Vector3()
+      if (!screenPivot(ndcX, ndcY, map)) return { reason: 'no ground under that point' }
+      const out = new THREE.Vector3()
+      const pickDebug: PivotDebug = { reason: null, passes: [] }
+      const liftDebug: PivotDebug = { reason: null, passes: [] }
+      const pickOutcome = pickPivot(map, out, pickDebug)
+      const picked = pickOutcome === 'hit' ? out.distanceTo(camera.position) : null
+      const liftStarted = performance.now()
+      const lifted = liftToCanopy(map, out, liftDebug) ? out.distanceTo(camera.position) : null
+      liftDebug.pickMs = +(performance.now() - liftStarted).toFixed(2)
+      const mapM = map.distanceTo(camera.position)
+      // What a press there would pivot on now: the dot, or the map through a gap.
+      const pivotM = picked ?? (pickOutcome === 'miss' ? mapM : lifted ?? mapM)
+      return { mapM, picked, lifted, pivotM, pickOutcome, pick: pickDebug, lift: liftDebug }
+    },
+    shaderTerms: {
+      force(name: CompiledTerm, on: boolean) {
+        if (!COMPILED_TERMS.includes(name)) throw new Error(`expected one of ${COMPILED_TERMS.join(', ')}, got ${name}`)
+        if (on) forcedShaderTerms.add(name)
+        else forcedShaderTerms.delete(name)
+        syncCompiledShaderTerms()
+        return this.state
+      },
+      get state() {
+        return { forced: [...forcedShaderTerms], effectsVersion: cloudEffectsVersion() }
+      },
+    },
     /**
      * The dot-geometry A/B from the console: `__wild.dots.set('tri')`, `set('quad')`,
      * `set('pulled')`, `set('instanced')`, or several at once — `set('tri', 'pulled')`.

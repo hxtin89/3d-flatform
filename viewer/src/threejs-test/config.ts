@@ -238,20 +238,25 @@ export const EXPERIENCE_CONFIG = {
     },
     /**
      * The primitive every point is drawn as — see dot-geometry.ts and
-     * plans/plan-dot-geometry-ab.md. A test switch: quad is today's picture; the triangle
-     * draws the same round dot from 3 vertices instead of 4. `?dot=tri|quad` picks the
-     * boot state, the panel flips it at runtime. The Square dot shape always draws quads.
+     * plans/plan-dot-geometry-ab.md. The triangle draws the same round dot as the quad
+     * from 3 vertices instead of 4, and is the default since 2026-09-29: pulled, it measured
+     * 12 % less cloud GPU time at nadir (lower in three of four passes) and 33 % less at a 40°
+     * tilt (all four), and the two differ on 0.01-0.04 % of pixels, at dot rims. `?dot=quad`
+     * boots on quads for the A/B, the panel flips it at runtime. The Square dot shape
+     * always draws quads.
      */
     dotGeometry: {
-      shape: 'quad' as 'quad' | 'triangle',
+      shape: 'triangle' as 'quad' | 'triangle',
       /** The triangle's inscribed circle in drawn diameters: the dot (0.5) plus 1 %. */
       triInradius: 0.505,
       /**
-       * How the points reach the GPU — step 2 of the A/B. 'instanced' is today's path;
-       * 'pulled' draws without instancing and reads each point from a per-tile data
-       * texture. `?feed=pull|inst` picks the boot state, the panel flips it at runtime.
+       * How the points reach the GPU. 'pulled', the default since 2026-09-29, draws without
+       * instancing and reads each point from a per-tile data texture; 'instanced' is the
+       * older path, kept for the A/B. Pixel-identical on WebGPU and WebGL2, and at the
+       * landing view the cloud's GPU time fell from 20.4 to 2.6 ms (pulled triangles against
+       * instanced quads). `?feed=inst` boots instanced, the panel flips it at runtime.
        */
-      feed: 'instanced' as 'instanced' | 'pulled',
+      feed: 'pulled' as 'instanced' | 'pulled',
       /** Width of the per-tile point-data texture, a power of two. */
       textureWidth: 1024,
     },
@@ -410,17 +415,22 @@ export const EXPERIENCE_CONFIG = {
      * about a point that far below what you see sweeps the view out from under the
      * cursor. Measured at 18 degrees of pitch: 330 px of slide for a 48 px drag, against
      * 7 px at 70 degrees. It is parallax, and it scales as 1/sin(pitch).
+     *
+     * On means: the pivot goes on the first drawn dot under the cursor, or stays on the
+     * map where the ground shows through a gap (cloud-pick.ts). The canopy lift the two
+     * settings below tune is only the fallback for when no drawn cloud is there to pick.
      */
     pivotOnCanopy: true,
     /**
-     * Footprint radius for the canopy height sample under the pivot, in metres. Small
+     * Footprint radius for the fallback lift's canopy height sample, in metres. Small
      * enough to follow a clearing edge, large enough that the percentile has support —
      * sampleGroundZ reports how many cells backed the answer.
      */
     pivotSampleRadiusM: 20,
     /**
      * Least steeply the click ray may descend, as a dot product against local up, for the
-     * canopy lift to run at all. Below this the pivot stays on the terrain hit.
+     * fallback canopy lift to run at all. Below this the pivot stays on the terrain hit.
+     * The pick has no such limit: it meets the dot on the ray itself, at any angle.
      *
      * A shallow ray gains height only by travelling: recorded at 4.7 degrees, reaching a
      * canopy 65 m up took 793 m along the ray. The pivot then sat hundreds of metres
@@ -758,6 +768,16 @@ export const EXPERIENCE_CONFIG = {
     strongMinPoints: 2_400_000,
     minSamples: 60,
     pointSizePx: 2,
+    /**
+     * The primitive the hidden stress mass is drawn as. 'instanced-quad' is what the bars
+     * above were tuned on (2026-07-21); 'pulled-triangle' is what the streamed tiles draw
+     * by default since 2026-09-29 (lod.dotGeometry), built the same way. It stays on the
+     * old one until those bars are re-measured against the new one on devices: pulled
+     * triangles cost several times less per point, so switching alone would raise tiers
+     * nobody has checked. `?benchstress=pulled|instanced` picks it for a calibration run,
+     * and the console logs every stage's frame time at Start (applyBenchPreset).
+     */
+    stress: 'instanced-quad' as 'instanced-quad' | 'pulled-triangle',
   },
   pointLighting: {
     // Directional daylight cues for the (normal-less) point cloud. All three
