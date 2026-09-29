@@ -138,6 +138,17 @@ const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationS
     console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
     return null
   })
+/** Boot milestones as `boot:<name>` performance marks — read them with
+ *  `performance.getEntriesByType('mark')` or in DevTools' Performance panel. */
+const bootMark = (name: string): void => { performance.mark(`boot:${name}`) }
+/** The survey manifest, requested here for the same reason as the shape: the download
+ * then runs while the GPU initialises and the cloud volume bakes, and nothing needs it
+ * before both are done. main() awaits it where it always did, so a failure surfaces
+ * there as before; the empty catch only keeps an early rejection from being reported
+ * as unhandled in the meantime. */
+bootMark('manifest-start')
+const manifestRequest: ReturnType<typeof fetchGlobeManifest> | null = baseUrl ? fetchGlobeManifest(baseUrl, dataset) : null
+manifestRequest?.catch(() => {})
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -253,6 +264,7 @@ function showLoaderReadyIfComplete(): void {
   loaderDisplayed = 1
   paintLoaderProgress(loaderDisplayed)
   loaderReadyShown = true
+  bootMark('loader-ready')
   loaderEl.classList.add('is-ready')
   loaderEl.setAttribute('aria-busy', 'false')
   loaderActionsEl.hidden = false
@@ -4741,7 +4753,7 @@ function loop(now: number): void {
 
 // ---------------------------------------------------------------- boot
 async function main(): Promise<void> {
-  if (!baseUrl) { showLoadError('CloudFront domain missing from the environment.'); return }
+  if (!baseUrl || !manifestRequest) { showLoadError('CloudFront domain missing from the environment.'); return }
   // A missing basemap key is no longer fatal, for the same reason the loader no
   // longer waits on the basemap: the point cloud is the payload. The globe still
   // gets built and simply fails its tile requests, which the loader's grace
@@ -4751,7 +4763,9 @@ async function main(): Promise<void> {
   }
 
   setLoadProgress(0.06, 'Initialising GPU and map system …')
+  bootMark('init-start')
   await renderer.init()
+  bootMark('init-end')
   setLoadProgress(0.16, 'Graphics ready. Connecting to the field station …')
   const backend: any = (renderer as any).backend
   const isWebGPU = Boolean(backend?.isWebGPUBackend ?? (backend && /WebGPU/i.test(backend.constructor?.name)))
@@ -4774,16 +4788,19 @@ async function main(): Promise<void> {
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
   // first streamed tile compiles its material.
+  bootMark('bake-start')
   cloudNoiseTexture = createCloudNoiseTexture(
     classifyTier(isWebGPU) === 'strong'
       ? EXPERIENCE_CONFIG.clouds.textureSizeStrong
       : EXPERIENCE_CONFIG.clouds.textureSize,
   )
+  bootMark('bake-end')
   setCloudShadowTexture(cloudNoiseTexture)
 
   setStatus('Loading adaptive point-cloud tree…')
   setLoadProgress(0.22, 'Loading survey area and coordinates …')
-  const manifest = await fetchGlobeManifest(baseUrl, dataset)
+  const manifest = await manifestRequest
+  bootMark('manifest-end')
   setLoadProgress(0.28, 'Survey area located. Building the scene …')
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()

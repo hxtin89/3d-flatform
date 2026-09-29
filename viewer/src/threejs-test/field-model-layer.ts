@@ -4,6 +4,7 @@ import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js'
 import { EXPERIENCE_CONFIG } from './config'
 import type { DaylightPhase, PerformanceTier } from './environment-layer'
+import { bakeHeldTracks, HELD_TRACK_TOLERANCE } from './held-tracks'
 
 export interface FieldModelLayer {
   update(now: number): void
@@ -47,6 +48,11 @@ interface BirdRecord {
   flight: THREE.AnimationAction
   glide: THREE.AnimationAction | null
 }
+
+/** How much farther than its rest pose a parrot may reach from its origin in flight, for
+ *  the off-screen test. Measured the same way (a bounding box of the skinned vertices)
+ *  over every bird's Flight and Glide blend, it peaks at 1.05. */
+const BIRD_REACH_HEADROOM = 1.25
 
 function assetUrl(path: string): string {
   const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
@@ -109,6 +115,31 @@ function createEditableTransform(
   positionNode.add(transformNode)
   parent.add(positionNode)
   return { positionNode, transformNode, modelRotationRad: rotation }
+}
+
+/**
+ * A parrot's body, wings and tail are three skinned meshes on one armature: the same
+ * bones in the same order, with bitwise the same inverse-bind matrices. One Skeleton then
+ * serves all three, and three works out the bone matrices once per bird and frame instead
+ * of once per part (it updates each skeleton once a frame). A part whose skin differs,
+ * after a re-export say, keeps its own.
+ */
+function shareSkeleton(bird: THREE.Object3D): void {
+  let shared: THREE.Skeleton | null = null
+  bird.traverse((object) => {
+    const mesh = object as THREE.SkinnedMesh
+    if (!mesh.isSkinnedMesh) return
+    if (shared === null) shared = mesh.skeleton
+    else if (sameArmature(shared, mesh.skeleton)) mesh.skeleton = shared
+  })
+}
+
+function sameArmature(a: THREE.Skeleton, b: THREE.Skeleton): boolean {
+  if (a.bones.length !== b.bones.length) return false
+  for (let index = 0; index < a.bones.length; index++) {
+    if (a.bones[index] !== b.bones[index] || !a.boneInverses[index].equals(b.boneInverses[index])) return false
+  }
+  return true
 }
 
 export async function createFieldModelLayer(options: FieldModelLayerOptions): Promise<FieldModelLayer> {
@@ -204,16 +235,35 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     else if (mesh.material) sourceMaterials.add(mesh.material)
     geometries.add(mesh.geometry)
   })
-  const flightClip = THREE.AnimationClip.findByName(parrotGltf.animations, 'Flight')
-  const glideClip = THREE.AnimationClip.findByName(parrotGltf.animations, 'Glide')
-  if (!flightClip) throw new Error('Parrot model has no Flight animation')
+  const sourceFlightClip = THREE.AnimationClip.findByName(parrotGltf.animations, 'Flight')
+  const sourceGlideClip = THREE.AnimationClip.findByName(parrotGltf.animations, 'Glide')
+  if (!sourceFlightClip) throw new Error('Parrot model has no Flight animation')
+  // Flight and Glide always play together with weights adding up to 1 (update below), so
+  // a track both hold can be baked into the bone before the birds are cloned from it. On
+  // Flight alone the rest pose blends in for the missing weight; then every track stays.
+  const [flightClip, glideClip] = sourceGlideClip
+    ? bakeHeldTracks(parrotGltf.scene, [sourceFlightClip, sourceGlideClip], HELD_TRACK_TOLERANCE)
+    : [sourceFlightClip, null]
+
+  // How far a bird reaches from its own origin, in model units: its rest pose's bounds,
+  // with headroom for the wings in flight.
+  parrotGltf.scene.updateMatrixWorld(true)
+  const birdRest = new THREE.Box3().setFromObject(parrotGltf.scene, true).getBoundingSphere(new THREE.Sphere())
+  const birdReachModel = (birdRest.center.length() + birdRest.radius) * BIRD_REACH_HEADROOM
 
   let activeTier = performanceTier
   const birdLimit = countForTier(performanceTier)
   const birds: BirdRecord[] = []
+  // Hung under the field root only while it may be seen (attachFlock): between passes, at
+  // night and while the camera looks away, three then neither draws it nor walks its
+  // bones in updateMatrixWorld, which it does for hidden objects too. It starts attached,
+  // so the first frames draw it and build its shaders behind the loader even when the
+  // session opens at night; update() parks it once it has faded out.
   const flock = new THREE.Group()
   flock.name = 'scarlet-macaw-flock'
   root.add(flock)
+  /** From the flock's origin to the farthest wingtip, in metres. */
+  let flockReachM = 0
 
   const spread = EXPERIENCE_CONFIG.parrots.spreadM
   // Loose natural flock: birds travel in small clusters of one to three flying
@@ -249,6 +299,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
       mesh.castShadow = false
       mesh.receiveShadow = false
     })
+    shareSkeleton(clone)
     const pivot = new THREE.Group()
     const cluster = clusterOf[index]
     const size = clusterSizes[cluster]
@@ -265,6 +316,8 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     )
     pivot.add(clone)
     flock.add(pivot)
+    // Over every bird, the ones the tier hides included, so the bound never shrinks.
+    flockReachM = Math.max(flockReachM, pivot.position.length() + birdReachModel * clone.scale.x)
     const mixer = new THREE.AnimationMixer(clone)
     const flight = mixer.clipAction(flightClip)
     flight.enabled = true
@@ -297,6 +350,11 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const cameraRight = new THREE.Vector3()
   const cameraScreenUp = new THREE.Vector3()
   const localFromWorld = new THREE.Matrix4()
+  const viewProjection = new THREE.Matrix4()
+  const frustum = new THREE.Frustum()
+  const flockBounds = new THREE.Sphere()
+  /** Animation time the wings have not been given yet, while the flock was out of view. */
+  let owedSeconds = 0
   let lastNow = performance.now()
   let passStartedAt = lastNow
   let nextPassAt = lastNow
@@ -352,8 +410,26 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     buildCameraPass()
     passStartedAt = now
     flying = true
-    flock.visible = true
     scheduleNextPass(now)
+  }
+
+  function attachFlock(attached: boolean): void {
+    if (attached === (flock.parent === root)) return
+    if (attached) root.add(flock)
+    else root.remove(flock)
+  }
+
+  /** Whether a sphere around the whole flock meets the view. Read off flock.position, not
+   *  its matrixWorld, so it also works while the flock is detached. */
+  function flockInView(): boolean {
+    camera.updateMatrixWorld()
+    viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    frustum.setFromProjectionMatrix(viewProjection, camera.coordinateSystem, camera.reversedDepth)
+    // root.matrixWorld is current even right after the floating origin moves: rebaseTo
+    // refreshes the whole tree under it at once (origin.ts), and nothing else moves the root.
+    flockBounds.center.copy(flock.position).applyMatrix4(root.matrixWorld)
+    flockBounds.radius = flockReachM
+    return frustum.intersectsSphere(flockBounds)
   }
 
   function syncBirdCount(): void {
@@ -369,7 +445,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     },
     update(now) {
       if (reducedMotion) {
-        flock.visible = false
+        attachFlock(false)
         lastNow = now
         return
       }
@@ -386,10 +462,13 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
       for (const material of parrotMaterials) material.opacity = flockOpacity
 
       if (daylightPhase !== 'night' && !flying && now >= nextPassAt) beginPass(now)
-      if (!flying) return
+      if (!flying) {
+        if (flockOpacity <= 0.001) attachFlock(false)
+        return
+      }
       if (daylightPhase === 'night' && flockOpacity <= 0.001) {
         flying = false
-        flock.visible = false
+        attachFlock(false)
         return
       }
       const progress = THREE.MathUtils.clamp(
@@ -399,17 +478,26 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
       )
       if (progress >= 1) {
         flying = false
-        flock.visible = false
+        attachFlock(false)
         return
       }
       flock.position.lerpVectors(passStart, passEnd, progress)
+      // Out of view (the camera turned away mid-pass) the wings wait, and the time they
+      // miss is given back in one step once the flock is in view again: the mixer advances
+      // an action by the time it is given whatever the weights, so the wingbeat lands
+      // where frame-by-frame updates would have put it.
+      owedSeconds += elapsedSeconds
+      const inView = flockInView()
+      attachFlock(inView)
+      if (!inView) return
       const glideWeight = 0.12 + smoothstep(0.2, 0.72, Math.sin(progress * Math.PI) ** 2) * 0.34
       for (const bird of birds) {
         if (!bird.pivot.visible) continue
         bird.flight.setEffectiveWeight(1 - glideWeight)
         bird.glide?.setEffectiveWeight(glideWeight)
-        bird.mixer.update(elapsedSeconds)
+        bird.mixer.update(owedSeconds)
       }
+      owedSeconds = 0
     },
     setPerformanceTier(nextTier) {
       activeTier = nextTier
