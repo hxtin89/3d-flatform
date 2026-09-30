@@ -53,6 +53,8 @@ export interface EnvironmentLayer {
    * because the shadow uniform is rewritten every frame from the daylight ramp,
    * so a panel writing the uniform directly would be overwritten immediately. */
   setCloudShadowStrength(strength: number): void
+  /** Follow a new cloud lift: the root carries zOffset like the stream group does. */
+  setZOffset(zOffset: number): void
   update(
     now: number,
     camera: THREE.PerspectiveCamera,
@@ -616,6 +618,12 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
   updateDaylight(performance.now())
 
   return {
+    setZOffset(nextZOffset) {
+      root.matrix.copy(enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, nextZOffset))
+      root.matrixWorldNeedsUpdate = true
+      // renderToLayerEnu caches the inverse per origin version; the root moved without one.
+      rootInverseVersion = -1
+    },
     getDaylightState: () => state,
     getCloudState: () => ({ mode: cloudMode, tier: activeTier, intent: cloudIntent, reason: cloudReason }),
     setCloudIntent(enabled, persist = true) {

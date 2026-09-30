@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
+import { DOME_HIDDEN_FADE } from './cloud-pick'
 import { EXPERIENCE_CONFIG } from './config'
 import { applyHighPrecisionAlways } from './point-cloud'
 
@@ -47,6 +48,8 @@ interface MarkerRecord {
   labelWidth: number
   labelHeight: number
   opacity: number
+  /** Set from outside, multiplied into the mask opacity: RIVER 05 leaves with its tower. */
+  fade: number
   opacityMaterials: Array<{ material: MeshBasicNodeMaterial; baseOpacity: number }>
 }
 
@@ -69,7 +72,20 @@ export interface MarkerLayer {
   ): void
   pickCenteredAction(camera: THREE.PerspectiveCamera, tolerancePx: number): MarkerActionTarget | null
   setFocusedAction(id: string | null): void
-  setTowerSensorTransform(positionM: readonly [number, number, number], sensorHeightM: number): void
+  /** Move the sensor with the tower (model editor): origin, height, yaw and scale. */
+  setTowerSensorTransform(
+    positionM: readonly [number, number, number],
+    sensorHeightM: number,
+    yawRad: number,
+    scale: number,
+  ): void
+  /** 0..1, the tower's own fade, so its sensor does not hang in the air without it. */
+  setTowerSensorFade(fade: number): void
+  /** The origin of the tower this sensor sits on, in the root's frame (raw ENU before
+   *  the lift) — known without the tower mesh, and kept in step with the editor. */
+  towerFootEnu(target: THREE.Vector3): THREE.Vector3
+  /** Follow a new cloud lift: the root carries zOffset like the stream group does. */
+  setZOffset(zOffset: number): void
   dispose(): void
 }
 
@@ -145,6 +161,11 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   const width = Math.max(maxX - minX, EXPERIENCE_CONFIG.markers.minimumSpreadM)
   const depth = Math.max(maxY - minY, EXPERIENCE_CONFIG.markers.minimumSpreadM)
   const random = createRandom(hashString(dataset))
+  // Measured crown tops for this dataset's layout, if there are any; see config.ts.
+  const canopyTopZM = EXPERIENCE_CONFIG.markers.canopyTopZM[dataset] ?? null
+  // The floor the tower mesh stands on, so its sensor rides on the tower top.
+  const towerFloorZ = EXPERIENCE_CONFIG.tower.groundZM ?? minZ
+  let towerSensorHeightM: number = EXPERIENCE_CONFIG.tower.sensorHeightM
 
   const root = new THREE.Group()
   root.name = 'wilderness-marker-layer'
@@ -201,11 +222,14 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     const angle = index * Math.PI * 0.5 + (random() - 0.5) * 0.5
     const radial = EXPERIENCE_CONFIG.markers.radialBase
       + random() * EXPERIENCE_CONFIG.markers.radialJitter
+    // Drawn even when a measured height replaces it: every later value in the layout
+    // comes from the same sequence, and skipping one would move the other stations.
+    const heightJitter = random()
     const group = new THREE.Group()
     group.position.set(
       centreX + Math.cos(angle) * width * radial,
       centreY + Math.sin(angle) * depth * radial,
-      minZ + 48 + random() * 18,
+      canopyTopZM ? canopyTopZM[index] : minZ + 48 + heightJitter * 18,
     )
 
     const stemOpacity = markerMaterial(temperatureMaterial)
@@ -241,6 +265,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       labelWidth: 0,
       labelHeight: 0,
       opacity: 1,
+      fade: 1,
       opacityMaterials: [stemOpacity, headOpacity, ringOpacity],
     })
   }
@@ -248,10 +273,33 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   // The observation tower is the fifth sensor: only its pulse and label are
   // rendered here, while FieldModelLayer supplies the physical tower mesh.
   const towerSensorGroup = new THREE.Group()
-  towerSensorGroup.position.set(
-    centreX + EXPERIENCE_CONFIG.tower.positionM[0],
-    centreY + EXPERIENCE_CONFIG.tower.positionM[1],
-    minZ + EXPERIENCE_CONFIG.tower.positionM[2] + EXPERIENCE_CONFIG.tower.sensorHeightM,
+  // The tower's origin, a corner of its footprint — what the dome fade is measured at,
+  // the same point the field-model layer uses, so the tower and its sensor leave together.
+  const towerPivot = new THREE.Vector3()
+  function placeTowerSensor(
+    positionM: readonly [number, number, number],
+    sensorHeightM: number,
+    yawRad: number,
+    scale: number,
+  ): void {
+    towerSensorHeightM = sensorHeightM
+    towerPivot.set(centreX + positionM[0], centreY + positionM[1], towerFloorZ + positionM[2])
+    // Over the platform centre rather than the origin: the offset turns and scales with
+    // the tower, the way transformNode turns and scales the mesh.
+    const [offsetX, offsetY] = EXPERIENCE_CONFIG.tower.sensorOffsetUnits
+    const cos = Math.cos(yawRad)
+    const sin = Math.sin(yawRad)
+    towerSensorGroup.position.set(
+      towerPivot.x + (offsetX * cos - offsetY * sin) * scale,
+      towerPivot.y + (offsetX * sin + offsetY * cos) * scale,
+      towerPivot.z + sensorHeightM,
+    )
+  }
+  placeTowerSensor(
+    EXPERIENCE_CONFIG.tower.positionM,
+    EXPERIENCE_CONFIG.tower.sensorHeightM,
+    EXPERIENCE_CONFIG.tower.rotationRad[2],
+    EXPERIENCE_CONFIG.tower.scale,
   )
   const towerRingOpacity = markerMaterial(temperatureRingMaterial)
   const towerRing = new THREE.Mesh(ringGeometry, towerRingOpacity.material)
@@ -263,6 +311,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   const towerTemperature = createTemperatureLabel(4, 'RIVER 05')
   overlay.append(towerTemperature.label)
   wireFlyTo(towerTemperature.label, towerSensorGroup, 'RIVER 05')
+  const towerSensorIndex = markers.length
   markers.push({
     group: towerSensorGroup,
     ring: towerRing,
@@ -278,12 +327,17 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     labelWidth: 0,
     labelHeight: 0,
     opacity: 1,
+    fade: 1,
     opacityMaterials: [towerRingOpacity],
   })
 
   // The media hotspot is deliberately offset from the four sensor stations.
   const mediaGroup = new THREE.Group()
-  mediaGroup.position.set(centreX + width * 0.1, centreY - depth * 0.06, minZ + 58)
+  mediaGroup.position.set(
+    centreX + width * 0.1,
+    centreY - depth * 0.06,
+    EXPERIENCE_CONFIG.markers.mediaTopZM[dataset] ?? minZ + 58,
+  )
   const mediaStemOpacity = markerMaterial(mediaMaterial)
   const mediaHeadOpacity = markerMaterial(mediaMaterial)
   const mediaRingOpacity = markerMaterial(mediaRingMaterial)
@@ -316,6 +370,7 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
     labelWidth: 0,
     labelHeight: 0,
     opacity: 1,
+    fade: 1,
     opacityMaterials: [mediaStemOpacity, mediaHeadOpacity, mediaRingOpacity],
   })
 
@@ -417,7 +472,8 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
           1,
           EXPERIENCE_CONFIG.markers.outsideMaskOpacity,
           outsideBlend,
-        )
+        ) * marker.fade
+        marker.group.visible = marker.fade > DOME_HIDDEN_FADE
         for (const entry of marker.opacityMaterials) {
           entry.material.opacity = entry.baseOpacity * marker.opacity
         }
@@ -454,6 +510,9 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
         : 1
       const acceptedBoxes: ScreenBox[] = []
       for (const marker of markers) {
+        // A faded-out marker loses its chip, click target and collision box on the same
+        // frame its 3D part goes, not only once the opacity reaches exactly 0.
+        if (!marker.group.visible) { marker.label.hidden = true; continue }
         const box = updateLabel(marker, camera, labelOpacity * marker.opacity)
         if (!box) continue
         // Temperature stations have priority. The media action is deliberately
@@ -485,13 +544,19 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
       mediaButton.classList.toggle('is-aimed', focused)
       mediaRingOpacity.material.color.setHex(focused ? 0xd9f99d : 0xffd19a)
     },
-    setTowerSensorTransform(positionM, sensorHeightM) {
-      towerSensorGroup.position.set(
-        centreX + positionM[0],
-        centreY + positionM[1],
-        minZ + positionM[2] + sensorHeightM,
-      )
+    setTowerSensorTransform(positionM, sensorHeightM, yawRad, scale) {
+      placeTowerSensor(positionM, sensorHeightM, yawRad, scale)
       root.updateMatrixWorld(true)
+    },
+    setTowerSensorFade(fade) {
+      markers[towerSensorIndex].fade = THREE.MathUtils.clamp(fade, 0, 1)
+    },
+    towerFootEnu(target) {
+      return target.copy(towerPivot)
+    },
+    setZOffset(nextZOffset) {
+      root.matrix.copy(enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, nextZOffset))
+      root.matrixWorldNeedsUpdate = true
     },
     dispose() {
       mediaButton.removeEventListener('click', onOpenVideo)

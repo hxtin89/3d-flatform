@@ -540,6 +540,23 @@ export const EXPERIENCE_CONFIG = {
     radialJitter: 0.08,
     outsideMaskOpacity: 0.5,
     maskEdgeFadeM: 90,
+    // Where the four CANOPY stations stand, per dataset: the crown top under each, in
+    // the survey's raw ENU metres (before the lift). Their x/y come from the seeded
+    // layout in marker-layer.ts, so these belong to that layout and that dataset only;
+    // a dataset without an entry keeps the old areaMinZ + 48..66 m band.
+    //
+    // Measured 2026-09-29 from the full-depth APH tiles: the 95th percentile of the
+    // point heights within 4 m of each station. The old band put them 17–36 m above
+    // these crowns, because areaMinZ is the floor of area-001's box, 4–6 km away.
+    // CANOPY 03 stands in a clearing, so its "crown" is the ground there.
+    canopyTopZM: {
+      'peru-b2-globe': [211.6, 212.2, 193.0, 222.1],
+    } as Readonly<Record<string, readonly [number, number, number, number]>>,
+    // The FIELD FILM hotspot's crown, measured the same way at its spot (it draws no
+    // random value, so the layout does not depend on it). Without an entry: areaMinZ + 58.
+    mediaTopZM: {
+      'peru-b2-globe': 221.2,
+    } as Readonly<Record<string, number>>,
   },
   donationShape: {
     // Outline of the protected parcel. Resolved through BASE_URL so the
@@ -718,16 +735,40 @@ export const EXPERIENCE_CONFIG = {
     maxPromotions: 2,
   },
   tower: {
-    // Field asset offsets are relative to the shifted hotspot centre.
-    positionM: [291.878, -1_988.147, 4],
+    // Field asset offsets: x/y relative to the shifted hotspot centre, z relative to
+    // groundZM below.
+    positionM: [291.878, -1_988.147, -0.2],
     rotationRad: [Math.PI / 2, 0, -1.039],
     scale: 24,
     sensorHeightM: 112.138,
+    // Where the platform centre sits in the tower's own horizontal plane, in model
+    // units: the GLTF's x and −z, i.e. after the model's quarter turn and before yaw and
+    // scale. The model's origin is a corner of its footprint, so without this the
+    // RIVER 05 sensor hung over that corner, 19 m off the tower's axis. Read from
+    // tower.gltf: the top section spans x 0.007..0.645 and z −1.655..0.192, and the
+    // straight lattice puts the base centre in the same place.
+    sensorOffsetUnits: [0.3262, 0.7315],
+    // The floor the tower stands on, raw ENU metres (before the lift). Until
+    // 2026-09-29 the height was areaMinZ + 4, the floor of area-001's box 6.6 km away,
+    // which left the legs 10–16 m up in the canopy. Measured from the full-depth APH
+    // tiles under the four legs: 167.8, 164.3 and 161.3 m on the bank, while the east
+    // leg stands over the river channel, whose edge there is at 159.9 m. 160 puts that
+    // leg on the water line and sinks the other three into the bank rather than lift
+    // any of them into the air. positionM z −0.2 lands the mesh's lowest vertex
+    // (0.18 m above its origin) on this floor.
+    groundZM: 160.0,
   },
   boat: {
-    positionM: [644.068, -1_961.281, 5],
+    // z is relative to groundZM below.
+    positionM: [644.068, -1_961.281, 1.43],
     rotationRad: [Math.PI / 2, 0, 0.039],
     scale: 7.046,
+    // The water line, raw ENU metres. The river itself returns no lidar points; the
+    // lowest returns at its edge beside the hull sit at 156.6 m (the draped imagery
+    // under it is near 153.3). positionM z 1.43 puts the flat hull bottom (2.43 m under
+    // the model origin) 1 m below this line; the stern gear reaches 1.8 m further.
+    // Until 2026-09-29 the keel was at areaMinZ + 5, about 20 m above the water.
+    groundZM: 156.6,
   },
   parrots: {
     // Each pass is sampled from the camera once, then remains fixed in world space.

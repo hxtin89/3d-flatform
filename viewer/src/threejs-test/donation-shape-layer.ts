@@ -77,6 +77,9 @@ export interface DonationShapeLayer {
   setForm(form: DonationShapeForm): void
   setSmoothness(value: number): void
   setVisible(visible: boolean): void
+  /** Follow a new cloud lift: the root carries zOffset like the stream group does.
+   *  The probe callback removes the lift it is handed, so the locked ground stays put. */
+  setZOffset(zOffset: number): void
   /** Parcel centroid at the current ground height, raw ENU. Null before ready. */
   flightTargetEnu(target?: THREE.Vector3): THREE.Vector3 | null
   groundCentreEnu(target?: THREE.Vector3): THREE.Vector3
@@ -685,6 +688,10 @@ export function createDonationShapeLayer(options: DonationShapeLayerOptions): Do
   }
 
   return {
+    setZOffset(zOffset) {
+      root.matrix.copy(options.enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, zOffset))
+      root.matrixWorldNeedsUpdate = true
+    },
     update(now, camera) {
       if (disposed || !visible) return
       const elapsed = lastFrame === -Infinity ? 16 : Math.min(64, Math.max(0, now - lastFrame))
