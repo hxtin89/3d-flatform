@@ -220,9 +220,12 @@ export function createGlobe(opts: {
   // it to the GPU: until now every resident tile held it for nothing, next to its texture.
   // A microtask later rather than inside onUpdate, because three counts the texture's
   // size from the image right after calling it. The callback stays on as a tripwire: a
-  // second upload would read a closed image and draw the tile black, so it is counted
-  // and warned about. Anything that bumps a map's version would cause one — needsUpdate,
-  // mipmaps, a new colour space — so none of that may touch these textures.
+  // second upload of a live map would read a closed image and leave the tile's imagery
+  // as it was, so it is counted and warned about. Anything that bumps a map's version
+  // would cause one — needsUpdate, mipmaps, a new colour space — so none of that may
+  // touch these textures. It is switched off once the tile is evicted: three can briefly
+  // re-create an evicted map through a binding the tiles share, which is harmless (the
+  // library closes the image on eviction either way) and not what the tripwire is for.
   let reuploadsAfterClose = 0
   const releaseImageAfterUpload = (texture: THREE.Texture): void => {
     const image = texture.image as ImageBitmap | undefined
@@ -240,6 +243,7 @@ export function createGlobe(opts: {
       if (!map) return
       map.flipY = false
       map.onUpdate = releaseImageAfterUpload
+      map.addEventListener('dispose', () => { map.onUpdate = null })
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters

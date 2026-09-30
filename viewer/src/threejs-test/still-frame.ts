@@ -2,9 +2,11 @@
  * Whether the point-cloud traversal has to run this frame, or would only repeat the last one.
  *
  * On a still frame `tiles.update()` walks the whole tile tree again and arrives at the same
- * selection — about 0.5 ms of main thread in the desktop test browser, several times that
- * on a phone. The traversal reads only what `StillFrameInputs` holds, so when none of it has
- * moved since the traversal last ran, and nothing is loading, it can be skipped. Anything
+ * selection — 0.5 to 2.5 ms of main thread in the desktop test browser depending on the
+ * view (the most while the landing view's point-of-view load is pricing its radius), and
+ * several times that on a phone. The traversal reads only what `StillFrameInputs` holds, so
+ * when none of it has moved since the traversal last ran, and nothing is loading, it can be
+ * skipped. Anything
  * that changes the selection some other way calls `invalidate()`, and a heartbeat reruns it
  * every `heartbeatMs` regardless, so an input missed here is at worst that late.
  *
@@ -15,7 +17,7 @@
  * let the gate close there.
  */
 export interface StillFrameInputs {
-  /** The tiles' root in camera space: camera.matrixWorldInverse × tiles.group.matrixWorld. */
+  /** The camera's pose in the tiles' frame: tiles.group.matrixWorld⁻¹ × camera.matrixWorld. */
   view: ArrayLike<number>
   projection: ArrayLike<number>
   errorTarget: number
@@ -27,9 +29,9 @@ export interface StillFrameInputs {
 
 export interface StillFrameTolerances {
   heartbeatMs: number
-  /** Rotation terms of the view matrix, unitless. */
+  /** Rotation terms of the camera pose, unitless. */
   rotation: number
-  /** Translation terms of the view matrix, and sphere centres and radii, in metres. */
+  /** The camera position, and sphere centres and radii, in metres. */
   metres: number
   /** Projection terms, relative. */
   projection: number
@@ -37,7 +39,7 @@ export interface StillFrameTolerances {
 
 export const STILL_FRAME_TOLERANCES: StillFrameTolerances = {
   heartbeatMs: 500,
-  // 1e-6 of a turn at the 460 m the farthest tiles sit is half a millimetre.
+  // A 1e-6 rad turn moves the farthest tiles, 460 m off, by half a millimetre.
   rotation: 1e-6,
   metres: 1e-3,
   projection: 1e-9,

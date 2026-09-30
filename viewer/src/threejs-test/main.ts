@@ -2285,6 +2285,8 @@ function stopForGraphicsFailure(message: string): void {
   graphicsFailed = true
   renderer.setAnimationLoop(null)
   document.body.classList.add('hud-open')
+  // No frame follows to fill the card it just opened, so fill it once here.
+  try { updateHud(lastStreamStats) } catch { /* a lost device: keep whatever the rows hold */ }
   setStatus(message)
   if (bootLoading) showLoadError(message)
 }
@@ -4480,7 +4482,8 @@ function updateHud(stats: StreamingStats | null): void {
   // Everything else lives in the settings panel or the HUD card, and both start closed
   // (display: none) until their chip is pressed, so their rows are only written while
   // open. Nothing is lost by it: the click lands between frames, and the next frame
-  // fills the card before it is painted.
+  // fills the card before it is painted (stopForGraphicsFailure, after which no frame
+  // follows, fills it itself).
   const cards = document.body.classList
   if (cards.contains('panel-open')) {
     // The dome's two gates, in the panel next to their sliders rather than on the HUD.

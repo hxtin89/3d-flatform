@@ -543,12 +543,20 @@ export function createStreamingCloud(opts: {
   } as any)
   tiles.addEventListener('needs-update', () => stillGate.invalidate())
   tiles.addEventListener('camera-resolution-change', () => stillGate.invalidate())
+  // An eviction makes room in a cache that refused requests, and only a traversal
+  // requests them again; so a full cache need not keep the gate open every frame.
+  tiles.addEventListener('dispose-model', () => stillGate.invalidate())
   const stillView = new THREE.Matrix4()
+  const stillGroupInverse = new THREE.Matrix4()
   const stillSpheres: number[] = []
   /** Everything the traversal reads, beyond the tile tree itself. */
   function stillFrameInputs(): StillFrameInputs {
-    // Camera and root together, so an origin rebase, which moves both, is no change.
-    stillView.multiplyMatrices(camera.matrixWorldInverse, tiles.group.matrixWorld)
+    // The camera's pose in the tiles' own frame, so an origin rebase, which moves both, is
+    // no change. This way round a turn changes only the rotation terms: the other way
+    // round (the tiles in camera space) the translation would carry the tiles' origin,
+    // the Earth's centre 6,400 km off, and magnify every turn by that lever.
+    stillGroupInverse.copy(tiles.group.matrixWorld).invert()
+    stillView.multiplyMatrices(stillGroupInverse, camera.matrixWorld)
     stillSpheres.length = 0
     if (maskActive) {
       const c = maskRegion.sphere.center
@@ -1204,8 +1212,13 @@ export function createStreamingCloud(opts: {
     povCandidateCount = 0
     povPoints = 0
     const root = (tiles as any).root
-    const info = (tiles as any).cameraInfo?.[0]
-    if (!root || !info || !(info.sseDenominator > 0)) return Infinity
+    // From the live camera, as prepareForTraversal works it out, not from cameraInfo: that
+    // is written inside tiles.update(), which runs after this, so it would still hold the
+    // last traversal's resolution — after a resize that could be many frames old.
+    const resolution = (tiles as any).cameraMap?.get(camera)
+    const projection = camera.projectionMatrix.elements
+    const sseDenominator = resolution?.height > 0 ? (2 / projection[5]) / resolution.height : -1
+    if (!root || !(sseDenominator > 0)) return Infinity
     const target = tiles.errorTarget
     const sphere = maskRegion.sphere
     const visit = (tile: any): void => {
@@ -1220,7 +1233,7 @@ export function createStreamingCloud(opts: {
         entry.points = points
         povCandidateCount++
       }
-      const error = distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * info.sseDenominator)
+      const error = distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * sseDenominator)
       if (!(error > target) && !tile?.internal?.hasUnrenderableContent) return
       const children = tile.children
       if (!Array.isArray(children)) return
@@ -1288,10 +1301,11 @@ export function createStreamingCloud(opts: {
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
-      // Loading or a full cache keeps it running: requests the cache refused are retried
-      // only by a traversal, and the library clears isLoading only at the end of one.
+      // Loading keeps it running: the library clears isLoading only at the end of a
+      // traversal. A full cache does not: requests it refused are retried by the traversal
+      // that the next eviction triggers ('dispose-model' above).
       traverseNow = stillGate.decide(
-        stillFrameInputs(), performance.now(), (tiles as any).isLoading || tiles.lruCache.isFull(), stillGateBypass,
+        stillFrameInputs(), performance.now(), Boolean((tiles as any).isLoading), stillGateBypass,
       )
       if (traverseNow) {
         // Only when it runs: the count describes the last traversal, and the panel reads it.
