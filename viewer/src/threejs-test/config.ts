@@ -238,20 +238,25 @@ export const EXPERIENCE_CONFIG = {
     },
     /**
      * The primitive every point is drawn as — see dot-geometry.ts and
-     * plans/plan-dot-geometry-ab.md. A test switch: quad is today's picture; the triangle
-     * draws the same round dot from 3 vertices instead of 4. `?dot=tri|quad` picks the
-     * boot state, the panel flips it at runtime. The Square dot shape always draws quads.
+     * plans/plan-dot-geometry-ab.md. The triangle draws the same round dot as the quad
+     * from 3 vertices instead of 4, and is the default since 2026-09-29: pulled, it measured
+     * 12 % less cloud GPU time at nadir (lower in three of four passes) and 33 % less at a 40°
+     * tilt (all four), and the two differ on 0.01-0.04 % of pixels, at dot rims. `?dot=quad`
+     * boots on quads for the A/B, the panel flips it at runtime. The Square dot shape
+     * always draws quads.
      */
     dotGeometry: {
-      shape: 'quad' as 'quad' | 'triangle',
+      shape: 'triangle' as 'quad' | 'triangle',
       /** The triangle's inscribed circle in drawn diameters: the dot (0.5) plus 1 %. */
       triInradius: 0.505,
       /**
-       * How the points reach the GPU — step 2 of the A/B. 'instanced' is today's path;
-       * 'pulled' draws without instancing and reads each point from a per-tile data
-       * texture. `?feed=pull|inst` picks the boot state, the panel flips it at runtime.
+       * How the points reach the GPU. 'pulled', the default since 2026-09-29, draws without
+       * instancing and reads each point from a per-tile data texture; 'instanced' is the
+       * older path, kept for the A/B. Pixel-identical on WebGPU and WebGL2, and at the
+       * landing view the cloud's GPU time fell from 20.4 to 2.6 ms (pulled triangles against
+       * instanced quads). `?feed=inst` boots instanced, the panel flips it at runtime.
        */
-      feed: 'instanced' as 'instanced' | 'pulled',
+      feed: 'pulled' as 'instanced' | 'pulled',
       /** Width of the per-tile point-data texture, a power of two. */
       textureWidth: 1024,
     },
@@ -403,8 +408,9 @@ export const EXPERIENCE_CONFIG = {
      * pan speed depend on the canopy height under the cursor.
      *
      * EnvironmentControls picks the pivot by raycasting the scene, and the only thing it
-     * can hit is the draped basemap: the cloud is instanced quads whose base geometry
-     * holds four corner offsets, and the carrier Points is parked at drawRange 0 — see
+     * can hit is the draped basemap: the cloud's dot meshes hold no point positions
+     * (pulled, the default, has no attributes at all; the instanced arm only four corner
+     * offsets), and the carrier Points is parked at drawRange 0 — see
      * the comment on sampleGroundZ, which exists for the same reason. So the pivot lands
      * on the terrain while you are looking at a canopy 20 to 90 m above it, and orbiting
      * about a point that far below what you see sweeps the view out from under the

@@ -1,6 +1,7 @@
 // Point-cloud material for the streamed tiles. The geometry itself stays
 // tile-owned so Three can release CPU and GPU resources as the camera moves.
-// Points are drawn as instanced quads — see createCloudMaterial for why.
+// Points are drawn as camera-facing triangles or quads, pulled from a per-tile texture by
+// default and instanced for the A/B — see createCloudMaterial for why not THREE.Points.
 import * as THREE from 'three'
 import { MaterialReferenceNode, PointsNodeMaterial } from 'three/webgpu'
 import {
@@ -622,7 +623,8 @@ export function gradePointNode(u: CloudUniforms, rgb: any): any {
   return max(mix(vec3(luma.mul(gain)), rgb.mul(gain), u.pointSaturation), vec3(0))
 }
 
-/** Names of the per-instance attributes each tile geometry must carry. Kept out
+/** Names of the per-instance attributes an instanced tile geometry carries (a pulled tile,
+ * the default, carries none: its points sit in the data texture). Kept out
  * of three's own `instancePosition`/`instanceColor` namespace so no InstancedMesh
  * machinery can claim them. */
 export const POINT_POSITION_ATTRIBUTE = 'cloudPointPosition'
@@ -641,8 +643,9 @@ export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
 // Applied per material rather than through `renderer.highPrecision`, which is
 // documented as incompatible with InstancedMesh and SkinnedMesh; this scene has
 // both (cloud puffs in environment-layer, the rigged parrots in
-// field-model-layer). Our tiles are plain Meshes with an InstancedBufferGeometry,
-// whose per-instance attributes feed positionLocal before the matrix is applied.
+// field-model-layer). Our tiles are plain Meshes — a pulled BufferGeometry by default,
+// an InstancedBufferGeometry in the A/B arm — whose point feeds positionLocal before the
+// matrix is applied.
 const HIGH_PRECISION_CONTEXT = context({ modelViewMatrix: highpModelViewMatrix })
 let highPrecisionMatrices = true
 
@@ -689,7 +692,7 @@ const effects = {
   groundFog: true,
   groundPatch: true,
   cloudShadows: true,
-  /** Cut each square quad into a circle. Off is the A side of the early-Z comparison. */
+  /** Cut each dot's triangle (the default) or quad into a circle. Off is the A side of the early-Z comparison. */
   roundDots: true,
   /** The level inspector's "show only this layer" cut. Only emitted while it is in use. */
   debugIsolate: false,
@@ -1040,7 +1043,8 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
    * was delivered rather than a separate correction on top.
    */
   // The point centre, not a quad corner: setupPositionView derives positionView from
-  // positionNode, which is the instanced position below. Floored so a point sitting on
+  // positionNode, which is the point's own position (the data-texture texel by default, the
+  // instanced attribute in the A/B arm). Floored so a point sitting on
   // the eye cannot divide by zero.
   const viewDepth = positionView.z.negate().max(float(0.001))
   const deliveredPx = spacingMetres
@@ -1257,7 +1261,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
 /** Create a material for exactly one streamed tile. Never share it across tiles:
  * UnloadTilesPlugin disposes hidden tile materials independently.
  *
- * The tile is drawn as instanced camera-facing quads, not as THREE.Points:
+ * The tile is drawn as camera-facing triangles or quads (dot-geometry.ts), not as THREE.Points:
  * PointsNodeMaterial only evaluates `sizeNode` in its sprite path, and both
  * backends pin a real point primitive to one pixel (WebGPU has no point-size
  * builtin, the WebGL node fallback hardcodes `gl_PointSize = 1.0`). One pixel at

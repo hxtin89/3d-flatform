@@ -5,13 +5,15 @@ import { EXPERIENCE_CONFIG } from './config.ts'
 /**
  * The shape every point is drawn as, and the one place that knows how a dot mesh draws.
  *
- * Every point is one instance of a small camera-facing primitive whose corners sit in
- * the geometry's `position` attribute, in units of the drawn diameter — PointsNodeMaterial's
- * sprite path scales them by the point size. The colour node then cuts a circle of
- * diameter 1 out of it with the `uv` attribute, so any primitive that contains that circle
- * draws the same round dot:
+ * Every point is drawn as a small camera-facing primitive whose corners are given in units
+ * of the drawn diameter: read from a corner table by vertex index when pulled (the default
+ * since 2026-09-29), or from the geometry's `position` attribute when instanced. The sprite
+ * path scales them by the point size. The colour node then cuts a circle of diameter 1 out
+ * of it with the dot's uv (corner + 0.5), so any primitive that contains that circle draws
+ * the same round dot:
  *
- * - **quad**: 4 corners, 2 triangles, area 1 d². The shape the viewer has always drawn.
+ * - **quad**: 4 corners, 2 triangles, area 1 d². The shape the viewer drew until 2026-09-29;
+ *   now the A/B arm, and what Square forces.
  * - **triangle**: 3 corners, 1 triangle, an equilateral triangle whose inscribed circle is
  *   the dot (plus a 1 % margin, `triInradius`), area 1.325 d².
  *
@@ -36,10 +38,11 @@ export type DotShape = 'quad' | 'triangle'
  * How the GPU is handed the points — step 2 of plans/plan-dot-geometry-ab.md.
  *
  * - **instanced**: one hardware instance per point, the corners in a tiny per-vertex
- *   buffer and the point in per-instance attributes. Today's path. Measured: the cost is
- *   per instance, because a 3- or 4-vertex instance fills a whole vertex batch.
- * - **pulled**: no instancing and no per-vertex attributes at all. Each tile draws
- *   `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
+ *   buffer and the point in per-instance attributes. The older path, kept for the A/B
+ *   (`?feed=inst`). Measured: the cost is per instance, because a 3- or 4-vertex instance
+ *   fills a whole vertex batch.
+ * - **pulled**, the default since 2026-09-29: no instancing and no per-vertex attributes
+ *   at all. Each tile draws `k × points` vertices (k = 3 for the triangle, 6 indices over 4 corners for the quad);
  *   the shader derives the point from the vertex index and reads it from a per-tile data
  *   texture, so vertices of many points share a batch. Same 16 bytes per point on the GPU.
  */
@@ -367,7 +370,8 @@ export const SHARED_QUAD_INDEX_NAME = 'sharedQuadIndex'
 
 /**
  * The index every pulled quad draws from: `4i + {0,1,2,0,2,3}`, so `vertexIndex` carries
- * the point (÷ 4) and the corner (mod 4) and the quad keeps the vertex reuse it has today.
+ * the point (÷ 4) and the corner (mod 4) and the pulled quad keeps the vertex reuse the
+ * instanced quad has.
  *
  * One buffer for every tile, grown to the largest tile seen. It starts at 2¹⁹ points
  * (12.6 MB) because the deployed overview tile holds 270 k points, just over 2¹⁸ — starting

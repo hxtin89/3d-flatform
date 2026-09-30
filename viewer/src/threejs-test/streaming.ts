@@ -175,7 +175,7 @@ export interface StreamingCloud {
   sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4): GroundSample | null
   stats(): StreamingStats
   /**
-   * Pixels the drawn quads cover this frame, summed over every visible tile, with the
+   * Pixels the drawn dots' primitives cover this frame, summed over every visible tile, with the
    * point count those pixels belong to.
    *
    * `diameterPx` is handed one tile's own point spacing and the view depth to its
@@ -184,18 +184,19 @@ export interface StreamingCloud {
    * have to move together or the readout quietly measures a size the shader is not using,
    * which is exactly the state this replaced.
    *
-   * The area counted is the **quad**, not the round dot inside it. Every fragment of
-   * the quad is rasterised and shaded; the circle is a Discard in the colour node, which
-   * runs afterwards. So this is fragments shaded — what it costs — rather than pixels
-   * lit, which is what shows.
+   * The area counted is the **primitive**, not the round dot inside it: the triangle by
+   * default (1.325 d²), the quad (1 d²) on `?dot=quad` or under Square — see dotAreaFactor.
+   * Every fragment of the primitive is rasterised and shaded; the circle is a Discard in
+   * the colour node, which runs afterwards. So this is fragments shaded — what it costs —
+   * rather than pixels lit, which is what shows.
    *
    * `points` is returned rather than taken from `stats()` because the two sets differ:
    * tiles wholly behind the camera are excluded here, and dividing a partial area by a
    * total point count would report dots that had shrunk.
    */
   /**
-   * Draw fewer of each tile's points, by lowering `instanceCount` so a shorter prefix of
-   * the (shuffled) buffer is drawn.
+   * Draw fewer of each tile's points, by drawing a shorter prefix of the reordered buffer
+   * (setDrawnPoints: the draw range when pulled, `instanceCount` when instanced).
    *
    * This removes primitives, which is the only thing that has been measured to move the
    * frame cost — shrinking points instead saves fragments, and fragments turned out to be
@@ -707,11 +708,11 @@ export function createStreamingCloud(opts: {
    */
   let fairOrderWanted = true
 
-  // One camera-facing primitive per point, instanced. Its corner offsets live in the
-  // `position` attribute because that is what PointsNodeMaterial's sprite path scales by
-  // the point size, and `uv` gives the round-dot cutout. Quad or triangle — see
-  // dot-geometry.ts, which owns both, and setDotMode below — which can also drop the
-  // instancing and draw the tile from a data texture instead.
+  // One camera-facing primitive per point: by default a pulled triangle, which has no
+  // per-vertex attributes and reads its point from the tile's data texture by vertex
+  // index. The instanced arm keeps its corner offsets in `position`, which is what
+  // PointsNodeMaterial's sprite path scales by the point size, and `uv` for the round-dot
+  // cutout. Both shapes and both feeds live in dot-geometry.ts; setDotMode switches.
   let dotMode: DotMode = { ...(opts.dotMode ?? { shape: 'quad', feed: 'instanced' }) }
   if (dotMode.feed === 'pulled' && dotMode.shape === 'quad') prepareSharedQuadIndex()
 
@@ -1474,12 +1475,14 @@ export function createStreamingCloud(opts: {
     },
     sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
       // Deliberately not a raycast. The load-model handler above parks every
-      // carrier Points at drawRange 0 and hangs instanced quads underneath, so
-      // THREE.Points.raycast clamps its loop to zero vertices and the instanced
-      // child only carries four corner offsets in `position` — a raycast here
-      // finds nothing, silently, whatever threshold it is given. The raw tile
-      // positions do survive, as the instanced attribute the quads read, so we
-      // sample those directly.
+      // carrier Points at drawRange 0 and hangs a dot mesh underneath, so
+      // THREE.Points.raycast clamps its loop to zero vertices, and the dot mesh holds
+      // no point positions a raycast can use: a pulled one (the default) has no
+      // attributes at all, an instanced one only four corner offsets in `position`. A
+      // raycast here finds nothing, silently, whatever threshold it is given. The raw
+      // tile positions do survive, on the carrier itself — its own position, a
+      // four-float view of the point texture in the pulled feed — so we sample those
+      // directly.
       const heights: number[] = []
       // 5×5 support grid: a candidate height backed by one corner of the
       // footprint is noise, not ground.
