@@ -4491,7 +4491,7 @@ function updateHud(stats: StreamingStats | null): void {
   }
   if (!cards.contains('hud-open')) return
 
-  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0, cacheBytesCeiling: 0 }
+  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, cacheBytesCeiling: 0, reuploadsAfterClose: 0 }
   // While the cloud is parked for the entrance flight, updateStreaming returns the last
   // pre-flight snapshot and the group is hidden — so these rows described a selection
   // that was not being drawn. Blanked instead: nothing is a truer answer than a stale

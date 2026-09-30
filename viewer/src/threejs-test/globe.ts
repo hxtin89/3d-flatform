@@ -8,7 +8,7 @@ import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 import { materialReference, mix } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
-import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
+import { XYZTilesPlugin, UpdateOnChangePlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
   applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, imageryEffectsKey,
@@ -76,7 +76,7 @@ export interface Globe {
   /** `cacheBytesCeiling` is the limit at which this tileset stops queueing downloads —
    *  reported so the HUD can put the basemap's share of memory against the basemap's own
    *  ceiling rather than against the point cloud's. */
-  stats(): { visible: number; cacheBytes: number; gpuBytes: number; cacheBytesCeiling: number }
+  stats(): { visible: number; cacheBytes: number; cacheBytesCeiling: number; reuploadsAfterClose: number }
   dispose(): void
 }
 
@@ -192,8 +192,12 @@ export function createGlobe(opts: {
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
   // configured value has to land afterwards to win.
   tiles.errorTarget = Math.max(EXPERIENCE_CONFIG.design.basemapErrorTarget, 0.5)
-  const unloadPlugin = new UnloadTilesPlugin({ delay: 750, bytesTarget: 64 * 1024 * 1024 })
-  tiles.registerPlugin(unloadPlugin as any)
+  // No UnloadTilesPlugin: each tile's image is closed once it is on the GPU (below), so a
+  // GPU copy cannot be rebuilt and has to live as long as the tile's cache entry. The
+  // cache itself drops tiles that leave the view within frames, and at a settled view the
+  // plugin never freed anything; at most it unloaded hidden ancestors on the constrained
+  // tier, which now stay on the GPU instead (on phones that is one-for-one against the
+  // image that is no longer kept). Do not bring it back without dropping the close.
   tiles.setCamera(camera)
   scene.add(tiles.group)
 
@@ -211,12 +215,31 @@ export function createGlobe(opts: {
   // And on the WebGL2 fallback each tile's vertex-array objects are deleted with its
   // geometry, which three never does — see vertex-arrays.ts. Registered here because the
   // tile has not been drawn yet, so the listener lands before three's own.
-  tiles.addEventListener('load-model', ({ scene: s }: any) => {
+  //
+  // Each tile's decoded image (a 512² ImageBitmap, 1 MiB) is closed once three has copied
+  // it to the GPU: until now every resident tile held it for nothing, next to its texture.
+  // A microtask later rather than inside onUpdate, because three counts the texture's
+  // size from the image right after calling it. The callback stays on as a tripwire: a
+  // second upload would read a closed image and draw the tile black, so it is counted
+  // and warned about. Anything that bumps a map's version would cause one — needsUpdate,
+  // mipmaps, a new colour space — so none of that may touch these textures.
+  let reuploadsAfterClose = 0
+  const releaseImageAfterUpload = (texture: THREE.Texture): void => {
+    const image = texture.image as ImageBitmap | undefined
+    if (!image || typeof image.close !== 'function') return
+    if (image.width === 0) {
+      if (reuploadsAfterClose++ === 0) console.warn('[globe] a basemap texture was uploaded again after its image was closed')
+      return
+    }
+    queueMicrotask(() => image.close())
+  }
+  tiles.addEventListener('load-model', ({ scene: s, tile }: any) => {
     s.traverse((o: any) => {
       if (o.geometry) releaseVertexArraysOnDispose(renderer, o.geometry)
       const map = o.material?.map
       if (!map) return
       map.flipY = false
+      map.onUpdate = releaseImageAfterUpload
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters
@@ -233,6 +256,11 @@ export function createGlobe(opts: {
       mat.userData.effectsVersion = cloudEffectsVersion()
       o.material.dispose()
       o.material = mat
+      // The library lists a tile's materials before this event and disposes that list on
+      // eviction, so the replacement has to join it; the unload plugin used to dispose it
+      // as a side effect. Left out, every evicted tile would keep its render object's
+      // uniform buffers in three's memory map.
+      tile?.engineData?.materials?.push(mat)
     })
   })
 
@@ -486,10 +514,14 @@ export function createGlobe(opts: {
   const setResolution = () => tiles.setResolutionFromRenderer(camera, renderer as any)
   setResolution()
 
-  const setMemoryBudget = (cacheMaxBytes: number, gpuBytesTarget: number) => {
+  // The basemap has no GPU target of its own any more: its GPU copies live exactly as
+  // long as the cache entries, so the cache ceiling bounds both. The value is only kept
+  // so a budget snapshot has the same shape as the point cloud's and restores exactly.
+  let gpuBytesTarget = 64 * 1024 * 1024
+  const setMemoryBudget = (cacheMaxBytes: number, nextGpuBytesTarget: number) => {
     tiles.lruCache.maxBytesSize = cacheMaxBytes
     tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (400 * 1024)))
-    ;(unloadPlugin as any).bytesTarget = gpuBytesTarget
+    gpuBytesTarget = nextGpuBytesTarget
   }
 
   return {
@@ -515,14 +547,14 @@ export function createGlobe(opts: {
         maxBytesSize: tiles.lruCache.maxBytesSize,
         minBytesSize: tiles.lruCache.minBytesSize,
         maxSize: tiles.lruCache.maxSize,
-        gpuBytesTarget: (unloadPlugin as any).bytesTarget as number,
+        gpuBytesTarget,
       }
     },
     setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
       tiles.lruCache.maxBytesSize = budget.maxBytesSize
       tiles.lruCache.minBytesSize = budget.minBytesSize
       tiles.lruCache.maxSize = budget.maxSize
-      ;(unloadPlugin as any).bytesTarget = budget.gpuBytesTarget
+      gpuBytesTarget = budget.gpuBytesTarget
     },
     update(constrainCamera) {
       // The pointer shift belongs to one drag only. The budget clears itself once the
@@ -577,8 +609,8 @@ export function createGlobe(opts: {
       return {
         visible: tiles.visibleTiles.size,
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
-        gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
         cacheBytesCeiling: (tiles.lruCache as any).maxBytesSize ?? 0,
+        reuploadsAfterClose,
       }
     },
     dispose() {
