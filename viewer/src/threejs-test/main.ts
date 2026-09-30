@@ -8,7 +8,7 @@ import {
   setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
 import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
-import { pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
+import { domeFadeAt, pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
 import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
@@ -1296,6 +1296,62 @@ function applyPointCloudLift(): void {
   groundFogFloorZ = areaMinZ + zOffset
   applyGroundFogBase()
   applyHeightOffset()
+  // Every layer root carries zOffset in its own matrix, built once when the layer was
+  // made. Without this the Lift slider moved the cloud alone and left the tower, the
+  // markers, the parcel and the cloud decks at the old lift.
+  fieldModelLayer?.setZOffset(zOffset)
+  markerLayer?.setZOffset(zOffset)
+  donationShapeLayer?.setZOffset(zOffset)
+  environmentLayer?.setZOffset(zOffset)
+}
+
+const modelDome: PickDome = {
+  centreEnu: uniforms.sphereFadeCentre.value, radius: 1e9, rampInset: 0, fadeIn: 1, fadeOut: 1,
+  upWorld: uniforms.sphereFadeUpWorld.value, enuInverse: uniforms.enuInverse.value,
+}
+const modelFootEnu = new THREE.Vector3()
+const FIELD_MODEL_KEYS = ['tower', 'boat'] as const
+
+/**
+ * The tower and the boat fade with the dome the way the points under them fade: the
+ * shader's own falloff, read from the uniforms it was handed this frame, at the model's
+ * foot. Outside the dome the cloud around them is not drawn, and they would stand on
+ * the flat map in the air. RIVER 05 leaves with its tower.
+ *
+ * Copies this frame's dome into `modelDome`; false while it is off or parked.
+ */
+function readModelDome(): boolean {
+  const live = sphereFadeSettings.enabled && uniforms.sphereFadeRadius.value < 1e8
+  if (live) {
+    modelDome.radius = uniforms.sphereFadeRadius.value
+    modelDome.rampInset = uniforms.sphereFadeRampInset.value
+    modelDome.fadeIn = uniforms.sphereFadeIn.value
+    modelDome.fadeOut = uniforms.sphereFadeOut.value
+  }
+  return live
+}
+
+/** The fade at a foot given in a layer's frame (before the lift). Whole while the model
+ *  editor is open, so the gizmo never drags a model that is not drawn. */
+function domeFadeAtFoot(foot: THREE.Vector3, domeLive: boolean): number {
+  if (!domeLive || modelTransformEditor) return 1
+  // The shader's frame carries the lift; the layers' frame does not.
+  foot.z += zOffset
+  return domeFadeAt(modelDome, foot)
+}
+
+function updateFieldModelFades(domeLive: boolean): void {
+  if (!fieldModelLayer) return
+  for (const key of FIELD_MODEL_KEYS) {
+    fieldModelLayer.setFade(key, domeFadeAtFoot(fieldModelLayer.footEnu(key, modelFootEnu), domeLive))
+  }
+}
+
+/** From the sensor's own idea of where the tower stands, so it fades whether or not the
+ *  tower mesh is loaded or switched on. */
+function updateTowerSensorFade(domeLive: boolean): void {
+  if (!markerLayer) return
+  markerLayer.setTowerSensorFade(domeFadeAtFoot(markerLayer.towerFootEnu(modelFootEnu), domeLive))
 }
 
 function applyHeightOffset(): void {
@@ -4710,9 +4766,15 @@ function loop(now: number): void {
     fieldModelLayer?.setPerformanceTier(nextFieldTier)
   }
   const options = renderOptions.effective()
-  if (options.fieldModels) fieldModelLayer?.update(now)
+  // After updateStreaming, which handed the shader this frame's dome.
+  const modelDomeLive = readModelDome()
+  if (options.fieldModels) {
+    updateFieldModelFades(modelDomeLive)
+    fieldModelLayer?.update(now)
+  }
   if (options.donationShape) donationShapeLayer?.update(now, camera)
   if (options.markers) {
+    updateTowerSensorFade(modelDomeLive)
     markerLayer?.update(
       now,
       camera,
@@ -5296,9 +5358,10 @@ async function main(): Promise<void> {
     if (disposed) layer.dispose()
     else {
       fieldModelLayer = layer
-      // The GLTFs load lazily — apply the flag that is effective right now,
-      // not the one from when loading started.
+      // The GLTFs load lazily — apply the flag and the lift that are effective right
+      // now, not the ones from when loading started.
       layer.setVisible(renderOptions.effective().fieldModels)
+      layer.setZOffset(zOffset)
       if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
       layer.setDaylightPhase(environmentLayer?.getDaylightState().phase ?? 'day')
       if (modelEditorEnabled) {
@@ -5308,8 +5371,8 @@ async function main(): Promise<void> {
           domElement: renderer.domElement,
           globeControls: globe!.controls,
           targets: layer.getEditTargets(),
-          onTowerTransform: (positionM, sensorHeightM) => {
-            markerLayer?.setTowerSensorTransform(positionM, sensorHeightM)
+          onTowerTransform: (positionM, sensorHeightM, yawRad, scale) => {
+            markerLayer?.setTowerSensorTransform(positionM, sensorHeightM, yawRad, scale)
           },
         })
       }

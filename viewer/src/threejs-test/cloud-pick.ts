@@ -103,6 +103,25 @@ function fadeAt(d: number, start: number, span: number, fadeIn: number, fadeOut:
   return 1 - rise / Math.max(rise + fall, 1e-6)
 }
 
+/** A dome fade at or below this skips an object instead of drawing it at nothing — one
+ *  cut for the field models and the tower's sensor, so they always leave together. */
+export const DOME_HIDDEN_FADE = 0.002
+
+/**
+ * The dome's fade at one raw-ENU point, floored exactly as sphereFadeFactor floors it —
+ * what a point standing there is drawn at. For the field models, which are not points
+ * but should leave the view where the cloud under them does.
+ */
+export function domeFadeAt(dome: PickDome, pointEnu: THREE.Vector3): number {
+  const radius = Math.max(dome.radius, 0.001)
+  const start = Math.max(radius - dome.rampInset, 0)
+  const span = Math.max(radius - start, 0.001)
+  return fadeAt(
+    pointEnu.distanceTo(dome.centreEnu), start, span,
+    Math.max(dome.fadeIn, 0.01), Math.max(dome.fadeOut, 0.01),
+  )
+}
+
 /**
  * Whether the dot at local point q, shrunk by `fade`, covers the cursor: q through the
  * tile's local-to-view matrix `m` and the projection `p`, its pixel distance from the

@@ -2,9 +2,12 @@ import * as THREE from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js'
+import { DOME_HIDDEN_FADE } from './cloud-pick'
 import { EXPERIENCE_CONFIG } from './config'
 import type { DaylightPhase, PerformanceTier } from './environment-layer'
 import { bakeHeldTracks, HELD_TRACK_TOLERANCE } from './held-tracks'
+
+export type FieldModelKey = 'tower' | 'boat'
 
 export interface FieldModelLayer {
   update(now: number): void
@@ -12,6 +15,13 @@ export interface FieldModelLayer {
   setVisible(visible: boolean): void
   setPerformanceTier(tier: PerformanceTier): void
   setDaylightPhase(phase: DaylightPhase): void
+  /** Follow a new cloud lift: the root carries zOffset like the stream group does. */
+  setZOffset(zOffset: number): void
+  /** Where a model stands — its origin on the floor it was placed on, in the root's
+   *  frame (raw ENU before the lift). Follows the model editor. */
+  footEnu(key: FieldModelKey, target: THREE.Vector3): THREE.Vector3
+  /** 0..1 — how much of a model is drawn. 1 is the model as authored; 0 skips it. */
+  setFade(key: FieldModelKey, fade: number): void
   getEditTargets(): FieldModelEditTargets
   dispose(): void
 }
@@ -20,10 +30,12 @@ export interface EditableFieldModel {
   positionNode: THREE.Group
   transformNode: THREE.Group
   modelRotationRad: readonly [number, number, number]
+  /** What positionM is relative to: the hotspot centre in x/y, the model's measured
+   *  floor (config groundZM) in z. */
+  originEnu: THREE.Vector3
 }
 
 export interface FieldModelEditTargets {
-  originEnu: THREE.Vector3
   tower: EditableFieldModel
   boat: EditableFieldModel
   towerHeightUnits: number
@@ -35,6 +47,8 @@ interface FieldModelLayerOptions {
   camera: THREE.PerspectiveCamera
   enuFrame: THREE.Matrix4
   zOffset: number
+  /** The shifted hotspot centre. Its z is only the fallback floor for a model without
+   *  a measured groundZM. */
   originEnu: THREE.Vector3
   performanceTier: PerformanceTier
   reducedMotion: boolean
@@ -114,7 +128,33 @@ function createEditableTransform(
   transformNode.add(object)
   positionNode.add(transformNode)
   parent.add(positionNode)
-  return { positionNode, transformNode, modelRotationRad: rotation }
+  return { positionNode, transformNode, modelRotationRad: rotation, originEnu: origin.clone() }
+}
+
+/** The hotspot centre in x/y, the model's measured floor in z — or the centre's own z
+ *  (areaMinZ) for a model that has no measurement. */
+function modelOrigin(centre: THREE.Vector3, groundZM: number | undefined): THREE.Vector3 {
+  return new THREE.Vector3(centre.x, centre.y, groundZM ?? centre.z)
+}
+
+/**
+ * A model is faded by its materials' opacity alone. They are transparent from the
+ * start (see where they are made) because flipping `transparent` at runtime is part of
+ * three's material cache key: r185 disposes the render object and builds the node graph
+ * and pipeline again on every flip, and a fade crosses 1 each time the dome edge passes.
+ */
+interface FadeState {
+  node: THREE.Object3D
+  materials: THREE.Material[]
+  fade: number
+}
+
+function applyFade(state: FadeState, fade: number): void {
+  const value = THREE.MathUtils.clamp(fade, 0, 1)
+  if (value === state.fade) return
+  state.fade = value
+  state.node.visible = value > DOME_HIDDEN_FADE
+  for (const material of state.materials) material.opacity = value
 }
 
 /**
@@ -174,6 +214,13 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const towerBottomMaterial = createBakedMaterial(towerBottom, false, 0.38)
   const towerTopMaterial = createBakedMaterial(towerTop, true, 0.42)
   const boatMaterial = createBakedMaterial(boatTexture, false, 0.48)
+  // Transparent from the start so the dome fade only has to write opacity (see
+  // applyFade). At opacity 1 this draws exactly as opaque: the bakes are WebP without
+  // alpha, so every fragment is alpha 1, depthWrite stays on, and at renderOrder 0 the
+  // two draw ahead of every other transparent in the scene. No alphaTest, which would
+  // cut the last few percent of a fade off hard.
+  towerBottomMaterial.transparent = true
+  boatMaterial.transparent = true
   const parrotBodyMaterial = createBakedMaterial(parrotBody, true, 0.62)
   const parrotWingsMaterial = createBakedMaterial(parrotWings, true, 0.62)
   const parrotTailMaterial = createBakedMaterial(parrotTail, true, 0.62)
@@ -201,7 +248,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const towerEditTarget = createEditableTransform(
     root,
     tower,
-    originEnu,
+    modelOrigin(originEnu, EXPERIENCE_CONFIG.tower.groundZM),
     EXPERIENCE_CONFIG.tower.positionM,
     EXPERIENCE_CONFIG.tower.rotationRad,
     EXPERIENCE_CONFIG.tower.scale,
@@ -222,11 +269,16 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const boatEditTarget = createEditableTransform(
     root,
     boat,
-    originEnu,
+    modelOrigin(originEnu, EXPERIENCE_CONFIG.boat.groundZM),
     EXPERIENCE_CONFIG.boat.positionM,
     EXPERIENCE_CONFIG.boat.rotationRad,
     EXPERIENCE_CONFIG.boat.scale,
   )
+  const fades: Record<FieldModelKey, FadeState> = {
+    tower: { node: towerEditTarget.positionNode, materials: [towerBottomMaterial, towerTopMaterial], fade: 1 },
+    boat: { node: boatEditTarget.positionNode, materials: [boatMaterial], fade: 1 },
+  }
+  const editTargets: Record<FieldModelKey, EditableFieldModel> = { tower: towerEditTarget, boat: boatEditTarget }
 
   parrotGltf.scene.traverse((object) => {
     const mesh = object as THREE.Mesh
@@ -506,9 +558,18 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     setDaylightPhase(nextPhase) {
       daylightPhase = nextPhase
     },
+    setZOffset(nextZOffset) {
+      root.matrix.copy(enuFrame).multiply(new THREE.Matrix4().makeTranslation(0, 0, nextZOffset))
+      root.matrixWorldNeedsUpdate = true
+    },
+    footEnu(key, target) {
+      return target.copy(editTargets[key].positionNode.position)
+    },
+    setFade(key, fade) {
+      applyFade(fades[key], fade)
+    },
     getEditTargets() {
       return {
-        originEnu: originEnu.clone(),
         tower: towerEditTarget,
         boat: boatEditTarget,
         towerHeightUnits,

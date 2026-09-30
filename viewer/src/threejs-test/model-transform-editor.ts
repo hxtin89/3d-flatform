@@ -15,7 +15,12 @@ interface ModelTransformEditorOptions {
   domElement: HTMLElement
   globeControls: { enabled: boolean }
   targets: FieldModelEditTargets
-  onTowerTransform(positionM: readonly [number, number, number], sensorHeightM: number): void
+  onTowerTransform(
+    positionM: readonly [number, number, number],
+    sensorHeightM: number,
+    yawRad: number,
+    scale: number,
+  ): void
 }
 
 function rounded(value: number): number {
@@ -68,7 +73,9 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
 
   function snapshotModel(key: ModelKey) {
     const target = model(key)
-    const relative = target.positionNode.position.clone().sub(targets.originEnu)
+    // Against the model's own origin, so z reads as height above its measured floor —
+    // what positionM means in config.ts.
+    const relative = target.positionNode.position.clone().sub(target.originEnu)
     return {
       positionM: [rounded(relative.x), rounded(relative.y), rounded(relative.z)],
       rotationRad: [
@@ -97,6 +104,8 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
     onTowerTransform(
       tower.positionM as [number, number, number],
       targets.towerHeightUnits * tower.scale + 5,
+      tower.rotationRad[2],
+      tower.scale,
     )
   }
 
