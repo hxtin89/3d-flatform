@@ -18,6 +18,7 @@ import { EXPERIENCE_CONFIG } from './config'
 import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { retryFailedTiles } from './tile-retry'
 import { createOrthoComposite, type OrthoComposite, type OrthoCompositeConfig, type OrthoStats } from './ortho-composite'
 import { parseSatelliteZxy, createPlanner, type OrthoDensity, type OrthoMeta } from './ortho-plan'
 
@@ -174,6 +175,9 @@ export function createGlobe(opts: {
   let imageryEnabled = true
 
   const tiles = new TilesRenderer()
+  // A dropped imagery request would otherwise leave its whole subtree missing for the
+  // session: a square of sky through the ground. See tile-retry.ts.
+  const stopRetrying = retryFailedTiles(tiles as any, 'globe')
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
   // cache exists in addition to point-cloud geometry and was the largest
   // unbounded allocation in the mobile path — hence a cap. But the cap has to
@@ -238,39 +242,6 @@ export function createGlobe(opts: {
     return dropped
   }
   tiles.registerPlugin(new UpdateOnChangePlugin())
-  // The library never retries a tile that failed to download, and a failed tile's children
-  // are never created: one network blip (measured 2026-09-30: ECONNRESET and connect
-  // timeouts from the tile host) left the view stuck at a blurry z6, or at sky, for the rest
-  // of the session. Retry failed tiles after a pause that doubles while failures keep coming
-  // and drops back once tiles load again.
-  //
-  // Not with resetFailedTiles(): it only flips FAILED back to UNLOADED, and the tile stays in
-  // the LRU cache, where requestTileContents cannot add it again, so it is never requested
-  // and holds its whole subtree back (2026-10-01: one failed z10 tile kept a landing view at
-  // z9). Taking the tile out of the cache unloads it properly; the root keeps the library's
-  // own reset.
-  let retryDelayMs = 2000
-  let retryTimer = 0
-  /** The library's FAILED loading state (core/renderer/constants.js), which its types omit. */
-  const FAILED = -1
-  function retryFailedTiles(): void {
-    const cache = (tiles as any).lruCache
-    const failed = (cache?.itemList ?? []).filter((tile: any) => tile?.internal?.loadingState === FAILED)
-    for (const tile of failed) {
-      if (cache.remove(tile)) (tiles as any).stats.failed--
-    }
-    tiles.resetFailedTiles()
-    tiles.dispatchEvent({ type: 'needs-update' })
-  }
-  tiles.addEventListener('load-error', () => {
-    if (retryTimer) return
-    retryTimer = window.setTimeout(() => {
-      retryTimer = 0
-      retryFailedTiles()
-      retryDelayMs = Math.min(retryDelayMs * 2, 60_000)
-    }, retryDelayMs)
-  })
-  tiles.addEventListener('load-model', () => { retryDelayMs = 2000 })
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
   // configured value has to land afterwards to win.
   tiles.errorTarget = Math.max(EXPERIENCE_CONFIG.design.basemapErrorTarget, 0.5)
@@ -696,7 +667,7 @@ export function createGlobe(opts: {
       return ortho?.stats() ?? null
     },
     dispose() {
-      window.clearTimeout(retryTimer)
+      stopRetrying()
       ortho?.dispose()
       detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)
