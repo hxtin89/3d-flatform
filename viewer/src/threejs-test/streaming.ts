@@ -11,7 +11,7 @@ import {
   POINT_COLOR_ATTRIBUTE, POINT_DATA_PROPERTY, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
-  denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
+  bandRank, compareBands, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
 } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import {
@@ -528,6 +528,9 @@ export function createStreamingCloud(opts: {
   const tileStats = new WeakMap<object, {
     points: number
     density: DensityBand
+    /** bandRank(density), kept because stats() compares it for every visible tile every
+     *  frame and the band would otherwise be parsed again each time. */
+    rank: number
     debugTiles: any[]
     /** The quad meshes this tile draws, for measuring the area they cover. Kept as a
      *  list because one tile can carry several point sources. */
@@ -1085,7 +1088,7 @@ export function createStreamingCloud(opts: {
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
     }
-    tileStats.set(tile, { points, density, debugTiles, quads })
+    tileStats.set(tile, { points, density, rank: bandRank(density), debugTiles, quads })
     recordArrival(performance.now() - arrivalStartedAt, points)
   })
   // Fired before 3d-tiles-renderer disposes the tile, while its scene is still whole. Both
@@ -1490,13 +1493,15 @@ export function createStreamingCloud(opts: {
     stats() {
       let points = 0
       let density: DensityBand = 'Overview p02'
+      let densityRank = bandRank(density)
       let leafTiles = 0
       const mix = new Map<DensityBand, { tiles: number; points: number }>()
       for (const tile of tiles.visibleTiles) {
         const stats = tileStats.get(tile)
         if (!stats) continue
         points += stats.points
-        density = denserBand(density, stats.density)
+        // The first of the densest wins, as a strict '>' makes it.
+        if (stats.rank > densityRank) { densityRank = stats.rank; density = stats.density }
         // Terminal = refinement stopped here, i.e. no child of this tile is also on
         // screen. Checked against the visible set rather than a traversal flag because
         // that is what the eye sees: a drawn tile with drawn children is an ancestor
@@ -1526,7 +1531,7 @@ export function createStreamingCloud(opts: {
         // Coarsest first, so the readout reads like the ladder it is.
         terminalLevels: [...mix.entries()]
           .map(([band, entry]) => ({ band, tiles: entry.tiles, points: entry.points }))
-          .sort((a, b) => a.band.localeCompare(b.band, undefined, { numeric: true })),
+          .sort((a, b) => compareBands(a.band, b.band)),
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
         cacheTiles: (tiles.lruCache as any).itemSet?.size ?? 0,
