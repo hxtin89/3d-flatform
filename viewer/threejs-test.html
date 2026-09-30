@@ -466,6 +466,34 @@
       input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
       input[type=color]::-webkit-color-swatch { border: 0; border-radius: 5px; }
 
+      /* ---------- volumetric fog: panel rows and the noise editor window ---------- */
+      .vfog-controls { display: flex; flex-direction: column; gap: 10px; }
+      .vfog-heading { margin-top: 6px; font: 700 10px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .14em;
+                      text-transform: uppercase; color: rgba(232,234,237,.5); }
+      .vfog-thumbs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+      .vfog-thumbs canvas { width: 100%; aspect-ratio: 1; border-radius: 4px; background: #111713; }
+      #fogNoiseWindow { top: calc(52px + var(--safe-t)); left: 16px; width: min(620px, calc(100vw - 32px));
+                        display: none; flex-direction: column; gap: 10px; z-index: 22;
+                        max-height: calc(100vh - 72px - var(--safe-t) - var(--safe-b)); }
+      body.fog-noise-open #fogNoiseWindow { display: flex; }
+      #fogNoiseWindow .fog-noise-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      #fogNoiseWindow .fog-noise-body { overflow-y: auto; overscroll-behavior: contain; margin: 0 -4px; padding: 0 4px;
+                                        display: flex; flex-direction: column; gap: 10px; }
+      .fog-noise-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+      .fog-noise-card { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #262b32;
+                        border-radius: 9px; background: rgba(255,255,255,.014); }
+      .fog-noise-card .row { gap: 3px; }
+      .fog-noise-card .h, .fog-noise-heading { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .7; }
+      .fog-noise-tile, .fog-noise-slice { width: 100%; height: auto; border-radius: 6px; background: #111713; }
+      .fog-noise-histogram { width: 100%; height: 28px; }
+      .fog-noise-strip { width: 100%; height: auto; border-radius: 6px; background: #111713; }
+      .fog-noise-actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+      .fog-noise-editor figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+      .fog-noise-editor figure.wide { grid-column: 1 / -1; }
+      .fog-noise-editor figcaption { font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace; color: rgba(232,234,237,.48); }
+      .fog-noise-editor select, .vfog-controls select { background: #21262d; color: #e8eaed; border: 1px solid #2d333b;
+                                                          border-radius: 7px; padding: 6px; font: inherit; }
+      @media (max-width: 720px) { #fogNoiseWindow { top: auto; bottom: 0; left: 0; width: 100%; max-height: 70vh; } }
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
       /* ---------- height ruler: the 2D column ----------
@@ -1225,6 +1253,13 @@
 
     <!-- Design panel: its own window, own chip, own scroll. Sections are native
          <details> so collapsing costs no JS and no state of ours. -->
+    <div id="fogNoiseWindow" class="card" role="dialog" aria-label="Fog noise editor">
+      <div class="fog-noise-head">
+        <h2 class="design-title">Fog noise editor</h2>
+        <button class="act" id="fogNoiseClose" type="button" aria-label="Close the fog noise editor">✕</button>
+      </div>
+      <div class="fog-noise-body" id="fogNoiseEditorBody"></div>
+    </div>
     <div id="designPanel" class="card" aria-label="Design">
       <button class="close" data-close="design">×</button>
       <p class="design-title">Design</p>
@@ -1423,6 +1458,13 @@
             <input type="range" id="groundPatchThreshold" min="0.02" max="0.98" step="0.01" />
             <span class="weather-note">Where to cut the blurred coverage. 50% sits on the outline, higher pulls the edge inward, lower pushes it out</span>
           </div>
+        </details>
+
+        <details class="design-section" id="volumetricFogSection">
+          <summary>Volumetric fog</summary>
+          <!-- Rows are built by main.ts from one table (volumetric fog panel), so the
+               controls, their config defaults and Copy values cannot drift apart. -->
+          <div id="volumetricFogControls" class="vfog-controls"></div>
         </details>
 
         <details class="design-section">

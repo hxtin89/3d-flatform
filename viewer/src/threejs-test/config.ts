@@ -1292,6 +1292,150 @@ export const EXPERIENCE_CONFIG = {
      * horizon, where the range changes by kilometres per degree. */
     focusSmoothing: 1,
   },
+  /**
+   * Volumetric ground fog (ground-fog.ts): mist ray-marched through a band just above the
+   * forest floor, so it lies in the gaps between the crowns, is cut off by them, and sends
+   * wisps up past the canopy — what the analytic `design.groundFog` can only fake as a
+   * tint. A post pass between eye-dome lighting and depth of field; off removes it from
+   * the pipeline. `?vfog=0|1` boots it off or on.
+   *
+   * Heights are metres above the default area's floor, the same floor the analytic fog
+   * uses; the survey-centre ground sits ~22 m above it, the crown tops ~50 m.
+   */
+  volumetricFog: {
+    enabled: true,
+    // ---- fidelity and cost
+    /** Fraction of the drawing buffer the march runs at; a depth-aware upsample brings it
+     *  back to full resolution. 0.5 marches a quarter of the pixels. The cost goes with the
+     *  marched pixels: measured 2026-09-30 (NVIDIA Ampere, 2000×1125 buffer, 40 steps),
+     *  +0.5 ms at 0.25, +2.4 ms at 0.5, +10 ms at 1. */
+    resolutionScale: 0.5,
+    /** Samples per ray through the band. The main cost knob together with the resolution,
+     *  about linear: +0.85 / +1.4 / +2.4 / +3.6 ms for 16 / 24 / 40 / 64 at half resolution
+     *  (same measurement). 24 looks all but the same as 40; 16 shows grain. */
+    steps: 40,
+    /** How the samples crowd toward the camera in the dense segment of the ray (the mist
+     *  and puffs; the sparse plume segment above is spaced evenly): 1 spaces them evenly,
+     *  2 puts half of them in the nearest quarter, where detail is resolvable. */
+    stepDistribution: 1.7,
+    /** Rays stop here. Beyond, the distance haze carries the atmosphere on its own. */
+    maxDistanceM: 9_000,
+    /** Extra scattering orders in Wrenninge's approximation (0 = single scattering only).
+     *  Costs nothing measurable. Rebuilds the shader. */
+    multipleScattering: 2,
+    /** '2d': layered reads of one tileable 2D texture (shipped). '3d': a 64³ 3D texture for
+     *  the height detail instead — same cost here, but one fixed channel the noise editor
+     *  only previews, and 8× the memory per doubling. 'procedural': every layer evaluated in
+     *  the shader, +9 ms over '2d'. For the cost comparison; rebuilds the shader. */
+    noiseSource: '2d' as '2d' | '3d' | 'procedural',
+    /** Height detail and plumes: the 2D-slice noise that carves the mist into rounded puffs
+     *  and wisps, and the columns rising out of the canopy. Off saves three texture reads per
+     *  sample, about 45 % of the fog's cost, and leaves flat-topped prisms; rebuilds the
+     *  shader. */
+    wisps: true,
+    /** Weigh the four low-resolution neighbours by depth when upsampling, so fog does not
+     *  bleed across crown silhouettes. Off = plain bilinear. Rebuilds the shader. */
+    depthAwareUpsample: true,
+    /** Picked by the loader benchmark, on top of the values above. Against a 60 fps frame,
+     *  10 fps is 3.3 ms; on the measured GPU these cost +2.5, +1.5 and +0.35 ms. */
+    qualityByPreset: {
+      strong: { resolutionScale: 0.5, steps: 40 },
+      medium: { resolutionScale: 0.5, steps: 24 },
+      constrained: { resolutionScale: 0.25, steps: 20 },
+    },
+    // ---- the band, metres above the area floor
+    bottomM: 10,
+    topM: 44,
+    /** How far plumes rise above the puff layer (or the band top, if higher). */
+    plumeHeightM: 45,
+    bottomSoftM: 10,
+    topSoftM: 12,
+    /** How far the band reaches past the survey's bounding box, fading out over it. The
+     *  march never leaves the box: beyond the point cloud the bare map has no crowns to
+     *  hide the band, and the haze carries the distance. */
+    marginM: 400,
+    /** Height above the floor of the crown surface the flat map stands for beyond the drawn
+     *  point cloud; mist below it is hidden there. The survey-centre crowns top out ~50 m. */
+    virtualCanopyM: 48,
+    /** A ray whose scene surface lies this far or more below the floor (metres, negative =
+     *  below) has landed on the bare map, not on the point cloud: a hole or the faded-out
+     *  distance. Its march ends at the virtual canopy. The map drape sits 20 m under the floor. */
+    mapBelowM: -6,
+    /** Where the mist in a real gap ends: the forest floor, metres above the area floor
+     *  (~22 at the survey centre). A gap is a ray that met no crown inside the sphere-fade
+     *  dome and landed on the map, which lies 20 m under the floor. */
+    groundLevelM: 20,
+    /** Beyond this distance the points are too sparse to hide anything, whatever the dome
+     *  says: the virtual canopy takes over. */
+    pointsReachM: 1_400,
+    /** The veil: a thin sheet of mist banks lying on the virtual canopy — what mist far away
+     *  reads as, and all of it beyond the drawn points. Visibility inside its densest banks
+     *  (0 = off) and its thickness; over the drawn points it is kept to a third. */
+    veilVisibilityM: 1_200,
+    veilHeightM: 18,
+    /** Plumes: columns of rising vapour. One candidate per square of this side, present by
+     *  `plumeChance`, this wide at its foot (radius, metres; it flares to about twice that as
+     *  it rises), leaning downwind. */
+    plumeSpacingM: 240,
+    plumeRadiusM: 9,
+    plumeChance: 0.3,
+    /** Puffs: flat, rounded clumps lying on the canopy, centred this high above the floor
+     *  (the crown tops are ~50 m), this thick at their strongest — about a third of their
+     *  width, as in the reference; taller puffs read as standing columns from above — on
+     *  billow clumps above `puffCut`. */
+    puffCentreM: 48,
+    puffHeightM: 4,
+    puffCut: 0.44,
+    puffAmount: 1,
+    /** How much the sky's colour tints the skylight on the mist (0 = the daylight's own
+     *  colour, 1 = the zenith blue). Humid forest air is pale. */
+    skyTint: 0.25,
+    // ---- shape
+    /** Visibility in the body of the mist (Koschmieder: extinction = 3.912 / visibility). The
+     *  3D detail carves it unevenly: its peaks and the plume cores run up to ~25 % denser. */
+    visibilityM: 70,
+    /** Share of the ground the mist pools over, and how soft the banks' edges are. */
+    coverage: 0.45,
+    coverageSoftness: 0.14,
+    /** World size of one noise tile per layer, metres. */
+    coverageScaleM: 900,
+    billowScaleM: 200,
+    erosionScaleM: 55,
+    wispScaleM: 70,
+    wispHeightM: 28,
+    billowAmount: 0.85,
+    erosionAmount: 0.55,
+    wispAmount: 0.7,
+    plumeAmount: 1.2,
+    /** Drift with the breeze, and the rise of warm, moist air out of the canopy (m/s). */
+    windMps: [0.7, 0.25] as [number, number],
+    riseMps: 0.35,
+    // ---- light
+    /** Droplet diameter for the Mie phase fit (Jendersie & d'Eon 2023): radiation fog runs
+     *  ~5–20 µm. Larger drops push the sunward glow into a tighter, brighter halo. */
+    dropletDiameterUm: 12,
+    /** Single-scattering albedo: water fog absorbs almost nothing. */
+    albedo: 0.995,
+    sunStrength: 1,
+    ambientStrength: 1.2,
+    /** How much of the sky the crowns hide from mist low in the band (0 = none). */
+    canopyOcclusion: 0.2,
+    /** Rayleigh scattering by the air in the band, 1 = sea-level air. Physically a small
+     *  bluish addition over these distances; the haze carries aerial perspective beyond. */
+    rayleighScale: 1,
+    /** Colour multiplied into the fog's light, for grading. */
+    tint: 0xffffff,
+    /** Tileable noise layers (fog-noise.ts); the noise editor rewrites these live. */
+    noise: {
+      size: 256,
+      layers: [
+        { kind: 'perlin', period: 4, octaves: 5, gain: 0.5, seed: 1, warp: 0.6, contrast: 1, invert: false },
+        { kind: 'worley', period: 6, octaves: 3, gain: 0.45, seed: 7, warp: 0.35, contrast: 1.2, invert: false },
+        { kind: 'perlin', period: 16, octaves: 4, gain: 0.55, seed: 13, warp: 1.1, contrast: 1, invert: false },
+        { kind: 'worley', period: 12, octaves: 2, gain: 0.5, seed: 29, warp: 0, contrast: 1, invert: false },
+      ],
+    },
+  },
   rain: {
     dryDurationMs: 10_000,
     activeDurationMs: 8_000,
