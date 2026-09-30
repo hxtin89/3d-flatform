@@ -1,6 +1,24 @@
 {
   "dataset": "peru-b2-globe",
   "frame": "tileset-enu",
+  "rootTransform": [
+    0.9367177284285796,
+    0.35008555703942124,
+    0.0,
+    0.0,
+    0.07786886580042492,
+    -0.2083523459371688,
+    0.9749490959436978,
+    0.0,
+    0.3413155973385296,
+    -0.913252102485878,
+    -0.22242810145880004,
+    0.0,
+    2177336.765005134,
+    -5825861.443092834,
+    -1409425.2360051193,
+    1.0
+  ],
   "origin": [
     -6416.0,
     -4272.0
@@ -17,26 +35,279 @@
   "encoding": {
     "kind": "log2-gain-rgb8",
     "stops": 3.0,
-    "zero": 127.5
+    "zero": 128,
+    "scale": 127,
+    "meanCode": [
+      129.35,
+      128.579,
+      129.122
+    ]
   },
+  "pngHash": "e0761ab37ad7",
   "basemapGain": [
-    4.6729,
-    4.4261,
-    3.5492
+    5.0418,
+    4.6527,
+    3.4325
   ],
+  "basemapGainByZoom": {
+    "15": [
+      5.0418,
+      4.6527,
+      3.4325
+    ],
+    "12": [
+      6.5679,
+      5.5764,
+      4.1795
+    ],
+    "13": [
+      5.2914,
+      4.7821,
+      3.5744
+    ],
+    "14": [
+      5.1601,
+      4.7167,
+      3.4991
+    ],
+    "16": [
+      6.0195,
+      5.3487,
+      3.8086
+    ],
+    "17": [
+      6.0942,
+      5.3917,
+      3.8521
+    ],
+    "18": [
+      6.1885,
+      5.4629,
+      3.9214
+    ],
+    "19": [
+      6.183,
+      5.4496,
+      3.8909
+    ]
+  },
   "basemapSaturation": 0.6,
   "made": {
     "date": "2026-09-30",
-    "sigmaM": 100.0,
+    "method": "median",
+    "radiusM": 120.0,
+    "sigmaM": null,
+    "kneeStops": 1.25,
     "cellM": 8.0,
     "texelM": 16.0,
     "depth": 2,
     "basemap": "maptiler/maps/satellite-v4/{z}/{x}/{y}.jpg",
     "basemapZoom": 15,
-    "clippedTexels": 156,
-    "mismatchBeforeStops": {
-      "median": 0.275,
-      "p95": 1.267
-    }
+    "pngBytes": 198538,
+    "landscapeResidualStops": {
+      "before": {
+        "median": 0.209,
+        "p95": 1.072
+      },
+      "after": {
+        "median": 0.039,
+        "p95": 0.322
+      }
+    },
+    "seamStopsPerTexel": {
+      "before": 0.0668,
+      "after": 0.0561
+    },
+    "fieldLumaStops": {
+      "p1": -0.68,
+      "p50": -0.03,
+      "p99": 1.12
+    },
+    "clippedTexels": 0
+  },
+  "ortho": {
+    "version": 2,
+    "target": "raw-basemap",
+    "kindZooms": [
+      15,
+      19
+    ],
+    "sources": [
+      {
+        "id": "29a110a3-5916-4bad-bfc5-4984410b57d3",
+        "name": "Secret Forest",
+        "bounds": [
+          -69.51775958882311,
+          -12.897620587019425,
+          -69.4321516385074,
+          -12.824083799443118
+        ],
+        "minzoom": 10,
+        "maxzoom": 20,
+        "format": "webp",
+        "baseGain": [
+          0.14255,
+          0.20679,
+          0.12513
+        ],
+        "zoomTrim": {
+          "15": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "16": [
+            0.8145,
+            0.8797,
+            0.9494
+          ],
+          "17": [
+            0.8097,
+            0.8781,
+            0.9352
+          ],
+          "18": [
+            0.7839,
+            0.8605,
+            0.9316
+          ],
+          "19": [
+            0.7875,
+            0.8601,
+            0.9303
+          ]
+        },
+        "field": {
+          "origin": [
+            -1120.0,
+            -5088.0
+          ],
+          "size": [
+            9296.0,
+            8144.0
+          ],
+          "texels": [
+            581,
+            509
+          ],
+          "rowOrder": "north-first",
+          "encoding": {
+            "kind": "log2-gain-rgb8",
+            "stops": 3.0,
+            "zero": 128,
+            "scale": 127,
+            "meanCode": [
+              129.124,
+              129.11,
+              129.209
+            ]
+          },
+          "gainPng": "peru-b2-globe.ortho-0.png",
+          "gainHash": "69c11f69a734",
+          "featherPng": "peru-b2-globe.ortho-0-feather.png",
+          "featherHash": "60a7d247e9a1",
+          "featherMean": 137.436
+        },
+        "kinds": {
+          "15": {
+            "x0": 10056,
+            "y0": 17561,
+            "w": 9,
+            "h": 8,
+            "bits": "QBVQWUWqRqkWqRWUFVAFAAEA",
+            "counts": [
+              27,
+              31,
+              14,
+              0
+            ]
+          },
+          "16": {
+            "x0": 20112,
+            "y0": 35122,
+            "w": 17,
+            "h": 15,
+            "bits": "AABVAABAVQUAVKlWFVCvqllQ+qpqQKmrqgGlqqoG1aquFbW6agWU+lsFQOlfAQClVgAAlBUAAEAVAAAAAQAAAA==",
+            "counts": [
+              103,
+              72,
+              65,
+              15
+            ]
+          },
+          "17": {
+            "x0": 40225,
+            "y0": 70244,
+            "w": 32,
+            "h": 29,
+            "bits": "AAAAAFABAAAAAAAAVQUAAAAAAFSlFQAAAABAVapWAAAAAFSpqlpBAQBQ9aqqqlVVAFT/q6qqllYA9P+vqqqqWgD1+r+qqqoaALXq/6qqqhYAtKr/q6qqFgC1qr6qqqoWAPWqqvqqqhYA9auq/6uqFkD1r6r+r2oFVP+rqvq/VgHVr+qr6v8VAOWr+q+qXwEApar/v6pVAACU6v//WgUAAFTq//9XAQAAUKr/fwUAAABUqv5fAQAAAJSq+hUAAAAAVKpaAQAAAABQqlUAAAAAAEBZBQAAAAAAQFUAAAAAAAAAAQAAAAAAAA==",
+            "counts": [
+              384,
+              162,
+              256,
+              126
+            ]
+          },
+          "18": {
+            "x0": 80450,
+            "y0": 140489,
+            "w": 64,
+            "h": 56,
+            "bits": "AAAAAAAAAAAAVAEAAAAAAAAAAAAAAAAAQFUFAAAAAAAAAAAAAAAAAFWlFQAAAAAAAAAAAAAAAFCVqlYAAAAAAAAAAAAAAEBVqapaAQAAAAAAAAAAAABUlaqqagUAAAAAAAAAAABQVaqqqqoVAAAAAAAAAAAAVaWqqqqqVgEAAAAAAAAAULWqqqqqqloFQAEAAAAAAFX/qqqqqqqqFVAVAAAAAFT1/6uqqqqqqlZVVRUAAFDV//+vqqqqqqpapWpVAABQ/f//v6qqqqqqqqqqVgAAUP////+qqqqqqqqqqhYAAFD/////q6qqqqqqqqoVAABU/////6+qqqqqqqqqBQAA1P+r////qqqqqqqqqgUAANT/qv7//6uqqqqqqmoBAADQv6r6//+vqqqqqqpqAQAA0K+q6v//v6qqqqqqagEAANCvqqr//7+qqqqqqmoBAADUv6qq/v+rqqqqqqpqAQAA1P+qqvq/qq6qqqqqagEAANT/q6rqqqr/qqqqqmoBAADU/6+qqqr6/6uqqqpqAQAA0P+/qqrq//+vqqqqagEAANT//6uq6v//v6qqqloBAADV//+vqqr///+qqqpWAABQ9f//q6qq/v//q6paFQAAVP///6qqqvr//6+qVgEAQNX//7/qq6rq//+/alUAAFD1//+q+q+qqv///1sBAABU/f+qqv6/qqr+//9VAAAAlf6vqur//6uq+v9fBQAAAKX6r6r+//+vqur/VwEAAACUqq+q////v6qqfxUAAAAAVKqu6v////+qqlYBAAAAAFCqqvr/////q2oVAAAAAABAqar6/////69WBQAAAAAAQKWq/v////+/VQEAAAAAAACVqv7/////XwUAAAAAAAAAlKr6/////1cAAAAAAAAAAJSq6v///38VAAAAAAAAAECVqqr///9fAQAAAAAAAABApaqq/v//FQAAAAAAAAAAQKmqqur/XwUAAAAAAAAAAECpqqqq/1UAAAAAAAAAAABApaqqql4FAAAAAAAAAAAAAJWqqqpWAQAAAAAAAAAAAACUqqpqFQAAAAAAAAAAAAAAVKqqVgUAAAAAAAAAAAAAAFCqqlUAAAAAAAAAAAAAAABAqVYFAAAAAAAAAAAAAAAAQFVVAAAAAAAAAAAAAAAAAABVAQAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAA=",
+            "counts": [
+              1552,
+              373,
+              1017,
+              642
+            ]
+          },
+          "19": {
+            "x0": 160901,
+            "y0": 280978,
+            "w": 126,
+            "h": 111,
+            "bits": "AAAAAAAAAAAAAAAAAAAAAAAAQAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABVBQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVVUBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQFWlVQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBVlWoVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQVamqWgUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUFWpqqpWAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFBVqqqqqlUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQVaqqqqpqVQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVVWqqqqqqloVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFVVqqqqqqqqWgUAAAAAAAAAAAAAAAAAAAAAAAAAAABVpaqqqqqqqqpWAQAAAAAAAAAAAAAAAAAAAAAAAAAAVaWqqqqqqqqqqlUAAAAAAAAAAAAAAAAAAAAAAAAAUFWlqqqqqqqqqqpqFQAAAAAAAAAAAAAAAAAAAAAAAFRVpaqqqqqqqqqqqloFAAAAAAAAAAAAAAAAAAAAAABQVaqqqqqqqqqqqqqqVgUAAAAAAAAAAAAAAAAAAAAAVNWrqqqqqqqqqqqqqqpVAQAAAAAAAAAAAAAAAAAAAFDV/6qqqqqqqqqqqqqqqlUAAAAVAAAAAAAAAAAAAABU1f+/qqqqqqqqqqqqqqpqFQAAVBUAAAAAAAAAAAAAVNX//6+qqqqqqqqqqqqqqloVAFRVFQAAAAAAAAAAQFXV////q6qqqqqqqqqqqqqqVgFUZVVVBQAAAAAAAEBV1f////+qqqqqqqqqqqqqqqpVVJWqVlUVAAAAAABAVf3/////v6qqqqqqqqqqqqqqalWVqqpaVQEAAAAAUFX9//////+/qqqqqqqqqqqqqqpapaqqqqpWAAAAAABV/f///////6+qqqqqqqqqqqqqqqqqqqqqWgUAAAAAVP//////////q6qqqqqqqqqqqqqqqqqqqqoVAAAAAED1//////////+qqqqqqqqqqqqqqqqqqqqqWgEAAAAAVP//////////v6qqqqqqqqqqqqqqqqqqqmoVAAAAAED1//////////+vqqqqqqqqqqqqqqqqqqqqVgAAAAAAVP///////////6uqqqqqqqqqqqqqqqqqqloFAAAAAFD1////////////qqqqqqqqqqqqqqqqqqqqFQAAAAAA1P////////////+qqqqqqqqqqqqqqqqqqlYAAAAAAED9////////////v6qqqqqqqqqqqqqqqqpqBQAAAAAA1f//v6r///////+vqqqqqqqqqqqqqqqqqhYAAAAAAFD9//+q6v///////6uqqqqqqqqqqqqqqqpaAQAAAAAA1P//r6r6////////qqqqqqqqqqqqqqqqqhUAAAAAAED9/6+qqv7//////7+qqqqqqqqqqqqqqqpWAQAAAAAA1P+/qqqq////////r6qqqqqqqqqqqqqqagUAAAAAAED9/6qqqur///////+rqqqqqqqqqqqqqqpWAAAAAAAA1P+vqqqq+v///////6uqqqqqqqqqqqqqagUAAAAAAED9/6qqqqr+//////+/qqqqqqqqqqqqqqpWAAAAAAAA1P+/qqqqqv///////6qqqqqqqqqqqqqqagUAAAAAAFD9/6+qqqrq//////+qqqqqqqqqqqqqqqpaAQAAAAAA1f//q6qqqvr/////qqqqqqqqqqqqqqqqqgUAAAAAAFD9//+qqqqq+v///6qq/qqqqqqqqqqqqqpaAAAAAAAA1f//v6qqqqr+//+qqvq/qqqqqqqqqqqqqgUAAAAAAFD9//+vqqqqqv+rqqrq/7+qqqqqqqqqqqpWAAAAAAAA1P///6uqqqrqq6qq+v//r6qqqqqqqqqqagUAAAAAAFD9////qqqqqqqqqur///+rqqqqqqqqqqpWAAAAAAAA1f///7+qqqqqqqrq/////6qqqqqqqqqqagUAAAAAAED9////r6qqqqqq/v////+/qqqqqqqqqqpWAAAAAAAA1P////+vqqqqqv7//////6+qqqqqqqqqagUAAAAAAED9/////6uqqqr6////////q6qqqqqqqqpWAAAAAAAA1f//////qqqqqvr///////+qqqqqqqqqVgUAAAAAAFT9/////7+qqqqq/v///////6qqqqqqqloVAAAAAABU9f//////q6qqqqr///////+/qqqqqqpqFQAAAAAAUNX//////6+qqqqq6v///////6+qqqqqWlUAAAAAAFDV//////+/qqqqqqr6////////q6qqqlpVAQAAAABA1f///////6rqqqqqqv7///////+qqqqqVQAAAAAAQFX///////+vqr+qqqqq////////v6qqalUAAAAAAABV/f//////r6r+r6qqqur///////+vqmpVBQAAAAAAVf3//////7+q+v+rqqqq+v///////6uqVQEAAAAAAFD1//////+vqur//6qqqqr+////////q1UBAAAAAABQ9f//////q6qq/v+/qqqqqv////////9WBQAAAAAAUFX//////6qqqv7//6+qqqqq////////VQUAAAAAAABV/v///6uqqqr6////r6qqqur//////1cVAAAAAAAAVKn///+vqqqq/v////+rqqqq+v////9/FQAAAAAAAFCl6v//r6qqqv///////6qqqqr+////VxUAAAAAAAAAlar6///qq6r+//////+/qqqqqv///19VAQAAAAAAAFCpqv7/r6+q+v///////6+qqqrq//9/VQAAAAAAAAAAVKqq/v/6qvr/////////q6qqqvr/X1UAAAAAAAAAAECVqqr/q6vq//////////+qqqqq/v9VAQAAAAAAAAAAUKWq6r+6qv//////////v6qqqqp/VQAAAAAAAAAAAABUqqr6q6r+//////////+vqqqqqlUFAAAAAAAAAAAAAJWqqr6q6v///////////6uqqmpVAQAAAAAAAAAAAABQqaqqq6r/////////////qqqqVQUAAAAAAAAAAAAAAFSqqqqq+v////////////+qqlYFAAAAAAAAAAAAAABAlaqqqur/////////////v6pVBQAAAAAAAAAAAAAAAFCpqqqq/v////////////+vVlUAAAAAAAAAAAAAAAAAVaqqqvr//////////////18FAAAAAAAAAAAAAAAAAECVqqqq//////////////9fFQAAAAAAAAAAAAAAAAAAUKWqqur/////////////X1UAAAAAAAAAAAAAAAAAAABUqqqq+v///////////18VAAAAAAAAAAAAAAAAAAAAAJWqqqr+//////////9/VQAAAAAAAAAAAAAAAAAAAABQqaqqqv//////////f1UAAAAAAAAAAAAAAAAAAAAAAJWqqqrq/////////39VAAAAAAAAAAAAAAAAAAAAAABUqqqqqvr///////9/VQEAAAAAAAAAAAAAAAAAAAAAVaWqqqqq/v///////1cBAAAAAAAAAAAAAAAAAAAAAFSVqqqqqqr///////9VAQAAAAAAAAAAAAAAAAAAAABAlaqqqqqq6v//////VxUAAAAAAAAAAAAAAAAAAAAAAFSqqqqqqqrq/////1UFAAAAAAAAAAAAAAAAAAAAAABApaqqqqqqqvr///9fFQAAAAAAAAAAAAAAAAAAAAAAAFSqqqqqqqqq/v//VwUAAAAAAAAAAAAAAAAAAAAAAAAAlaqqqqqqqqr//18VAAAAAAAAAAAAAAAAAAAAAAAAAFClqqqqqqqq6v9fFQAAAAAAAAAAAAAAAAAAAAAAAAAAVKqqqqqqqqr6X1UAAAAAAAAAAAAAAAAAAAAAAAAAAACVqqqqqqqqqn5VAAAAAAAAAAAAAAAAAAAAAAAAAAAAUKWqqqqqqqpqVQAAAAAAAAAAAAAAAAAAAAAAAAAAAABUqqqqqqqqqlUBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJWqqqqqqqpVAQAAAAAAAAAAAAAAAAAAAAAAAAAAAABQqaqqqqqqVgUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFSqqqqqqlUFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlaqqqqpVFQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCpqqqqVgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVKqqqlUFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEClqmpVBQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUKlqVQUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABUVlUBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQFVVAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQRQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "counts": [
+              6135,
+              1000,
+              3991,
+              2860
+            ]
+          }
+        },
+        "made": {
+          "zoom": 15,
+          "footprintM": [
+            480.0,
+            32.0
+          ],
+          "featherM": [
+            8.0,
+            60.0
+          ],
+          "bytes": 156561,
+          "offsetStops": [
+            2.8105,
+            2.2738,
+            2.9985
+          ],
+          "landscapeResidualStops": {
+            "before": {
+              "median": 0.209,
+              "p95": 0.685
+            },
+            "after": {
+              "median": 0.027,
+              "p95": 0.181
+            }
+          },
+          "seamStopsPerTexel": {
+            "before": 0.0476,
+            "after": 0.0426
+          },
+          "clippedTexels": 0
+        }
+      }
+    ]
   }
 }
