@@ -891,12 +891,14 @@ export const EXPERIENCE_CONFIG = {
       enabled: true,
       /** How much of the patch is applied at all. 1 = fully. */
       amount: 1,
-      /** 0 = the raw basemap at `brightness` below, 1 = the flat `color`. Anything
+      /** 0 = the basemap at `brightness` below, 1 = the flat `color`. Anything
        * between blends the two, so one control covers both requests: dim the map
        * only there, or replace it outright. */
       colorMix: 1,
-      /** Brightness of the raw imagery inside the patch, independent of the global
-       * basemap grading — the point being to see exactly this, not this plus fog. */
+      /** Brightness of the imagery inside the patch, relative to the map's own level: the
+       * raw tile while design.colourMatch is off, the matched map while it is on. Independent
+       * of mapBrightness/mapSaturation, fog and the vignette — the point being to see exactly
+       * this, not this plus fog. */
       brightness: 0.3,
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
@@ -1000,7 +1002,9 @@ export const EXPERIENCE_CONFIG = {
        */
       maskUploadIntervalMs: 400,
     },
-    /** 1 = raw satellite colour, 0 = fully grey. */
+    /** 1 = raw satellite colour, 0 = fully grey. While design.colourMatch is on the map is
+     * matched at the field's basemapSaturation (0.6 for peru-b2-globe) across the whole globe,
+     * and this multiplies on top of it. */
     mapSaturation: 1,
     /** Multiplies the basemap only — the point cloud keeps its own grading.
      * Pushed above 1 so the map reads as daylight ground where it shows through: the
@@ -1011,7 +1015,11 @@ export const EXPERIENCE_CONFIG = {
      * sandbars and bright roofs (raw sRGB 220+ in full daylight) go past 1 and are scaled
      * down with their hue kept rather than clipped per channel, so 1.4 stays. With a
      * higher white point they roll off instead, from raw sRGB 199 up. The panel slider
-     * runs to 2 for that case. */
+     * runs to 2 for that case.
+     *
+     * Those thresholds hold with design.colourMatch off. With it on, the map's gain is
+     * basemapGain × mapBrightness / colourMatch.referenceBrightness (4.7 / 4.4 / 3.5 for
+     * peru-b2-globe at 1.4), so the knee is reached from about raw sRGB 115 in red. */
     mapBrightness: 1.4,
     /**
      * Point-cloud grade, applied to the decoded linear colour before daylight, shadow and
@@ -1032,19 +1040,30 @@ export const EXPERIENCE_CONFIG = {
      * blocks with straight edges, brighter, bluer or greener than their neighbours —
      * 1.05 stops of drift measured over peru-b2-globe, with almost nothing in common with
      * the landscape (r = -0.10 against the satellite). `pipeline/build_colour_field.py`
-     * turns that into a gain texture: every point keeps its own detail below ~100 m and
-     * takes the basemap's colour above it. The same run gives the basemap the per-channel
-     * gain that lifts it to the cloud's level (the raw satellite is 3–6× darker), which
-     * `mapBrightness` then trims around.
+     * turns that into a gain texture: the cloud-minus-satellite difference, smoothed with a
+     * masked median over a 120 m disc, so the correction follows the block borders instead of
+     * leaving a halo at them, and clearings the satellite shows as bare ground but the drone
+     * saw green are not copied onto the cloud. Each point keeps its own texture; the
+     * landscape-scale mismatch against the matched map falls from 0.21 to 0.04 stops (median)
+     * in the builder's own measure. The same run gives the basemap its lift to the cloud's
+     * level — per channel, per zoom (MapTiler's satellite changes colour between levels), and
+     * at 60 % saturation so that bare soil does not turn orange; mapBrightness trims around it.
      *
-     * Costs one filtered lookup of a 0.1 MB texture per point fragment; off compiles it out
-     * of the tile shaders, and the basemap is back to `mapBrightness` alone. See the
-     * Canopy Colour Matching artifact for the measurements.
+     * Costs one bilinear lookup per point fragment into an 802×533 RGBA8 texture (1.7 MB on the
+     * GPU, a 0.2 MB PNG download); its GPU time is measured in the Canopy Colour Matching
+     * artifact. Off compiles it out of the tile shaders and puts the basemap back on
+     * mapBrightness/mapSaturation alone. Cloud shadows and the golden-hour rim still act on the
+     * points only.
      */
     colourMatch: {
       enabled: true,
       /** 0 = captured colour and today's basemap level, 1 = the full match. Blended in log light. */
       strength: 1,
+      /** The mapBrightness the match is measured against. The field's basemapGain already
+       * contains the map's level, so the map draws at basemapGain × mapBrightness / this:
+       * mapBrightness (the config value, the slider, a Copy-values paste) stays a trim
+       * around the match. Fixed, so that pasting a new mapBrightness cannot cancel it. */
+      referenceBrightness: 1.4,
       /** Built per dataset into public/colour-field/; a dataset without one is left as captured. */
       fieldDir: 'colour-field/',
     },
@@ -1190,8 +1209,10 @@ export const EXPERIENCE_CONFIG = {
   toneMapping: {
     /**
      * Master switch for the whole stage. Off removes it as if it had never been added —
-     * no curve, no point grade, and the old pow(2.2) decode — so the shader is the one
-     * sbb-main ran and an fps A/B against it is fair. `?tonemap=off` boots with it off.
+     * no curve, no point grade, and the old pow(2.2) decode. With design.colourMatch off as
+     * well (`?tonemap=off&colourmatch=off`) the shader is the one sbb-main ran and an fps A/B
+     * against it is fair; the match corrects the capture and keeps its own switch.
+     * `?tonemap=off` boots with the stage off.
      */
     enabled: true,
     /**

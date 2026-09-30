@@ -1238,7 +1238,7 @@
           <div class="row">
             <label class="h" for="mapBrightness">Brightness · <span class="val" id="mapBrightnessVal">—</span></label>
             <input type="range" id="mapBrightness" min="0.1" max="2" step="0.01" />
-            <span class="weather-note">In full daylight raw white reaches the <em>Shoulder</em> knee from 80 %; at 140 % everything from raw sRGB 199 up is compressed. Past 100 % the brightest ground rolls off where <em>None</em> would clip it</span>
+            <span class="weather-note">With <em>Colour match</em> off, raw white reaches the <em>Shoulder</em> knee from 80 % and at 140 % everything from raw sRGB 199 up is compressed; with the match on the map sits on a 3.5–4.7× gain, so the knee comes from about raw sRGB 115. Past 100 % the brightest ground rolls off where <em>None</em> would clip it</span>
           </div>
           <div class="row">
             <label class="h" for="basemapErrorTarget">Sharpness budget · <span class="val" id="basemapErrorTargetVal">—</span></label>
@@ -1252,7 +1252,7 @@
           <div class="row">
             <label class="h" for="colourMatchToggle">Match</label>
             <button class="act on" id="colourMatchToggle" type="button" aria-pressed="true" aria-describedby="colourMatchNote">◈ Colour match · On</button>
-            <span class="weather-note" id="colourMatchNote">Evens out the flight blocks and stripes in the point colour and gives the cloud and the basemap one colour at landscape scale: every point keeps its own detail below about 100 m and takes the basemap's colour above it, and the basemap is lifted to the cloud's level. Off compiles it out of the tile shaders and puts the basemap back on <em>Brightness</em> alone. <code>?colourmatch=off</code> boots with it off</span>
+            <span class="weather-note" id="colourMatchNote">Evens out the colour drift between the flight blocks in the point colour and gives the cloud and the basemap one colour at landscape scale: each point keeps its own fine detail and takes the basemap&apos;s colour over hundreds of metres. The basemap is lifted to the cloud&apos;s level and matched at the field&apos;s saturation (60 % for this survey) everywhere, and the ground patch&apos;s map follows it. Off compiles it out of the tile shaders and puts the basemap back on <em>Brightness</em> and <em>Saturation</em> alone. <code>?colourmatch=off</code> boots with it off</span>
           </div>
           <div class="row">
             <label class="h" for="colourMatchStrength">Strength · <span class="val" id="colourMatchStrengthVal">—</span></label>
@@ -1266,7 +1266,7 @@
           <div class="row">
             <label class="h" for="toneStageToggle">Stage</label>
             <button class="act on" id="toneStageToggle" type="button" aria-pressed="true" aria-describedby="toneStageNote">◐ Tone &amp; colour · On</button>
-            <span class="weather-note" id="toneStageNote">Off takes the whole stage out as if it had never been added — no curve, no point grade, the old decode — so the shader is exactly the pre-tone-mapping one. Use it to read off what the stage costs in fps. <code>?tonemap=off</code> boots with it off</span>
+            <span class="weather-note" id="toneStageNote">Off takes the whole stage out as if it had never been added — no curve, no point grade, the old decode. With <em>Colour match</em> off as well the shader is exactly the pre-tone-mapping one; use that pair to read off what the stage costs in fps. <code>?tonemap=off&amp;colourmatch=off</code> boots with both off</span>
           </div>
           <div class="row">
             <label class="h">Tone curve</label>
@@ -1420,7 +1420,7 @@
           <div class="row">
             <label class="h" for="groundPatchBrightness">Basemap brightness here · <span class="val" id="groundPatchBrightnessVal">—</span></label>
             <input type="range" id="groundPatchBrightness" min="0" max="1.5" step="0.01" />
-            <span class="weather-note">Independent of the global basemap brightness, and free of fog and vignette</span>
+            <span class="weather-note">Relative to the map&apos;s own level (the colour-matched map while <em>Colour match</em> is on). Independent of the global Brightness slider, and free of fog and vignette</span>
           </div>
           <div class="row">
             <label class="h" for="groundPatchAmount">Coverage · <span class="val" id="groundPatchAmountVal">—</span></label>

@@ -6,10 +6,10 @@ import './hidden-pane-clock'
 import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
-  createUniforms, setCloudShadowTexture, setGroundPatchMask, setColourField,
+  createUniforms, setCloudShadowTexture, setGroundPatchMask, setColourField, setImageryZoomGains,
   isCloudEffectEnabled, setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
-import { loadColourField } from './colour-field'
+import { loadColourField, colourFieldMatchesFrame, type ColourField } from './colour-field'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -140,6 +140,10 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
  * it. `?shape=` accepts an absolute URL for a future booking API. */
 const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
 const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
+// The colour field needs only the dataset name, so it downloads while the renderer starts;
+// main() waits briefly for it before the first tiles exist, so they compile once.
+const colourFieldPromise: Promise<ColourField | null> = loadColourField(dataset, EXPERIENCE_CONFIG.design.colourMatch.fieldDir)
+  .catch((error) => { console.warn('[colour match] colour field failed to load:', error); return null })
   .catch((error) => {
     console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
     return null
@@ -3380,8 +3384,10 @@ const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
 // Tone & colour. The master switch takes the whole stage out — curve, point grade and the
-// exact decode — so off compiles the shader sbb-main ran and an fps A/B against it is
-// fair; the curve buttons keep their pick while it is off. The grade is compiled in only
+// exact decode. With the colour match off as well (?tonemap=off&colourmatch=off) that is
+// the shader sbb-main ran, and an fps A/B against it is fair; the match is a correction of
+// the capture, not part of the look, so it keeps its own switch. The curve buttons keep
+// their pick while the stage is off. The grade is compiled in only
 // while it would change something, so sliders at 1× / 100 % cost nothing either.
 let toneStageOn: boolean = EXPERIENCE_CONFIG.toneMapping.enabled && params.get('tonemap') !== 'off'
 let pointGradeOn: boolean = EXPERIENCE_CONFIG.design.pointGradeEnabled
@@ -3408,24 +3414,63 @@ bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => {
   syncToneStage()
 })
 // Colour match — see design.colourMatch. The per-point gain is a tile-shader effect that
-// only exists once the field has loaded (and is compiled out at strength 0); the basemap
-// half is a uniform, so it costs nothing either way.
+// only exists once the field has loaded, and only the switch compiles it in or out: the
+// strength is a uniform (strength 0 is exact, 2^0 = 1), so dragging the slider to its end
+// never rebuilds a tile. The basemap half is uniforms, so it costs nothing either way.
 const COLOUR_MATCH = DESIGN.colourMatch
 let colourMatchOn: boolean = COLOUR_MATCH.enabled && params.get('colourmatch') !== 'off'
 /** The field's basemap gain, or null until a field for this dataset has loaded. */
 let colourFieldBasemapGain: readonly [number, number, number] | null = null
 let colourFieldBasemapSaturation = 1
+/** basemapGainByZoom relative to basemapGain, per XYZ zoom: what the per-zoom node applies. */
+let colourFieldZoomRatios: Array<THREE.Vector3 | undefined> = []
+/** Set once the load has settled without a usable field, so the switch can say so. */
+let colourFieldMissing = false
 function syncColourMatch(): void {
   const on = colourMatchOn && colourFieldBasemapGain !== null
   const strength = uniforms.colourFieldStrength.value
-  // Relative to the configured brightness, so the Brightness slider stays a trim around the
-  // match, and off (or strength 0) is exactly today's map.
-  const [r, g, b] = (on ? colourFieldBasemapGain! : [1, 1, 1].map(() => DESIGN.mapBrightness))
-    .map((gain) => (gain / DESIGN.mapBrightness) ** strength)
+  // Relative to a fixed reference, not to the config's mapBrightness: the Brightness slider
+  // (and a Copy-values paste of it) stays a trim around the match, and off or strength 0 is
+  // exactly today's map.
+  const reference = COLOUR_MATCH.referenceBrightness
+  const [r, g, b] = on ? colourFieldBasemapGain!.map((gain) => (gain / reference) ** strength) : [1, 1, 1]
   uniforms.mapMatchGain.value.set(r, g, b)
   uniforms.mapMatchSaturation.value = on ? 1 + (colourFieldBasemapSaturation - 1) * strength : 1
-  // Point tiles only: the basemap reads a uniform, not a flag.
-  if (setCloudEffectEnabled('colourField', on && strength > 0)) stream?.refreshEffects()
+  setImageryZoomGains(on ? colourFieldZoomRatios.map((ratio) => ratio && new THREE.Vector3(
+    ratio.x ** strength, ratio.y ** strength, ratio.z ** strength)) : [])
+  // Point tiles only: the basemap reads uniforms, not a flag.
+  if (setCloudEffectEnabled('colourField', on)) stream?.refreshEffects()
+  if (colourFieldMissing) {
+    const button = $<HTMLButtonElement>('#colourMatchToggle')
+    button.textContent = '◈ Colour match · no field for this dataset'
+    button.disabled = true
+    $<HTMLInputElement>('#colourMatchStrength').disabled = true
+  }
+}
+/** Take a loaded field into use, unless it is missing or was built for another survey frame. */
+function applyColourField(field: ColourField | null, rootTransform: ArrayLike<number>): void {
+  if (!field || !colourFieldMatchesFrame(field.meta, rootTransform)) {
+    if (field) console.warn('[colour match] the colour field was built for another ENU frame; the cloud stays as captured.')
+    else console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
+    colourFieldMissing = true
+    syncColourMatch()
+    return
+  }
+  const { origin, size, encoding, basemapGain, basemapSaturation } = field.meta
+  setColourField(field.texture)
+  uniforms.colourFieldOrigin.value.set(origin[0], origin[1])
+  uniforms.colourFieldInvSize.value.set(1 / size[0], 1 / size[1])
+  uniforms.colourFieldStops.value = encoding.stops
+  uniforms.colourFieldZero.value = encoding.zero
+  uniforms.colourFieldScale.value = encoding.scale ?? 127.5
+  colourFieldBasemapGain = basemapGain
+  colourFieldBasemapSaturation = basemapSaturation ?? 1
+  colourFieldZoomRatios = []
+  for (const [zoom, gain] of Object.entries(field.meta.basemapGainByZoom ?? {})) {
+    colourFieldZoomRatios[Number(zoom)] = new THREE.Vector3(
+      gain[0] / basemapGain[0], gain[1] / basemapGain[1], gain[2] / basemapGain[2])
+  }
+  syncColourMatch()
 }
 bindEffectToggle('colourMatchToggle', '◈ Colour match', colourMatchOn, (on) => { colourMatchOn = on; syncColourMatch() })
 bindDesignSlider('colourMatchStrength', COLOUR_MATCH.strength, asPercent, (v) => {
@@ -3817,7 +3862,10 @@ designCopyEl.addEventListener('click', async () => {
     pointContrast: uniforms.pointContrast.value,
     pointSaturation: uniforms.pointSaturation.value,
     pointGradeEnabled: pointGradeOn,
-    colourMatch: { enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value, fieldDir: COLOUR_MATCH.fieldDir },
+    colourMatch: {
+      enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value,
+      referenceBrightness: COLOUR_MATCH.referenceBrightness, fieldDir: COLOUR_MATCH.fieldDir,
+    },
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -4739,22 +4787,16 @@ async function main(): Promise<void> {
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()
   refreshOriginDerived()
-  // Not awaited: the field is 0.1 MB and the tiles built before it lands are rebuilt with it.
-  // A dataset without a field stays as captured.
-  loadColourField(dataset, COLOUR_MATCH.fieldDir).then((field) => {
-    if (!field) {
-      console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
-      return
-    }
-    const { origin, size, encoding, basemapGain, basemapSaturation } = field.meta
-    setColourField(field.texture)
-    uniforms.colourFieldOrigin.value.set(origin[0], origin[1])
-    uniforms.colourFieldInvSize.value.set(1 / size[0], 1 / size[1])
-    uniforms.colourFieldStops.value = encoding.stops
-    colourFieldBasemapGain = basemapGain
-    colourFieldBasemapSaturation = basemapSaturation ?? 1
-    syncColourMatch()
-  }).catch((error) => console.warn('[colour match] colour field failed to load:', error))
+  // The field (a 0.13 MB download started at module load) is normally back by now. Waiting a
+  // moment for it means the globe and the first point tiles compile with it in place; if the
+  // origin is slow it is applied when it lands, and the tiles built meanwhile are rebuilt.
+  const rootTransform = manifest.rootTransform
+  const fieldInTime = await Promise.race([
+    colourFieldPromise.then((field) => ({ field })),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+  ])
+  if (fieldInTime) applyColourField(fieldInTime.field, rootTransform)
+  else void colourFieldPromise.then((field) => applyColourField(field, rootTransform))
   // A direction, so the origin's translation cannot touch it.
   enuUp.setFromMatrixColumn(enuFrame, 2).normalize()
 

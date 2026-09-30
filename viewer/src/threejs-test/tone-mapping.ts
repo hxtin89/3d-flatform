@@ -49,7 +49,8 @@ export const TONE_MAPPINGS: Record<ToneMappingMode, THREE.ToneMapping> = {
 
 /** Peak (max channel, linear) below which `shoulder` is the identity: Neutral's knee
  * without its offset. sRGB 231, above every canopy colour; the basemap crosses it from
- * raw sRGB 199 at mapBrightness 1.4× (raw white from 0.8×). */
+ * raw sRGB 199 at mapBrightness 1.4× (raw white from 0.8×) with the colour match off; with
+ * it on the map's gain is 3.5–4.7× and the knee is reached from about raw sRGB 115. */
 const SHOULDER_KNEE = 0.8
 /** Neutral's pull toward white for overbright colour, so a blown highlight goes white
  * instead of staying a saturated 100 % primary. Zero below the knee. */

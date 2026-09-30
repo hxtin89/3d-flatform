@@ -11,7 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion,
+  applyGroundPatch, rebuildEffectMaterial, imageryEffectsVersion,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -95,13 +95,21 @@ export interface Globe {
  * currently being drawn, so one node reads each tile's own `map`. That is why `mat.map`
  * has to keep being set; it was previously kept only for the disposal path.
  *
- * Keyed on the cloud's effect version because the effect switches compile their code out
- * entirely rather than turning it down, so a flag flip has to produce a different graph.
+ * Keyed on the imagery's own effect version because the effect switches compile their code
+ * out entirely rather than turning it down, so a flag flip has to produce a different graph —
+ * but only the flags this graph reads (point-cloud.ts IMAGERY_EFFECTS) move that version, so
+ * a point-only switch does not cost a map tile a fresh build of an identical graph.
  */
 const imageryGraphCache = new Map<number, any>()
 
+/** z of an XYZ tile URL ending in /{z}/{x}/{y}.<ext>, or -1. */
+export function zoomOfTileUrl(url: string | undefined): number {
+  const m = /\/(\d+)\/\d+\/\d+\.[a-z]+(?:\?|$)/i.exec(url ?? '')
+  return m ? Number(m[1]) : -1
+}
+
 function imageryColorNode(uniforms: CloudUniforms): any {
-  const key = cloudEffectsVersion()
+  const key = imageryEffectsVersion()
   const cached = imageryGraphCache.get(key)
   if (cached) return cached
 
@@ -210,7 +218,10 @@ export function createGlobe(opts: {
   // And on the WebGL2 fallback each tile's vertex-array objects are deleted with its
   // geometry, which three never does — see vertex-arrays.ts. Registered here because the
   // tile has not been drawn yet, so the listener lands before three's own.
-  tiles.addEventListener('load-model', ({ scene: s }: any) => {
+  tiles.addEventListener('load-model', ({ scene: s, tile }: any) => {
+    // The XYZ zoom, for the per-zoom colour gain (gradeImageryNode). From the tile's own URL
+    // (…/{z}/{x}/{y}.jpg): the plugin keeps level/x/y under module-private Symbols.
+    const zoom = zoomOfTileUrl(tile?.content?.uri)
     s.traverse((o: any) => {
       if (o.geometry) releaseVertexArraysOnDispose(renderer, o.geometry)
       const map = o.material?.map
@@ -218,6 +229,7 @@ export function createGlobe(opts: {
       map.flipY = false
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
+      mat.userData.basemapZoom = zoom
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters
       // with them, but never follows the point-cloud precision toggle — mediump
       // tears visible gaps between the map tiles. See applyHighPrecisionAlways.
@@ -553,7 +565,12 @@ export function createGlobe(opts: {
     },
     setResolution,
     refreshEffects() {
-      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+      // Every loaded tile, not only the visible ones in tiles.group: a hidden tile held in
+      // the cache would otherwise come back with the graph from before the switch. The same
+      // fix streaming.ts made for the point tiles.
+      tiles.forEachLoadedModel((model: any) => {
+        model.traverse((object: any) => rebuildEffectMaterial(object.material))
+      })
     },
     setImageryEnabled(enabled) {
       if (enabled === imageryEnabled) return
