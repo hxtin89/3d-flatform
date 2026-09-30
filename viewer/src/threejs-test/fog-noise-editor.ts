@@ -1,11 +1,12 @@
 // Noise editor for the volumetric ground fog: inspect the baked tiles, change every layer's
-// settings and see the result in the fog as it rebakes.
+// settings and see the result in the fog as it rebakes (the B layer only with the '2d' noise
+// source; the default 3D texture has fixed settings).
 //
 // Built the first time its panel section is opened, so a closed editor costs nothing. The
 // previews read three different things, each from where it is exact:
 //   · the four 2D layers and their RGBA composite, drawn from the baked texels themselves,
 //     each repeated 2×2 so a seam would show as a cross through the middle;
-//   · the 3D comparison texture, as a strip of z slices plus the three orthogonal cuts
+//   · the 3D height-detail texture, as a strip of z slices plus the three orthogonal cuts
 //     through a movable point;
 //   · the fog density the march actually sees — a top view at a chosen height, a side view
 //     through the band and the column density seen from above — rendered on the GPU by the
@@ -39,7 +40,7 @@ export interface FogNoiseEditorOptions {
 const CHANNEL_ROLES = [
   ['R', 'Coverage', 'Where the mist pools — the broad banks'],
   ['G', 'Billows', 'Rounded clumps between the crowns'],
-  ['B', 'Wisps', 'Height detail: read as stacked slices, it carves the mist into puffs and frays the plumes'],
+  ['B', 'Wisps', 'Height detail with the 2D noise source: read as stacked slices, it carves the mist into puffs and frays the plumes. Unused with the 3D texture'],
   ['A', 'Erosion', 'Holes carved into the billows'],
 ] as const
 
@@ -159,17 +160,17 @@ export function mountFogNoiseEditor(options: FogNoiseEditorOptions): FogNoiseEdi
     densityNote,
   )
 
-  // ---- 3D comparison slices
+  // ---- 3D texture slices
   const strip = el('canvas', { width: 8 * 64, height: 64, className: 'fog-noise-strip' })
   const ortho = el('canvas', { width: 3 * 96, height: 96, className: 'fog-noise-strip' })
   const zInput = el('input', { type: 'range', min: '0', max: '1', step: '0.01', value: '0.5' })
   const zVal = el('span', { className: 'val' })
-  const bake3dButton = el('button', { className: 'act', type: 'button', textContent: '▦ Bake 3D baseline (64³)' })
+  const bake3dButton = el('button', { className: 'act', type: 'button', textContent: '▦ Bake 3D texture (64³)' })
   let volume: Uint8Array | null = null
   const volumeSize = 64
   container.append(
-    el('div', { className: 'h fog-noise-heading', textContent: '3D baseline' }),
-    note('The 3D-texture variant the panel can switch to for the cost comparison: eight z slices, then the XY, XZ and YZ cuts through the marker'),
+    el('div', { className: 'h fog-noise-heading', textContent: '3D height detail' }),
+    note('The 3D texture the default noise source reads for the height detail (fixed settings): eight z slices, then the XY, XZ and YZ cuts through the marker'),
     el('div', { className: 'row' }, bake3dButton, el('label', { className: 'h' }, 'Cut position · ', zVal), zInput),
     strip, ortho,
   )
@@ -333,7 +334,7 @@ export function mountFogNoiseEditor(options: FogNoiseEditorOptions): FogNoiseEdi
   bake3dButton.addEventListener('click', async () => {
     bake3dButton.textContent = '▦ Baking…'
     volume = await options.bake3d(volumeSize) ?? volume
-    bake3dButton.textContent = '▦ Rebake 3D baseline (64³)'
+    bake3dButton.textContent = '▦ Rebake 3D texture (64³)'
     drawVolume()
   })
 

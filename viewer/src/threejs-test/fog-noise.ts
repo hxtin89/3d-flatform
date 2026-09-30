@@ -1,13 +1,13 @@
 // Tileable noise for the volumetric ground fog, baked on the CPU (in a worker, see
-// fog-noise.worker.ts) and uploaded as one texture.
+// fog-noise.worker.ts) and uploaded as textures.
 //
 // The fog is marched per pixel, so its density function runs dozens of times per pixel and
 // must be cheap. A texture fetch is: one filtered read replaces a whole fBm evaluation. The
 // fog therefore samples a 2D texture that holds four independent noise layers, one per
-// channel, and builds its 3D look by layering 2D reads — coverage, billows and erosion on
-// the ground plane, height detail as stacked, offset slices of the wisp layer blended by
-// height (see ground-fog.ts). A 3D texture of the same kind of noise can be baked too, but
-// only as the comparison baseline the panel can switch to.
+// channel: coverage, billows and erosion are read on the ground plane. The height detail
+// comes from a 64³ 3D texture of the same kind of noise by default (bakeFogNoise3D), or,
+// with the '2d' noise source, from stacked, offset slices of the wisp layer blended by
+// height (see ground-fog.ts).
 //
 // Every layer tiles: each lattice wraps with the texture, and domain warping only adds a
 // periodic offset, so RepeatWrapping shows no seam. Pure functions only — no DOM, no GPU —
@@ -171,8 +171,9 @@ export function bakeFogNoise(settings: FogNoiseSettings): Uint8Array {
   return data
 }
 
-/** The 3D counterpart for the cost comparison: value-noise fBm that tiles in all three axes,
- *  one channel, `size`³ bytes. Not the shipped path — see the module comment. */
+/** The 3D height-detail texture the default noise source reads: value-noise fBm that tiles
+ *  in all three axes, one channel, `size`³ bytes. Its settings are fixed; the noise editor
+ *  only previews it. */
 export function bakeFogNoise3D(size: number, period = 4, octaves = 4, seed = 3): Uint8Array {
   const smooth = (t: number) => t * t * (3 - 2 * t)
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t

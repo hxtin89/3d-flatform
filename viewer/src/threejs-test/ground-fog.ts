@@ -9,28 +9,34 @@
 //
 // What it marches. Only the band's bounding box: a flat slab from `bottomM` above the area
 // floor up to the plume tops or the veil, whichever is higher, over the survey's bounding
-// box plus `marginM`. Each ray is clipped to the box, to the scene depth and to
+// box plus `marginM`. Each ray is clipped to the box, to its surface (the fog depth pass
+// below: the nearest surface in the texel's footprint) and to
 // `maxDistanceM` before a single sample is taken, so rays that miss the band cost one box
-// test. A ray that lands on the bare map ends at the ground inside the sphere-fade dome (a
-// real gap) and at the virtual canopy outside it. Inside the box the ray is split where it
+// test. A ray that lands on the bare map ends at `groundLevelM` inside the sphere-fade dome (a
+// real gap), or at the band's bottom where that is higher, and at the virtual canopy outside
+// it. Inside the box the ray is split where it
 // crosses the top of the dense layer: a quarter of the `steps` go to the sparse plumes above,
 // three quarters to the mist and puffs below, crowded toward the camera by a power law.
-// Per-pixel white-noise jitter turns what banding is left into fine grain.
+// A per-pixel jitter turns what banding is left into grain: interleaved gradient noise moved
+// every frame, for the temporal filter to average away, or fixed white noise without it.
 //
-// Density. Layered reads of one tileable 2D RGBA texture (fog-noise.ts, baked in a worker,
-// editable in the noise editor): coverage (R) decides where mist pools; billows (G) carved
-// by erosion (A) raise and lower the band's local top and seed the flat puffs on the crowns.
-// Height detail comes from the wisp layer (B) as value noise along z built from 2D slices —
-// two offset reads blended by height, plus one sheared finer octave — and carves the
-// envelope the way cloud renderers erode a noise volume. Plumes are hashed columns on a grid.
-// A thin veil lying on the virtual canopy carries the far field, where the points thin out.
-// Six filtered reads per sample, mipmapped by the pixel's footprint so far fog does not
-// shimmer. `noiseSource` swaps the height detail for a 3D texture, or every layer for noise
-// evaluated in the shader, for the cost comparison: measured 2026-09-30, the 3D texture
-// (64³) costs the same as the 2D slices and the shader noise five times the whole fog.
+// Density. Coverage (R), billows (G) and erosion (A) come from one tileable 2D RGBA texture
+// (fog-noise.ts, baked in a worker, editable in the noise editor): coverage decides where
+// mist pools; billows carved by erosion raise and lower the band's local top and seed the
+// flat puffs on the crowns. The height detail carves that envelope the way cloud renderers
+// erode a noise volume. `noiseSource` picks where it comes from: '3d' (the default) reads a
+// fixed 64³ value-noise texture, two trilinear reads, no mips; '2d' builds it from the
+// wisp layer (B) as value noise along z from 2D slices — two offset reads blended by
+// height plus one sheared finer octave — which the noise editor can change; 'procedural'
+// evaluates every layer in the shader. Plumes are hashed columns on a grid. A veil lying on
+// the virtual canopy carries the mist outside the sphere-fade dome. The 2D reads are
+// mipmapped by the pixel's footprint so far fog does not shimmer. Measured 2026-09-30 with
+// the defaults of 517dc5a: the 3D texture costs the same as the 2D slices, the shader
+// noise five times the whole fog.
 //
 // Light. Physically based within a thin-band approximation:
-//   · extinction from visibility (Koschmieder), single-scattering albedo ~0.995 (water);
+//   · extinction from visibility (Koschmieder); a single-scattering albedo scales the
+//     droplets' light (water is ~0.995; the look default is lower and greys the mist);
 //   · Mie phase for water droplets — Jendersie & d'Eon's HG + Draine fit (fog-optics.ts) —
 //     so looking toward a low sun lights the mist up in a tight forward glow;
 //   · Wrenninge's multiple-scattering octaves: each extra order sees the sun through less
@@ -49,10 +55,16 @@
 // by how close their depth is to its own, so mist does not bleed over crown silhouettes.
 // The result is premultiplied — colour × transmittance + in-scattered light — and the
 // in-scatter is hazed at the fog's transmittance-weighted depth like the volumetric clouds.
+//
+// Temporal filter (`temporal`, on by default). Between the march and the upsample,
+// fog-temporal.ts blends each frame into the previous result, reprojected with the camera,
+// and the march's jitter changes every frame (interleaved gradient noise, stepped by
+// 5.588238 px a frame) so the blend averages the sampling error away instead of leaving it
+// to boil under a moving camera.
 import * as THREE from 'three'
 import { NodeMaterial, QuadMesh, RenderTarget } from 'three/webgpu'
 import {
-  Break, Fn, If, Loop, abs, clamp, dot, exp, float, floor, fract, sin, step, getViewPosition, int,
+  Break, Fn, If, Loop, abs, clamp, dot, exp, float, floor, fract, sin, step, getViewPosition, int, interleavedGradientNoise, ivec2, select,
   length, log2, max, min, mix, mx_fractal_noise_float, mx_noise_float, normalize, perspectiveDepthToViewZ, pow,
   rtt, screenCoordinate, smoothstep, sqrt, texture, texture3D, textureSize, uniform, uv, vec2, vec3, vec4,
 } from 'three/tsl'
@@ -63,12 +75,18 @@ import type { FogNoiseSettings } from './fog-noise'
 import type { FogNoiseBaker } from './fog-noise-baker'
 import { extinctionForVisibility, miePhaseParameters, multipleScatteringOctaves, RAYLEIGH_SEA_LEVEL_PER_M } from './fog-optics'
 import type { DensitySliceRequest } from './fog-noise-editor'
+import { FogTemporalNode } from './fog-temporal'
 
 const CONFIG = EXPERIENCE_CONFIG.volumetricFog
 export type FogNoiseSource = '2d' | '3d' | 'procedural'
 /** Wind offsets wrap at this many tiles: whole for the plain reads (period 1) and for the
  *  finer wisp octave read at 2.3× (23 tiles). */
 const DRIFT_PERIOD = 10
+/** Linear depth in the fog depth pass, stored in units of this many metres so the far plane
+ *  (650 km) fits a half float: ~0.25 m resolution at 400 m. */
+const DEPTH_UNIT_M = 16
+/** Stored where nothing was drawn (the sky): beyond the far plane. */
+const SKY_DEPTH = 65_000
 /** The rise wraps at this many wisp heights: the slice hash repeats over it, and so do the
  *  sheared finer octave (10, −8 tiles) and the 3D texture's z reads (4 and 9 tiles). The
  *  'procedural' comparison path is not periodic and jumps on a wrap. */
@@ -81,6 +99,11 @@ export interface GroundFogBuildOptions {
   multipleScattering: number
   wisps: boolean
   depthAwareUpsample: boolean
+  /** Average the march over frames (fog-temporal.ts); off leaves each frame's grain as is. */
+  temporal: boolean
+  /** March each texel to the nearest surface among the full-resolution pixels it covers, so
+   *  the sub-pixel holes between point splats do not let rays through a crown into the mist. */
+  fillCanopyHoles: boolean
   /** off: the composite. light: the fog's in-scattered light alone. transmittance: how
    *  much of the scene gets through, white = all. For tuning. */
   debugView: 'off' | 'light' | 'transmittance'
@@ -121,6 +144,11 @@ export interface GroundFogLayer {
 export interface GroundFogParams {
   steps: number
   stepDistribution: number
+  /** Temporal filter: the current frame's weight, and the history clip in standard deviations. */
+  temporalBlend: number
+  temporalClip: number
+  /** Temporal filter: relative depth change that counts as a different surface a frame ago. */
+  temporalOcclusion: number
   maxDistanceM: number
   bottomM: number
   topM: number
@@ -184,6 +212,8 @@ export function createGroundFogLayer(opts: {
     multipleScattering: CONFIG.multipleScattering,
     wisps: CONFIG.wisps,
     depthAwareUpsample: CONFIG.depthAwareUpsample,
+    temporal: CONFIG.temporal,
+    fillCanopyHoles: CONFIG.fillCanopyHoles,
     debugView: 'off',
   }
   let resolutionScale: number = CONFIG.resolutionScale
@@ -191,6 +221,9 @@ export function createGroundFogLayer(opts: {
   const params: GroundFogParams = {
     steps: CONFIG.steps,
     stepDistribution: CONFIG.stepDistribution,
+    temporalBlend: CONFIG.temporalBlend,
+    temporalClip: CONFIG.temporalClip,
+    temporalOcclusion: CONFIG.temporalOcclusion,
     maxDistanceM: CONFIG.maxDistanceM,
     bottomM: CONFIG.bottomM,
     topM: CONFIG.topM,
@@ -252,6 +285,13 @@ export function createGroundFogLayer(opts: {
   const u: Record<string, any> = {
     steps: uniform(params.steps, 'int'),
     stepDistribution: uniform(params.stepDistribution),
+    temporalBlend: uniform(params.temporalBlend),
+    temporalClip: uniform(params.temporalClip),
+    temporalOcclusion: uniform(params.temporalOcclusion),
+    /** This frame's jitter offset, in pixels: 5.588238 per frame over a 64-frame cycle. */
+    jitterOffset: uniform(0),
+    /** The march target's size in texels, for the fog-depth pass's footprints. */
+    marchSize: uniform(new THREE.Vector2(1, 1)),
     maxDistance: uniform(params.maxDistanceM),
     bottom: uniform(params.bottomM), top: uniform(params.topM), plumeHeight: uniform(params.plumeHeightM),
     bottomSoft: uniform(params.bottomSoftM), topSoft: uniform(params.topSoftM), margin: uniform(params.marginM),
@@ -338,7 +378,8 @@ export function createGroundFogLayer(opts: {
   }
   void setNoise(noiseSettings)
 
-  // The 3D comparison texture exists only once someone asks for it.
+  // The 3D height-detail texture: baked at boot when the config starts on '3d' (the
+  // default), otherwise the first time the panel switches to it.
   let noise3dTexture: THREE.Data3DTexture | null = null
   // A real, uploaded 1³ volume until the bake lands. Left un-uploaded, WebGPU binds its
   // default texture, which is 2D, to the 3D slot, and the march's pass fails validation.
@@ -436,8 +477,8 @@ export function createGroundFogLayer(opts: {
         wispA = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(8), vz.mul(8))).mul(0.5).add(0.5)
         wispB = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(19), vz.mul(19).add(3.1))).mul(0.5).add(0.5)
       } else if (options.noiseSource === '3d') {
-        // The comparison baseline: the same two octaves from a tileable 3D texture, one
-        // trilinear read each, where the 2D path spends three filtered reads.
+        // The default path: the same two octaves from a tileable 3D texture, one trilinear
+        // read each (no mips), where the 2D path spends three filtered reads.
         wispA = noise3dNode.sample(vec3(q, vz.mul(0.25))).r
         wispB = noise3dNode.sample(vec3(q.mul(2.3), vz.mul(0.5625).add(0.37))).r
       } else {
@@ -479,7 +520,7 @@ export function createGroundFogLayer(opts: {
         .mul(mix(float(1), detail.mul(1.6), 0.5))
       plumes = plume.mul(u.plumeAmount).mul(coverage.mul(0.6).add(0.4))
     }
-    // The veil: a thin sheet lying on the crown tops, what distant mist reads as — banks a
+    // The veil: a sheet lying on the virtual canopy, what distant mist reads as — banks a
     // few hundred metres across (coverage and billows together) over a faint floor.
     const banks = smoothstep(0.35, 0.8, coverageRaw.mul(0.5).add(billow.mul(0.5)))
     const veil = smoothstep(u.virtualCanopy.sub(6), u.virtualCanopy, hRel)
@@ -513,24 +554,79 @@ export function createGroundFogLayer(opts: {
   // panel lets it reach 0, and smoothstep with equal edges is undefined.
   const domeFade = (distance: any) => float(1).sub(smoothstep(
     shared.sphereFadeRadius.sub(max(shared.sphereFadeRampInset, 0.5)), shared.sphereFadeRadius, distance))
-  const marchNode = (depth: any, options: GroundFogBuildOptions) => Fn(() => {
-    const st = uv()
+  // ---------------------------------------------------------------- the depth the fog marches to
+  // One pass at the march's resolution, read by the march, the temporal filter and the
+  // upsample alike, so all three agree on where each texel's ray ends. With
+  // `fillCanopyHoles` it holds the nearest surface among the full-resolution pixels the
+  // texel covers (2 × 2 at half resolution): the point splats leave sub-pixel holes in a
+  // crown, and a ray through one marches past the crown into the dense mist below — a bright
+  // speck that jumps with every camera move. Where a pixel of its own does see through (a
+  // real gap, or mist behind sparse foliage), the depth-aware upsample still finds the
+  // neighbouring texels that reach as deep. Without it: the texel's centre pixel. A ring
+  // one pixel wider around the footprint was measured too (2026-09-30): it closes more of a
+  // dense crown but turns sparse foliage over mist into dark 4 × 4 blocks — while tiles
+  // stream in, and where the cloud is thinned — so it was left out. At full resolution the
+  // footprint is the pixel itself and only the temporal filter helps.
+  const fogDepthNode = (depth: any, options: GroundFogBuildOptions) => Fn(() => {
     const fullSize = vec2(sizeOf(depth))
-    // The full-resolution pixel this march texel stands for, read at its exact centre.
-    const fullUv = floor(st.mul(fullSize)).add(0.5).div(fullSize)
-    const sceneDepth = depth.sample(fullUv).x
-    const viewPosition = getViewPosition(fullUv, sceneDepth, projectionInverse)
+    const texel: any = floor(uv().mul(u.marchSize))
+    const toStored = (z: any) => select(z.greaterThanEqual(0.9999999), float(SKY_DEPTH),
+      perspectiveDepthToViewZ(z, near, far).negate().div(DEPTH_UNIT_M))
+    if (!options.fillCanopyHoles) {
+      // The pixel under the texel's centre, where the march casts its ray.
+      const centre: any = floor(uv().mul(fullSize))
+      return vec4(toStored(depth.load(ivec2(centre)).x), 0, 0, 1)
+    }
+    const first: any = floor(texel.mul(fullSize).div(u.marchSize))
+    const last: any = min(max(floor(texel.add(1).mul(fullSize).div(u.marchSize)).sub(1), first), fullSize.sub(1))
+    const nearest = float(SKY_DEPTH).toVar()
+    Loop(
+      { start: int(first.y), end: int(last.y), type: 'int', condition: '<=' },
+      { start: int(first.x), end: int(last.x), type: 'int', condition: '<=' },
+      ({ i, j }: { i: any; j: any }) => {
+        nearest.assign(min(nearest, toStored(depth.load(ivec2(j, i)).x)))
+      },
+    )
+    return vec4(nearest, 0, 0, 1)
+  })()
+
+  // Where along a ray the fog's light mostly comes from, for the temporal filter's
+  // reprojection (render space in, metres out): in the dense layer — mist and puffs, where
+  // nearly all of it is — one mean free path past where the ray enters it (half the segment
+  // if that is shorter), and never past the ray's end. Rays that miss the layer use their
+  // end. It is the transmittance-weighted distance of a uniform layer, close enough for a
+  // point to reproject; the surface itself would misplace plumes, the veil and grazing views.
+  const fogDistanceOf = (originRender: any, directionRender: any, surfaceDistance: any) => {
+    const o: any = shared.enuInverse.mul(vec4(originRender, 1)).xyz
+    const d: any = normalize(shared.enuInverse.mul(vec4(directionRender, 0)).xyz)
+    const end = min(surfaceDistance, u.maxDistance)
+    const toLow = floorZ.add(u.bottom).sub(o.z).div(d.z.add(1e-7))
+    const toHigh = floorZ.add(max(u.top, u.puffCentre.add(u.puffHeight))).sub(o.z).div(d.z.add(1e-7))
+    const enter = max(min(toLow, toHigh), 0)
+    const exit = min(max(toLow, toHigh), end)
+    const estimate = enter.add(min(exit.sub(enter).mul(0.5), float(1).div(max(u.sigmaMax, 1e-5))))
+    return select(exit.greaterThan(enter), estimate, end)
+  }
+
+  const marchNode = (depth: any, fogDepth: any, options: GroundFogBuildOptions) => Fn(() => {
+    const st = uv()
+    // The ray goes through the texel's own centre — where the temporal filter and the
+    // upsample take the texel to be — and ends at the fog depth pass's surface for it.
+    const storedDepth = fogDepth.load(ivec2(floor(st.mul(vec2(sizeOf(fogDepth)))))).x
+    const sky = storedDepth.greaterThanEqual(SKY_DEPTH * 0.99)
+    const viewDirection = normalize(getViewPosition(st, float(0.5), projectionInverse))
+    const viewPosition = viewDirection.mul(storedDepth.mul(DEPTH_UNIT_M).div(max(viewDirection.z.negate(), 1e-4)))
     const origin = cameraWorld.mul(vec4(0, 0, 0, 1)).xyz
     const surface = cameraWorld.mul(vec4(viewPosition, 1)).xyz
     const rayWorld = normalize(surface.sub(origin))
-    const surfaceDistance = mix(length(surface.sub(origin)), float(1e9), sceneDepth.greaterThanEqual(0.9999999).select(1, 0))
+    const surfaceDistance = sky.select(float(1e9), length(viewPosition))
     const o: any = shared.enuInverse.mul(vec4(origin, 1)).xyz
     const d: any = normalize(shared.enuInverse.mul(vec4(rayWorld, 0)).xyz)
     // Ray against the band's box.
     const boxMin = vec3(boundsMin.sub(u.margin), floorZ.add(u.bottom))
-    // Plumes rise from the puff layer, so their tops stand `plumeHeightM` above whichever of
-    // the band top and the puff centre is higher.
-    const boxMax = vec3(boundsMax.add(u.margin), floorZ.add(max(max(u.top, u.puffCentre).add(u.plumeHeight), u.virtualCanopy.add(u.veilHeight))))
+    // The highest of the three: the band's top, the plume tops (plumes rise `plumeHeightM`
+    // from the puff layer, whatever the band's top is) and the veil's top.
+    const boxMax = vec3(boundsMax.add(u.margin), floorZ.add(max(max(u.top, u.puffCentre.add(u.plumeHeight)), u.virtualCanopy.add(u.veilHeight))))
     // A hair of bias keeps an axis-parallel ray off a division by zero.
     const inv = vec3(1).div(d.add(vec3(1e-7)))
     const t0 = boxMin.sub(o).mul(inv)
@@ -538,14 +634,17 @@ export function createGroundFogLayer(opts: {
     const tNear = min(t0, t1)
     const tFar = max(t0, t1)
     const tEnter = max(max(max(tNear.x, tNear.y), tNear.z), 0)
-    // A ray that lands on the bare map, below real ground, went through the point cloud
-    // without meeting a crown. Inside the sphere-fade dome, where the points are drawn, that
-    // is a real gap: the mist there reaches down to the ground, so the march ends at ground
-    // height. Outside the dome, or beyond the points' reach, the map stands in for the crown
+    // A ray whose surface lies below `mapBelowM` has landed on the bare map: it went through
+    // the point cloud without meeting a crown (with a positive `mapBelowM`, low point-cloud
+    // ground counts too). Inside the sphere-fade dome, where the points are drawn, that is a
+    // real gap: the mist there reaches down to `groundLevelM`, or to the band's bottom when
+    // that is higher. Outside the dome, or beyond the points' reach, the map stands in for the crown
     // tops, and the march ends where the ray sinks through the virtual canopy.
     // Sky seen below the horizon counts as map: it is a basemap tile that has not loaded (or
-    // failed), and marched to the box's far side it would fill with a full band of fog. Its
-    // far-plane point lies far under the floor, so the height test catches it.
+    // failed), and marched to the box's far side it would fill with a full band of fog. The
+    // fog depth pass stores it at the sky marker (SKY_DEPTH × DEPTH_UNIT_M, ~1,040 km along
+    // the view axis); below the horizon that point lies far under the floor, so the height
+    // test catches it.
     const surfaceEnu = shared.enuInverse.mul(vec4(surface, 1)).xyz
     const surfaceHeight = surfaceEnu.z.sub(floorZ)
     const onMap = surfaceHeight.lessThan(u.mapBelow).and(d.z.lessThan(-1e-4))
@@ -560,9 +659,12 @@ export function createGroundFogLayer(opts: {
     const transmittance = float(1).toVar()
     const weightedDistance = float(0).toVar()
     If(tExit.greaterThan(tEnter), () => {
-      // White-noise jitter rather than interleaved gradient noise: IGN is made for a temporal
-      // filter to average out, and without one its diagonal structure reads as hatching.
-      const jitter = fract(sin(dot(screenCoordinate.xy, vec2(12.9898, 78.233))).mul(43758.5453))
+      // With the temporal filter: interleaved gradient noise, moved on every frame, which is
+      // what a temporal filter averages best (Jimenez 2014). Without it: fixed white noise —
+      // IGN left unaveraged reads as diagonal hatching.
+      const jitter = options.temporal
+        ? interleavedGradientNoise(screenCoordinate.xy.add(u.jitterOffset))
+        : fract(sin(dot(screenCoordinate.xy, vec2(12.9898, 78.233))).mul(43758.5453))
       const stepsF = float(u.steps)
       // Two segments, split where the ray crosses the top of the dense layer (mist and
       // puffs): above it only sparse plumes stand, so a descending ray gets a quarter of its
@@ -661,7 +763,14 @@ export function createGroundFogLayer(opts: {
 
   // ---------------------------------------------------------------- composite
   let marchTexture: any = null
+  let fogDepthTexture: any = null
+  let temporalNode: FogTemporalNode | null = null
   const release = () => {
+    temporalNode?.dispose()
+    temporalNode = null
+    fogDepthTexture?.renderTarget.dispose()
+    fogDepthTexture?._quadMesh?.material?.dispose()
+    fogDepthTexture = null
     if (!marchTexture) return
     marchTexture.renderTarget.dispose()
     marchTexture._quadMesh?.material?.dispose()
@@ -670,10 +779,23 @@ export function createGroundFogLayer(opts: {
   const buildComposite = (color: any, depth: any) => {
     release()
     const options = { ...build }
-    marchTexture = rtt(marchNode(depth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+    fogDepthTexture = rtt(fogDepthNode(depth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+    fogDepthTexture.setResolutionScale(resolutionScale)
+    fogDepthTexture.updateBeforeType = 'frame'
+    const fogDepth = fogDepthTexture
+    marchTexture = rtt(marchNode(depth, fogDepth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
     marchTexture.setResolutionScale(resolutionScale)
     marchTexture.updateBeforeType = 'frame'
-    const march = marchTexture
+    // The composite reads the filtered fog when the temporal filter is on: the same texels,
+    // at the march's resolution, so the depth-aware upsample below is unchanged.
+    if (options.temporal) {
+      temporalNode = new FogTemporalNode({
+        march: marchTexture, fogDepth, depthUnitM: DEPTH_UNIT_M, skyDepth: SKY_DEPTH, distanceOf: fogDistanceOf,
+        camera, resolutionScale: () => resolutionScale,
+        blend: u.temporalBlend, clip: u.temporalClip, occlusion: u.temporalOcclusion,
+      })
+    }
+    const march = temporalNode ? temporalNode.getTextureNode() : marchTexture
     return Fn(() => {
       const st = uv()
       const scene = color
@@ -683,10 +805,11 @@ export function createGroundFogLayer(opts: {
       if (!options.depthAwareUpsample) {
         fog = march.sample(st)
       } else {
-        const fullSize = vec2(sizeOf(depth))
         const lowSize = vec2(sizeOf(march))
-        const linear = (z: any) => perspectiveDepthToViewZ(z, near, far).negate()
-        const here = linear(depth.sample(st).x)
+        // Both in the fog depth pass's units: this pixel's own surface, and each texel's.
+        const hereRaw = depth.sample(st).x
+        const here = select(hereRaw.greaterThanEqual(0.9999999), float(SKY_DEPTH),
+          perspectiveDepthToViewZ(hereRaw, near, far).negate().div(DEPTH_UNIT_M))
         const position = st.mul(lowSize).sub(0.5)
         const base = floor(position)
         const f = position.sub(base)
@@ -695,10 +818,12 @@ export function createGroundFogLayer(opts: {
         for (const [ox, oy] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
           const texel = clamp(base.add(vec2(ox, oy)), vec2(0), lowSize.sub(1))
           const lowUv = texel.add(0.5).div(lowSize)
-          // The depth the march used for that texel: its full-resolution pixel's centre.
-          const tapDepth = linear(depth.sample(floor(lowUv.mul(fullSize)).add(0.5).div(fullSize)).x)
+          // The depth the march used for that texel, read exactly.
+          const tapDepth = fogDepth.load(ivec2(texel)).x
           const bilinear = (ox === 1 ? f.x : f.x.oneMinus()).mul(oy === 1 ? f.y : f.y.oneMinus())
-          const w = bilinear.mul(float(1).div(abs(here.sub(tapDepth)).div(here).mul(40).add(0.02)))
+          // The floor sits above the half-float rounding of the stored depths (~5e-4 × 40), so
+          // that rounding alone cannot reweigh taps on the pixel's own surface.
+          const w = bilinear.mul(float(1).div(abs(here.sub(tapDepth)).div(here).mul(40).add(0.05)))
           sum.addAssign(march.sample(lowUv).mul(w))
           weight.addAssign(w)
         }
@@ -754,8 +879,9 @@ export function createGroundFogLayer(opts: {
     return node
   }
   /** The band's top above the floor, as the march's box has it (the veil aside). */
-  const bandTopM = () => Math.max(params.topM, params.puffCentreM) + params.plumeHeightM
+  const bandTopM = () => Math.max(params.topM, params.puffCentreM + params.plumeHeightM)
   let lastCameraEnu = new THREE.Vector2()
+  let jitterFrame = 0
   const renderDensitySlice = async (request: DensitySliceRequest) => {
     if (!enabled) return null
     const sizeKey = `${request.width}x${request.height}`
@@ -804,6 +930,9 @@ export function createGroundFogLayer(opts: {
   const syncUniforms = () => {
     u.steps.value = Math.max(1, Math.round(params.steps))
     u.stepDistribution.value = params.stepDistribution
+    u.temporalBlend.value = THREE.MathUtils.clamp(params.temporalBlend, 0.02, 1)
+    u.temporalClip.value = THREE.MathUtils.clamp(params.temporalClip, 0.25, 8)
+    u.temporalOcclusion.value = Math.max(params.temporalOcclusion, 0.001)
     u.maxDistance.value = params.maxDistanceM
     u.bottom.value = params.bottomM; u.top.value = Math.max(params.topM, params.bottomM + 1)
     u.plumeHeight.value = params.plumeHeightM
@@ -851,12 +980,15 @@ export function createGroundFogLayer(opts: {
       matrix.copy(shared.enuInverse.value)
       cameraEnu.setFromMatrixPosition(cam.matrixWorld).applyMatrix4(matrix)
       lastCameraEnu.set(cameraEnu.x, cameraEnu.y)
+      u.marchSize.value.set(Math.max(1, Math.floor(size.x * resolutionScale)), Math.max(1, Math.floor(size.y * resolutionScale)))
       const dt = Math.min(Math.max(deltaS, 0), 0.25)
       advance(u.offCoverage.value, u.coverageScaleInv.value, dt)
       advance(u.offBillow.value, u.billowScaleInv.value, dt)
       advance(u.offErosion.value, u.erosionScaleInv.value, dt)
       advance(u.offWisp.value, u.wispScaleInv.value, dt)
       u.rise.value = wrap(u.rise.value + params.riseMps * dt * u.wispHeightInv.value, RISE_PERIOD)
+      jitterFrame = (jitterFrame + 1) % 64
+      u.jitterOffset.value = jitterFrame * 5.588238
       if (daylight) {
         sun.copy(daylight.lightColor).multiplyScalar(daylight.intensity * params.sunStrength)
         // Skylight: the daylight tinted by the sky colour by `skyTint` — the humid air over a
@@ -885,6 +1017,7 @@ export function createGroundFogLayer(opts: {
     setResolutionScale(scale) {
       resolutionScale = THREE.MathUtils.clamp(scale, 0.125, 1)
       marchTexture?.setResolutionScale(resolutionScale)
+      fogDepthTexture?.setResolutionScale(resolutionScale)
     },
     getResolutionScale: () => resolutionScale,
     applyPreset(preset) {

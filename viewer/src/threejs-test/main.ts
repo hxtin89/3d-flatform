@@ -2500,7 +2500,7 @@ function updateMaskFollow(): void {
   // shrinks the "portal" below arm's reach, and cap the strength below the
   // shader's 0.95 discard threshold — points are dimmed/tinted toward the
   // surround at most, never discarded. Distant points still disappear, but
-  // through groundFog rather than a hard mask edge.
+  // through the distance haze (and groundFog when it is on) rather than a hard mask edge.
   const radius = Math.max(
     THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000),
     vignetteSideMinRadiusM * sideFactor,
@@ -3794,6 +3794,9 @@ const FOG_SLIDERS: { heading: string; rows: FogSlider[] }[] = [
     { key: 'steps', label: 'Steps per ray', min: 4, max: 96, step: 1, format: (v) => String(v), note: 'The main cost knob with the resolution' },
     { key: 'stepDistribution', label: 'Step crowding', min: 1, max: 3, step: 0.05, format: (v) => v.toFixed(2), note: '1 spaces samples evenly; higher crowds them near the camera' },
     { key: 'maxDistanceM', label: 'Max distance', min: 500, max: 20000, step: 250, format: asKm },
+    { key: 'temporalBlend', label: 'Temporal blend', min: 0.02, max: 1, step: 0.01, format: asPercent, note: 'Share of each new frame when the temporal filter is on: lower is smoother, 100 % is no averaging' },
+    { key: 'temporalClip', label: 'Temporal clip', min: 0.25, max: 4, step: 0.05, format: (v) => v.toFixed(2), note: 'How far the carried-over fog may differ from the current frame, in standard deviations: wider is smoother, narrower trails less' },
+    { key: 'temporalOcclusion', label: 'Temporal occlusion', min: 0.02, max: 10, step: 0.01, format: asPercent, note: 'How far the surface behind a pixel may change in depth before its history is left out: smaller keeps outlines sharp in motion, large is steadier but smears' },
   ] },
   { heading: 'Band', rows: [
     { key: 'bottomM', label: 'Bottom', min: -40, max: 60, step: 1, format: asMetres, note: 'Above the area floor; the survey-centre ground is ~22 m up, the crown tops ~50 m' },
@@ -3803,10 +3806,10 @@ const FOG_SLIDERS: { heading: string; rows: FogSlider[] }[] = [
     { key: 'topSoftM', label: 'Top softness', min: 0.5, max: 60, step: 0.5, format: asMetres },
     { key: 'marginM', label: 'Margin past the survey', min: 0, max: 3000, step: 50, format: asMetres, note: 'The band covers the survey box plus this, fading out over it' },
     { key: 'virtualCanopyM', label: 'Virtual canopy', min: 0, max: 120, step: 1, format: asMetres, note: 'Beyond the drawn points the map stands for the crown tops at this height; mist below it is hidden there' },
-    { key: 'mapBelowM', label: 'Bare map below', min: -60, max: 20, step: 1, format: asMetres, note: 'A ray landing this far under the floor has hit the map, not the points' },
-    { key: 'groundLevelM', label: 'Forest floor', min: -20, max: 60, step: 1, format: asMetres, note: 'Where mist in a real gap ends: a map hit inside the sphere-fade dome' },
-    { key: 'pointsReachM', label: 'Points reach', min: 200, max: 8000, step: 50, format: asMetres, note: 'Beyond it, map hits stop at the virtual canopy even inside the dome' },
-    { key: 'veilVisibilityM', label: 'Veil visibility', min: 0, max: 20000, step: 100, format: asMetres, note: 'The thin sheet on the crown tops that far mist reads as; 0 = off' },
+    { key: 'mapBelowM', label: 'Bare map below', min: -60, max: 20, step: 1, format: asMetres, note: 'A ray whose surface lies below this height (negative = under the floor) has hit the map, not the points; the drape is 20 m under the floor' },
+    { key: 'groundLevelM', label: 'Forest floor', min: -20, max: 60, step: 1, format: asMetres, note: 'Where mist in a real gap ends (a map hit inside the sphere-fade dome); below Bottom, the band’s own bottom ends it' },
+    { key: 'pointsReachM', label: 'Points reach', min: 200, max: 8000, step: 50, format: asMetres, note: 'Beyond it, map hits stop at the virtual canopy even inside the dome, and the mist gives way to the veil; no effect past the max distance' },
+    { key: 'veilVisibilityM', label: 'Veil visibility', min: 0, max: 20000, step: 100, format: asMetres, note: 'The sheet of mist on the virtual canopy that far mist reads as; 0 = off' },
     { key: 'veilHeightM', label: 'Veil thickness', min: 1, max: 80, step: 1, format: asMetres },
   ] },
   { heading: 'Shape', rows: [
@@ -3884,7 +3887,7 @@ const setFogValue = (key: FogSlider['key'], value: number) => {
     refreshFogDensity()
   }
   const source = make('select', { id: 'vfogNoiseSource' })
-  for (const [value, text] of [['2d', '2D texture, layered (shipped)'], ['3d', '3D texture (comparison)'], ['procedural', 'In-shader noise (comparison)']]) source.append(make('option', { value, textContent: text }))
+  for (const [value, text] of [['2d', '2D slices, editable'], ['3d', '3D texture (default)'], ['procedural', 'In-shader noise (comparison)']]) source.append(make('option', { value, textContent: text }))
   source.value = groundFog.getBuildOptions().noiseSource
   source.addEventListener('change', () => rebuildWith('noiseSource', source.value as '2d' | '3d' | 'procedural'))
   const scattering = make('select', { id: 'vfogScattering' })
@@ -3897,12 +3900,14 @@ const setFogValue = (key: FogSlider['key'], value: number) => {
   debugView.addEventListener('change', () => rebuildWith('debugView', debugView.value as 'off' | 'light' | 'transmittance'))
   container.append(
     make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogNoiseSource', textContent: 'Noise source' }), source,
-      note('Rebuilds the pass. For the cost comparison: the 2D texture is the shipped path')),
+      note('Rebuilds the pass. The height detail: the 3D texture is fixed; the 2D slices cost the same and take the noise editor’s B (wisps) layer')),
     make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogScattering', textContent: 'Multiple scattering' }), scattering),
     make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogDebug', textContent: 'Debug view' }), debugView,
       note('Light: the fog’s scattered light alone. Transmittance: how much of the scene gets through (white = all)')),
     make('div', { className: 'row' }, toggle('≋ 3D detail & plumes', () => groundFog.getBuildOptions().wisps, () => rebuildWith('wisps', !groundFog.getBuildOptions().wisps)),
-      toggle('◧ Depth-aware upsample', () => groundFog.getBuildOptions().depthAwareUpsample, () => rebuildWith('depthAwareUpsample', !groundFog.getBuildOptions().depthAwareUpsample))),
+      toggle('◧ Depth-aware upsample', () => groundFog.getBuildOptions().depthAwareUpsample, () => rebuildWith('depthAwareUpsample', !groundFog.getBuildOptions().depthAwareUpsample)),
+      toggle('⧗ Temporal filter', () => groundFog.getBuildOptions().temporal, () => rebuildWith('temporal', !groundFog.getBuildOptions().temporal)),
+      toggle('◌ Fill canopy holes', () => groundFog.getBuildOptions().fillCanopyHoles, () => rebuildWith('fillCanopyHoles', !groundFog.getBuildOptions().fillCanopyHoles))),
   )
   for (const group of FOG_SLIDERS) {
     container.append(make('div', { className: 'vfog-heading', textContent: group.heading }))
