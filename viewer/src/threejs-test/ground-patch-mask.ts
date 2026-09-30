@@ -190,9 +190,10 @@ export function createGroundPatchMask(opts: {
    */
   metresPerPixel: number
   /**
-   * How many cells may hold data at once. Cells are handed out on demand, so this
-   * is a ceiling on memory (cellPx^2 x maxCells) rather than an allocation of it —
-   * but the array texture itself is sized from it, so it is not free either.
+   * How many cells may hold data at once. Cells are handed out on demand, but both
+   * the CPU buffer and the GPU array texture are allocated at the full
+   * cellPx^2 x maxCells, so this is paid in full; only the first upload is cheap
+   * (one layer).
    */
   maxCells: number
   /**
@@ -241,6 +242,11 @@ export function createGroundPatchMask(opts: {
   texture.magFilter = THREE.LinearFilter
   texture.wrapS = THREE.ClampToEdgeWrapping
   texture.wrapT = THREE.ClampToEdgeWrapping
+  // The first upload sends one layer, not all maxCells of them: every layer is zero
+  // here, and a new GPU texture reads as zero on both backends, so the rest would be
+  // megabytes of zeros copied for nothing. One rather than none, because three reads
+  // an empty set as "all layers".
+  texture.addLayerUpdate(0)
   texture.needsUpdate = true
 
   // Full size from the start, and only partly used: see indexSize. Zero everywhere
@@ -262,6 +268,7 @@ export function createGroundPatchMask(opts: {
   const enuInverseWorld = new THREE.Matrix4()
   let enuInverseWorldSet = false
   let cellsUsed = 0
+  let budgetWarned = false
   let indexDirty = false
   let lastUploadMs = -Infinity
   /** Layers touched since the last upload — exactly what gets sent. */
@@ -330,14 +337,21 @@ export function createGroundPatchMask(opts: {
    * Layer holding this lattice cell, allocating one if the cell is new, or -1 when
    * the budget is spent. Returning -1 rather than growing keeps the failure to a
    * missing patch in one corner instead of a reallocation mid-frame; the console
-   * report says when it happens.
+   * says so once when it happens.
    */
   function layerFor(col: number, row: number): number {
     if (col < 0 || row < 0 || col >= grid.cols || row >= grid.rows) return -1
     const slot = row * indexSize + col
     const existing = indexData[slot]
     if (existing !== 0) return existing - 1
-    if (cellsUsed >= maxCells || cellsUsed >= 255) return -1
+    if (cellsUsed >= maxCells || cellsUsed >= 255) {
+      if (!budgetWarned) {
+        budgetWarned = true
+        console.warn(`[ground-patch] all ${cellsUsed} cells are in use; coverage stops here. `
+          + 'Raise design.groundPatch.maskMaxCells.')
+      }
+      return -1
+    }
     const layer = cellsUsed++
     indexData[slot] = layer + 1
     indexDirty = true
@@ -506,6 +520,7 @@ export function createGroundPatchMask(opts: {
       indexData.fill(0)
       index.needsUpdate = true
       cellsUsed = 0
+      budgetWarned = false
 
       const footprintCells = Math.ceil((maxX - minX) / cellSizeM) * Math.ceil((maxY - minY) / cellSizeM)
       const report = `${grid.cols}x${grid.rows} cells of ${cellPx}px at ${metresPerPixel} m/px`

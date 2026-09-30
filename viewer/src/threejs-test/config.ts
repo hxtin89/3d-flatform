@@ -936,13 +936,15 @@ export const EXPERIENCE_CONFIG = {
        */
       maskMetresPerPixel: 5,
       /**
-       * Cells that may hold data at once — a ceiling on mask memory of
-       * maskCellPx^2 x this, so 512px x 64 is 16 MB. Cells are handed out only where
+       * Cells that may hold data at once. The GPU texture is allocated at
+       * maskCellPx^2 x this, so 512px x 32 is 8 MB. Cells are handed out only where
        * points actually land, and the Peru footprint is a diagonal strip, so it needs
-       * far fewer than its bounding box suggests. The console reports what was used;
-       * it warns rather than fails if the budget runs out.
+       * far fewer than its bounding box suggests: its area boxes touch 18 cells (24 by
+       * the survey box, 30 with the 200 m stray tolerance); Usk, Manu and Pantiacolla
+       * need 4-8. `__wild.mask.stats().cellsUsed` shows the live count, and the console
+       * warns once rather than failing if the budget runs out.
        */
-      maskMaxCells: 64,
+      maskMaxCells: 32,
       /**
        * Edge length of the cell index map, and so the largest lattice addressable:
        * 64 cells is 164 km at the default cell size. Fixed at startup and never
@@ -981,10 +983,10 @@ export const EXPERIENCE_CONFIG = {
        */
       maskPointsPerFrame: 20_000,
       /**
-       * Shortest gap between mask uploads while coverage is still arriving. The
-       * upload is the expensive half — the whole 4.2 MB texture, measured at 10.7 ms,
-       * against ~1 ms of splatting — so batching it is what keeps the fill invisible.
-       * The final upload is never delayed.
+       * Shortest gap between mask uploads while coverage is still arriving. Each
+       * upload sends only the cells that changed, 256 kB apiece, but a burst of tiles
+       * usually touches the same few, so batching still pays. The final upload is
+       * never delayed.
        */
       maskUploadIntervalMs: 400,
     },
