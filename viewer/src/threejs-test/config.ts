@@ -1026,6 +1026,29 @@ export const EXPERIENCE_CONFIG = {
     /** Off compiles the point grade out of the tile shaders whatever the sliders say. */
     pointGradeEnabled: true,
     /**
+     * Colour match: the point cloud and the basemap share one colour at landscape scale.
+     *
+     * The survey was flown on several days under different skies, so its colour comes in
+     * blocks with straight edges, brighter, bluer or greener than their neighbours —
+     * 1.05 stops of drift measured over peru-b2-globe, with almost nothing in common with
+     * the landscape (r = -0.10 against the satellite). `pipeline/build_colour_field.py`
+     * turns that into a gain texture: every point keeps its own detail below ~100 m and
+     * takes the basemap's colour above it. The same run gives the basemap the per-channel
+     * gain that lifts it to the cloud's level (the raw satellite is 3–6× darker), which
+     * `mapBrightness` then trims around.
+     *
+     * Costs one filtered lookup of a 0.1 MB texture per point fragment; off compiles it out
+     * of the tile shaders, and the basemap is back to `mapBrightness` alone. See the
+     * Canopy Colour Matching artifact for the measurements.
+     */
+    colourMatch: {
+      enabled: true,
+      /** 0 = captured colour and today's basemap level, 1 = the full match. Blended in log light. */
+      strength: 1,
+      /** Built per dataset into public/colour-field/; a dataset without one is left as captured. */
+      fieldDir: 'colour-field/',
+    },
+    /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
      * the XYZ plugin's `useRecommendedSettings` picks — effectively pixel-perfect,

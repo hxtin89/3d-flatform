@@ -1,0 +1,42 @@
+{
+  "dataset": "peru-b2-globe",
+  "frame": "tileset-enu",
+  "origin": [
+    -6416.0,
+    -4272.0
+  ],
+  "size": [
+    12832.0,
+    8528.0
+  ],
+  "texels": [
+    802,
+    533
+  ],
+  "rowOrder": "north-first",
+  "encoding": {
+    "kind": "log2-gain-rgb8",
+    "stops": 3.0,
+    "zero": 127.5
+  },
+  "basemapGain": [
+    4.6729,
+    4.4261,
+    3.5492
+  ],
+  "basemapSaturation": 0.6,
+  "made": {
+    "date": "2026-09-30",
+    "sigmaM": 100.0,
+    "cellM": 8.0,
+    "texelM": 16.0,
+    "depth": 2,
+    "basemap": "maptiler/maps/satellite-v4/{z}/{x}/{y}.jpg",
+    "basemapZoom": 15,
+    "clippedTexels": 156,
+    "mismatchBeforeStops": {
+      "median": 0.275,
+      "p95": 1.267
+    }
+  }
+}

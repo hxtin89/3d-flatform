@@ -1248,6 +1248,20 @@
         </details>
 
         <details class="design-section">
+          <summary>Colour match</summary>
+          <div class="row">
+            <label class="h" for="colourMatchToggle">Match</label>
+            <button class="act on" id="colourMatchToggle" type="button" aria-pressed="true" aria-describedby="colourMatchNote">◈ Colour match · On</button>
+            <span class="weather-note" id="colourMatchNote">Evens out the flight blocks and stripes in the point colour and gives the cloud and the basemap one colour at landscape scale: every point keeps its own detail below about 100 m and takes the basemap's colour above it, and the basemap is lifted to the cloud's level. Off compiles it out of the tile shaders and puts the basemap back on <em>Brightness</em> alone. <code>?colourmatch=off</code> boots with it off</span>
+          </div>
+          <div class="row">
+            <label class="h" for="colourMatchStrength">Strength · <span class="val" id="colourMatchStrengthVal">—</span></label>
+            <input type="range" id="colourMatchStrength" min="0" max="1" step="0.01" />
+            <span class="weather-note">0 = the captured colour and today's basemap, 100 % = the full match. Blended in stops, so 50 % is half the correction in brightness terms. The basemap <em>Brightness</em> slider trims around the matched level</span>
+          </div>
+        </details>
+
+        <details class="design-section">
           <summary>Tone &amp; colour</summary>
           <div class="row">
             <label class="h" for="toneStageToggle">Stage</label>

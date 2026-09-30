@@ -1,12 +1,15 @@
 // Three.js globe + point cloud with one adaptive streaming path on every device.
 // The One LOD Tree moves from Overview p02 to Explore p10 and Detail p100 while
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
+// First, before anything schedules a frame: the `?bgclock` test hook (hidden-pane-clock.ts).
+import './hidden-pane-clock'
 import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
-  createUniforms, setCloudShadowTexture, setGroundPatchMask,
+  createUniforms, setCloudShadowTexture, setGroundPatchMask, setColourField,
   isCloudEffectEnabled, setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
+import { loadColourField } from './colour-field'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -3404,6 +3407,31 @@ bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => {
   uniforms.pointSaturation.value = v
   syncToneStage()
 })
+// Colour match — see design.colourMatch. The per-point gain is a tile-shader effect that
+// only exists once the field has loaded (and is compiled out at strength 0); the basemap
+// half is a uniform, so it costs nothing either way.
+const COLOUR_MATCH = DESIGN.colourMatch
+let colourMatchOn: boolean = COLOUR_MATCH.enabled && params.get('colourmatch') !== 'off'
+/** The field's basemap gain, or null until a field for this dataset has loaded. */
+let colourFieldBasemapGain: readonly [number, number, number] | null = null
+let colourFieldBasemapSaturation = 1
+function syncColourMatch(): void {
+  const on = colourMatchOn && colourFieldBasemapGain !== null
+  const strength = uniforms.colourFieldStrength.value
+  // Relative to the configured brightness, so the Brightness slider stays a trim around the
+  // match, and off (or strength 0) is exactly today's map.
+  const [r, g, b] = (on ? colourFieldBasemapGain! : [1, 1, 1].map(() => DESIGN.mapBrightness))
+    .map((gain) => (gain / DESIGN.mapBrightness) ** strength)
+  uniforms.mapMatchGain.value.set(r, g, b)
+  uniforms.mapMatchSaturation.value = on ? 1 + (colourFieldBasemapSaturation - 1) * strength : 1
+  // Point tiles only: the basemap reads a uniform, not a flag.
+  if (setCloudEffectEnabled('colourField', on && strength > 0)) stream?.refreshEffects()
+}
+bindEffectToggle('colourMatchToggle', '◈ Colour match', colourMatchOn, (on) => { colourMatchOn = on; syncColourMatch() })
+bindDesignSlider('colourMatchStrength', COLOUR_MATCH.strength, asPercent, (v) => {
+  uniforms.colourFieldStrength.value = v
+  syncColourMatch()
+})
 // The curve lives on the renderer, so switching it rebuilds only the output pass, never a
 // tile material. The markup's `on` is overwritten first so a ?tonemap= override shows.
 for (const button of $<HTMLDivElement>('#toneMappingSeg').querySelectorAll<HTMLButtonElement>('button')) {
@@ -3789,6 +3817,7 @@ designCopyEl.addEventListener('click', async () => {
     pointContrast: uniforms.pointContrast.value,
     pointSaturation: uniforms.pointSaturation.value,
     pointGradeEnabled: pointGradeOn,
+    colourMatch: { enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value, fieldDir: COLOUR_MATCH.fieldDir },
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -4710,6 +4739,22 @@ async function main(): Promise<void> {
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()
   refreshOriginDerived()
+  // Not awaited: the field is 0.1 MB and the tiles built before it lands are rebuilt with it.
+  // A dataset without a field stays as captured.
+  loadColourField(dataset, COLOUR_MATCH.fieldDir).then((field) => {
+    if (!field) {
+      console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
+      return
+    }
+    const { origin, size, encoding, basemapGain, basemapSaturation } = field.meta
+    setColourField(field.texture)
+    uniforms.colourFieldOrigin.value.set(origin[0], origin[1])
+    uniforms.colourFieldInvSize.value.set(1 / size[0], 1 / size[1])
+    uniforms.colourFieldStops.value = encoding.stops
+    colourFieldBasemapGain = basemapGain
+    colourFieldBasemapSaturation = basemapSaturation ?? 1
+    syncColourMatch()
+  }).catch((error) => console.warn('[colour match] colour field failed to load:', error))
   // A direction, so the origin's translation cannot touch it.
   enuUp.setFromMatrixColumn(enuFrame, 2).normalize()
 
