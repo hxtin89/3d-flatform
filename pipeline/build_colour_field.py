@@ -17,10 +17,12 @@ The orthophoto is composited INTO the satellite's own tiles in the viewer, so it
 through the basemap's grade (lift, desaturation, per-zoom gain) like the satellite does.
 Its field therefore takes it to the raw satellite at the reference zoom instead (no level,
 no desaturation): `ortho_gain = -offset - smooth(d - offset)`, with `offset` the ortho's
-median brightness over the satellite (about 2.9 stops for secretForest) stored as three
-numbers (`ortho.offsetStops`) and only the local part in the texture, where the soft knee
-applies. The viewer scales
-it by the tile zoom's colour ratio, and the grade then lands it where the cloud lands.
+median brightness over the satellite (2.3-3.0 stops per channel for secretForest, 2.4 in
+luma). The offset travels as three numbers, `sources[i].baseGain` = 2^-offset (the
+diagnostic `made.offsetStops` keeps the stops), and only the local part goes into the
+texture, where the soft knee applies. The viewer scales it by the tile zoom's colour ratio
+and by the ortho pyramid's own level at the child's zoom, and the grade then lands it where
+the cloud lands.
 
 `smooth` is a masked MEDIAN over a footprint, not a Gaussian. A Gaussian field matches the
 inside of each flight block but keeps the jump at a hard block border for any sigma (it
@@ -44,8 +46,9 @@ Writes into `--out` (all files swapped in together at the end of a successful ru
   <dataset>.ortho-<i>-feather.png  per ortho source: feather weight, greyscale 0..255
   <dataset>.json                placement of all of them in the tileset's ENU frame, the encoding,
                                 the basemap gains, and per ortho source its base gain, per-zoom
-                                trim and a 2-bit tile-kind grid (none / edge / full / full under
-                                the ground patch) for the zooms the viewer composites at
+                                satellite trim, the ortho pyramid's per-zoom level and a 2-bit
+                                tile-kind grid (none / edge / full / full under the ground patch)
+                                for the zooms the viewer composites at
 
 The basemap and the orthos are read through the viewer's dev proxy, so `npm run dev` must be
 running in viewer/ (port 5177 by default): that proxy is what makes the localhost MapTiler
@@ -70,7 +73,7 @@ import urllib.request
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import distance_transform_edt, gaussian_filter, median_filter
+from scipy.ndimage import convolve, distance_transform_edt, gaussian_filter, median_filter
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 LN2 = math.log(2)
@@ -375,8 +378,31 @@ def disc(radius_px: float):
 
 
 def bar(length_px: float, height_px: float):
-    """An east-west bar: long in x (columns), short in y (rows)."""
+    """An east-west bar: long in x (columns), short in y (rows). Each side rounds to an odd
+    texel count, so 480 x 32 m on 16 m texels is 31 x 3 texels, 496 x 48 m."""
     return np.ones((max(1, int(round(height_px)) | 1), max(1, int(round(length_px)) | 1)), bool)
+
+
+def patch_kernel(radius_px: float, samples: int = 40000):
+    """The viewer's ground-patch blur as a kernel (point-cloud.ts, GROUND_PATCH_TAPS): the
+    centre and two rings of six taps at 0.55 and 1 x the radius, equal weights, the pattern
+    rotated at random and its radius scaled by 0.85-1.15 per fragment. A Gaussian of the same
+    radius reaches further and closes gaps the viewer keeps open."""
+    rng = np.random.default_rng(0)
+    r = int(math.ceil(radius_px * 1.15)) + 1
+    k = np.zeros((2 * r + 1, 2 * r + 1), np.float64)
+    k[r, r] += 1 / 13
+    angle = rng.uniform(0, 2 * math.pi, samples)
+    scale = rng.uniform(0.85, 1.15, samples)
+    for ring in (0.55, 1.0):
+        rad = ring * radius_px * scale
+        x, y = r + rad * np.cos(angle), r + rad * np.sin(angle)
+        x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+        fx, fy = x - x0, y - y0
+        w = 6 / 13 / samples
+        for dx, dy, wt in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)), (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+            np.add.at(k, (y0 + dy, x0 + dx), w * wt)
+    return (k / k.sum()).astype(np.float32)
 
 
 def soft_knee(field_ln, knee_stops):
@@ -487,7 +513,9 @@ def tile_kinds(grid, feather8, under8, bounds, zooms, erode_m=16.0):
                 # the viewer samples bilinearly, so the box is dilated, never eroded.
                 i0, i1 = max(c0 - er - 1, 0), min(c1 + er + 1, grid.w)
                 j0, j1 = max(r0 - er - 1, 0), min(r1 + er + 1, grid.h)
-                if feather8[j0:j1, i0:i1].min() >= 0.999:
+                # Past the grid's edge nothing is known, so a box the grid clips is never full.
+                clipped = (i0, i1, j0, j1) != (c0 - er - 1, c1 + er + 1, r0 - er - 1, r1 + er + 1)
+                if not clipped and feather8[j0:j1, i0:i1].min() >= 0.999:
                     kinds[j, i] = 3 if under8[j0:j1, i0:i1].all() else 2
                 else:
                     kinds[j, i] = 1
@@ -688,8 +716,9 @@ def main() -> None:
         print('orthos', file=sys.stderr)
         length_m, height_m = (float(v) for v in args.ortho_footprint.lower().split('x'))
         f0, f1 = (float(v) for v in args.ortho_feather.split(','))
-        # Where the survey's ground patch covers the map (config groundPatch: 40 m blur, 0.65 cut)
-        under8 = gaussian_filter(cmask.astype(np.float32), 40.0 / args.cell) > 0.65
+        # Where the survey's ground patch covers the map (config groundPatch: 40 m blur, 0.65 cut),
+        # blurred the way the viewer blurs it.
+        under8 = convolve(cmask.astype(np.float32), patch_kernel(40.0 / args.cell), mode='constant') > 0.65
         kind_zooms = list(range(args.ortho_min_zoom, args.basemap_max_zoom + 1))
         sources = []
         for i, o in enumerate(orthos):  # CLI order is priority: later ones draw on top
@@ -701,12 +730,14 @@ def main() -> None:
             o16, om16 = block_mean(orgb, cov, k)
             od = np.log(o16 + 1e-3) - np.log(b16raw + 1e-3)
             olevel = np.median(od[om16], 0)
-            osmooth = masked_median(od, om16, bar(length_m / texel, height_m / texel), fill_sigma_px=length_m / texel)
+            footprint = bar(length_m / texel, height_m / texel)
+            osmooth = masked_median(od, om16, footprint, fill_sigma_px=length_m / texel)
             # Only the local part goes through the knee and into the texture; the ortho's global
             # offset over the satellite (several stops) travels as three numbers.
             ofield = soft_knee(olevel - osmooth, args.knee_stops)
             ofield = spread_to_outside(ofield, om16, fade_px=3)
-            inside_m = distance_transform_edt(cov) * args.cell
+            # Padded with uncovered cells: the grid's own edge is not ortho.
+            inside_m = distance_transform_edt(np.pad(cov, 1))[1:-1, 1:-1] * args.cell
             feather8 = np.clip((inside_m - f0) / max(f1 - f0, 1e-6), 0, 1)
             feather8 = (feather8 * feather8 * (3 - 2 * feather8)).astype(np.float32)
             f16 = feather8[:om16.shape[0] * k, :om16.shape[1] * k].reshape(om16.shape[0], k, om16.shape[1], k).mean((1, 3))
@@ -799,7 +830,7 @@ def main() -> None:
                     'featherMean': round(float(fcode.mean()), 3),
                 },
                 'kinds': kinds,
-                'made': {'zoom': z_s, 'footprintM': [length_m, height_m], 'featherM': [f0, f1],
+                'made': {'zoom': z_s, 'footprintM': [footprint.shape[1] * texel, footprint.shape[0] * texel], 'featherM': [f0, f1],
                          'bytes': gbytes + fbytes, **ostats},
             })
             if ortho_preview is None:
