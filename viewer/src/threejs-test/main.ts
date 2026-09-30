@@ -119,6 +119,8 @@ const originEnabled = !params.has('noorigin')
  * from it.
  */
 const gpuTiming = params.has('gputime')
+/** `?stillgate=off` runs the point-cloud traversal every frame, as before still-frame.ts. */
+const stillGateOff = params.get('stillgate') === 'off'
 /** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
  * measures. The benchmark samples frame times while tiles are still streaming,
  * so a hitch can collapse the median past its 60 fps threshold and pin a
@@ -4168,6 +4170,13 @@ function updateStreaming(now: number): StreamingStats | null {
     stream.setPovLoad(null)
   }
   foveation?.beginFrame()
+  // The still-frame gate stands aside while a debug view-error tool is on — each changes
+  // what the traversal selects without the gate seeing it, and foveation keeps per-frame
+  // counters — and while the loader benchmark is still measuring, so that it sees the
+  // main thread as it always was.
+  stream.setStillFrameGate(stillGateOff || foveationSettings.enabled
+    || Boolean(viewAngle?.settings.enabled) || Boolean(viewDepth?.settings.enabled)
+    || (bootLoading && !benchPresetApplied))
   stream.update()
   // After the traversal, so the error and the stopped-here flag the inspector paints
   // come from the selection that is about to be drawn rather than the previous frame's.
@@ -5008,6 +5017,8 @@ async function main(): Promise<void> {
   ;(window as any).__wild = {
     stream,
     camera,
+    /** Still-frame gate: frames, traversals run, and why each ran. `?stillgate=off` to A/B. */
+    get stillGate() { return stream?.stillFrameStats() },
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },

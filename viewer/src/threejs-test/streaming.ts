@@ -27,6 +27,7 @@ import {
 import { EXPERIENCE_CONFIG } from './config'
 import { sampleGroundHeights, type GroundSample } from './ground-sample'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { createStillFrameGate, type StillFrameGate, type StillFrameInputs } from './still-frame'
 
 export interface StreamingStats {
   visible: number
@@ -101,6 +102,10 @@ export interface StreamingCloud {
   /** Diagnostics only. */
   debugVolume: { blockedByCeiling: number[]; inside: number[]; outside: number[]; noVolume: number[] }
   update(): void
+  /** While `bypass` holds, the traversal runs every frame; otherwise frames that would
+   *  only repeat the last traversal skip it (still-frame.ts). */
+  setStillFrameGate(bypass: boolean): void
+  stillFrameStats(): ReturnType<StillFrameGate['stats']>
   setErrorTarget(v: number): void
   /** Diagnostic mode: no mask gate and large resident/worker limits so every
    * APH leaf selected by the camera frustum can finish loading. */
@@ -522,6 +527,47 @@ export function createStreamingCloud(opts: {
     bytesTarget: limits.gpuBytesTarget,
   })
   tiles.registerPlugin(unloadPlugin as any)
+
+  // Skips the traversal on frames that would only repeat the last one — see still-frame.ts.
+  // Before each update the library asks every plugin whether one is needed and walks the
+  // tree only if one says yes; this is the only plugin here that answers, so it decides.
+  // A loaded tile or a newly processed tileset node sends 'needs-update', which reopens it.
+  const stillGate = createStillFrameGate()
+  let traverseNow = true
+  let stillGateBypass = false
+  let densityCeilingLevel = NaN
+  tiles.registerPlugin({
+    name: 'STILL_FRAME_GATE',
+    doTilesNeedUpdate: () => traverseNow,
+    preprocessNode: () => stillGate.invalidate(),
+  } as any)
+  tiles.addEventListener('needs-update', () => stillGate.invalidate())
+  tiles.addEventListener('camera-resolution-change', () => stillGate.invalidate())
+  const stillView = new THREE.Matrix4()
+  const stillSpheres: number[] = []
+  /** Everything the traversal reads, beyond the tile tree itself. */
+  function stillFrameInputs(): StillFrameInputs {
+    // Camera and root together, so an origin rebase, which moves both, is no change.
+    stillView.multiplyMatrices(camera.matrixWorldInverse, tiles.group.matrixWorld)
+    stillSpheres.length = 0
+    if (maskActive) {
+      const c = maskRegion.sphere.center
+      stillSpheres.push(c.x, c.y, c.z, maskRadiusRequested)
+    }
+    if (povActive) stillSpheres.push(povEye.x, povEye.y, povEye.z, povBudget)
+    // The dome band reaches the traversal only through the rim-detail view error.
+    if (renderGateActive && domeBand && domeBand.rimDetailFactor > 1) {
+      const c = renderSphere.center
+      stillSpheres.push(c.x, c.y, c.z, renderSphere.radius, domeBand.rampM, domeBand.fadeIn, domeBand.fadeOut, domeBand.rimDetailFactor)
+    }
+    return {
+      view: stillView.elements,
+      projection: camera.projectionMatrix.elements,
+      errorTarget: tiles.errorTarget,
+      spheres: stillSpheres,
+      mode: `${maskActive ? 'mask ' : ''}${povActive ? 'pov ' : ''}${renderGateActive ? 'dome ' : ''}${leafLoading ? 'leaf' : ''}`,
+    }
+  }
 
   /** `debugTiles` are this tile's own materials, kept so the false-colour inspector can
    *  write their per-frame uniforms without traversing the scene graph every frame. */
@@ -1242,16 +1288,24 @@ export function createStreamingCloud(opts: {
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
-      loadGateCut = 0
-      // The point-of-view load runs the mask at the largest radius the point cap allows;
-      // everything else runs it at the radius asked for.
-      if (maskActive) {
-        maskRegion.sphere.radius = maskRadiusRequested
-        if (povActive && Number.isFinite(povBudget)) {
-          povRadius = solvePovRadius()
-          maskRegion.sphere.radius = Math.min(maskRadiusRequested, povRadius)
-        } else {
-          povRadius = Infinity
+      // Loading or a full cache keeps it running: requests the cache refused are retried
+      // only by a traversal, and the library clears isLoading only at the end of one.
+      traverseNow = stillGate.decide(
+        stillFrameInputs(), performance.now(), (tiles as any).isLoading || tiles.lruCache.isFull(), stillGateBypass,
+      )
+      if (traverseNow) {
+        // Only when it runs: the count describes the last traversal, and the panel reads it.
+        loadGateCut = 0
+        // The point-of-view load runs the mask at the largest radius the point cap allows;
+        // everything else runs it at the radius asked for.
+        if (maskActive) {
+          maskRegion.sphere.radius = maskRadiusRequested
+          if (povActive && Number.isFinite(povBudget)) {
+            povRadius = solvePovRadius()
+            maskRegion.sphere.radius = Math.min(maskRadiusRequested, povRadius)
+          } else {
+            povRadius = Infinity
+          }
         }
       }
       tiles.update()
@@ -1271,6 +1325,10 @@ export function createStreamingCloud(opts: {
       // After the release, so a tile released this frame is gated in this frame too.
       applyRenderGate()
     },
+    setStillFrameGate(bypass: boolean) {
+      stillGateBypass = bypass
+    },
+    stillFrameStats: () => stillGate.stats(),
     setArrivalBudget(perFrame: number) {
       arrivalBudget = Math.max(0, Math.floor(perFrame))
       if (arrivalBudget === 0) {
@@ -1285,14 +1343,17 @@ export function createStreamingCloud(opts: {
       }
     },
     setParseBudget(maxJobs: number) {
+      stillGate.invalidate()
       parseBudget = Math.max(1, Math.floor(maxJobs))
       // Leaf loading deliberately runs the queue wide open; it restores this value on exit.
       if (!leafLoading) tiles.parseQueue.maxJobs = parseBudget
     },
     setErrorTarget(value: number) {
+      stillGate.invalidate()
       tiles.errorTarget = value
     },
     setLeafLoading(enabled: boolean) {
+      stillGate.invalidate()
       if (enabled === leafLoading) return
       leafLoading = enabled
       if (enabled) {
@@ -1335,6 +1396,11 @@ export function createStreamingCloud(opts: {
       }
     },
     setDensityCeiling(level: number) {
+      // Called every frame, so only a real change reopens the gate.
+      if (level !== densityCeilingLevel) {
+        densityCeilingLevel = level
+        stillGate.invalidate()
+      }
       requestVolumePlugin?.setDensityCeiling(level)
     },
     /**
@@ -1375,6 +1441,7 @@ export function createStreamingCloud(opts: {
       }
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
+      stillGate.invalidate()
       tiles.lruCache.maxBytesSize = cacheMaxBytes
       // The floor is where the cache comes to rest, so it has to stay clear of the
       // ceiling: clamped to `cacheMaxBytes` itself, the medium and constrained tiers
@@ -1395,6 +1462,7 @@ export function createStreamingCloud(opts: {
       }
     },
     setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
+      stillGate.invalidate()
       // setMemoryBudget() only ever grows maxSize / shrinks minBytesSize, so a
       // snapshot restore (compare mode off) needs plain assignment.
       tiles.lruCache.maxBytesSize = budget.maxBytesSize
@@ -1695,6 +1763,7 @@ export function createStreamingCloud(opts: {
       return { shrunk, tiles: spacingEntries.length }
     },
     reloadTiles() {
+      stillGate.invalidate()
       const cache = (tiles as any).lruCache
       const itemList: any[] = cache?.itemList
       if (!Array.isArray(itemList)) return 0
