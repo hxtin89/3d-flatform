@@ -33,6 +33,7 @@ import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
+import { installPntsParseInPlace, pntsParseCounts } from './pnts-parse'
 import { EXPERIENCE_CONFIG } from './config'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -4815,6 +4816,10 @@ async function main(): Promise<void> {
   // Before the first render: without it, a tile geometry's GPU buffers are freed on its
   // first unload only. See geometry-dispose.ts.
   installGeometryDisposeFix(renderer)
+  // Settles in a few microtasks, long before the first tile has been fetched. See pnts-parse.ts.
+  void installPntsParseInPlace().then(({ on, reason }) => {
+    console.info(`[pnts] parse in place: ${on ? 'on' : `off (${reason})`}`)
+  })
 
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
@@ -5483,6 +5488,8 @@ async function main(): Promise<void> {
   ;(window as any).__cost = {
     report: () => costReport(renderer),
     reset: () => resetCost(),
+    /** Tiles parsed in place versus through the library's copying parse. */
+    pnts: () => pntsParseCounts(),
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()

@@ -1013,9 +1013,9 @@ export function createStreamingCloud(opts: {
     )
     const debugTiles: any[] = []
     const quads: THREE.Mesh[] = []
-    // The PNTS loader keeps the tile's whole decoded ArrayBuffer alive here, and that is
-    // the buffer `reorderForPrefixSampling` copies out of — position and colour are both
-    // views into it. Dropping the reference is what makes the reorder memory-neutral:
+    // The PNTS loader keeps the tile's whole fetched body alive here (read in place, see
+    // pnts-parse.ts), and that is the buffer `reorderForPrefixSampling` copies out of —
+    // position and colour are both views into it. Dropping the reference is what makes the reorder memory-neutral:
     // 15 bytes per point are released against the 16 the new arrays take. Nothing in the
     // viewer reads `featureTable`, and in 3d-tiles-renderer only the B3DM path does, so
     // this is dead weight for a PNTS tile either way.
