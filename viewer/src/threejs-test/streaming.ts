@@ -25,6 +25,7 @@ import {
 } from './point-order'
 import { EXPERIENCE_CONFIG } from './config'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { retryFailedTiles } from './tile-retry'
 
 export interface StreamingStats {
   visible: number
@@ -1102,10 +1103,10 @@ export function createStreamingCloud(opts: {
     }
     tileStats.delete(tile)
   })
-  // A missing tile is a gap in the published data, not a crash, and the
-  // renderer retries whenever it comes back into view. Report each URL once so
-  // one absent tile cannot bury the console, but leave the retries alone: the
-  // file may well appear after the next upload.
+  // A missing tile is a gap in the published data, not a crash. Report each URL once so
+  // one absent tile cannot bury the console. The renderer itself only asks again once the
+  // tile has been evicted, which a tile in view never is, so a dropped connection is retried
+  // by tile-retry.ts; a refused one (4xx) waits for eviction, as before.
   tiles.addEventListener('load-error', ({ tile, url, error }: any) => {
     // A null tile means the *root* tileset failed — the whole pack is unreachable,
     // not one gap, so the caller gets to pick a different source.
@@ -1115,6 +1116,8 @@ export function createStreamingCloud(opts: {
     failedTiles.add(key)
     console.warn(`[streaming] tile unavailable (${failedTiles.size} so far)`, key, error?.message)
   })
+
+  const stopRetrying = retryFailedTiles(tiles as any, 'streaming')
 
   scene.add(tiles.group)
 
@@ -1987,6 +1990,7 @@ export function createStreamingCloud(opts: {
       return { areaPx, points }
     },
     dispose() {
+      stopRetrying()
       scene.remove(tiles.group)
       tiles.dispose()
       lifecycle.abort()

@@ -18,6 +18,7 @@ import { EXPERIENCE_CONFIG } from './config'
 import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { retryFailedTiles } from './tile-retry'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -147,6 +148,9 @@ export function createGlobe(opts: {
   let imageryEnabled = true
 
   const tiles = new TilesRenderer()
+  // A dropped imagery request would otherwise leave its whole subtree missing for the
+  // session: a square of sky through the ground. See tile-retry.ts.
+  const stopRetrying = retryFailedTiles(tiles as any, 'globe')
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
   // cache exists in addition to point-cloud geometry and was the largest
   // unbounded allocation in the mobile path — hence a cap. But the cap has to
@@ -576,6 +580,7 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      stopRetrying()
       detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)
       window.removeEventListener('pointerup', trackPointerUp, true)
