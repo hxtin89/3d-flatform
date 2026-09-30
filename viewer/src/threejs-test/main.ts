@@ -10,6 +10,7 @@ import {
   isCloudEffectEnabled, setCloudEffectEnabled, type CloudEffect,
 } from './point-cloud'
 import { loadColourField, colourFieldMatchesFrame, type ColourField } from './colour-field'
+import type { OrthoDensity } from './ortho-plan'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -359,6 +360,10 @@ function applyBenchPreset(): void {
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
+  // The ortho's density follows the preset for tiles loaded from now on (no reload: at this
+  // point the entrance flight starts, and the tiles under the loader are far and few).
+  orthoPresetDensity = DRONE_ORTHO.presets[preset] as OrthoDensity | 'off'
+  globe?.setOrthoDensity(orthoDensity(), { reload: false })
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
@@ -3426,6 +3431,30 @@ let colourFieldBasemapSaturation = 1
 let colourFieldZoomRatios: Array<THREE.Vector3 | undefined> = []
 /** Set once the load has settled without a usable field, so the switch can say so. */
 let colourFieldMissing = false
+/** The field in use, kept for the drone ortho, which is attached once the globe exists. */
+let colourFieldInUse: { field: ColourField; rootTransform: ArrayLike<number> } | null = null
+
+// Drone ortho — see design.droneOrtho. ?ortho=off boots without it (no worker, no request);
+// ?ortho=half|full forces a density whatever the bench preset; ?orthokinds tints the
+// composited tiles (red where the satellite was blended in, blue where the ortho covers all).
+const DRONE_ORTHO = DESIGN.droneOrtho
+const orthoParam = params.get('ortho')
+let droneOrthoOn: boolean = DRONE_ORTHO.enabled && orthoParam !== 'off'
+const orthoForcedDensity: OrthoDensity | null = orthoParam === 'half' || orthoParam === 'full' ? orthoParam : null
+let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets.medium as OrthoDensity | 'off'
+let orthoAttached = false
+const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? orthoPresetDensity
+function attachDroneOrtho(): void {
+  const meta = colourFieldInUse?.field.meta.ortho
+  if (orthoAttached || !globe || !droneOrthoOn || !meta || !colourFieldInUse) return
+  orthoAttached = true
+  const fieldBaseUrl = new URL(
+    `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}${COLOUR_MATCH.fieldDir.replace(/\/?$/, '/')}`, location.href).href
+  void globe.attachOrtho({
+    meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
+    config: DRONE_ORTHO, density: orthoDensity(), debugKinds: params.has('orthokinds'),
+  }).then(syncDroneOrthoPanel)
+}
 function syncColourMatch(): void {
   const on = colourMatchOn && colourFieldBasemapGain !== null
   const strength = uniforms.colourFieldStrength.value
@@ -3465,6 +3494,8 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
   uniforms.colourFieldScale.value = encoding.scale ?? 127.5
   colourFieldBasemapGain = basemapGain
   colourFieldBasemapSaturation = basemapSaturation ?? 1
+  colourFieldInUse = { field, rootTransform }
+  attachDroneOrtho()
   colourFieldZoomRatios = []
   for (const [zoom, gain] of Object.entries(field.meta.basemapGainByZoom ?? {})) {
     colourFieldZoomRatios[Number(zoom)] = new THREE.Vector3(
@@ -3473,6 +3504,25 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
   syncColourMatch()
 }
 bindEffectToggle('colourMatchToggle', '◈ Colour match', colourMatchOn, (on) => { colourMatchOn = on; syncColourMatch() })
+const droneOrthoStatsEl = $<HTMLSpanElement>('#droneOrthoStats')
+function syncDroneOrthoPanel(): void {
+  const s = globe?.orthoStats()
+  if (!s) {
+    droneOrthoStatsEl.textContent = droneOrthoOn ? 'Waiting for the colour field' : 'Off (?ortho=off or config)'
+    return
+  }
+  if (!s.ready) { droneOrthoStatsEl.textContent = 'Not available here — see the console'; return }
+  droneOrthoStatsEl.textContent = `${s.density} · ${s.composed} tiles (${s.fullTiles} full, ${s.edgeTiles} edge) · `
+    + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
+    + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
+}
+bindEffectToggle('droneOrthoToggle', '▦ Drone ortho', droneOrthoOn, (on) => {
+  droneOrthoOn = on
+  if (on) attachDroneOrtho()
+  globe?.setOrthoEnabled(on)
+  syncDroneOrthoPanel()
+})
+setInterval(syncDroneOrthoPanel, 1000)
 bindDesignSlider('colourMatchStrength', COLOUR_MATCH.strength, asPercent, (v) => {
   uniforms.colourFieldStrength.value = v
   syncColourMatch()
@@ -3866,6 +3916,7 @@ designCopyEl.addEventListener('click', async () => {
       enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value,
       referenceBrightness: COLOUR_MATCH.referenceBrightness, fieldDir: COLOUR_MATCH.fieldDir,
     },
+    droneOrtho: { ...DRONE_ORTHO, enabled: droneOrthoOn },
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -4853,6 +4904,7 @@ async function main(): Promise<void> {
     uniforms,
     panBudgetM: panDragBudget,
   })
+  attachDroneOrtho()
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
     globe.controls.minDistance = 1

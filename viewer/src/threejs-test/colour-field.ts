@@ -2,6 +2,7 @@
 // matches the point cloud to the basemap at landscape scale. Built offline per dataset by
 // pipeline/build_colour_field.py; see design.colourMatch in config.ts for what it does.
 import * as THREE from 'three'
+import type { OrthoMeta } from './ortho-plan'
 
 /** `<dataset>.json` as the builder writes it. */
 export interface ColourFieldMeta {
@@ -28,6 +29,8 @@ export interface ColourFieldMeta {
   /** Short hash of the PNG, so the texture can never come from a different build than this
    *  metadata (the two files are cached independently in production). */
   pngHash?: string
+  /** The drone orthos composited into the basemap, and their fields (ortho-composite.ts). */
+  ortho?: OrthoMeta
 }
 
 export interface ColourField {

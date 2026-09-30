@@ -18,6 +18,8 @@ import { EXPERIENCE_CONFIG } from './config'
 import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { createOrthoComposite, type OrthoComposite, type OrthoCompositeConfig, type OrthoStats } from './ortho-composite'
+import { parseSatelliteZxy, createPlanner, type OrthoDensity, type OrthoMeta } from './ortho-plan'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -77,6 +79,20 @@ export interface Globe {
    *  reported so the HUD can put the basemap's share of memory against the basemap's own
    *  ceiling rather than against the point cloud's. */
   stats(): { visible: number; cacheBytes: number; gpuBytes: number; cacheBytesCeiling: number }
+  /**
+   * Composite the drone orthos into the satellite tiles they cover (ortho-composite.ts).
+   * Resolves false when the ortho cannot run here; the basemap then stays satellite only.
+   * Covered tiles already loaded are reloaded once it is ready, so they get the ortho too.
+   */
+  attachOrtho(ortho: {
+    meta: OrthoMeta; rootTransform: ArrayLike<number>; fieldBaseUrl: string
+    config: OrthoCompositeConfig; density: OrthoDensity | 'off'; debugKinds: boolean
+  }): Promise<boolean>
+  /** Switch the ortho for new tiles and reload the covered ones that are loaded. */
+  setOrthoEnabled(on: boolean): void
+  /** `reload: false` applies the density to tiles loaded from now on only. */
+  setOrthoDensity(density: OrthoDensity | 'off', options?: { reload?: boolean }): void
+  orthoStats(): OrthoStats | null
   dispose(): void
 }
 
@@ -101,6 +117,9 @@ export interface Globe {
  * a point-only switch does not cost a map tile a fresh build of an identical graph.
  */
 const imageryGraphCache = new Map<number, any>()
+
+/** In dev the vite proxy, which claims an origin the domain-restricted key accepts. */
+const MAPTILER_BASE = import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'
 
 /** z of an XYZ tile URL ending in /{z}/{x}/{y}.<ext>, or -1. */
 export function zoomOfTileUrl(url: string | undefined): number {
@@ -182,7 +201,7 @@ export function createGlobe(opts: {
   tiles.parseQueue.maxJobs = 4
   tiles.processNodeQueue.maxJobs = 4
   tiles.maxTilesProcessed = 80
-  tiles.registerPlugin(new XYZTilesPlugin({
+  const xyz = new XYZTilesPlugin({
     shape: 'ellipsoid',
     useRecommendedSettings: true,
     tileDimension: 512,
@@ -193,9 +212,49 @@ export function createGlobe(opts: {
     // Same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer). In dev
     // it goes through the vite proxy, which strips the Referer the domain-restricted
     // key rejects from localhost — see vite.config.ts.
-    url: `${import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
-  }))
+    url: `${MAPTILER_BASE}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
+  })
+  tiles.registerPlugin(xyz)
+  let ortho: OrthoComposite | null = null
+  let orthoMeta: OrthoMeta | null = null
+  let orthoMinZoom = 0
+
+  /**
+   * Drop the loaded tiles the ortho covers so they are fetched again — with the ortho or
+   * without it, whichever is now asked for. Only covered tiles: their loaded ancestors keep
+   * the ground drawn while they come back, so this shows as a brief blur, never as sky.
+   */
+  function reloadOrthoTiles(): number {
+    if (!orthoMeta) return 0
+    const covers = createPlanner(orthoMeta.sources, { minZoom: orthoMinZoom, density: 'half', disabled: new Set() })
+    const cache = (tiles as any).lruCache
+    const items: any[] = Array.isArray(cache?.itemList) ? cache.itemList.slice() : []
+    let dropped = 0
+    for (const tile of items) {
+      const zxy = parseSatelliteZxy(tile?.content?.uri ?? '')
+      if (zxy && covers(zxy.z, zxy.x, zxy.y) && cache.remove(tile)) dropped++
+    }
+    tiles.dispatchEvent({ type: 'needs-update' })
+    return dropped
+  }
   tiles.registerPlugin(new UpdateOnChangePlugin())
+  // The library never retries a tile that failed to download, and a failed tile's children
+  // are never created: one network blip (measured 2026-09-30: ECONNRESET and connect
+  // timeouts from the tile host) left the view stuck at a blurry z6, or at sky, for the rest
+  // of the session. Retry failed tiles after a pause that doubles while failures keep coming
+  // and drops back once tiles load again.
+  let retryDelayMs = 2000
+  let retryTimer = 0
+  tiles.addEventListener('load-error', () => {
+    if (retryTimer) return
+    retryTimer = window.setTimeout(() => {
+      retryTimer = 0
+      tiles.resetFailedTiles()
+      tiles.dispatchEvent({ type: 'needs-update' })
+      retryDelayMs = Math.min(retryDelayMs * 2, 60_000)
+    }, retryDelayMs)
+  })
+  tiles.addEventListener('load-model', () => { retryDelayMs = 2000 })
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
   // configured value has to land afterwards to win.
   tiles.errorTarget = Math.max(EXPERIENCE_CONFIG.design.basemapErrorTarget, 0.5)
@@ -592,7 +651,37 @@ export function createGlobe(opts: {
         cacheBytesCeiling: (tiles.lruCache as any).maxBytesSize ?? 0,
       }
     },
+    async attachOrtho(options) {
+      if (ortho) return true
+      orthoMeta = options.meta
+      orthoMinZoom = options.config.minZoom
+      ortho = createOrthoComposite({
+        ...options,
+        xyz,
+        orthoTileUrl: (id, format, z, x, y) =>
+          `${MAPTILER_BASE}/tiles/${id}/${z}/${x}/${y}.${format}?key=${encodeURIComponent(maptilerKey)}`,
+      })
+      tiles.registerPlugin(ortho.plugin as any)
+      const ok = await ortho.ready
+      if (ok) reloadOrthoTiles()
+      return ok
+    },
+    setOrthoEnabled(on) {
+      if (!ortho || ortho.stats().enabled === on) return
+      ortho.setEnabled(on)
+      reloadOrthoTiles()
+    },
+    setOrthoDensity(density, options) {
+      if (!ortho || ortho.stats().density === density) return
+      ortho.setDensity(density)
+      if (options?.reload !== false) reloadOrthoTiles()
+    },
+    orthoStats() {
+      return ortho?.stats() ?? null
+    },
     dispose() {
+      window.clearTimeout(retryTimer)
+      ortho?.dispose()
       detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)
       window.removeEventListener('pointerup', trackPointerUp, true)

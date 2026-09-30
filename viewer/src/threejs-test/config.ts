@@ -1068,6 +1068,34 @@ export const EXPERIENCE_CONFIG = {
       fieldDir: 'colour-field/',
     },
     /**
+     * The drone orthophoto (10 cm, MapTiler custom tilesets from the wi-map prototype),
+     * composited into the satellite's own tiles where it covers them — see
+     * ortho-composite.ts. It adds no mesh, texture, draw call or shader code, so the frame
+     * costs what it did; it costs downloads (one or four ortho tiles of ~100-130 KB per
+     * covered satellite tile, lossless WebP) and worker time per covered tile, which is what
+     * the zoom and density gates below limit. Colour-matched offline into the raw satellite's
+     * colour (build_colour_field.py --ortho), so the colour match, fog and ground patch treat
+     * it as satellite. Under the survey the ground patch still covers it; it shows around the
+     * survey, in the river and in the gaps. The small plots (ireneJohn, danilo, cacao) are
+     * left out: their z21/22 detail cannot show below basemapMaxZoom 19, and their hard
+     * 1-bit edges inside secretForest would be seams.
+     */
+    droneOrtho: {
+      enabled: true,
+      /** Lowest satellite zoom the ortho goes into. z15 tiles are 1.2 km wide: far views
+       *  keep the satellite, which the ortho is matched to anyway. */
+      minZoom: 15,
+      /** Per bench preset: 'full' = the four ortho tiles one zoom down per satellite tile (its
+       *  full 512 px), 'half' = the one at the same zoom (256 px drawn up), 'off' = none. */
+      presets: { strong: 'full', medium: 'half', constrained: 'off' },
+      fetchTimeoutMs: 8000,
+      composeTimeoutMs: 5000,
+      maxConcurrentComposes: 4,
+      extraDownloadJobs: 4,
+      /** 401/403 answers after which a source is switched off for the session. */
+      forbiddenLimit: 3,
+    },
+    /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
      * the XYZ plugin's `useRecommendedSettings` picks — effectively pixel-perfect,
