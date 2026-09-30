@@ -56,7 +56,31 @@ const LATTICE = SIZE / STEP + 1
 let enuFromEcef: Float64Array | null = null
 let sources: Source[] = []
 let debugKinds = false
+/** Composes in progress, and those among them the page gave up on. */
+const running = new Set<number>()
 const cancelled = new Set<number>()
+
+/** A compose's working memory, about 6 MB; composes overlap at their awaits, so each takes
+ *  its own set from the pool and gives it back. */
+interface Scratch {
+  lin: Float32Array
+  cover: Float32Array
+  lat: Float32Array
+  lctx: OffscreenCanvasRenderingContext2D
+  out: ImageData
+}
+const pool: Scratch[] = []
+function takeScratch(): Scratch {
+  const reused = pool.pop()
+  if (reused) return reused
+  return {
+    lin: new Float32Array(SIZE * SIZE * 3),
+    cover: new Float32Array(SIZE * SIZE),
+    lat: new Float32Array(LATTICE * LATTICE * 4),
+    lctx: new OffscreenCanvas(SIZE, SIZE).getContext('2d', { willReadFrequently: true })!,
+    out: new ImageData(SIZE, SIZE),
+  }
+}
 
 // sRGB → linear for 8-bit codes, and linear → sRGB through a 4096-entry table.
 const DEC = new Float32Array(256)
@@ -173,28 +197,41 @@ function sample(s: Source, ex: number, ey: number, trim: readonly number[], out:
 }
 
 async function compose(msg: ComposeMessage): Promise<void> {
+  const { id } = msg
+  running.add(id)
+  const scratch = takeScratch()
+  try {
+    await composeInto(msg, scratch)
+  } finally {
+    running.delete(id)
+    cancelled.delete(id)
+    pool.push(scratch)
+  }
+}
+
+async function composeInto(msg: ComposeMessage, scratch: Scratch): Promise<void> {
   const t0 = performance.now()
   const { id, z, x, y } = msg
-  const enu = lattice(z, x, y)
-  const lin = new Float32Array(SIZE * SIZE * 3)
-  const cover = msg.sat ? null : new Float32Array(SIZE * SIZE)
+  const { lin, lat, lctx, out } = scratch
+  const cover = msg.sat ? null : scratch.cover.fill(0)
   if (msg.sat) {
     const sat = await pixelsOf(msg.sat, SIZE, SIZE)
+    if (cancelled.has(id)) return
     for (let p = 0, q = 0; p < SIZE * SIZE; p++, q += 4) {
       lin[p * 3] = DEC[sat.data[q]]
       lin[p * 3 + 1] = DEC[sat.data[q + 1]]
       lin[p * 3 + 2] = DEC[sat.data[q + 2]]
     }
+  } else {
+    lin.fill(0)
   }
+  const enu = lattice(z, x, y)
   const bySource = new Map<number, ChildInput[]>()
   for (const child of msg.children) {
     if (!child.blob) continue
     if (!bySource.has(child.source)) bySource.set(child.source, [])
     bySource.get(child.source)!.push(child)
   }
-  const layer = new OffscreenCanvas(SIZE, SIZE)
-  const lctx = layer.getContext('2d', { willReadFrequently: true })!
-  const lat = new Float32Array(LATTICE * LATTICE * 4)
   // Sources in priority order: later ones draw on top.
   for (const index of [...bySource.keys()].sort((a, b) => a - b)) {
     const s = sources[index]
@@ -206,7 +243,15 @@ async function compose(msg: ComposeMessage): Promise<void> {
       else lctx.drawImage(bitmap, child.dx * 256, child.dy * 256, 256, 256)
       bitmap.close()
     }
+    if (cancelled.has(id)) return
     const px = lctx.getImageData(0, 0, SIZE, SIZE).data
+    if (cover && bySource.size === 1) {
+      // A tile planned as covered, from one source: a transparent pixel is a hole whatever the
+      // feather says, so ask for the satellite now instead of after the blend.
+      for (let p = 3; p < px.length; p += 4) {
+        if (px[p] === 0) { postMessage({ type: 'need-satellite', id }); return }
+      }
+    }
     // Into the tile zoom's satellite colour, from the children's own zoom level of the ortho.
     const satTrim = s.zoomTrim[String(z)] ?? [1, 1, 1]
     const pyramid = s.pyramidLevel[String(bySource.get(index)![0].z)] ?? [1, 1, 1]
@@ -251,9 +296,8 @@ async function compose(msg: ComposeMessage): Promise<void> {
       if (cover[p] < 0.998) { postMessage({ type: 'need-satellite', id }); return }
     }
   }
-  if (cancelled.delete(id)) return
+  if (cancelled.has(id)) return
   const tint = debugKinds ? (msg.sat ? [1.25, 0.85, 0.85] : [0.85, 0.85, 1.25]) : null
-  const out = new ImageData(SIZE, SIZE)
   const d = out.data
   for (let j = 0; j < SIZE; j++) {
     const dst = (SIZE - 1 - j) * SIZE // pre-flipped, like the library's own tile bitmaps
@@ -266,10 +310,8 @@ async function compose(msg: ComposeMessage): Promise<void> {
       d[q + 3] = 255
     }
   }
-  const canvas = new OffscreenCanvas(SIZE, SIZE)
-  canvas.getContext('2d')!.putImageData(out, 0, 0)
-  const bitmap = canvas.transferToImageBitmap()
-  if (cancelled.delete(id)) { bitmap.close(); return }
+  const bitmap = await createImageBitmap(out, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+  if (cancelled.has(id)) { bitmap.close(); return }
   postMessage({ type: 'done', id, bitmap, ms: performance.now() - t0 }, { transfer: [bitmap] })
 }
 
@@ -284,6 +326,7 @@ self.onmessage = (event: MessageEvent<InitMessage | ComposeMessage | CancelMessa
   } else if (msg.type === 'compose') {
     compose(msg).catch((error) => postMessage({ type: 'failed', id: msg.id, reason: String(error?.message ?? error) }))
   } else if (msg.type === 'cancel') {
-    cancelled.add(msg.id)
+    // Only a compose still running can be cancelled; a late cancel would never be cleared.
+    if (running.has(msg.id)) cancelled.add(msg.id)
   }
 }

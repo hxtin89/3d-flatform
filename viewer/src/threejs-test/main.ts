@@ -141,14 +141,14 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
  * it. `?shape=` accepts an absolute URL for a future booking API. */
 const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
 const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
-// The colour field needs only the dataset name, so it downloads while the renderer starts;
-// main() waits briefly for it before the first tiles exist, so they compile once.
-const colourFieldPromise: Promise<ColourField | null> = loadColourField(dataset, EXPERIENCE_CONFIG.design.colourMatch.fieldDir)
-  .catch((error) => { console.warn('[colour match] colour field failed to load:', error); return null })
   .catch((error) => {
     console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
     return null
   })
+// The colour field needs only the dataset name, so it downloads while the renderer starts;
+// main() waits briefly for it before the first tiles exist, so they compile once.
+const colourFieldPromise: Promise<ColourField | null> = loadColourField(dataset, EXPERIENCE_CONFIG.design.colourMatch.fieldDir)
+  .catch((error) => { console.warn('[colour match] colour field failed to load:', error); return null })
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -360,10 +360,15 @@ function applyBenchPreset(): void {
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
-  // The ortho's density follows the preset for tiles loaded from now on (no reload: at this
-  // point the entrance flight starts, and the tiles under the loader are far and few).
+  // The ortho waits for this: behind the loader the camera already sits at the landing view,
+  // over the survey, and composing there at a guessed density would spend a constrained
+  // device's bandwidth and worker on tiles it should never get, or leave a strong device the
+  // soft variant. Attaching drops the covered tiles the loader brought in; the flight goes
+  // out first, so they come back composited on the way in.
   orthoPresetDensity = DRONE_ORTHO.presets[preset] as OrthoDensity | 'off'
-  globe?.setOrthoDensity(orthoDensity(), { reload: false })
+  orthoDensityKnown = true
+  globe?.setOrthoDensity(orthoDensity())
+  attachDroneOrtho()
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
@@ -3441,19 +3446,42 @@ const DRONE_ORTHO = DESIGN.droneOrtho
 const orthoParam = params.get('ortho')
 let droneOrthoOn: boolean = DRONE_ORTHO.enabled && orthoParam !== 'off'
 const orthoForcedDensity: OrthoDensity | null = orthoParam === 'half' || orthoParam === 'full' ? orthoParam : null
-let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets.medium as OrthoDensity | 'off'
+let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets[presetOverride ?? 'medium'] as OrthoDensity | 'off'
+/** Known at boot when forced by ?ortho= or ?preset=, otherwise once the loader benchmark ran. */
+let orthoDensityKnown = orthoForcedDensity !== null || presetOverride !== null
+/** null while the worker starts, then whether it came up. */
+let orthoAttachResult: boolean | null = null
 let orthoAttached = false
-const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? orthoPresetDensity
+/** The link's say in the density, where the browser tells (Network Information API, Chromium
+ *  only; elsewhere the preset alone decides). A covered tile costs 6-8x a satellite tile's
+ *  bytes at 'half' and 22-30x at 'full', on the same link the point tiles arrive over. */
+function networkCappedDensity(density: OrthoDensity | 'off'): OrthoDensity | 'off' {
+  const connection = (navigator as any).connection
+  if (!connection || density === 'off') return density
+  const type = String(connection.effectiveType ?? '')
+  if (connection.saveData || type.endsWith('2g')) return 'off'
+  // Mbit/s, which Chromium rounds and caps at 10.
+  const downlink = Number(connection.downlink)
+  const slow = type === '3g' || (downlink > 0 && downlink < DRONE_ORTHO.fullMinDownlinkMbps)
+  return density === 'full' && slow ? 'half' : density
+}
+const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? networkCappedDensity(orthoPresetDensity)
 function attachDroneOrtho(): void {
   const meta = colourFieldInUse?.field.meta.ortho
   if (orthoAttached || !globe || !droneOrthoOn || !meta || !colourFieldInUse) return
+  // 'off' never starts the worker, fetches the field PNGs or widens the download queue.
+  if (!orthoDensityKnown || orthoDensity() === 'off') return
   orthoAttached = true
   const fieldBaseUrl = new URL(
     `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}${COLOUR_MATCH.fieldDir.replace(/\/?$/, '/')}`, location.href).href
+  // With the dome on, the ground patch covers the view centre only, and a cached tile is
+  // seen from everywhere; only a patch over the whole survey hides the ortho under it.
+  const patch = DESIGN.groundPatch
+  const thinUnderPatch = patch.enabled && patch.amount >= 1 && !EXPERIENCE_CONFIG.lod.sphereFade.enabled
   void globe.attachOrtho({
     meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
-    config: DRONE_ORTHO, density: orthoDensity(), debugKinds: params.has('orthokinds'),
-  }).then(syncDroneOrthoPanel)
+    config: DRONE_ORTHO, density: orthoDensity(), thinUnderPatch, debugKinds: params.has('orthokinds'),
+  }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
 }
 function syncColourMatch(): void {
   const on = colourMatchOn && colourFieldBasemapGain !== null
@@ -3505,16 +3533,33 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
 }
 bindEffectToggle('colourMatchToggle', '◈ Colour match', colourMatchOn, (on) => { colourMatchOn = on; syncColourMatch() })
 const droneOrthoStatsEl = $<HTMLSpanElement>('#droneOrthoStats')
-function syncDroneOrthoPanel(): void {
+function droneOrthoStatus(): string {
   const s = globe?.orthoStats()
   if (!s) {
-    droneOrthoStatsEl.textContent = droneOrthoOn ? 'Waiting for the colour field' : 'Off (?ortho=off or config)'
-    return
+    if (!droneOrthoOn) return orthoParam === 'off' ? 'Off (?ortho=off)' : 'Off'
+    if (colourFieldMissing) return 'No colour field for this dataset'
+    if (colourFieldInUse && !colourFieldInUse.field.meta.ortho) return 'No drone ortho for this dataset'
+    if (!colourFieldInUse) return 'Waiting for the colour field'
+    if (!orthoDensityKnown) return 'Waiting for the loader benchmark'
+    if (orthoDensity() === 'off') {
+      return orthoPresetDensity === 'off'
+        ? `Off on this device (${presetOverride ?? benchPreset} preset)` : 'Off: Save-Data or a slow link'
+    }
+    return 'Starting'
   }
-  if (!s.ready) { droneOrthoStatsEl.textContent = 'Not available here — see the console'; return }
-  droneOrthoStatsEl.textContent = `${s.density} · ${s.composed} tiles (${s.fullTiles} full, ${s.edgeTiles} edge) · `
+  if (!s.ready) return orthoAttachResult === false ? 'Not available here — see the console' : 'Starting the worker'
+  if (!s.enabled) return 'Off — covered tiles show the satellite'
+  if (s.density === 'off') return 'Off for tiles loaded from now on'
+  return `${s.density} · ${s.composed} tiles (${s.fullTiles} full, ${s.edgeTiles} edge) · `
     + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
-    + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
+    + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`
+    + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}`
+    + `${s.childFailures ? ` · ${s.childFailures} ortho requests failed` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
+}
+function syncDroneOrthoPanel(): void {
+  // The span is aria-live: write only on a change, or it is re-announced every second.
+  const text = droneOrthoStatus()
+  if (droneOrthoStatsEl.textContent !== text) droneOrthoStatsEl.textContent = text
 }
 bindEffectToggle('droneOrthoToggle', '▦ Drone ortho', droneOrthoOn, (on) => {
   droneOrthoOn = on

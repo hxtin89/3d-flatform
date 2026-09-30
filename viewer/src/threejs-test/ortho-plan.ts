@@ -1,5 +1,5 @@
-// Which drone-ortho tiles a basemap tile needs — pure data, no DOM, so it runs under
-// `node --test` (ortho-plan.test.ts). The data comes from pipeline/build_colour_field.py
+// Which drone-ortho tiles a basemap tile needs, and the turns their composes take — pure
+// logic, no DOM, so it runs under `node --test` (ortho-plan.test.ts). The data comes from pipeline/build_colour_field.py
 // `--ortho`, inside the colour field's JSON; ortho-composite.ts does the fetching.
 
 /** 0 none, 1 edge (feathered or partly covered), 2 full, 3 full and under the ground patch. */
@@ -132,11 +132,16 @@ export interface PlannerOptions {
   density: OrthoDensity
   /** Source indices switched off, e.g. after repeated 403s. */
   disabled: ReadonlySet<number>
+  /** Kind 3 tiles take one same-z tile, not four children. Only true where the ground patch
+   *  lies over the whole survey: with the dome on it covers the view centre only, and a
+   *  cached tile is seen from everywhere else too. */
+  thinUnderPatch?: boolean
 }
 
 /** Plan the ortho children for a basemap tile, or null when no source touches it. */
 export function createPlanner(sources: readonly OrthoSourceMeta[], options: PlannerOptions) {
   const kinds = sources.map((source) => decodeKinds(source.kinds))
+  const kindZooms = sources.map((source) => new Set(Object.keys(source.kinds).map(Number)))
   return (z: number, x: number, y: number): TilePlan | null => {
     const children: ChildRequest[] = []
     let needsSatellite = true
@@ -146,22 +151,79 @@ export function createPlanner(sources: readonly OrthoSourceMeta[], options: Plan
       const kind = kinds[index](z, x, y)
       if (kind === 0) return
       if (kind >= 2) needsSatellite = false
-      // Under the ground patch the ortho is covered anyway: one tile, not four.
-      const split = options.density === 'full' && kind !== 3 && source.maxzoom >= z + 1
+      const thin = kind === 3 && options.thinUnderPatch === true
+      const split = options.density === 'full' && !thin && source.maxzoom >= z + 1
       if (!split) {
         children.push({ source: index, z, x, y, dx: 0, dy: 0, size: 512 })
         return
       }
       const range = serverTileRange(source.bounds, z + 1)
+      // A child the builder's own grid one zoom down marks empty would come back as a 72 B
+      // blank; without a grid at z+1 (the source's top zoom) every in-range child is asked for.
+      const childKnown = kindZooms[index].has(z + 1)
       for (const dy of [0, 1] as const) {
         for (const dx of [0, 1] as const) {
           const cx = 2 * x + dx
           const cy = 2 * y + dy
           if (cx < range.x0 || cx > range.x1 || cy < range.y0 || cy > range.y1) continue
+          if (childKnown && kinds[index](z + 1, cx, cy) === 0) continue
           children.push({ source: index, z: z + 1, x: cx, y: cy, dx, dy, size: 256 })
         }
       }
     })
     return children.length ? { z, x, y, needsSatellite, children } : null
+  }
+}
+
+/**
+ * Compose turns for covered tiles (ortho-composite.ts). A tile waiting for a turn sits inside
+ * the library's download job, so `lend(+1)` gives its slot back to the queue for the wait and
+ * `lend(-1)` takes it back when the tile leaves the line. An abort leaves the line at once,
+ * so a turn is never handed to a tile that is gone and never lost with it.
+ */
+export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
+  let inFlight = 0
+  const waiters: Array<{ grant(): void }> = []
+  return {
+    get inFlight() { return inFlight },
+    get waiting() { return waiters.length },
+    turn(signal: AbortSignal): Promise<void> {
+      if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'))
+      if (inFlight < max) {
+        inFlight++
+        return Promise.resolve()
+      }
+      return new Promise<void>((resolve, reject) => {
+        const leave = () => {
+          signal.removeEventListener('abort', onAbort)
+          lend(-1)
+        }
+        const waiter = {
+          grant() {
+            leave()
+            inFlight++
+            resolve()
+          },
+        }
+        const onAbort = () => {
+          const index = waiters.indexOf(waiter)
+          if (index >= 0) waiters.splice(index, 1)
+          leave()
+          reject(new DOMException('aborted', 'AbortError'))
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        waiters.push(waiter)
+        lend(1)
+      })
+    },
+    /** Ends a turn that `turn` granted, and hands free turns to the waiters in order. */
+    release(): void {
+      inFlight--
+      while (inFlight < max && waiters.length) waiters.shift()!.grant()
+    },
+    /** Grants every waiter at once, e.g. on dispose. */
+    releaseAll(): void {
+      waiters.splice(0).forEach((waiter) => waiter.grant())
+    },
   }
 }

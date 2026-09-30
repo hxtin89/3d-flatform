@@ -1018,8 +1018,9 @@ export const EXPERIENCE_CONFIG = {
      * runs to 2 for that case.
      *
      * Those thresholds hold with design.colourMatch off. With it on, the map's gain is
-     * basemapGain × mapBrightness / colourMatch.referenceBrightness (4.7 / 4.4 / 3.5 for
-     * peru-b2-globe at 1.4), so the knee is reached from about raw sRGB 115 in red. */
+     * basemapGain × mapBrightness / colourMatch.referenceBrightness, per zoom: for
+     * peru-b2-globe at 1.4 that is 5.0 / 4.7 / 3.4 at z15 and about 6.2 / 5.5 / 3.9 at
+     * z16-19, so the knee is reached from about raw sRGB 110-125 in red. */
     mapBrightness: 1.4,
     /**
      * Point-cloud grade, applied to the decoded linear colour before daylight, shadow and
@@ -1068,17 +1069,21 @@ export const EXPERIENCE_CONFIG = {
       fieldDir: 'colour-field/',
     },
     /**
-     * The drone orthophoto (10 cm, MapTiler custom tilesets from the wi-map prototype),
-     * composited into the satellite's own tiles where it covers them — see
-     * ortho-composite.ts. It adds no mesh, texture, draw call or shader code, so the frame
-     * costs what it did; it costs downloads (one or four ortho tiles of ~100-130 KB per
-     * covered satellite tile, lossless WebP) and worker time per covered tile, which is what
-     * the zoom and density gates below limit. Colour-matched offline into the raw satellite's
-     * colour (build_colour_field.py --ortho), so the colour match, fog and ground patch treat
-     * it as satellite. Under the survey the ground patch still covers it; it shows around the
-     * survey, in the river and in the gaps. The small plots (ireneJohn, danilo, cacao) are
-     * left out: their z21/22 detail cannot show below basemapMaxZoom 19, and their hard
-     * 1-bit edges inside secretForest would be seams.
+     * The drone orthophoto (MapTiler custom tilesets from the wi-map prototype; secretForest
+     * is served down to z20, about 15 cm a pixel here), composited into the satellite's own
+     * tiles where it covers them — see ortho-composite.ts. It adds no mesh, texture, draw
+     * call or shader code, so the frame costs what it did; it costs downloads and worker time
+     * per covered tile, which is what the zoom, density and link gates below limit. The ortho
+     * tiles are lossless WebP of ~100-120 KB each, against 14-54 KB for a satellite tile
+     * (z19-z15), so a covered tile downloads 6-8x the satellite's bytes at 'half' and 22-30x
+     * at 'full'. Colour-matched offline into the raw satellite's colour
+     * (build_colour_field.py --ortho), so the colour match, fog and ground patch treat it as
+     * satellite. Inside the dome the ground patch covers it where the cloud is; it shows in
+     * the river and the gaps there, and everywhere beyond the dome, where the points have
+     * melted away. It sits within about 3 m of the point cloud (the satellite: about 6 m).
+     * The small plots (ireneJohn, danilo, cacao) are left out: their z21/22 detail cannot
+     * show below basemapMaxZoom 19, and their hard 1-bit edges inside secretForest would be
+     * seams.
      */
     droneOrtho: {
       enabled: true,
@@ -1086,9 +1091,17 @@ export const EXPERIENCE_CONFIG = {
        *  keep the satellite, which the ortho is matched to anyway. */
       minZoom: 15,
       /** Per bench preset: 'full' = the four ortho tiles one zoom down per satellite tile (its
-       *  full 512 px), 'half' = the one at the same zoom (256 px drawn up), 'off' = none. */
+       *  full 512 px), 'half' = the one at the same zoom (256 px drawn up), 'off' = none.
+       *  Decided before the ortho starts, so 'off' never runs the worker. The link caps it
+       *  further where the browser reports one: Save-Data or 2g turns it off, 3g or a
+       *  downlink under fullMinDownlinkMbps keeps 'full' at 'half'. */
       presets: { strong: 'full', medium: 'half', constrained: 'off' },
-      fetchTimeoutMs: 8000,
+      /** Chromium reports at most 10, so 10 means "the fastest it will say". */
+      fullMinDownlinkMbps: 10,
+      /** Per ortho child, body included. A child that times out leaves its quadrant to the
+       *  satellite for as long as the tile stays loaded; at 8 s, 8 of ~180 did through the dev
+       *  proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
+      fetchTimeoutMs: 20000,
       composeTimeoutMs: 5000,
       maxConcurrentComposes: 4,
       extraDownloadJobs: 4,

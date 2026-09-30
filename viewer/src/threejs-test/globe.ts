@@ -86,7 +86,7 @@ export interface Globe {
    */
   attachOrtho(ortho: {
     meta: OrthoMeta; rootTransform: ArrayLike<number>; fieldBaseUrl: string
-    config: OrthoCompositeConfig; density: OrthoDensity | 'off'; debugKinds: boolean
+    config: OrthoCompositeConfig; density: OrthoDensity | 'off'; thinUnderPatch: boolean; debugKinds: boolean
   }): Promise<boolean>
   /** Switch the ortho for new tiles and reload the covered ones that are loaded. */
   setOrthoEnabled(on: boolean): void
