@@ -144,6 +144,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       sources: meta.sources.map((source) => ({
         baseGain: source.baseGain,
         zoomTrim: source.zoomTrim,
+        pyramidLevel: source.pyramidLevel ?? {},
         field: {
           ...source.field,
           stops: source.field.encoding.stops, zero: source.field.encoding.zero, scale: source.field.encoding.scale,

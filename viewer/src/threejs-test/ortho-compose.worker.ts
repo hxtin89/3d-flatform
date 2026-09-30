@@ -24,17 +24,19 @@ interface FieldInit {
 interface SourceInit {
   baseGain: [number, number, number]
   zoomTrim: Record<string, [number, number, number]>
+  pyramidLevel: Record<string, [number, number, number]>
   field: FieldInit
 }
 
 interface InitMessage { type: 'init'; enuFromEcef: number[]; sources: SourceInit[]; debugKinds: boolean }
-interface ChildInput { source: number; dx: 0 | 1; dy: 0 | 1; size: 256 | 512; blob: Blob | null }
+interface ChildInput { source: number; z: number; dx: 0 | 1; dy: 0 | 1; size: 256 | 512; blob: Blob | null }
 interface ComposeMessage { type: 'compose'; id: number; z: number; x: number; y: number; sat: Blob | null; children: ChildInput[] }
 interface CancelMessage { type: 'cancel'; id: number }
 
 interface Source {
   baseGain: [number, number, number]
   zoomTrim: Record<string, [number, number, number]>
+  pyramidLevel: Record<string, [number, number, number]>
   ox: number
   oy: number
   sx: number
@@ -112,7 +114,7 @@ async function loadSource(init: SourceInit): Promise<Source> {
     throw new Error('ortho field reads back differently from the file')
   }
   return {
-    baseGain: init.baseGain, zoomTrim: init.zoomTrim,
+    baseGain: init.baseGain, zoomTrim: init.zoomTrim, pyramidLevel: init.pyramidLevel ?? {},
     ox: f.origin[0], oy: f.origin[1], sx: f.size[0], sy: f.size[1], w, h, gain, feather,
   }
 }
@@ -205,7 +207,10 @@ async function compose(msg: ComposeMessage): Promise<void> {
       bitmap.close()
     }
     const px = lctx.getImageData(0, 0, SIZE, SIZE).data
-    const trim = s.zoomTrim[String(z)] ?? [1, 1, 1]
+    // Into the tile zoom's satellite colour, from the children's own zoom level of the ortho.
+    const satTrim = s.zoomTrim[String(z)] ?? [1, 1, 1]
+    const pyramid = s.pyramidLevel[String(bySource.get(index)![0].z)] ?? [1, 1, 1]
+    const trim = [0, 1, 2].map((c) => satTrim[c] / pyramid[c])
     for (let k = 0; k < LATTICE * LATTICE; k++) sample(s, enu[k * 2], enu[k * 2 + 1], trim, lat, k * 4)
     for (let cj = 0; cj < LATTICE - 1; cj++) {
       for (let ci = 0; ci < LATTICE - 1; ci++) {

@@ -43,6 +43,9 @@ export interface OrthoSourceMeta {
   baseGain: [number, number, number]
   /** Per XYZ zoom, the raw satellite's colour relative to the builder's reference zoom. */
   zoomTrim: Record<string, [number, number, number]>
+  /** Per XYZ zoom, this ortho's own colour relative to the zoom its field was fitted at:
+   *  MapTiler Engine's coarser levels are darker in linear light than its fine ones. */
+  pyramidLevel?: Record<string, [number, number, number]>
   field: OrthoFieldPlacement
   kinds: Record<string, OrthoKindLevel>
 }

@@ -531,7 +531,7 @@ def main() -> None:
     ap.add_argument('--ortho-zoom', type=int, default=15, help='zoom the ortho is analysed at (4.7 m pixels at 15)')
     ap.add_argument('--ortho-min-zoom', type=int, default=15, help='lowest basemap zoom the viewer composites the ortho into')
     ap.add_argument('--basemap-max-zoom', type=int, default=19, help='config design.basemapMaxZoom')
-    ap.add_argument('--ortho-ladder-tiles', type=int, default=12, help='tiles sampled per zoom for the ortho trim')
+    ap.add_argument('--ortho-ladder-tiles', type=int, default=24, help='tiles sampled per zoom for the ortho trim and pyramid')
     ap.add_argument('--ortho-footprint', default='480x32', help='median bar for the ortho, metres east-west x north-south')
     ap.add_argument('--ortho-feather', default='8,60', help='feather ramp inside the ortho edge, metres from,to')
     ap.add_argument('--env', default=os.path.join(os.path.dirname(__file__), '..', 'viewer', '.env'),
@@ -744,6 +744,32 @@ def main() -> None:
                     continue
                 trim[str(z)] = [round(float(v), 4) for v in z16[both].mean(0) / np.maximum(b16raw[both].mean(0), 1e-6)]
 
+            # The ortho's own pyramid is not colour-stable either: MapTiler Engine's coarser
+            # levels come out darker in linear light than the fine ones (measured on Secret
+            # Forest: z17 is up to 0.17 stops brighter in red than z15 over the same ground).
+            # The field is fitted at z_s, and the viewer composites children of other zooms,
+            # so each of those zooms' level against z_s is measured and divided out per child.
+            pyramid = {str(z_s): [1.0, 1.0, 1.0]}
+            o_interior = o16[interior16].mean(0) if interior16.any() else None
+            for zc in range(args.ortho_min_zoom, min(args.basemap_max_zoom + 1, o['maxzoom']) + 1):
+                if zc == z_s or o_interior is None or len(lon_i) == 0:
+                    continue
+                nz = 2 ** zc
+                txs = np.floor((lon_i + 180) / 360 * nz).astype(int)
+                r = np.radians(lat_i)
+                tys = np.floor((1 - np.log(np.tan(r) + 1 / np.cos(r)) / math.pi) / 2 * nz).astype(int)
+                cand = sorted(set(zip(txs.tolist(), tys.tolist())))
+                stride = max(1, len(cand) // args.ortho_ladder_tiles)
+                prgb, pcount = sample_xyz(grid, ot, zc, 256, args.cache, headers, rgba=True,
+                                          tiles=cand[::stride][:args.ortho_ladder_tiles], label='ortho pyramid')
+                p16, pm16 = block_mean(prgb, pcount > 0, k)
+                both = interior16 & pm16
+                if both.sum() < 20:
+                    continue
+                pyramid[str(zc)] = [round(float(v), 4) for v in p16[both].mean(0) / np.maximum(o16[both].mean(0), 1e-6)]
+            print(f'  pyramid vs z{z_s}: ' + ', '.join(f'z{z} {np.round(np.log2(v), 3).tolist()}' for z, v in pyramid.items()),
+                  file=sys.stderr)
+
             ys, xs = np.nonzero(om16)
             bx0, bx1, by0, by1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
             gcode, gclipped = encode_field(ofield[by0:by1, bx0:bx1] / LN2, args.encode_stops)
@@ -760,6 +786,8 @@ def main() -> None:
                 **o,
                 'baseGain': [round(float(v), 5) for v in np.exp(-olevel)],
                 'zoomTrim': trim,
+                # this source's own colour at each zoom against the zoom its field was fitted at
+                'pyramidLevel': pyramid,
                 'field': {
                     'origin': [x0 + bx0 * texel, y0 + by0 * texel],
                     'size': [(bx1 - bx0) * texel, (by1 - by0) * texel],
