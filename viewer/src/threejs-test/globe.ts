@@ -243,14 +243,30 @@ export function createGlobe(opts: {
   // timeouts from the tile host) left the view stuck at a blurry z6, or at sky, for the rest
   // of the session. Retry failed tiles after a pause that doubles while failures keep coming
   // and drops back once tiles load again.
+  //
+  // Not with resetFailedTiles(): it only flips FAILED back to UNLOADED, and the tile stays in
+  // the LRU cache, where requestTileContents cannot add it again, so it is never requested
+  // and holds its whole subtree back (2026-10-01: one failed z10 tile kept a landing view at
+  // z9). Taking the tile out of the cache unloads it properly; the root keeps the library's
+  // own reset.
   let retryDelayMs = 2000
   let retryTimer = 0
+  /** The library's FAILED loading state (core/renderer/constants.js), which its types omit. */
+  const FAILED = -1
+  function retryFailedTiles(): void {
+    const cache = (tiles as any).lruCache
+    const failed = (cache?.itemList ?? []).filter((tile: any) => tile?.internal?.loadingState === FAILED)
+    for (const tile of failed) {
+      if (cache.remove(tile)) (tiles as any).stats.failed--
+    }
+    tiles.resetFailedTiles()
+    tiles.dispatchEvent({ type: 'needs-update' })
+  }
   tiles.addEventListener('load-error', () => {
     if (retryTimer) return
     retryTimer = window.setTimeout(() => {
       retryTimer = 0
-      tiles.resetFailedTiles()
-      tiles.dispatchEvent({ type: 'needs-update' })
+      retryFailedTiles()
       retryDelayMs = Math.min(retryDelayMs * 2, 60_000)
     }, retryDelayMs)
   })
