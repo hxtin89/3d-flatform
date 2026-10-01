@@ -55,6 +55,9 @@ export interface SkyCloudSource {
    *  `skyOcclusion`: how much of the sky behind they hide, as seen through the haze in front.
    *  `sunOcclusion`: their true opacity, which hides the sun disc. */
   sample(dirEnu: any): { radiance: any; skyOcclusion: any; sunOcclusion: any }
+  /** The sun's mean transmittance through the clouds over the surroundings (a node): how much
+   *  of the air around is in sunlight at all. */
+  meanSunTransmittance(): any
   /** Bumped whenever `sample` would build different nodes. */
   readonly version: number
 }
@@ -95,6 +98,9 @@ export interface SkyParams {
   /** An artistic multiplier on the sky's own radiance — the background and the haze, not the
    *  light it casts. */
   skyBrightness: number
+  /** Under a full overcast, the share of the clear sky's glow the haze keeps: the light the
+   *  clouds let through diffusely. */
+  overcastGlow: number
 }
 
 /** The light the sky and sun cast this frame, CPU side, already in display units. */
@@ -108,6 +114,10 @@ export interface SkyLight {
   skyMean: THREE.Color
   /** Transmittance of the sun through the clouds, from the dome (1 without clouds). */
   sunThroughClouds: number
+  /** The sun's mean transmittance through the clouds over the surroundings (1 without). */
+  cloudSunMean: number
+  /** The clear sky's mean radiance from the ground, relative units (before the exposure). */
+  clearSkyMean: Rgb
   /** K: the factor from relative illuminance to display. */
   illuminanceScale: number
   /** Sun elevation, radians. */
@@ -175,6 +185,10 @@ export interface SkyNodes {
   miePhase(cosTheta: any): any
   /** Multiple-scattering luminance at radius r for sun zenith cosine mu. */
   multiScattering(r: any, mu: any): any
+  /** Transmittance of the air over `distanceKm` from radius `r0` along zenith cosine `mu0`
+   *  (Simpson's rule over the exponential layers), for passes that see from elsewhere than the
+   *  camera — the cloud bake's eye. */
+  airTransmittance(r0: any, mu0: any, distanceKm: any): any
 }
 
 // ---------------------------------------------------------------- shared helpers
@@ -261,6 +275,9 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   const sunTint = group(uniform(new THREE.Color(1, 1, 1)))
   const sunMax = group(uniform(60))
   const nightSky = group(uniform(new THREE.Color(0, 0, 0)))
+  /** The share of the air's own glow left under the clouds: in sunlight it is the clear sky,
+   *  under an overcast only the light the clouds let through diffusely lights the haze. */
+  const cloudLight = group(uniform(1))
   const aerialStart = group(uniform(0))
   const aerialDensity = group(uniform(1))
 
@@ -481,14 +498,16 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     const st = skyViewUv(cameraRadius, dirEnu, SKY_VIEW_SIZE)
     const A = skyViewATexture.sample(st).level(0).rgb
     const B = skyViewBTexture.sample(st).level(0).rgb
-    return A.add(B.mul(miePhase(dot(dirEnu, sunDirection)))).mul(skyBrightness)
+    return A.add(B.mul(miePhase(dot(dirEnu, sunDirection)))).mul(skyBrightness).mul(cloudLight)
   }
-  const groundSkyRadiance = (dirEnu: any) => {
+  /** The clear sky seen from the ground, as if there were no clouds at all. */
+  const clearGroundSkyRadiance = (dirEnu: any) => {
     const st = skyViewUv(groundRadius.add(0.01), dirEnu, GROUND_VIEW_SIZE)
     const A = groundViewATexture.sample(st).level(0).rgb
     const B = groundViewBTexture.sample(st).level(0).rgb
     return A.add(B.mul(miePhase(dot(dirEnu, sunDirection))))
   }
+  const groundSkyRadiance = (dirEnu: any) => clearGroundSkyRadiance(dirEnu).mul(cloudLight)
 
   /** Transmittance from the camera to where a downward ray meets the ground, and that
    *  distance; (1, −1) for a ray that does not. */
@@ -513,6 +532,16 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
    * included), and the light scattered into it, taken from the sky-view table for the same
    * direction scaled by how much of the full ray's in-scatter this part of it holds.
    */
+  const airTransmittance = (r0: any, mu0: any, dKm: any) => {
+    const radiusAt = (t: any) => sqrt(r0.mul(r0).add(t.mul(t)).add(r0.mul(mu0).mul(t).mul(2)))
+    const h0 = r0.sub(air.bottom)
+    const hm = radiusAt(dKm.mul(0.5)).sub(air.bottom)
+    const h1 = radiusAt(dKm).sub(air.bottom)
+    const density = (h: any, height: any) => exp(max(h, 0).negate().div(height))
+    const rayleigh = density(h0, air.rayleighHeight).add(density(hm, air.rayleighHeight).mul(4)).add(density(h1, air.rayleighHeight)).div(6)
+    const mie = density(h0, air.mieHeight).add(density(hm, air.mieHeight).mul(4)).add(density(h1, air.mieHeight)).div(6)
+    return exp(vec3(air.rayleighScattering).mul(rayleigh).add(vec3(air.mieExtinction).mul(mie)).mul(dKm).negate())
+  }
   const aerial = (distanceM: any, dirEnu: any) => {
     const r0 = cameraRadius
     const mu0 = dirEnu.z
@@ -578,15 +607,18 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   })()
 
   // ---------------------------------------------------------------- capture
-  // Four texels: 0 the sky's irradiance on a horizontal surface at the ground, 1 the mean
-  // radiance of the upper sky, 2 the sun's transmittance through the clouds, 3 spare. One
-  // fragment each, a 16 × 32 grid of directions over the upper hemisphere.
-  const captureTarget = new RenderTarget(4, 1, { type: THREE.FloatType, depthBuffer: false })
+  // Eight texels: 0 the sky's irradiance on a horizontal surface at the ground, 1 the mean
+  // radiance of the upper sky, 2 the sun's transmittance through the clouds seen from the
+  // survey, 3 its mean over the surroundings, 4 the clear sky's mean radiance (no clouds: what
+  // lights the clouds' own tops). One fragment each, a 16 × 32 grid of directions over the
+  // upper hemisphere.
+  const captureTarget = new RenderTarget(8, 1, { type: THREE.FloatType, depthBuffer: false })
   captureTarget.texture.minFilter = captureTarget.texture.magFilter = THREE.NearestFilter
   const buildCaptureNode = () => Fn(() => {
-    const index = uv().x.mul(4).floor()
+    const index = uv().x.mul(8).floor()
     const irradiance = vec3(0).toVar()
     const mean = vec3(0).toVar()
+    const clearMean = vec3(0).toVar()
     const rows = 16
     const columns = 32
     Loop(rows, columns, ({ i, j }: { i: any; j: any }) => {
@@ -595,6 +627,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       const cosEl = sqrt(sinEl.mul(sinEl).oneMinus())
       const az = float(j).add(0.5).div(columns).mul(2 * PI)
       const dir = vec3(cosEl.mul(cos(az)), cosEl.mul(sin(az)), sinEl)
+      clearMean.addAssign(clearGroundSkyRadiance(dir))
       let L: any = groundSkyRadiance(dir)
       if (clouds) {
         const c = clouds.sample(dir)
@@ -606,9 +639,15 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     })
     const dOmega = (2 * PI) / (rows * columns)
     let sunThrough: any = float(1)
-    if (clouds) sunThrough = float(1).sub(clouds.sample(sunDirection).sunOcclusion)
+    let sunMean: any = float(1)
+    if (clouds) {
+      sunThrough = float(1).sub(clouds.sample(sunDirection).sunOcclusion)
+      sunMean = clouds.meanSunTransmittance()
+    }
     return select(index.lessThan(0.5), vec4(irradiance.mul(dOmega), 1),
-      select(index.lessThan(1.5), vec4(mean.div(rows * columns), 1), vec4(sunThrough, sunThrough, sunThrough, 1)))
+      select(index.lessThan(1.5), vec4(mean.div(rows * columns), 1),
+        select(index.lessThan(2.5), vec4(sunThrough, sunThrough, sunThrough, 1),
+          select(index.lessThan(3.5), vec4(sunMean, sunMean, sunMean, 1), vec4(clearMean.div(rows * columns), 1)))))
   })()
 
   // ---------------------------------------------------------------- passes
@@ -639,6 +678,8 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     sky: new THREE.Color(0.2, 0.22, 0.25),
     skyMean: new THREE.Color(0.2, 0.22, 0.25),
     sunThroughClouds: 1,
+    cloudSunMean: 1,
+    clearSkyMean: [0.05, 0.055, 0.065],
     illuminanceScale: 1,
     sunElevation: Math.PI / 3,
   }
@@ -649,11 +690,13 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   const readCapture = async () => {
     captureInFlight = true
     try {
-      const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, 4, 1) as Float32Array
-      if (pixels && pixels.length >= 12 && Number.isFinite(pixels[0])) {
+      const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, 8, 1) as Float32Array
+      if (pixels && pixels.length >= 20 && Number.isFinite(pixels[0])) {
         capturedSky[0] = pixels[0]; capturedSky[1] = pixels[1]; capturedSky[2] = pixels[2]
         capturedMean[0] = pixels[4]; capturedMean[1] = pixels[5]; capturedMean[2] = pixels[6]
         light.sunThroughClouds = THREE.MathUtils.clamp(pixels[8], 0, 1)
+        light.cloudSunMean = THREE.MathUtils.clamp(pixels[12], 0, 1)
+        light.clearSkyMean = [pixels[16], pixels[17], pixels[18]]
       }
     } catch {
       // A lost device or a disposed target: keep the last values.
@@ -702,6 +745,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       air,
       miePhase,
       multiScattering: multiScatteringAt,
+      airTransmittance,
     },
     textures: {
       transmittance: transmittanceTarget.texture,
@@ -727,7 +771,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       material.fragmentNode = buildCaptureNode()
       material.needsUpdate = true
       captureDirty = true
-      if (!source) light.sunThroughClouds = 1
+      if (!source) { light.sunThroughClouds = 1; light.cloudSunMean = 1 }
     },
     invalidateCapture() { captureDirty = true },
     async debugRead(table) {
@@ -798,6 +842,9 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       // Night: the sky fades to the configured floor as the sun sinks below −2° … −12°.
       const night = 1 - THREE.MathUtils.smoothstep(elevation, THREE.MathUtils.degToRad(-12), THREE.MathUtils.degToRad(-2))
       nightSky.value.copy(params.nightSky).multiplyScalar(night)
+      // Under the clouds only their diffuse share lights the haze; eased, it follows a re-bake.
+      const wanted = clouds ? light.cloudSunMean + (1 - light.cloudSunMean) * THREE.MathUtils.clamp(params.overcastGlow, 0, 1) : 1
+      cloudLight.value += (wanted - cloudLight.value) * (1 - Math.exp(-Math.max(input.deltaS, 0) / 0.5))
     },
     dispose() {
       for (const pass of Object.values(passes)) (pass.quad.material as NodeMaterial).dispose()
@@ -832,7 +879,7 @@ export function defaultSkyParams(config: {
   exposure: number; adaptation: number; adaptationMax: number; sunIntensity: number; sunSize: number
   sunSharpnessPx: number; sunLimbDarkening: number; sunGlow: number; sunGlowSize: number; sunTint: number
   sunMaxRadiance: number; nightSky: number; aerialStartM: number; aerialDensity: number
-  whiteBalance: number; skyBrightness: number
+  whiteBalance: number; skyBrightness: number; overcastGlow: number
 }): SkyParams {
   return {
     exposure: config.exposure,
@@ -851,5 +898,6 @@ export function defaultSkyParams(config: {
     aerialDensity: config.aerialDensity,
     whiteBalance: config.whiteBalance,
     skyBrightness: config.skyBrightness,
+    overcastGlow: config.overcastGlow,
   }
 }

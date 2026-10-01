@@ -906,7 +906,9 @@ export const EXPERIENCE_CONFIG = {
     /** White balance to the noon sun (1), as a camera on daylight; 0 keeps the sun at the top
      *  of the air white. And an artistic multiplier on the sky's own radiance. */
     whiteBalance: 1,
-    skyBrightness: 1,
+    skyBrightness: 1.35,
+    /** Under a full overcast the haze keeps this share of the clear sky's glow. */
+    overcastGlow: 0.3,
     /**
      * The sun and sky as light on the point cloud and the basemap (point-cloud.ts sunLight):
      * the captured colours relit by the atmosphere's sun and sky instead of the daylight
@@ -930,8 +932,9 @@ export const EXPERIENCE_CONFIG = {
    */
   sunShadows: {
     enabled: true,
-    /** Texels per side; the dome-fitted map covers 1–6 km, so 2048 gives 0.5–3 m texels. */
-    resolution: 2048,
+    /** Texels per side; the dome-fitted map covers 1–6 km, so 1024 gives 1–6 m texels, plenty
+     *  for soft blobs (each map is 1024² RGBA16F, ~11 MB with mips). */
+    resolution: 1024,
     /** 1 or 2: an inner map over the dome's middle (`cascadeSplit` of the extent) for close-ups. */
     cascades: 1,
     cascadeSplit: 0.35,
@@ -957,6 +960,99 @@ export const EXPERIENCE_CONFIG = {
     /** Volumetric shadows in the fog's march: optical-depth multiplier and the mip bias. */
     fogStrength: 1,
     fogLodBias: 1,
+  },
+  /**
+   * Clouds on the sky dome (sky-clouds.ts): one cloud field baked into a panorama from the
+   * survey's centre — volumetric light transport, infinitely far geometry — and its shadows on
+   * the ground, the points and inside the fog. Needs the physical sky. `?clouds=0|1|<preset>`.
+   * Lengths in km.
+   */
+  skyClouds: {
+    enabled: true,
+    preset: 'fair',
+    /** Panorama size (azimuth × elevation, rows packed toward the horizon), steps per ray, and
+     *  the frames one bake is spread over. */
+    bakeWidth: 2048,
+    bakeHeight: 768,
+    bakeSteps: 64,
+    bakeFrames: 48,
+    /** Seconds a new bake cross-fades over the old one. */
+    fadeSeconds: 1.2,
+    sunLight: 1,
+    ambient: 1,
+    multipleScattering: 3,
+    powder: 0.4,
+    /** Deep multiple scattering (two-stream diffusion): the lit side's diffuse reflectance and
+     *  how fast it fades with the optical depth toward the sun. */
+    diffuse: 0.55,
+    /** The fall-off 2 / (2 + kτ) of the diffuse light inward: (1 − g) of the droplets is 0.15;
+     *  a little steeper keeps fair-weather cumulus their grey bases. */
+    diffusePenetration: 0.3,
+    /** How strongly the cloud above a point hides the sky light from it: dark storm cores. */
+    ambientOcclusion: 0.08,
+    /** Share of the air's optical depth the clouds are hazed with: below 1 distant towers
+     *  keep standing over the haze. */
+    haze: 0.65,
+    /** Cloud shadows: optical-depth multiplier (thick clouds are opaque; below 1 lets the
+     *  diffuse light through) and the mip bias that softens them. */
+    shadowStrength: 0.6,
+    shadowSoftness: 1.5,
+    weatherSize: 256,
+    shapeSize: 64,
+    /** Longest slant a ray marches through the layer, km: farther the haze hides it. */
+    maxSlabKm: 40,
+    rainDensityPerKm: 1.2,
+    shadowSize: 512,
+    shadowHalfExtentM: 16_000,
+    /** Weather situations. Each carries its own haze (aerosol optical depth). */
+    presets: {
+      clear: {
+        coverage: 0.04, cells: 0.6, type: 0.5, typeVariation: 0.3, baseKm: 1.2, thicknessKm: 1.5,
+        densityPerKm: 25, erosion: 0.6, shapeScaleKm: 3, weatherScaleKm: 50, absorption: 0,
+        precipitation: 0, anvil: 0, highCoverage: 0.25, highAltitudeKm: 9, highDepth: 0.15,
+        offsetKm: [0, 0] as [number, number], aerosolDepth: 0.15,
+      },
+      fair: {
+        coverage: 0.32, cells: 0.75, type: 0.5, typeVariation: 0.35, baseKm: 1.1, thicknessKm: 2.2,
+        densityPerKm: 35, erosion: 0.55, shapeScaleKm: 2.6, weatherScaleKm: 40, absorption: 0.02,
+        precipitation: 0, anvil: 0, highCoverage: 0.15, highAltitudeKm: 8, highDepth: 0.1,
+        offsetKm: [3, 5] as [number, number], aerosolDepth: 0.2,
+      },
+      scattered: {
+        coverage: 0.55, cells: 0.65, type: 0.6, typeVariation: 0.4, baseKm: 1, thicknessKm: 3.2,
+        densityPerKm: 40, erosion: 0.5, shapeScaleKm: 3, weatherScaleKm: 45, absorption: 0.05,
+        precipitation: 0.15, anvil: 0.1, highCoverage: 0.3, highAltitudeKm: 7, highDepth: 0.2,
+        offsetKm: [11, -4] as [number, number], aerosolDepth: 0.25,
+      },
+      /** Low sun, scattered cumulus under a sheet of altocumulus (the RDR2 reference). */
+      golden: {
+        coverage: 0.38, cells: 0.7, type: 0.5, typeVariation: 0.35, baseKm: 1.2, thicknessKm: 2.4,
+        densityPerKm: 32, erosion: 0.6, shapeScaleKm: 2.8, weatherScaleKm: 40, absorption: 0,
+        precipitation: 0, anvil: 0, highCoverage: 0.55, highAltitudeKm: 4.5, highDepth: 0.35,
+        offsetKm: [-7, 9] as [number, number], aerosolDepth: 0.18,
+      },
+      /** Low, misty stratus over the cloud forest (the second reference). */
+      mist: {
+        coverage: 0.95, cells: 0.2, type: 0.1, typeVariation: 0.15, baseKm: 0.35, thicknessKm: 2.4,
+        densityPerKm: 30, erosion: 0.75, shapeScaleKm: 1.8, weatherScaleKm: 30, absorption: 0.12,
+        precipitation: 0.1, anvil: 0, highCoverage: 0.6, highAltitudeKm: 3.5, highDepth: 0.8,
+        offsetKm: [2, 2] as [number, number], aerosolDepth: 0.45,
+      },
+      /** Heavy grey overcast with rain shafts (the rainy river reference). */
+      overcast: {
+        coverage: 0.92, cells: 0.35, type: 0.3, typeVariation: 0.3, baseKm: 0.7, thicknessKm: 2.5,
+        densityPerKm: 40, erosion: 0.5, shapeScaleKm: 3.5, weatherScaleKm: 50, absorption: 0.12,
+        precipitation: 0.6, anvil: 0, highCoverage: 0.7, highAltitudeKm: 5, highDepth: 1,
+        offsetKm: [-3, -8] as [number, number], aerosolDepth: 0.4,
+      },
+      /** Towering cells with anvils, dark bases and rain (the mountain storm reference). */
+      storm: {
+        coverage: 0.6, cells: 0.95, type: 0.8, typeVariation: 0.4, baseKm: 0.9, thicknessKm: 9,
+        densityPerKm: 70, erosion: 0.4, shapeScaleKm: 4.5, weatherScaleKm: 60, absorption: 0.4,
+        precipitation: 0.9, anvil: 1, highCoverage: 0.75, highAltitudeKm: 10, highDepth: 2.5,
+        offsetKm: [6, -12] as [number, number], aerosolDepth: 0.35,
+      },
+    },
   },
   // Look grading exposed live by the DESIGN section of the panel. These are the
   // shipped defaults; the sliders write the same uniforms, so anything dialled in

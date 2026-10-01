@@ -90,7 +90,12 @@ export interface SunShadowParams {
 // Module-level, so the tile graphs that read them can be built before the layer exists; the
 // layer swaps the textures in and writes the uniforms. A 1-texel zero map until then: τ = 0,
 // fully lit.
+// With the maps' own sampler state: three keeps a texture node's sampler until the texture's
+// version changes, so a node built on a nearest, unmipmapped stand-in would sample the maps so.
 const placeholder = new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType)
+placeholder.magFilter = THREE.LinearFilter
+placeholder.minFilter = THREE.LinearMipmapLinearFilter
+placeholder.wrapS = placeholder.wrapT = THREE.ClampToEdgeWrapping
 placeholder.needsUpdate = true
 const group = (node: any) => node.setGroup(renderGroup)
 export const canopyShadow = {
@@ -246,10 +251,13 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   }
 
   // ---------------------------------------------------------------- targets
+  // Made once and resized, never replaced: a texture node switched to another render target
+  // keeps sampling the old one in r185, so every node here reads one fixed target.
   let resolution = 0
   const accum: RenderTarget[] = []
   const finals: RenderTarget[] = []
   let blurTemp: RenderTarget | null = null
+  let blurPasses: { horizontal: QuadMesh[]; vertical: QuadMesh } | null = null
   const makeTarget = (size: number, mips: boolean, name: string) => {
     const target = new RenderTarget(size, size, { type: THREE.HalfFloatType, depthBuffer: false })
     const t = target.texture
@@ -262,54 +270,62 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   }
   const releaseTargets = () => {
     for (const target of [...accum, ...finals, blurTemp]) target?.dispose()
-    accum.length = 0
-    finals.length = 0
-    blurTemp = null
+    resolution = 0
   }
   const ensureTargets = () => {
     const size = THREE.MathUtils.clamp(2 ** Math.round(Math.log2(Math.max(params.resolution, 256))), 256, 4096)
-    if (size === resolution && accum.length === 2) return
-    releaseTargets()
+    if (size === resolution) return
     resolution = size
-    for (let c = 0; c < 2; c++) {
-      accum.push(makeTarget(size, false, `canopy-shadow-accum-${c}`))
-      finals.push(makeTarget(size, true, `canopy-shadow-${c}`))
+    if (!blurTemp) {
+      // One accumulation and one blur target, shared by the cascades (drawn one after the
+      // other); a final, mipmapped map per cascade.
+      accum.push(makeTarget(size, false, 'canopy-shadow-accum'))
+      for (let c = 0; c < 2; c++) finals.push(makeTarget(size, true, `canopy-shadow-${c}`))
+      blurTemp = makeTarget(size, false, 'canopy-shadow-blur')
+      canopyShadow.maps[0].value = finals[0].texture
+      canopyShadow.maps[1].value = finals[1].texture
+      blurPasses = {
+        horizontal: [blurPass(accum[0].texture, true)],
+        vertical: blurPass(blurTemp.texture, false),
+      }
+    } else {
+      for (const target of [...accum, ...finals, blurTemp]) target.setSize(size, size)
     }
-    blurTemp = makeTarget(size, false, 'canopy-shadow-blur')
-    canopyShadow.maps[0].value = finals[0].texture
-    canopyShadow.maps[1].value = finals[1].texture
     forceUpdate = true
   }
 
   // ---------------------------------------------------------------- blur
   // Separable Gaussian, 17 taps a pass, spaced so ±3σ is covered (bilinear taps fill between
-  // them when the blur is wider than eight texels).
-  const blurInput = texture(placeholder)
-  const blurStep = uniform(new THREE.Vector2(1, 0))
+  // them when the blur is wider than eight texels). One pass per input target: a texture
+  // node's target never changes (see the targets above).
+  const blurTexel = uniform(1)
   const blurSigma = uniform(1)
-  const blurNode = Fn(() => {
-    const st = uv()
-    const sum = vec4(0).toVar()
-    const weight = float(0).toVar()
-    const spacing = max(blurSigma.mul(3).div(8), 1)
-    Loop({ start: int(-8), end: int(8), type: 'int', condition: '<=' }, ({ i }: { i: any }) => {
-      const offset = float(i).mul(spacing)
-      const w = exp(offset.mul(offset).div(max(blurSigma.mul(blurSigma).mul(2), 1e-4)).negate())
-      sum.addAssign(blurInput.sample(st.add(blurStep.mul(offset))).level(0).mul(w))
-      weight.addAssign(w)
-    })
-    return sum.div(max(weight, 1e-6))
-  })()
-  const blurMaterial = new NodeMaterial()
-  blurMaterial.fragmentNode = blurNode
-  blurMaterial.name = 'canopy-shadow-blur'
-  const blurQuad = new QuadMesh(blurMaterial)
-  const runBlur = (source: RenderTarget, target: RenderTarget, horizontal: boolean, sigmaTexels: number) => {
-    blurInput.value = source.texture
-    blurStep.value.set(horizontal ? 1 / resolution : 0, horizontal ? 0 : 1 / resolution)
+  const blurPass = (input: THREE.Texture, horizontal: boolean): QuadMesh => {
+    const source = texture(input)
+    const node = Fn(() => {
+      const st = uv()
+      const sum = vec4(0).toVar()
+      const weight = float(0).toVar()
+      const spacing = max(blurSigma.mul(3).div(8), 1)
+      const step = horizontal ? vec2(blurTexel, 0) : vec2(0, blurTexel)
+      Loop({ start: int(-8), end: int(8), type: 'int', condition: '<=' }, ({ i }: { i: any }) => {
+        const offset = float(i).mul(spacing)
+        const w = exp(offset.mul(offset).div(max(blurSigma.mul(blurSigma).mul(2), 1e-4)).negate())
+        sum.addAssign(source.sample(st.add(step.mul(offset))).level(0).mul(w))
+        weight.addAssign(w)
+      })
+      return sum.div(max(weight, 1e-6))
+    })()
+    const material = new NodeMaterial()
+    material.fragmentNode = node
+    material.name = horizontal ? 'canopy-shadow-blur-h' : 'canopy-shadow-blur-v'
+    return new QuadMesh(material)
+  }
+  const runBlur = (pass: QuadMesh, target: RenderTarget, sigmaTexels: number) => {
+    blurTexel.value = 1 / resolution
     blurSigma.value = Math.max(sigmaTexels, 0.01)
     renderer.setRenderTarget(target)
-    blurQuad.render(renderer)
+    pass.render(renderer)
   }
 
   // ---------------------------------------------------------------- casters
@@ -409,8 +425,8 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       if (!enabled) {
         canopyShadow.fade.value = 0
         for (const proxy of [...proxies.values()]) dropProxy(proxy)
+        // Frees the GPU memory; the targets themselves stay, re-allocated on the next draw.
         releaseTargets()
-        resolution = 0
       }
       forceUpdate = true
     },
@@ -521,11 +537,11 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
         caster.centre.value.copy(centre)
         caster.halfExtent.value = half
         caster.texelM.value = texel
-        renderer.setRenderTarget(accum[index])
+        renderer.setRenderTarget(accum[0])
         renderer.render(shadowScene, shadowCamera)
         const sigma = params.softnessM / texel
-        runBlur(accum[index], blurTemp!, true, sigma)
-        runBlur(blurTemp!, finals[index], false, sigma)
+        runBlur(blurPasses!.horizontal[0], blurTemp!, sigma)
+        runBlur(blurPasses!.vertical, finals[index], sigma)
         const centreUniform = index === 0 ? canopyShadow.centre0 : canopyShadow.centre1
         centreUniform.value.copy(centre)
         ;(index === 0 ? canopyShadow.half0 : canopyShadow.half1).value = half
@@ -538,7 +554,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
     dispose() {
       for (const proxy of [...proxies.values()]) dropProxy(proxy)
       releaseTargets()
-      blurMaterial.dispose()
+      if (blurPasses) for (const pass of [...blurPasses.horizontal, blurPasses.vertical]) (pass.material as NodeMaterial).dispose()
       canopyShadow.maps[0].value = placeholder
       canopyShadow.maps[1].value = placeholder
       canopyShadow.fade.value = 0

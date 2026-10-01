@@ -78,6 +78,7 @@ import { extinctionForVisibility, miePhaseParameters, multipleScatteringOctaves,
 import type { DensitySliceRequest } from './fog-noise-editor'
 import { FogTemporalNode } from './fog-temporal'
 import { canopyShadow, canopyTransmittance } from './sun-shadows'
+import { cloudTransmittance } from './sky-clouds'
 
 const CONFIG = EXPERIENCE_CONFIG.volumetricFog
 export type FogNoiseSource = '2d' | '3d' | 'procedural'
@@ -112,6 +113,8 @@ export interface GroundFogBuildOptions {
   /** Volumetric shadows: each step's sunlight through the canopy's shadow map
    *  (sun-shadows.ts) — light shafts between the crowns. One map read per step. */
   canopyShadows: boolean
+  /** The sky's cloud shadows on each step's sunlight (sky-clouds.ts): one map read per step. */
+  cloudShadows: boolean
 }
 
 export interface GroundFogLayer {
@@ -231,6 +234,7 @@ export function createGroundFogLayer(opts: {
     fillCanopyHoles: CONFIG.fillCanopyHoles,
     debugView: 'off',
     canopyShadows: false,
+    cloudShadows: false,
   }
   let resolutionScale: number = CONFIG.resolutionScale
 
@@ -744,6 +748,8 @@ export function createGroundFogLayer(opts: {
             max(log2(max(t.mul(u.pixelAngle).div(max(canopyShadow.texel1, 0.01)), 1)).add(u.canopyShadowLodBias), 0),
             canopyShadow.strength.mul(u.canopyShadowStrength)).toVar()
           : float(1)
+        const clouds = options.cloudShadows ? cloudTransmittance(p, float(1)).toVar() : float(1)
+        const shaded = canopy.mul(clouds).toVar()
         const localTop = sample.localTop.toVar()
         const hRel = sample.hRel.toVar()
         If(sigma.greaterThan(1e-5), () => {
@@ -759,7 +765,7 @@ export function createGroundFogLayer(opts: {
           octaves.forEach((octave, index) => {
             sunLight = sunLight.add(exp(tauSun.mul(-octave.extinction)).mul(phases[index]).mul(octave.scattering))
           })
-          const inScatter = vec3(u.sunRadiance).mul(sunLight.mul(occlusion).mul(canopy).mul(daylight))
+          const inScatter = vec3(u.sunRadiance).mul(sunLight.mul(occlusion).mul(shaded).mul(daylight))
             .add(vec3(u.ambientRadiance).mul(occlusion).mul(exp(tauUp.negate()).mul(0.35).add(0.65)))
             .mul(u.albedo)
           const stepTransmittance = exp(sigma.mul(dt).negate())
@@ -775,7 +781,7 @@ export function createGroundFogLayer(opts: {
         // under 1 % across the band and about 7 % on a kilometres-long grazing ray).
         const airStep = exp(vec3(u.rayleigh).mul(dt).negate())
         const airMean = airStep.x.add(airStep.y).add(airStep.z).div(3)
-        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(canopy).add(u.ambientRadiance)
+        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(shaded).add(u.ambientRadiance)
           .mul(airStep.oneMinus()).mul(transmittance))
         weightedDistance.addAssign(transmittance.mul(airMean.oneMinus()).mul(t))
         transmittance.mulAssign(airMean)
@@ -1026,7 +1032,7 @@ export function createGroundFogLayer(opts: {
       if (skyLight) {
         // The atmosphere's own light: the sun through the air (and, until the clouds shadow
         // the march themselves, through the clouds), and the sky's mean radiance.
-        sun.copy(skyLight.sun).multiplyScalar(skyLight.sunThroughClouds * params.skySunScale * params.sunStrength)
+        sun.copy(skyLight.sun).multiplyScalar((build.cloudShadows ? 1 : skyLight.sunThroughClouds) * params.skySunScale * params.sunStrength)
         sky.copy(skyLight.skyMean).multiplyScalar(params.skyAmbientScale * params.ambientStrength)
         u.sunRadiance.value.copy(sun).multiply(params.tint)
         u.ambientRadiance.value.copy(sky).multiply(params.tint)

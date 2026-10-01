@@ -32,6 +32,9 @@ import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
 import { createSkyAtmosphere, defaultSkyParams, type SkyAtmosphere } from './sky-atmosphere'
 import { createSunShadowLayer, type SunShadowLayer } from './sun-shadows'
+import { createSkyClouds, type SkyClouds } from './sky-clouds'
+import { mountSkyPanel } from './sky-panel'
+import { ellipsoidHeight } from './atmosphere-model'
 import { createGroundFogLayer } from './ground-fog'
 import { createFogNoiseBaker } from './fog-noise-baker'
 import { mountFogNoiseEditor, type FogNoiseEditor } from './fog-noise-editor'
@@ -1213,6 +1216,8 @@ const sunLightParams = {
   nightLevel: SKY.sunLight.nightLevel as number,
 }
 setCloudEffectEnabled('sunLight', skyEnabled && SKY.sunLight.enabled)
+/** What the panel asked for; the effective states also need the sky (and shadows the sun light). */
+let sunLightIntent: boolean = SKY.sunLight.enabled
 /** Volumetric ground fog (ground-fog.ts): a stage of the post pipeline, between eye-dome
  *  lighting and depth of field. `?vfog=0|1` boots it off or on whatever the config says. */
 const groundFog = createGroundFogLayer({ renderer, camera, shared: uniforms, baker: createFogNoiseBaker() })
@@ -1227,11 +1232,38 @@ const groundFog = createGroundFogLayer({ renderer, camera, shared: uniforms, bak
  *  inside the fog's march. Needs the sun light; `?shadows=0|1` boots them off or on. */
 const SUN_SHADOWS = EXPERIENCE_CONFIG.sunShadows
 const sunShadows: SunShadowLayer = createSunShadowLayer({ renderer, uniforms })
-let shadowsEnabled: boolean = skyEnabled && SKY.sunLight.enabled
-  && (params.get('shadows') === '0' ? false : params.get('shadows') === '1' ? true : SUN_SHADOWS.enabled)
+let shadowsIntent: boolean = params.get('shadows') === '0' ? false : params.get('shadows') === '1' ? true : SUN_SHADOWS.enabled
+let shadowsEnabled: boolean = skyEnabled && SKY.sunLight.enabled && shadowsIntent
+let fogShadowsIntent = true
 sunShadows.setEnabled(shadowsEnabled)
 setCloudEffectEnabled('canopyShadows', shadowsEnabled)
 groundFog.setBuildOption('canopyShadows', shadowsEnabled)
+/** Clouds on the sky dome and their shadows (sky-clouds.ts). Need the physical sky.
+ *  `?clouds=0|1|<preset>` boots them off, on, or on with a preset. */
+const SKY_CLOUDS = EXPERIENCE_CONFIG.skyClouds
+const skyClouds: SkyClouds = createSkyClouds({ renderer, sky: skyAtmosphere })
+let cloudsEnabled: boolean
+let cloudsIntent = true
+let fogCloudShadowsIntent = true
+let cloudShadowsIntent = true
+{
+  const value = params.get('clouds')
+  cloudsIntent = value === '0' ? false : value ? true : SKY_CLOUDS.enabled
+  cloudsEnabled = skyEnabled && cloudsIntent
+  const look = skyClouds.applyPreset(value && value !== '1' && value !== '0' ? value : SKY_CLOUDS.preset)
+  skyClouds.params.enabled = cloudsEnabled
+  if (cloudsEnabled) {
+    skyAtmosphere.setClouds(skyClouds)
+    hazeLayer.refreshPhysicalSky()
+    // The weather brings its haze.
+    if (look) skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth })
+  }
+  setCloudEffectEnabled('skyCloudShadows', cloudsEnabled)
+  groundFog.setBuildOption('cloudShadows', cloudsEnabled)
+  groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  // The fog's graph was built above, before the shadow and cloud options were set: once more.
+  if (groundFog.isEnabled()) depthOfField.setGroundFog(groundFog)
+}
 /** Rebuild the post graph after the fog changed shape (switch, build option, haze). */
 const refreshGroundFog = () => depthOfField.setGroundFog(groundFog.isEnabled() ? groundFog : null)
 const scratchFogMin = new THREE.Vector2()
@@ -3994,6 +4026,58 @@ const setFogValue = (key: FogSlider['key'], value: number) => {
   })
   closeEditor.addEventListener('click', () => document.body.classList.remove('fog-noise-open'))
 }
+/**
+ * Apply the sky package's switches together: every effect flag, scene node and fog option
+ * that depends on them, so no combination leaves a stale graph. The sun light needs the sky,
+ * the shadows the sun light, the clouds the sky.
+ */
+function applySkyPackage(): void {
+  const sunLightOn = skyEnabled && sunLightIntent
+  shadowsEnabled = sunLightOn && shadowsIntent
+  cloudsEnabled = skyEnabled && cloudsIntent
+  let tiles = false
+  if (hazeLayer.setPhysicalSky(skyEnabled ? skyAtmosphere : null)) tiles = true
+  skyClouds.params.enabled = cloudsEnabled
+  skyAtmosphere.setClouds(cloudsEnabled ? skyClouds : null)
+  if (hazeLayer.refreshPhysicalSky()) tiles = true
+  tiles = setCloudEffectEnabled('sunLight', sunLightOn) || tiles
+  sunShadows.setEnabled(shadowsEnabled)
+  tiles = setCloudEffectEnabled('canopyShadows', shadowsEnabled) || tiles
+  const cloudShadowsOn = cloudsEnabled && cloudShadowsIntent
+  tiles = setCloudEffectEnabled('skyCloudShadows', cloudShadowsOn) || tiles
+  if (cloudShadowsOn) tiles = setCloudEffectEnabled('cloudShadows', true) || tiles
+  groundFog.setSkyLight(skyEnabled ? skyAtmosphere.light : null)
+  let fogGraph = groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  fogGraph = groundFog.setBuildOption('canopyShadows', shadowsEnabled && fogShadowsIntent) || fogGraph
+  fogGraph = groundFog.setBuildOption('cloudShadows', cloudsEnabled && fogCloudShadowsIntent) || fogGraph
+  environmentLayer?.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  if (cloudsEnabled) environmentLayer?.setCloudIntent(false, false)
+  if (tiles) refreshEffectShaders()
+  if (fogGraph && groundFog.isEnabled()) refreshGroundFog()
+}
+const skyPanel = mountSkyPanel({
+  containers: {
+    sky: $<HTMLDivElement>('#skyControls'),
+    shadows: $<HTMLDivElement>('#sunShadowControls'),
+    clouds: $<HTMLDivElement>('#skyCloudControls'),
+  },
+  sky: skyAtmosphere,
+  sunLight: sunLightParams,
+  sideLight: uniforms.sunSideLight,
+  fog: groundFog.params,
+  shadows: sunShadows,
+  clouds: skyClouds,
+  switches: {
+    sky: { get: () => skyEnabled, set: (on) => { skyEnabled = on; applySkyPackage() } },
+    sunLight: { get: () => sunLightIntent, set: (on) => { sunLightIntent = on; applySkyPackage() } },
+    shadows: { get: () => shadowsIntent, set: (on) => { shadowsIntent = on; applySkyPackage() } },
+    fogShadows: { get: () => fogShadowsIntent, set: (on) => { fogShadowsIntent = on; applySkyPackage() } },
+    clouds: { get: () => cloudsIntent, set: (on) => { cloudsIntent = on; applySkyPackage() } },
+    cloudShadows: { get: () => cloudShadowsIntent, set: (on) => { cloudShadowsIntent = on; applySkyPackage() } },
+    fogCloudShadows: { get: () => fogCloudShadowsIntent, set: (on) => { fogCloudShadowsIntent = on; applySkyPackage() } },
+  },
+  onPreset: (look) => skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth }),
+})
 /** Re-read the sliders the loader preset may have moved. */
 function syncGroundFogQualityControls(): void {
   fogSliderRefresh.get('steps')?.()
@@ -4149,7 +4233,8 @@ volumetricFog: ${JSON.stringify({
     windMps: groundFog.params.windMps.map((v) => Number(v.toFixed(3))),
     tint: `0x${groundFog.params.tint.getHexString()}`,
     noise: groundFog.noiseSettings(),
-  }, null, 2)}`
+  }, null, 2)}
+${Object.entries(skyPanel.copyValues()).map(([key, value]) => `${key}: ${JSON.stringify(value, null, 2)}`).join('\n')}`
   try {
     await navigator.clipboard.writeText(snippet)
     designCopyEl.textContent = '✓ Copied'
@@ -4929,6 +5014,7 @@ function loop(now: number): void {
   groundPatchMask.update()
   if (skyEnabled && daylightState) updateSky(daylightState, (now - lastGroundFogFrameMs) / 1000)
   if (shadowsEnabled && daylightState) updateSunShadows(daylightState)
+  if (cloudsEnabled && daylightState) updateSkyClouds(daylightState, (now - lastGroundFogFrameMs) / 1000)
   if (groundFog.isEnabled()) groundFog.update(camera, daylightState ?? null, (now - lastGroundFogFrameMs) / 1000)
   lastGroundFogFrameMs = now
   depthOfField.update(cameraGroundRange)
@@ -4961,14 +5047,27 @@ function updateSky(daylight: DaylightState, deltaS: number): void {
   })
   uniforms.sunDirectionEnu.value.copy(daylight.sunDirectionEnu)
   const light = skyAtmosphere.light
+  // With the clouds' own shadows on the receivers the sun is not dimmed twice.
+  const cloudsShadowLocally = cloudsEnabled && isCloudEffectEnabled('cloudShadows')
   uniforms.sunLightColor.value.copy(light.sun).multiply(sunLightParams.tint)
-    .multiplyScalar(sunLightParams.sunIntensity * light.sunThroughClouds)
+    .multiplyScalar(sunLightParams.sunIntensity * (cloudsShadowLocally ? 1 : light.sunThroughClouds))
   uniforms.skyLightColor.value.copy(light.sky).multiplyScalar(sunLightParams.skyIntensity)
   // The night floor of the daylight grade, faded in as the sun sinks from 0° to −12°.
   const night = 1 - THREE.MathUtils.smoothstep(light.sunElevation, THREE.MathUtils.degToRad(-12), 0)
   uniforms.nightLightColor.value.copy(nightGradeColor).multiplyScalar(sunLightParams.nightLevel * night)
 }
 const nightGradeColor = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
+const cloudCameraKm = new THREE.Vector3()
+const cloudCameraEnu = new THREE.Vector3()
+/** The dome's clouds: the camera relative to the survey for the parallax-corrected lookup,
+ *  and the bake when it is due. */
+function updateSkyClouds(daylight: DaylightState, deltaS: number): void {
+  cloudCameraEnu.copy(camera.position).applyMatrix4(enuInverseRender)
+  const heightKm = ellipsoidHeight(skyCameraEcef.x, skyCameraEcef.y, skyCameraEcef.z) / 1000
+  cloudCameraKm.set(cloudCameraEnu.x / 1000, cloudCameraEnu.y / 1000, Math.max(heightKm, 0))
+  ;(skyClouds as any).setGroundZ(groundFogFloorZ)
+  skyClouds.update({ cameraEnuKm: cloudCameraKm, groundAltitudeKm: 0, sunDirectionEnu: daylight.sunDirectionEnu, deltaS: Math.min(Math.max(deltaS, 0), 0.25) })
+}
 const shadowFallbackCentre = new THREE.Vector3()
 /** Fit the canopy shadow map to this frame's dome and draw it if anything moved. After the
  *  traversal (the drawn tiles are final) and before the scene renders. */
@@ -5200,6 +5299,7 @@ async function main(): Promise<void> {
     /** The sky package: atmosphere, canopy shadows (sky-atmosphere.ts, sun-shadows.ts). */
     get sky() { return skyAtmosphere },
     get shadows() { return sunShadows },
+    get clouds() { return skyClouds },
     stream,
     camera,
     get flight() { return cameraFlight.active },
@@ -5350,6 +5450,8 @@ async function main(): Promise<void> {
     onCloudStateChange: updateCloudControls,
   })
   environmentLayer.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  // The sky's clouds replace the box clouds: off for this session, the stored choice kept.
+  if (cloudsEnabled) environmentLayer.setCloudIntent(false, false)
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
   // Hand over anything dialled in while the layer did not exist yet — both of
@@ -5680,6 +5782,7 @@ function dispose(): void {
   hazeLayer.dispose()
   skyAtmosphere.dispose()
   sunShadows.dispose()
+  skyClouds.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()

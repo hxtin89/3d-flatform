@@ -20,6 +20,7 @@ import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
 import { retryFailedTiles } from './tile-retry'
 import { canopyTransmittance } from './sun-shadows'
+import { cloudTransmittance } from './sky-clouds'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -110,11 +111,12 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   const raw = (materialReference('map', 'texture') as any).rgb
   // Physically lit (effects.sunLight): flat ground takes the sun by the sine of its elevation.
   const lit = isCloudEffectEnabled('sunLight')
-  const canopy = lit && isCloudEffectEnabled('canopyShadows')
-    ? canopyTransmittance((uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz, float(0))
-    : float(1)
+  const enu = (uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz
+  const canopy = lit && isCloudEffectEnabled('canopyShadows') ? canopyTransmittance(enu, float(0)) : float(1)
+  const clouds = lit && isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
+    ? cloudTransmittance(enu) : float(1)
   const graded = lit
-    ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), canopy))
+    ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), (canopy as any).mul(clouds)))
     : gradeImageryNode(uniforms, raw)
       .mul(uniforms.daylightColor)
       .mul(uniforms.daylightIntensity)

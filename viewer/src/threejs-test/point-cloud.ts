@@ -18,6 +18,7 @@ import {
   dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
 } from './dot-geometry'
 import { canopyShadow, canopyTransmittance } from './sun-shadows'
+import { cloudTransmittance } from './sky-clouds'
 
 /** The material property a pulled tile's point-data texture sits on. An own property, not
  *  userData: UnloadTilesPlugin frees the GPU copy of the textures it finds on a hidden
@@ -730,6 +731,9 @@ const effects = {
   sunLight: false,
   /** The canopy's soft sun shadows (sun-shadows.ts) on the direct sun of `sunLight`. */
   canopyShadows: false,
+  /** Cloud shadows from the sky's clouds (sky-clouds.ts) in place of the drifting noise slice:
+   *  the clouds you see are the shadows you get. */
+  skyCloudShadows: false,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -1201,7 +1205,9 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     // Directional cues without normals: project each point up the sun ray onto
     // a virtual cloud deck and shade it by the drifting cloud density there.
     const cloudShadow = float(1).toVar()
-    if (effects.cloudShadows && cloudShadowTextureNode) {
+    if (effects.cloudShadows && effects.skyCloudShadows) {
+      cloudShadow.assign(cloudTransmittance(enu))
+    } else if (effects.cloudShadows && cloudShadowTextureNode) {
       const sunZ = max(u.sunDirectionEnu.z, float(0.15))
       const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
       const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))
