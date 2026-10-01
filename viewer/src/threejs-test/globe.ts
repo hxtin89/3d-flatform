@@ -6,12 +6,12 @@
 // No Cesium, no Ion. Uses the same satellite-v4 raster endpoint as the Cesium viewer.
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { materialReference, mix } from 'three/tsl'
+import { float, materialReference, max, mix, positionWorld, vec4 } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion,
+  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, isCloudEffectEnabled, sunLight,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -19,6 +19,7 @@ import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
 import { retryFailedTiles } from './tile-retry'
+import { canopyTransmittance } from './sun-shadows'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -107,9 +108,16 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   if (cached) return cached
 
   const raw = (materialReference('map', 'texture') as any).rgb
-  const graded = gradeImageryNode(uniforms, raw)
-    .mul(uniforms.daylightColor)
-    .mul(uniforms.daylightIntensity)
+  // Physically lit (effects.sunLight): flat ground takes the sun by the sine of its elevation.
+  const lit = isCloudEffectEnabled('sunLight')
+  const canopy = lit && isCloudEffectEnabled('canopyShadows')
+    ? canopyTransmittance((uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz, float(0))
+    : float(1)
+  const graded = lit
+    ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), canopy))
+    : gradeImageryNode(uniforms, raw)
+      .mul(uniforms.daylightColor)
+      .mul(uniforms.daylightIntensity)
   const fog = groundFogNode(uniforms)
   const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
   const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)

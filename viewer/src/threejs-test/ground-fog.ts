@@ -71,11 +71,13 @@ import {
 import { EXPERIENCE_CONFIG } from './config'
 import type { CloudHaze } from './atmosphere-haze'
 import type { DaylightState } from './environment-layer'
+import type { SkyLight } from './sky-atmosphere'
 import type { FogNoiseSettings } from './fog-noise'
 import type { FogNoiseBaker } from './fog-noise-baker'
 import { extinctionForVisibility, miePhaseParameters, multipleScatteringOctaves, RAYLEIGH_SEA_LEVEL_PER_M } from './fog-optics'
 import type { DensitySliceRequest } from './fog-noise-editor'
 import { FogTemporalNode } from './fog-temporal'
+import { canopyShadow, canopyTransmittance } from './sun-shadows'
 
 const CONFIG = EXPERIENCE_CONFIG.volumetricFog
 export type FogNoiseSource = '2d' | '3d' | 'procedural'
@@ -107,6 +109,9 @@ export interface GroundFogBuildOptions {
   /** off: the composite. light: the fog's in-scattered light alone. transmittance: how
    *  much of the scene gets through, white = all. For tuning. */
   debugView: 'off' | 'light' | 'transmittance'
+  /** Volumetric shadows: each step's sunlight through the canopy's shadow map
+   *  (sun-shadows.ts) — light shafts between the crowns. One map read per step. */
+  canopyShadows: boolean
 }
 
 export interface GroundFogLayer {
@@ -128,6 +133,9 @@ export interface GroundFogLayer {
   setFrame(floorZ: number, boundsMin: THREE.Vector2, boundsMax: THREE.Vector2): void
   /** Returns true when it changed: the haze is built into the march, so the pipeline rebuilds. */
   setHaze(haze: CloudHaze | null): boolean
+  /** The physically based sky's light (sky-atmosphere.ts), or null for the daylight ramp.
+   *  Read every frame; `skySunScale` / `skyAmbientScale` carry the look over. */
+  setSkyLight(light: SkyLight | null): void
   /** Live-tunable values; the panel writes these directly. */
   readonly params: GroundFogParams
   noiseSettings(): FogNoiseSettings
@@ -191,6 +199,13 @@ export interface GroundFogParams {
   canopyOcclusion: number
   rayleighScale: number
   tint: THREE.Color
+  /** With the physical sky: the fog's sun and sky light are the atmosphere's, times these.
+   *  Calibrated so the default look at 14:00 matches the daylight ramp's. */
+  skySunScale: number
+  skyAmbientScale: number
+  /** Volumetric canopy shadows: optical-depth multiplier and extra mip levels. */
+  canopyShadowStrength: number
+  canopyShadowLodBias: number
 }
 
 const PI4 = 4 * Math.PI
@@ -215,6 +230,7 @@ export function createGroundFogLayer(opts: {
     temporal: CONFIG.temporal,
     fillCanopyHoles: CONFIG.fillCanopyHoles,
     debugView: 'off',
+    canopyShadows: false,
   }
   let resolutionScale: number = CONFIG.resolutionScale
 
@@ -266,6 +282,10 @@ export function createGroundFogLayer(opts: {
     canopyOcclusion: CONFIG.canopyOcclusion,
     rayleighScale: CONFIG.rayleighScale,
     tint: new THREE.Color(CONFIG.tint),
+    skySunScale: CONFIG.skySunScale,
+    skyAmbientScale: CONFIG.skyAmbientScale,
+    canopyShadowStrength: EXPERIENCE_CONFIG.sunShadows.fogStrength,
+    canopyShadowLodBias: EXPERIENCE_CONFIG.sunShadows.fogLodBias,
   }
 
   // ---------------------------------------------------------------- uniforms
@@ -320,8 +340,11 @@ export function createGroundFogLayer(opts: {
     canopyOcclusion: uniform(params.canopyOcclusion),
     rayleigh: uniform(new THREE.Vector3(...RAYLEIGH_SEA_LEVEL_PER_M)),
     pixelAngle: uniform(0.001),
+    canopyShadowStrength: uniform(EXPERIENCE_CONFIG.sunShadows.fogStrength),
+    canopyShadowLodBias: uniform(EXPERIENCE_CONFIG.sunShadows.fogLodBias),
   }
   let hazeParts: CloudHaze | null = null
+  let skyLight: SkyLight | null = null
 
   const applyPhase = () => {
     const p = miePhaseParameters(params.dropletDiameterUm)
@@ -714,6 +737,13 @@ export function createGroundFogLayer(opts: {
         // The veil takes over where the mist leaves off, and stays light (a third) over the
         // drawn points, where the mist itself is there to be seen.
         const sigma = sample.mist.mul(nearPoints).add(sample.veil.mul(nearPoints.mul(-0.65).add(1))).toVar()
+        // The sun through the canopy at this sample, from a mip as wide as the sample's own
+        // footprint (and a level or two more: blurrier shafts are steadier ones).
+        const canopy = options.canopyShadows
+          ? canopyTransmittance(p, float(0),
+            max(log2(max(t.mul(u.pixelAngle).div(max(canopyShadow.texel1, 0.01)), 1)).add(u.canopyShadowLodBias), 0),
+            canopyShadow.strength.mul(u.canopyShadowStrength)).toVar()
+          : float(1)
         const localTop = sample.localTop.toVar()
         const hRel = sample.hRel.toVar()
         If(sigma.greaterThan(1e-5), () => {
@@ -724,13 +754,13 @@ export function createGroundFogLayer(opts: {
           // a flat body and high in the empty gap under a puff — traded for a second march.
           const tauSun = sigma.mul(above).mul(0.5).div(sunUp)
           const tauUp = sigma.mul(above).mul(0.5)
-          const canopy = mix(u.canopyOcclusion.oneMinus(), float(1), smoothstep(u.bottom, u.top, hRel))
+          const occlusion = mix(u.canopyOcclusion.oneMinus(), float(1), smoothstep(u.bottom, u.top, hRel))
           let sunLight: any = float(0)
           octaves.forEach((octave, index) => {
             sunLight = sunLight.add(exp(tauSun.mul(-octave.extinction)).mul(phases[index]).mul(octave.scattering))
           })
-          const inScatter = vec3(u.sunRadiance).mul(sunLight.mul(canopy).mul(daylight))
-            .add(vec3(u.ambientRadiance).mul(canopy).mul(exp(tauUp.negate()).mul(0.35).add(0.65)))
+          const inScatter = vec3(u.sunRadiance).mul(sunLight.mul(occlusion).mul(canopy).mul(daylight))
+            .add(vec3(u.ambientRadiance).mul(occlusion).mul(exp(tauUp.negate()).mul(0.35).add(0.65)))
             .mul(u.albedo)
           const stepTransmittance = exp(sigma.mul(dt).negate())
           // Frostbite's energy-conserving step: ∫ T σs L over the step, not σs L dt.
@@ -745,7 +775,7 @@ export function createGroundFogLayer(opts: {
         // under 1 % across the band and about 7 % on a kilometres-long grazing ray).
         const airStep = exp(vec3(u.rayleigh).mul(dt).negate())
         const airMean = airStep.x.add(airStep.y).add(airStep.z).div(3)
-        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).add(u.ambientRadiance)
+        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(canopy).add(u.ambientRadiance)
           .mul(airStep.oneMinus()).mul(transmittance))
         weightedDistance.addAssign(transmittance.mul(airMean.oneMinus()).mul(t))
         transmittance.mulAssign(airMean)
@@ -755,8 +785,10 @@ export function createGroundFogLayer(opts: {
     let light: any = scattered
     if (hazeParts) {
       const fogDistance = weightedDistance.div(max(transmittance.oneMinus(), 1e-4))
-      light = mix(scattered, vec3(hazeParts.color).mul(transmittance.oneMinus()),
-        max(hazeParts.amount(fogDistance), hazeParts.wall(fogDistance)))
+      light = hazeParts.aerial
+        ? hazeParts.aerial(scattered, transmittance, fogDistance, rayWorld)
+        : mix(scattered, vec3(hazeParts.color).mul(transmittance.oneMinus()),
+          max(hazeParts.amount(fogDistance), hazeParts.wall(fogDistance)))
     }
     return vec4(light, transmittance)
   })()
@@ -966,6 +998,8 @@ export function createGroundFogLayer(opts: {
     u.albedo.value = params.albedo
     u.canopyOcclusion.value = params.canopyOcclusion
     u.rayleigh.value.set(...RAYLEIGH_SEA_LEVEL_PER_M).multiplyScalar(params.rayleighScale)
+    u.canopyShadowStrength.value = params.canopyShadowStrength
+    u.canopyShadowLodBias.value = params.canopyShadowLodBias
     applyPhase()
   }
 
@@ -989,7 +1023,14 @@ export function createGroundFogLayer(opts: {
       u.rise.value = wrap(u.rise.value + params.riseMps * dt * u.wispHeightInv.value, RISE_PERIOD)
       jitterFrame = (jitterFrame + 1) % 64
       u.jitterOffset.value = jitterFrame * 5.588238
-      if (daylight) {
+      if (skyLight) {
+        // The atmosphere's own light: the sun through the air (and, until the clouds shadow
+        // the march themselves, through the clouds), and the sky's mean radiance.
+        sun.copy(skyLight.sun).multiplyScalar(skyLight.sunThroughClouds * params.skySunScale * params.sunStrength)
+        sky.copy(skyLight.skyMean).multiplyScalar(params.skyAmbientScale * params.ambientStrength)
+        u.sunRadiance.value.copy(sun).multiply(params.tint)
+        u.ambientRadiance.value.copy(sky).multiply(params.tint)
+      } else if (daylight) {
         sun.copy(daylight.lightColor).multiplyScalar(daylight.intensity * params.sunStrength)
         // Skylight: the daylight tinted by the sky colour by `skyTint` — the humid air over a
         // forest scatters the sky into a paler, whiter light than the zenith's blue.
@@ -1035,6 +1076,7 @@ export function createGroundFogLayer(opts: {
       hazeParts = haze
       return true
     },
+    setSkyLight(next) { skyLight = next },
     params,
     noiseSettings: () => JSON.parse(JSON.stringify(noiseSettings)),
     setNoise,

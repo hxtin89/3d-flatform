@@ -17,6 +17,7 @@ import { ERROR_BAND_COLORS } from './density-band'
 import {
   dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
 } from './dot-geometry'
+import { canopyShadow, canopyTransmittance } from './sun-shadows'
 
 /** The material property a pulled tile's point-data texture sits on. An own property, not
  *  userData: UnloadTilesPlugin frees the GPU copy of the textures it finds on a hidden
@@ -241,6 +242,17 @@ export interface CloudUniforms {
   sphereFadeIn: any
   sphereFadeOut: any
   sphereFadeUpWorld: any
+  /**
+   * The physically based light (sky-atmosphere.ts), compiled in by `effects.sunLight`, in
+   * display units: the sun's illuminance on a surface facing it, the sky's on a horizontal
+   * one, and the floor a dark night still leaves. Points carry no normals, so how much of
+   * the sun a point catches is a blend: `sunSideLight` 0 treats every point as flat ground
+   * (the sine of the sun's elevation), 1 as facing the sun; crowns are round, in between.
+   */
+  sunLightColor: any
+  skyLightColor: any
+  nightLightColor: any
+  sunSideLight: any
 }
 
 let cloudShadowTextureNode: any = null
@@ -355,6 +367,10 @@ export function createUniforms(): CloudUniforms {
     sphereFadeIn: uniform(EXPERIENCE_CONFIG.lod.sphereFade.fadeIn),
     sphereFadeOut: uniform(EXPERIENCE_CONFIG.lod.sphereFade.fadeOut),
     sphereFadeUpWorld: uniform(new THREE.Vector3(0, 0, 1)),
+    sunLightColor: uniform(new THREE.Color(1, 1, 1)),
+    skyLightColor: uniform(new THREE.Color(0.2, 0.2, 0.2)),
+    nightLightColor: uniform(new THREE.Color(0, 0, 0)),
+    sunSideLight: uniform(EXPERIENCE_CONFIG.sky.sunLight.sideLight),
   })
 }
 
@@ -709,8 +725,25 @@ const effects = {
   /** gradePointNode. Compiled in only while contrast or saturation is off 1 — at 1 / 1 the
    *  uniforms would still pay a pow and two divisions per fragment to change nothing. */
   pointGrade: false,
+  /** The physically based sun and sky light in place of the daylight grade (sky-atmosphere.ts):
+   *  the colour is relit by `sunLight(...)` below. Off compiles the graded shader of old. */
+  sunLight: false,
+  /** The canopy's soft sun shadows (sun-shadows.ts) on the direct sun of `sunLight`. */
+  canopyShadows: false,
 }
 export type CloudEffect = keyof typeof effects
+
+/**
+ * The light a surface receives from the physically based sky, display units: the sun times
+ * how much of it the surface faces (`facing`) and how much reaches it (`visibility` — canopy
+ * and cloud shadows), plus the sky and the night floor. The captured colours already carry
+ * the light of the survey day; multiplying them by this relights them, and a surface under
+ * the reference light (a clear 60° sun) shows as captured.
+ */
+export function sunLight(u: CloudUniforms, facing: any, visibility: any): any {
+  return vec3(u.sunLightColor).mul(facing.mul(visibility) as any)
+    .add(vec3(u.skyLightColor)).add(vec3(u.nightLightColor))
+}
 
 /**
  * 1 where the vignette keeps a point, 0 where it dissolves it.
@@ -855,6 +888,7 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
   // for the pulled graphs, whose texel reference otherwise keeps the last tile it drew
   // (its material and point-data texture) reachable for the rest of the session.
   cloudGraphCache.clear()
+  casterGraphCache.clear()
   return true
 }
 
@@ -1195,11 +1229,18 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     // stage the old decode used — a per-vertex decode measured no different in a GPU-time A/B.
     const decoded = effects.exactDecode ? sRGBTransferEOTF(pointColor) : pointColor.pow(2.2)
     const linear = effects.pointGrade ? gradePointNode(u, decoded) : decoded
-    const graded = linear
-      .mul(u.daylightColor)
-      .mul(u.daylightIntensity)
-      .mul(cloudShadow)
-      .mul(rim)
+    // Physically lit: the sun's share by how much a round crown faces it, shadowed by the
+    // clouds; the golden rim is the sun's own colour now, so it is left out.
+    // Canopy shadows: the sun through the crowns above, looked up from the point lifted a few
+    // metres toward the sun so it does not shadow itself.
+    const canopy = effects.sunLight && effects.canopyShadows ? canopyTransmittance(enu, canopyShadow.offset) : float(1)
+    const graded = effects.sunLight
+      ? linear.mul(sunLight(u, mix(max(u.sunDirectionEnu.z, 0), float(1), u.sunSideLight), cloudShadow.mul(canopy)))
+      : linear
+        .mul(u.daylightColor)
+        .mul(u.daylightIntensity)
+        .mul(cloudShadow)
+        .mul(rim)
 
     // Fog before the vignette dim, so the mask still darkens the fogged result
     // rather than the fog re-lighting the vignette edge.
@@ -1255,6 +1296,102 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
 
   const graph = { sizeNode, positionNode, colorNode: buildColorNode(), cornerNode }
   cloudGraphCache.set(key, graph)
+  return graph
+}
+
+/** The canopy shadow pass's uniforms the caster graph reads (sun-shadows.ts writes them). */
+export interface ShadowCasterUniforms {
+  /** The sun in ENU, and the floor plane the points are projected onto along it. */
+  sun: any
+  floorZ: any
+  /** The map's floor-plane centre (ENU xy), half extent and texel size, metres. */
+  centre: any
+  halfExtent: any
+  texelM: any
+  /** 1 / the canopy height the heights are stored in units of. */
+  bandHeightInv: any
+  /** Splat radius against the drawn points' spacing; the share of points drawn; the optical
+   *  depth of a fully covered layer; the smallest splat radius in texels. */
+  splatScale: any
+  fraction: any
+  density: any
+  minTexels: any
+}
+
+const casterGraphCache = new Map<string, { vertexNode: any; fragmentNode: any; key: string }>()
+
+/**
+ * The canopy shadow pass's graph for one dot mode (sun-shadows.ts). The same point the colour
+ * graph draws — the pulled texel or the instanced attribute, melted toward the map by the
+ * dome — but projected along the sun onto the floor plane in clip space directly, as a splat
+ * of world size from the point's spacing, weighed so a fully covered layer adds the
+ * configured optical depth along the slanted ray whatever the spacing, thinning or the share
+ * of points drawn. The fragment writes the weight times a smooth radial profile and the
+ * profile-weighted height and height², added up by the blend.
+ */
+export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode, c: ShadowCasterUniforms) {
+  const feedKey = mode.feed === 'pulled' ? `pulled-${mode.shape}` : `${colorItemSize}`
+  const key = `caster|${feedKey}|${effectsVersion}`
+  const cached = casterGraphCache.get(key)
+  if (cached) return cached
+  let pointLocal: any
+  let corner: any
+  if (mode.feed === 'pulled') {
+    const k = mode.shape === 'triangle' ? 3 : 4
+    const pointIndex: any = vertexIndex.div(uint(k))
+    const cornerIndex: any = vertexIndex.mod(uint(k))
+    const corners = dotCorners(mode.shape)
+    let cornerValue: any = vec2(corners[corners.length - 1][0], corners[corners.length - 1][1])
+    for (let i = corners.length - 2; i >= 0; i--) {
+      cornerValue = cornerIndex.equal(uint(i)).select(vec2(corners[i][0], corners[i][1]), cornerValue)
+    }
+    const column: any = pointIndex.bitAnd(uint(POINT_DATA_WIDTH - 1))
+    const row: any = pointIndex.shiftRight(uint(POINT_DATA_WIDTH_BITS))
+    const texel: any = (nodeObject(new PointDataReference(POINT_DATA_PROPERTY, 'texture') as any) as any)
+      .context({ getUV: () => ivec2(int(column), int(row)) })
+    pointLocal = texel.xyz
+    corner = cornerValue
+  } else {
+    pointLocal = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
+    corner = (attribute('position', 'vec3') as any).xy
+  }
+  let local: any = pointLocal
+  let fade: any = float(1)
+  if (effects.sphereFade) {
+    const world0: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
+    const enu0: any = u.enuInverse.mul(vec4(world0, 1)).xyz
+    fade = sphereFadeFactor(u, enu0)
+    const localUp: any = transformDirection(u.sphereFadeUpWorld, modelWorldMatrixInverse)
+    local = pointLocal.add(localUp.mul(u.sphereFadeCentre.z.sub(enu0.z).mul(float(1).sub(fade))))
+  }
+  const world: any = modelWorldMatrix.mul(vec4(local, 1)).xyz
+  const enu: any = u.enuInverse.mul(vec4(world, 1)).xyz
+  const sz: any = max(c.sun.z, float(0.08))
+  const height: any = enu.z.sub(c.floorZ)
+  const q: any = enu.xy.sub(c.sun.xy.div(sz).mul(height))
+  // The drawn points' spacing (the whole stack at this spot, thinned), then the spacing among
+  // the share the shadow pass draws.
+  const spacing: any = tileSpacingMetres.mul(tileThinScale).div((c.fraction as any).sqrt())
+  const radius: any = spacing.mul(c.splatScale)
+  const drawnRadius: any = max(radius, c.texelM.mul(c.minTexels))
+  const energy: any = radius.div(drawnRadius).pow(2)
+  // κ s² / (π r² sin e): a full layer at spacing s adds κ / sin e along the slanted ray.
+  const weight: any = c.density.mul(energy).mul(fade)
+    .div(c.splatScale.mul(c.splatScale).mul(Math.PI).mul(sz))
+  const ndc: any = q.sub(c.centre).add(corner.mul(drawnRadius.mul(2))).div(c.halfExtent)
+  const weightV: any = varying(weight, 'v_casterWeight')
+  const heightV: any = varying(height.mul(c.bandHeightInv), 'v_casterHeight')
+  const uvV: any = varying(corner.mul(2), 'v_casterUv')
+  const vertexNode = vec4(ndc, 0.5, 1)
+  const fragmentNode = Fn(() => {
+    const rho2: any = uvV.dot(uvV)
+    // (1 − ρ²)², three times its mean over the disc so the splat integrates to its weight.
+    const profile: any = max(float(1).sub(rho2), float(0)).pow(2).mul(3)
+    const w: any = weightV.mul(profile)
+    return vec4(w, w.mul(heightV), w.mul(heightV).mul(heightV), 0)
+  })()
+  const graph = { vertexNode, fragmentNode, key }
+  casterGraphCache.set(key, graph)
   return graph
 }
 

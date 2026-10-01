@@ -30,6 +30,8 @@ import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
+import { createSkyAtmosphere, defaultSkyParams, type SkyAtmosphere } from './sky-atmosphere'
+import { createSunShadowLayer, type SunShadowLayer } from './sun-shadows'
 import { createGroundFogLayer } from './ground-fog'
 import { createFogNoiseBaker } from './fog-noise-baker'
 import { mountFogNoiseEditor, type FogNoiseEditor } from './fog-noise-editor'
@@ -1196,6 +1198,21 @@ const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
 /** Distance haze and the graded sky; reads enuUp live, so it can exist before the frame does. */
 const hazeLayer: HazeLayer = createHazeLayer({ scene, up: enuUp })
+/** The physically based sky, sun and aerial perspective (sky-atmosphere.ts), which take over
+ *  the haze layer's two nodes while on. `?sky=0|1` boots it off or on whatever the config says. */
+const SKY = EXPERIENCE_CONFIG.sky
+const skyAtmosphere: SkyAtmosphere = createSkyAtmosphere({ renderer, settings: SKY.atmosphere, params: defaultSkyParams(SKY) })
+let skyEnabled: boolean = params.get('sky') === '0' ? false : params.get('sky') === '1' ? true : SKY.enabled
+if (skyEnabled) hazeLayer.setPhysicalSky(skyAtmosphere)
+/** The sky's light on the points and the basemap (point-cloud.ts sunLight): compiled in before
+ *  the first tile material exists, so no tile is ever built without it. */
+const sunLightParams = {
+  sunIntensity: SKY.sunLight.sunIntensity as number,
+  skyIntensity: SKY.sunLight.skyIntensity as number,
+  tint: new THREE.Color(SKY.sunLight.tint),
+  nightLevel: SKY.sunLight.nightLevel as number,
+}
+setCloudEffectEnabled('sunLight', skyEnabled && SKY.sunLight.enabled)
 /** Volumetric ground fog (ground-fog.ts): a stage of the post pipeline, between eye-dome
  *  lighting and depth of field. `?vfog=0|1` boots it off or on whatever the config says. */
 const groundFog = createGroundFogLayer({ renderer, camera, shared: uniforms, baker: createFogNoiseBaker() })
@@ -1203,8 +1220,18 @@ const groundFog = createGroundFogLayer({ renderer, camera, shared: uniforms, bak
   const value = params.get('vfog')
   groundFog.setEnabled(value === '0' ? false : value === '1' ? true : EXPERIENCE_CONFIG.volumetricFog.enabled)
   groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  groundFog.setSkyLight(skyEnabled ? skyAtmosphere.light : null)
   if (groundFog.isEnabled()) depthOfField.setGroundFog(groundFog)
 }
+/** Soft canopy shadows from the sky's sun (sun-shadows.ts): on the points, the basemap and
+ *  inside the fog's march. Needs the sun light; `?shadows=0|1` boots them off or on. */
+const SUN_SHADOWS = EXPERIENCE_CONFIG.sunShadows
+const sunShadows: SunShadowLayer = createSunShadowLayer({ renderer, uniforms })
+let shadowsEnabled: boolean = skyEnabled && SKY.sunLight.enabled
+  && (params.get('shadows') === '0' ? false : params.get('shadows') === '1' ? true : SUN_SHADOWS.enabled)
+sunShadows.setEnabled(shadowsEnabled)
+setCloudEffectEnabled('canopyShadows', shadowsEnabled)
+groundFog.setBuildOption('canopyShadows', shadowsEnabled)
 /** Rebuild the post graph after the fog changed shape (switch, build option, haze). */
 const refreshGroundFog = () => depthOfField.setGroundFog(groundFog.isEnabled() ? groundFog : null)
 const scratchFogMin = new THREE.Vector2()
@@ -4900,6 +4927,8 @@ function loop(now: number): void {
   // immediately once the queue is empty, which it is for all but the first
   // seconds after a tile loads.
   groundPatchMask.update()
+  if (skyEnabled && daylightState) updateSky(daylightState, (now - lastGroundFogFrameMs) / 1000)
+  if (shadowsEnabled && daylightState) updateSunShadows(daylightState)
   if (groundFog.isEnabled()) groundFog.update(camera, daylightState ?? null, (now - lastGroundFogFrameMs) / 1000)
   lastGroundFogFrameMs = now
   depthOfField.update(cameraGroundRange)
@@ -4908,6 +4937,55 @@ function loop(now: number): void {
   // renderer.info immediately before calling this function, so anything read further up
   // — updateHud included — sees a counter that has just been zeroed.
   lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
+}
+
+const skyCameraEcef = new THREE.Vector3()
+const skyWorldToEnu = new THREE.Matrix3()
+const skyBufferSize = new THREE.Vector2()
+/** The physically based sky's frame: its tables for this camera and sun, and the light it
+ *  casts. The sun uniform the tile shaders and the fog share is written here too, every
+ *  frame, so it also follows the clock while the daylight grading is off. */
+function updateSky(daylight: DaylightState, deltaS: number): void {
+  renderToEcef(camera.position, skyCameraEcef)
+  // ECEF → ENU; the floating origin only translates, so it is also render space → ENU.
+  skyWorldToEnu.setFromMatrix4(enuInverse)
+  renderer.getDrawingBufferSize(skyBufferSize)
+  skyAtmosphere.update({
+    cameraEcef: skyCameraEcef,
+    worldToEnu: skyWorldToEnu,
+    sunDirectionEnu: daylight.sunDirectionEnu,
+    groundAltitudeM: 0,
+    fovDeg: camera.fov,
+    bufferHeightPx: skyBufferSize.y,
+    deltaS: Math.min(Math.max(deltaS, 0), 0.25),
+  })
+  uniforms.sunDirectionEnu.value.copy(daylight.sunDirectionEnu)
+  const light = skyAtmosphere.light
+  uniforms.sunLightColor.value.copy(light.sun).multiply(sunLightParams.tint)
+    .multiplyScalar(sunLightParams.sunIntensity * light.sunThroughClouds)
+  uniforms.skyLightColor.value.copy(light.sky).multiplyScalar(sunLightParams.skyIntensity)
+  // The night floor of the daylight grade, faded in as the sun sinks from 0° to −12°.
+  const night = 1 - THREE.MathUtils.smoothstep(light.sunElevation, THREE.MathUtils.degToRad(-12), 0)
+  uniforms.nightLightColor.value.copy(nightGradeColor).multiplyScalar(sunLightParams.nightLevel * night)
+}
+const nightGradeColor = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
+const shadowFallbackCentre = new THREE.Vector3()
+/** Fit the canopy shadow map to this frame's dome and draw it if anything moved. After the
+ *  traversal (the drawn tiles are final) and before the scene renders. */
+function updateSunShadows(daylight: DaylightState): void {
+  const placed = sphereFade?.placed() ?? false
+  enuToWorld(cloudCenterEnu, shadowFallbackCentre)
+  sunShadows.update({
+    enuInverse: enuInverseRender,
+    sunDirectionEnu: daylight.sunDirectionEnu,
+    domeCentre: placed ? sphereFade!.centreWorld : null,
+    domeRadius: placed ? sphereFade!.innerRadius() : 0,
+    fallbackCentre: shadowFallbackCentre,
+    fallbackRadius: 1500,
+    floorZ: groundFogFloorZ,
+    bandHeightM: uniforms.canopyTopZ.value - groundFogFloorZ + 10,
+    forEachCaster: (visit) => stream?.forEachDrawnQuad(visit),
+  })
 }
 
 // ---------------------------------------------------------------- boot
@@ -5119,6 +5197,9 @@ async function main(): Promise<void> {
   })
   // Debug handle for streaming diagnosis in the console.
   ;(window as any).__wild = {
+    /** The sky package: atmosphere, canopy shadows (sky-atmosphere.ts, sun-shadows.ts). */
+    get sky() { return skyAtmosphere },
+    get shadows() { return sunShadows },
     stream,
     camera,
     get flight() { return cameraFlight.active },
@@ -5597,6 +5678,8 @@ function dispose(): void {
   fogNoiseEditor?.dispose()
   groundFog.dispose()
   hazeLayer.dispose()
+  skyAtmosphere.dispose()
+  sunShadows.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()

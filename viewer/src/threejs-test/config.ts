@@ -861,6 +861,103 @@ export const EXPERIENCE_CONFIG = {
       zenithElevation: 0.45,
     },
   },
+  /**
+   * The physically based sky (sky-atmosphere.ts): Hillaire's atmosphere in four small lookup
+   * tables, the sun disc drawn at full resolution, aerial perspective in place of the haze
+   * curve, and the light the sun and sky cast on the scene. Off is the graded sky and haze of
+   * atmosphere-haze.ts, the shaders as they were. `?sky=0|1` boots it off or on.
+   */
+  sky: {
+    enabled: true,
+    /** The air (atmosphere-model.ts). Aerosol optical depth 0.25 over a 1.6 km layer is the
+     *  humid haze of the Amazon lowlands outside the fire season. */
+    atmosphere: {
+      aerosolDepth: 0.22,
+      aerosolHeightKm: 1.6,
+      aerosolAlbedo: 0.95,
+      aerosolG: 0.72,
+      angstrom: 1,
+      rayleighScale: 1,
+      ozoneScale: 0.88,
+      groundAlbedo: [0.09, 0.13, 0.07] as [number, number, number],
+    },
+    /** Exposure on top of the physical anchor (a white surface under a clear 60° sun shows as
+     *  1), and how far dim scenes are lifted toward it: 0 none, 1 all the way. */
+    exposure: 1,
+    adaptation: 0.6,
+    adaptationMax: 4,
+    /** The sun disc: intensity, size against the real 0.53°, edge width in pixels, limb
+     *  darkening, and an artistic glow on top of the haze's own halo. */
+    sunIntensity: 1,
+    sunSize: 1.6,
+    sunSharpnessPx: 1.5,
+    sunLimbDarkening: 0.85,
+    sunGlow: 0.02,
+    sunGlowSize: 0.3,
+    sunTint: 0xffffff,
+    /** Ceiling on the disc's displayed radiance (the frame is half float). */
+    sunMaxRadiance: 60,
+    /** The night sky's floor, linear. */
+    nightSky: 0x02060c,
+    /** Aerial perspective: the clear distance around the camera, and a multiplier on the
+     *  air's optical depth (1 is the atmosphere above). */
+    aerialStartM: 150,
+    aerialDensity: 1,
+    /** White balance to the noon sun (1), as a camera on daylight; 0 keeps the sun at the top
+     *  of the air white. And an artistic multiplier on the sky's own radiance. */
+    whiteBalance: 1,
+    skyBrightness: 1,
+    /**
+     * The sun and sky as light on the point cloud and the basemap (point-cloud.ts sunLight):
+     * the captured colours relit by the atmosphere's sun and sky instead of the daylight
+     * grade. `sunIntensity` / `skyIntensity` scale the two; `sideLight` is how much of the sun
+     * a normal-less point catches beyond flat ground (crowns are round); the tint colours the
+     * sunlight. Night keeps the old floor: `nightLevel` × the night grade.
+     */
+    sunLight: {
+      enabled: true,
+      sunIntensity: 1,
+      skyIntensity: 1,
+      sideLight: 0.5,
+      tint: 0xffffff,
+      nightLevel: 0.3,
+    },
+  },
+  /**
+   * Soft sun shadows of the canopy (sun-shadows.ts): an additive optical-depth map of the
+   * points seen from the sun, fitted to the sphere-fade dome, blurred in metres, read by the
+   * points, the basemap and the volumetric fog. Needs the physical sky's sun light. `?shadows=0|1`.
+   */
+  sunShadows: {
+    enabled: true,
+    /** Texels per side; the dome-fitted map covers 1–6 km, so 2048 gives 0.5–3 m texels. */
+    resolution: 2048,
+    /** 1 or 2: an inner map over the dome's middle (`cascadeSplit` of the extent) for close-ups. */
+    cascades: 1,
+    cascadeSplit: 0.35,
+    /** Optical depth one fully covered layer of points adds straight up. A rainforest canopy
+     *  lets 5–10 % of the sun through (LAI ≈ 5, k ≈ 0.5); a few layers of 1 get there. */
+    density: 1.4,
+    strength: 1,
+    /** Blur, metres (one standard deviation). Soft blobs, not crisp leaves. */
+    softnessM: 1.5,
+    /** Share of each tile's points drawn into the map; the rest is made up by the weight. */
+    pointFraction: 0.2,
+    splatScale: 0.7,
+    minSplatTexels: 1.25,
+    /** A point lifts itself this far toward the sun before it looks up its shadow. */
+    selfOffsetM: 3,
+    /** Floor on the occluders' height spread in one texel, metres. */
+    minSpreadM: 1.5,
+    /** Redraw the map at most every this many frames; never while nothing moved. */
+    updateEvery: 2,
+    /** The shadows fade in as the sun climbs from 2° to 8°. */
+    fadeStartDeg: 2,
+    fadeEndDeg: 8,
+    /** Volumetric shadows in the fog's march: optical-depth multiplier and the mip bias. */
+    fogStrength: 1,
+    fogLodBias: 1,
+  },
   // Look grading exposed live by the DESIGN section of the panel. These are the
   // shipped defaults; the sliders write the same uniforms, so anything dialled in
   // here can be pasted back as a new default.
@@ -1471,6 +1568,12 @@ export const EXPERIENCE_CONFIG = {
     /** Rayleigh scattering by the air in the band, 1 = sea-level air. Physically a small
      *  bluish addition over these distances; the haze carries aerial perspective beyond. */
     rayleighScale: 1,
+    /** With the physically based sky (sky-atmosphere.ts) the fog takes the atmosphere's sun
+     *  and sky light instead of the daylight ramp; these scale it so the look the panel was
+     *  tuned to at 14:00 carries over (the sun strength and ambient strength above still
+     *  apply on top). */
+    skySunScale: 1,
+    skyAmbientScale: 1,
     /** Colour multiplied into the fog's light, for grading. */
     tint: 0xffffff,
     /** Tileable noise layers (fog-noise.ts); the noise editor rewrites these live. */

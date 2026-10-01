@@ -122,6 +122,9 @@ export interface StreamingCloud {
   setHighPrecision(enabled: boolean): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
+  /** Visit every dot mesh drawn this frame: the selected tiles' quads that pass the render
+   *  gate. For passes that draw the same points from elsewhere (the canopy shadows). */
+  forEachDrawnQuad(visit: (mesh: THREE.Mesh) => void): void
   /**
    * Hold freshly built tiles back and release a few per frame, instead of letting every
    * tile that arrived in one frame upload and compile in that same frame.
@@ -1208,6 +1211,14 @@ export function createStreamingCloud(opts: {
    * pipeline; and the tile itself is untouched — still in `visibleTiles`, so the unload
    * plugin never fires and the cache keeps it, which is what "hidden but loaded" means.
    */
+  function forEachDrawnQuad(visit: (mesh: THREE.Mesh) => void): void {
+    for (const tile of tiles.visibleTiles) {
+      const stats = tileStats.get(tile)
+      if (!stats) continue
+      for (const mesh of stats.quads) if (mesh.visible && mesh.parent) visit(mesh)
+    }
+  }
+
   function applyRenderGate(): void {
     renderGateHidden = 0
     renderGateTiles = 0
@@ -1235,6 +1246,7 @@ export function createStreamingCloud(opts: {
   return {
     tiles,
     group: tiles.group,
+    forEachDrawnQuad,
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
