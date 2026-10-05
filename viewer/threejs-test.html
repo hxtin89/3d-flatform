@@ -485,13 +485,30 @@
                                   border-radius: 50%; background: #79b8ff; }
       .grade-slot.selected { border-color: #1f6feb; }
       #gradeTabs button { padding: 7px 2px; font-size: 11px; }
-      /* The widgets (wheels, curves) of the next step. */
+      /* The widgets (grade-widgets.ts): canvases drawn at the device pixel ratio. Rows a widget
+         hides (the master ranges of the wheels not picked) need [hidden] over .row's flex. */
+      #gradeSection .row[hidden] { display: none; }
       canvas.grade-widget { display: block; width: 100%; touch-action: none; border: 1px solid #2d333b;
-                            border-radius: 8px; background: #0d1117; }
+                            border-radius: 8px; background: #0d1117; user-select: none; -webkit-user-select: none;
+                            -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+      canvas.grade-widget:focus { outline: none; }
+      canvas.grade-widget:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
       canvas.grade-widget.grade-wheel, canvas.grade-widget.grade-curve { aspect-ratio: 1; }
+      canvas.grade-widget.grade-wheel-large { width: min(100%, 220px); margin: 0 auto; }
+      canvas.grade-widget.grade-curve { margin: 0 auto; }
       canvas.grade-widget.grade-hue { height: 140px; }
       .grade-wheels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .grade-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+      .grade-cell > .h { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; opacity: .55; }
       .grade-minis { display: flex; gap: 6px; }
+      .grade-mini { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px;
+                    padding: 5px 2px 4px; background: transparent; color: #b9c0c8; border: 1px solid #2d333b;
+                    border-radius: 8px; font: inherit; font-size: 10px; letter-spacing: .04em; cursor: pointer; }
+      .grade-mini.on { border-color: #1f6feb; background: rgba(31,111,235,.14); color: #fff; }
+      .grade-mini:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
+      .grade-mini > canvas { display: block; width: 44px; height: 44px; pointer-events: none; }
+      .grade-readout { color: #b9c0c8; font: 600 11px/1.3 ui-monospace, SFMono-Regular, monospace;
+                       font-variant-numeric: tabular-nums; text-align: center; min-height: 1.3em; }
       /* Before/after split: the line and its tags over the canvas, the handle the only thing
          that takes the pointer. Under the panels (20, 21), over the map overlays. */
       #gradeSplit { position: fixed; inset: 0; z-index: 18; pointer-events: none; --split: 50%; --handle-top: 30vh; }
@@ -707,7 +724,7 @@
         /* Colour grade on a phone: the split handle sits above the 64vh sheet, and a curve never
            takes more than 40 % of the screen height. */
         #gradeSplit { --handle-top: 18vh; }
-        .grade-curve { width: min(100%, 40vh); }
+        canvas.grade-widget.grade-curve { width: min(100%, 40vh); }
         /* Peek: while a grade control is held, the sheet clears and only that control's row
            stays, so the frame it changes can be seen. visibility, not display, so nothing moves. */
         body.grade-dragging #designPanel { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
@@ -1461,7 +1478,7 @@
               <button class="act" id="gradeRedo" type="button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
               <button class="act" id="gradeReset" type="button" title="Every control back to neutral; the look stays">⟲ Reset</button>
             </div>
-            <span class="weather-note"><em>A</em> and <em>B</em> hold two versions to flip between: tap an empty slot to store the grade, a stored one (dotted) to recall it. <em>Store</em> overwrites the slot used last. Each finished slider move, recall, reset, import and paste is one undo step: ↶ ↷, or Ctrl+Z and Ctrl+Shift+Z while a control here has focus. <em>Reset</em> sets every control to neutral and keeps the look</span>
+            <span class="weather-note"><em>A</em> and <em>B</em> hold two versions to flip between: tap an empty slot to store the grade, a stored one (dotted) to recall it. <em>Store</em> overwrites the slot used last. Each finished slider move or drag, run of arrow keys, recall, reset, import and paste is one undo step: ↶ ↷, or Ctrl+Z and Ctrl+Shift+Z while a control here has focus. <em>Reset</em> sets every control to neutral and keeps the look</span>
           </div>
           <div class="row">
             <div class="seg" id="gradeTabs" role="tablist" aria-label="Grade controls">
@@ -1475,25 +1492,34 @@
 
           <div class="grade-group" id="gradePrimary" role="tabpanel" aria-label="Primary">
             <div class="row">
-              <span class="weather-note">The colour wheels arrive in the next step; for now each wheel's master value. Applied in this order: white balance, then lift, gain and offset, then gamma, then contrast</span>
-              <span class="weather-note" id="gradePrimaryHeld" hidden></span>
+              <span class="weather-note">Pick a wheel, then drag anywhere on the large one: the puck moves toward the colour it adds, relative to where it was, Shift for fine moves. A double tap, or 0 with the wheel focused, sets it back; arrows nudge it. The range under it is that wheel's master value. Applied in this order: white balance, then lift, gain and offset, then gamma, then contrast</span>
+            </div>
+            <div class="row">
+              <div class="grade-minis" id="gradeWheelMinis" role="group" aria-label="Wheel to edit">
+                <button type="button" class="grade-mini on" data-wheel="lift" aria-pressed="true" aria-controls="gradeWheel"><canvas aria-hidden="true"></canvas>Lift</button>
+                <button type="button" class="grade-mini" data-wheel="gamma" aria-pressed="false" aria-controls="gradeWheel"><canvas aria-hidden="true"></canvas>Gamma</button>
+                <button type="button" class="grade-mini" data-wheel="gain" aria-pressed="false" aria-controls="gradeWheel"><canvas aria-hidden="true"></canvas>Gain</button>
+                <button type="button" class="grade-mini" data-wheel="offset" aria-pressed="false" aria-controls="gradeWheel"><canvas aria-hidden="true"></canvas>Offset</button>
+              </div>
+              <canvas class="grade-widget grade-wheel grade-wheel-large" id="gradeWheel" tabindex="0" role="application" aria-label="Lift colour wheel" aria-describedby="gradeWheelReadout"></canvas>
+              <span class="grade-readout" id="gradeWheelReadout" title="What the wheel adds per channel, beyond its master value">R 0.000 G 0.000 B 0.000</span>
             </div>
             <div class="row">
               <label class="h" for="gradeLiftY">Lift · <span class="val" id="gradeLiftYVal">—</span></label>
               <input type="range" id="gradeLiftY" min="-0.25" max="0.25" step="0.001" />
               <span class="weather-note">Raises or lowers black while white stays put, so the shadows move most</span>
             </div>
-            <div class="row">
+            <div class="row" hidden>
               <label class="h" for="gradeGammaY">Gamma · <span class="val" id="gradeGammaYVal">—</span></label>
               <input type="range" id="gradeGammaY" min="-1" max="1" step="0.01" />
               <span class="weather-note">Bends the mid-tones with black and white fixed: right brightens them. The value is in stops of the power; γ is the gamma it amounts to</span>
             </div>
-            <div class="row">
+            <div class="row" hidden>
               <label class="h" for="gradeGainY">Gain · <span class="val" id="gradeGainYVal">—</span></label>
               <input type="range" id="gradeGainY" min="0.5" max="2" step="0.01" />
               <span class="weather-note">Scales white while black stays put, so the highlights move most. Past white it clips unless Roll-off (Tones) softens it</span>
             </div>
-            <div class="row">
+            <div class="row" hidden>
               <label class="h" for="gradeOffsetY">Offset · <span class="val" id="gradeOffsetYVal">—</span></label>
               <input type="range" id="gradeOffsetY" min="-0.25" max="0.25" step="0.001" />
               <span class="weather-note">Moves every tone by the same amount, black and white included</span>
@@ -1536,24 +1562,55 @@
 
           <div class="grade-group" id="gradeCurves" role="tabpanel" aria-label="Curves" hidden>
             <div class="row">
-              <span class="weather-note">The curve editors arrive in the next step: one master curve and one each for red, green and blue, after the Primary controls</span>
-              <span class="weather-note" id="gradeCurvesHeld" hidden></span>
-              <button class="act" id="gradeCurveReset" type="button">⟲ Reset curves</button>
+              <div class="seg" id="gradeCurveChannel" role="group" aria-label="Curve to edit">
+                <button type="button" data-channel="master" class="on" aria-pressed="true" aria-controls="gradeCurve">RGB</button>
+                <button type="button" data-channel="red" aria-pressed="false" aria-controls="gradeCurve">R</button>
+                <button type="button" data-channel="green" aria-pressed="false" aria-controls="gradeCurve">G</button>
+                <button type="button" data-channel="blue" aria-pressed="false" aria-controls="gradeCurve">B</button>
+              </div>
+              <canvas class="grade-widget grade-curve" id="gradeCurve" tabindex="0" role="application" aria-label="RGB curve" aria-describedby="gradeCurveReadout"></canvas>
+              <span class="grade-readout" id="gradeCurveReadout">—</span>
+              <div class="grade-bar">
+                <button class="act" id="gradeCurvePointRemove" type="button" disabled>✕ Remove point</button>
+                <button class="act" id="gradeCurveReset" type="button">⟲ Reset curves</button>
+              </div>
+              <span class="weather-note">RGB first, then the red, green and blue curve, after the Primary controls; the others show faint behind the one picked. Tap the curve to add a point (12 at most) and drag it; the two ends move up and down only. A double tap, dragging a point off the box or <em>Remove point</em> takes it away. With the curve focused, arrows nudge the picked point by one sRGB code (Shift ten), [ and ] pick the previous or next, Delete removes it. <em>Reset curves</em> resets all four</span>
             </div>
           </div>
 
           <div class="grade-group" id="gradeHue" role="tabpanel" aria-label="Hue" hidden>
             <div class="row">
-              <span class="weather-note">The hue curve editors arrive in the next step: saturation and brightness per hue, which leave greys and haze alone</span>
-              <span class="weather-note" id="gradeHueHeld" hidden></span>
-              <button class="act" id="gradeHueReset" type="button">⟲ Reset hue curves</button>
+              <div class="seg" id="gradeHueMode" role="group" aria-label="Hue curve to edit">
+                <button type="button" data-mode="sat" class="on" aria-pressed="true" aria-controls="gradeHueCurve">Hue vs sat</button>
+                <button type="button" data-mode="luma" aria-pressed="false" aria-controls="gradeHueCurve">Hue vs luma</button>
+              </div>
+              <canvas class="grade-widget grade-hue" id="gradeHueCurve" tabindex="0" role="application" aria-label="Hue vs saturation curve" aria-describedby="gradeHueReadout"></canvas>
+              <span class="grade-readout" id="gradeHueReadout">—</span>
+              <div class="grade-bar">
+                <button class="act" id="gradeHuePointRemove" type="button" disabled>✕ Remove point</button>
+                <button class="act" id="gradeHueReset" type="button">⟲ Reset hue curves</button>
+              </div>
+              <span class="weather-note">Saturation (0–200 %) or brightness (±1 stop) per hue, along the strip; both fade out toward grey, so greys and haze never move. The band marks the canopy's greens. The curve wraps round: a point dragged past one edge comes back at the other. A point dragged near the centre line snaps onto it. Arrows nudge the picked point by 1° and 0.01 (Shift ten times); otherwise as the curves. <em>Reset hue curves</em> resets both</span>
             </div>
           </div>
 
           <div class="grade-group" id="gradeTones" role="tabpanel" aria-label="Tones" hidden>
             <div class="row">
-              <span class="weather-note">Split toning: a tint for the shadows and one for the highlights, which leaves true black black. Their colour wheels arrive in the next step; these set where the two hand over</span>
-              <span class="weather-note" id="gradeTonesHeld" hidden></span>
+              <span class="weather-note">Split toning: a tint for the shadows and one for the highlights, which leaves true black black. Drag a wheel toward the tint (Shift for fine moves); a double tap or 0 sets it back. Balance and blending set where the two hand over</span>
+            </div>
+            <div class="row">
+              <div class="grade-wheels">
+                <div class="grade-cell">
+                  <span class="h">Shadows</span>
+                  <canvas class="grade-widget grade-wheel" id="gradeShadowWheel" tabindex="0" role="application" aria-label="Shadow tint wheel" aria-describedby="gradeShadowReadout"></canvas>
+                  <span class="grade-readout" id="gradeShadowReadout">Neutral</span>
+                </div>
+                <div class="grade-cell">
+                  <span class="h">Highlights</span>
+                  <canvas class="grade-widget grade-wheel" id="gradeHighlightWheel" tabindex="0" role="application" aria-label="Highlight tint wheel" aria-describedby="gradeHighlightReadout"></canvas>
+                  <span class="grade-readout" id="gradeHighlightReadout">Neutral</span>
+                </div>
+              </div>
             </div>
             <div class="row">
               <label class="h" for="gradeBalance">Balance · <span class="val" id="gradeBalanceVal">—</span></label>

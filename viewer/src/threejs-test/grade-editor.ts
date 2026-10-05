@@ -2,7 +2,8 @@
 // final quad shows (grade-output.ts) — the state and the look, the undo history and the A/B
 // snapshots, the bake (a module worker, grade-bake.worker.ts, or the same code on the main
 // thread when no worker comes up), the texel buffers, when the tap is compiled in, .cube import
-// and export, Frame for grading, the before/after split and the section's sliders.
+// and export, Frame for grading, the before/after split, the section's sliders and its wheels and
+// curve editors (grade-widgets.ts).
 //
 // The decisions live in grade-editor-logic.ts, where node tests reach them; this file wires them
 // to the DOM. The panel's own binders (bindDesignSlider, bindSeg, bindEffectToggle in main.ts)
@@ -11,8 +12,9 @@
 //
 // Per frame, update() (main.ts, right before depthOfField.render()) disposes replaced textures,
 // runs at most one main-thread bake, and uploads the newest bake result — at most one upload a
-// frame. A slider's 'input' patches the state and asks for a bake (a draft while finals are
-// slow); its 'change' is a commit: an undo step, a final bake, and the compile-in decision.
+// frame. A slider's 'input', a widget's drag or arrow key patches the state and asks for a bake
+// (a draft while finals are slow); a slider's 'change', a widget's pointerup or the pause after
+// its arrow keys is a commit: an undo step, a final bake, and the compile-in decision.
 import { GRADE_CUBE_TITLE, gradeCubeFileName } from './cube-format.ts'
 import {
   createGradeBakeHost, type CubeMessage, type GradeBakeHost, type HostReply, type HostRequest, type LookMeta,
@@ -23,14 +25,19 @@ import {
   type BakeJob, type BakeMessage, type BakeResult, type BufferPool, type LatticeSize,
 } from './grade-bake.ts'
 import {
-  createCompilePolicy, createLookStore, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS, GRADE_TABS,
-  gradeBoot, gradeStatusText, heldEditsNote, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER, lookStatusText,
-  lookUrl, nudgeSplit, planPaste, pushSample, readPath, sliderRange, splitFromPointer, summarize, toggleText,
-  undoKeyAction, writePath, type GradeConfig, type GradeTab,
+  createCompilePolicy, createLookStore, curveLabel, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS,
+  GRADE_TABS, gradeBoot, gradeStatusText, hueCurveLabel, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER,
+  lookStatusText, lookUrl, nudgeSplit, planPaste, pushSample, readPath, sliderRange, splitFromPointer, summarize,
+  toggleText, toneWheelLabel, undoKeyAction, WHEEL_MASTER_SLIDERS, wheelLabel, writePath, type GradeConfig, type GradeTab,
 } from './grade-editor-logic.ts'
-import { GRADE_RANGES, isGradeIdentity, parseGradeState, type GradeState, type LookRef } from './grade-model.ts'
+import {
+  CURVE_CHANNELS, GRADE_RANGES, isGradeIdentity, parseGradeState, WHEEL_NAMES,
+  type CurveChannel, type GradeState, type LookRef, type WheelName,
+} from './grade-model.ts'
 import type { GradeOutput } from './grade-output.ts'
 import { createHistory, createSnapshots, gradeSnippet, type GradePaste, type GradeSnapshot, type SnapshotSlot } from './grade-state.ts'
+import { HUE_MODES, puckReadout, wheelReadout, type HueMode } from './grade-widget-logic.ts'
+import { createColourWheel, createCurveEditor, createHueCurveEditor, type GradeWidget } from './grade-widgets.ts'
 
 export interface GradeEditorOptions {
   /** #gradeSection, the section's <details>. */
@@ -128,12 +135,23 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     redo: byId<HTMLButtonElement>(ids.redo),
     reset: byId<HTMLButtonElement>(ids.reset),
     tabs: byId(ids.tabs),
-    primaryHeld: byId(ids.primaryHeld),
-    curvesHeld: byId(ids.curvesHeld),
-    hueHeld: byId(ids.hueHeld),
-    tonesHeld: byId(ids.tonesHeld),
+    wheelMinis: byId(ids.wheelMinis),
+    wheel: byId<HTMLCanvasElement>(ids.wheel),
+    wheelReadout: byId(ids.wheelReadout),
+    curveChannel: byId(ids.curveChannel),
+    curve: byId<HTMLCanvasElement>(ids.curve),
+    curveReadout: byId(ids.curveReadout),
+    curvePointRemove: byId<HTMLButtonElement>(ids.curvePointRemove),
     curveReset: byId<HTMLButtonElement>(ids.curveReset),
+    hueMode: byId(ids.hueMode),
+    hueCurve: byId<HTMLCanvasElement>(ids.hueCurve),
+    hueReadout: byId(ids.hueReadout),
+    huePointRemove: byId<HTMLButtonElement>(ids.huePointRemove),
     hueReset: byId<HTMLButtonElement>(ids.hueReset),
+    shadowWheel: byId<HTMLCanvasElement>(ids.shadowWheel),
+    shadowReadout: byId(ids.shadowReadout),
+    highlightWheel: byId<HTMLCanvasElement>(ids.highlightWheel),
+    highlightReadout: byId(ids.highlightReadout),
     pivotTrack: byId(ids.pivotTrack),
     importButton: byId<HTMLButtonElement>(ids.importButton),
     file: byId<HTMLInputElement>(ids.file),
@@ -419,6 +437,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
       const meta = looks.has(key) ? looks.get(key)!.meta : await holdLook(key, await file.text(), file.name, null)
       if (disposed) return
       lookNote = undefined
+      flushWidgets()
       look = { key, name: file.name, file: null, size: meta.size, amount: GRADE_RANGES.look.amount.default }
       commit()
       syncControls()
@@ -487,6 +506,14 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     renderAll()
   }
 
+  /** The wheels and curve editors (made with the controls below). */
+  const widgets: GradeWidget[] = []
+  /** An arrow-key nudge still waiting for its pause becomes its own undo step before anything
+   *  else changes the state (an undo, a reset, a recall, a paste). */
+  const flushWidgets = () => {
+    for (const widget of widgets) widget.flush()
+  }
+
   /** Makes a history entry or a snapshot the present; the caller records it (or not). */
   function restore(entry: GradeSnapshot): void {
     state = entry.state
@@ -498,15 +525,18 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
 
   const undo = () => {
+    flushWidgets()
     const entry = history.undo()
     if (entry) restore(entry)
   }
   const redo = () => {
+    flushWidgets()
     const entry = history.redo()
     if (entry) restore(entry)
   }
 
   function tapSnapshot(slot: SnapshotSlot): void {
+    flushWidgets()
     const held = snapshots.tap(slot, current())
     if (held) {
       restore(held)
@@ -639,9 +669,9 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   interface BoundSlider { sync(): void }
 
   /** A range bound to the state: its limits from GRADE_RANGES, its readout from `format`; 'input'
-   *  edits (a bake, no undo step), 'change' commits. */
+   *  edits (a bake, no undo step, then `after`), 'change' commits. */
   function bindGradeSlider(id: string, range: { min: number; max: number; step: number }, format: (v: number) => string,
-    get: () => number, set: (v: number) => void): BoundSlider {
+    get: () => number, set: (v: number) => void, after?: () => void): BoundSlider {
     const input = byId<HTMLInputElement>(id)
     const readout = byId(`${id}Val`)
     input.min = String(range.min)
@@ -653,6 +683,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
       show()
       editAt ??= performance.now()
       requestBake(false)
+      after?.()
     })
     listen(input, 'change', () => commit())
     return {
@@ -663,8 +694,174 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     }
   }
 
+  // ---- peek (plan 4.12, 5.8): on a phone the sheet clears while a grade control is held — a
+  // range, or a widget once its drag starts (a swipe that scrolls never) — leaving its row, until
+  // the pointer lifts; the CSS only acts under 700 px.
+  let endPeek: (() => void) | null = null
+  function startPeek(row: Element | null): void {
+    endPeek?.()
+    row?.classList.add('grade-active')
+    body.classList.add('grade-dragging')
+    const end = () => {
+      row?.classList.remove('grade-active')
+      body.classList.remove('grade-dragging')
+      window.removeEventListener('pointerup', end, true)
+      window.removeEventListener('pointercancel', end, true)
+      if (endPeek === end) endPeek = null
+    }
+    window.addEventListener('pointerup', end, true)
+    window.addEventListener('pointercancel', end, true)
+    endPeek = end
+  }
+  listen(root, 'pointerdown', (event: PointerEvent) => {
+    // Widgets stop their pointerdown and call startPeek themselves (grabbing below).
+    const target = event.target
+    if (target instanceof HTMLInputElement && target.type === 'range') startPeek(target.closest('.row'))
+  })
+
+  // ---- the wheels and curve editors (plan 5.3–5.5). They read and write the state through
+  // closures, so a restore only redraws them; their input bakes like a slider's 'input', their
+  // commit is a slider's 'change'. None of them ever changes the stage.
+  const widgetInput = () => {
+    editAt ??= performance.now()
+    requestBake(false)
+  }
+  const grabbing = (canvas: HTMLElement) => () => startPeek(canvas.closest('.row'))
+
+  // Primary: four minis pick the wheel the large one edits; that wheel's master range shows under it.
+  let wheelName: WheelName = 'lift'
+  const miniButtons = [...el.wheelMinis.querySelectorAll<HTMLButtonElement>('button[data-wheel]')]
+  const minis = new Map<WheelName, GradeWidget>()
+  for (const button of miniButtons) {
+    const name = button.dataset.wheel as WheelName
+    const canvas = button.querySelector('canvas')
+    if (!WHEEL_NAMES.includes(name) || !canvas) throw new Error('grade editor: each wheel button needs a data-wheel and a canvas')
+    minis.set(name, createColourWheel(canvas, { mini: true, get: () => state[name] }))
+  }
+  const masterRows = WHEEL_NAMES.map((name) => [name, byId(WHEEL_MASTER_SLIDERS[name]).closest<HTMLElement>('.row')] as const)
+  const primaryWheel = createColourWheel(el.wheel, {
+    get: () => state[wheelName],
+    set: (puck) => {
+      state[wheelName].u = puck.u
+      state[wheelName].v = puck.v
+    },
+    label: wheelLabel(wheelName),
+    readout: { element: el.wheelReadout, text: () => wheelReadout(wheelName, state[wheelName], tuning) },
+    onInput: () => {
+      minis.get(wheelName)?.redraw()
+      widgetInput()
+    },
+    onCommit: commit,
+    onGrab: grabbing(el.wheel),
+  })
+  function showWheel(): void {
+    for (const button of miniButtons) {
+      const on = button.dataset.wheel === wheelName
+      button.classList.toggle('on', on)
+      button.setAttribute('aria-pressed', String(on))
+    }
+    for (const [name, row] of masterRows) if (row) row.hidden = name !== wheelName
+    primaryWheel.setLabel(wheelLabel(wheelName))
+    primaryWheel.redraw()
+  }
+  for (const button of miniButtons) {
+    listen(button, 'click', () => {
+      flushWidgets()
+      wheelName = button.dataset.wheel as WheelName
+      showWheel()
+    })
+  }
+
+  // Tones: the shadow and highlight tints.
+  const toneWheel = (which: 'shadows' | 'highlights', canvas: HTMLCanvasElement, readout: HTMLElement) => createColourWheel(canvas, {
+    get: () => state.tones[which],
+    set: (puck) => { state.tones[which] = puck },
+    label: toneWheelLabel(which),
+    readout: { element: readout, text: () => puckReadout(state.tones[which]) },
+    onInput: widgetInput,
+    onCommit: commit,
+    onGrab: grabbing(canvas),
+  })
+
+  // Curves: one editor, the channel picked above it.
+  let curveChannel: CurveChannel = 'master'
+  const channelButtons = [...el.curveChannel.querySelectorAll<HTMLButtonElement>('button[data-channel]')]
+  const curveEditor = createCurveEditor(el.curve, {
+    curves: () => state.curves,
+    channel: () => curveChannel,
+    setPoints: (points) => { state.curves[curveChannel] = points },
+    label: curveLabel(curveChannel),
+    readout: el.curveReadout,
+    removeButton: el.curvePointRemove,
+    onInput: widgetInput,
+    onCommit: commit,
+    onGrab: grabbing(el.curve),
+  })
+  function showChannel(): void {
+    for (const button of channelButtons) {
+      const on = button.dataset.channel === curveChannel
+      button.classList.toggle('on', on)
+      button.setAttribute('aria-pressed', String(on))
+    }
+    curveEditor.setLabel(curveLabel(curveChannel))
+    curveEditor.deselect()
+  }
+  for (const button of channelButtons) {
+    const channel = button.dataset.channel as CurveChannel
+    if (!CURVE_CHANNELS.includes(channel)) throw new Error(`grade editor: unknown curve channel ${channel}`)
+    listen(button, 'click', () => {
+      curveChannel = channel
+      showChannel()
+    })
+  }
+
+  // Hue: one editor, hue vs saturation or hue vs luma.
+  let hueMode: HueMode = 'sat'
+  const hueButtons = [...el.hueMode.querySelectorAll<HTMLButtonElement>('button[data-mode]')]
+  const hueEditor = createHueCurveEditor(el.hueCurve, {
+    mode: () => hueMode,
+    points: () => (hueMode === 'sat' ? state.hueSat : state.hueLuma),
+    setPoints: (points) => {
+      if (hueMode === 'sat') state.hueSat = points
+      else state.hueLuma = points
+    },
+    label: hueCurveLabel(hueMode),
+    readout: el.hueReadout,
+    removeButton: el.huePointRemove,
+    onInput: widgetInput,
+    onCommit: commit,
+    onGrab: grabbing(el.hueCurve),
+  })
+  function showHueMode(): void {
+    for (const button of hueButtons) {
+      const on = button.dataset.mode === hueMode
+      button.classList.toggle('on', on)
+      button.setAttribute('aria-pressed', String(on))
+    }
+    hueEditor.setLabel(hueCurveLabel(hueMode))
+    hueEditor.deselect()
+  }
+  for (const button of hueButtons) {
+    const mode = button.dataset.mode as HueMode
+    if (!HUE_MODES.includes(mode)) throw new Error(`grade editor: unknown hue curve mode ${mode}`)
+    listen(button, 'click', () => {
+      hueMode = mode
+      showHueMode()
+    })
+  }
+
+  widgets.push(...minis.values(), primaryWheel,
+    toneWheel('shadows', el.shadowWheel, el.shadowReadout), toneWheel('highlights', el.highlightWheel, el.highlightReadout),
+    curveEditor, hueEditor)
+  showWheel()
+  showChannel()
+  showHueMode()
+
+  /** A wheel's master range changes its readout too. */
+  const wheelMasterIds = new Set<string>(Object.values(WHEEL_MASTER_SLIDERS))
   const sliders: BoundSlider[] = GRADE_SLIDERS.map((spec) => bindGradeSlider(spec.id, sliderRange(spec), spec.format,
-    () => readPath(state, spec.path), (v) => writePath(state, spec.path, v)))
+    () => readPath(state, spec.path), (v) => writePath(state, spec.path, v),
+    wheelMasterIds.has(spec.id) ? primaryWheel.redraw : undefined))
   const lookAmountInput = byId<HTMLInputElement>(LOOK_AMOUNT_SLIDER.id)
   const lookAmount = bindGradeSlider(LOOK_AMOUNT_SLIDER.id, LOOK_AMOUNT_SLIDER.range, LOOK_AMOUNT_SLIDER.format,
     () => look?.amount ?? LOOK_AMOUNT_SLIDER.range.default,
@@ -708,19 +905,6 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     el.redo.disabled = !history.canRedo()
   }
 
-  function renderHeld(): void {
-    const notes: [HTMLElement, string][] = [
-      [el.primaryHeld, heldEditsNote(state, 'primary')],
-      [el.curvesHeld, heldEditsNote(state, 'curves')],
-      [el.hueHeld, heldEditsNote(state, 'hue')],
-      [el.tonesHeld, heldEditsNote(state, 'tones')],
-    ]
-    for (const [note, text] of notes) {
-      note.textContent = text
-      note.hidden = text === ''
-    }
-  }
-
   function renderLook(): void {
     const meta = metaOf(look)
     el.lookStatus.textContent = lookStatusText(look, meta, meta ? latticeOf(look) : null, lookNote)
@@ -746,14 +930,15 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
 
   function renderAll(): void {
     renderHeader()
-    renderHeld()
     renderLook()
     renderStatus()
   }
 
+  /** Every control from the state, after anything that replaced it. */
   function syncControls(): void {
     for (const slider of sliders) slider.sync()
     lookAmount.sync()
+    for (const widget of widgets) widget.redraw()
     renderAll()
   }
 
@@ -776,17 +961,20 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   listen(el.undo, 'click', undo)
   listen(el.redo, 'click', redo)
   listen(el.reset, 'click', () => {
+    flushWidgets()
     // The controls to neutral; the look stays (✕ Remove takes it off).
     state = parseGradeState({}).state
     commit()
     syncControls()
   })
   listen(el.curveReset, 'click', () => {
+    flushWidgets()
     state.curves = parseGradeState({}).state.curves
     commit()
     syncControls()
   })
   listen(el.hueReset, 'click', () => {
+    flushWidgets()
     state.hueSat = []
     state.hueLuma = []
     commit()
@@ -800,6 +988,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     if (file) void importFile(file)
   })
   listen(el.lookRemove, 'click', () => {
+    flushWidgets()
     look = null
     lookNote = undefined
     commit()
@@ -848,28 +1037,6 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
   listen(root, 'keydown', onSectionKey)
   listen(root, 'keyup', onSectionKey)
-
-  // ---- peek (plan 4.12): on a phone the sheet clears while a grade slider is held, leaving
-  // its row; the CSS only acts under 700 px.
-  let endPeek: (() => void) | null = null
-  listen(root, 'pointerdown', (event: PointerEvent) => {
-    const target = event.target
-    if (!(target instanceof HTMLInputElement) || target.type !== 'range') return
-    endPeek?.()
-    const row = target.closest('.row')
-    row?.classList.add('grade-active')
-    body.classList.add('grade-dragging')
-    const end = () => {
-      row?.classList.remove('grade-active')
-      body.classList.remove('grade-dragging')
-      window.removeEventListener('pointerup', end, true)
-      window.removeEventListener('pointercancel', end, true)
-      endPeek = null
-    }
-    window.addEventListener('pointerup', end, true)
-    window.addEventListener('pointercancel', end, true)
-    endPeek = end
-  })
 
   // ---- the section and the panel
   listen(root, 'toggle', () => {
@@ -935,6 +1102,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     snippet: () => gradeSnippet(enabled, lutSize, look ? { name: look.name, file: look.file, amount: look.amount } : null, state),
     applyPaste(paste) {
       if (!paste.grade) return []
+      flushWidgets()
       const held = looks.keys().map((key) => {
         const entry = looks.peek(key)!
         return { key, name: entry.name, file: entry.file }
@@ -986,6 +1154,8 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
       for (const cleanup of cleanups) cleanup()
       cleanups.length = 0
       endPeek?.()
+      for (const widget of widgets) widget.dispose()
+      widgets.length = 0
       for (const timer of flashTimers.values()) clearTimeout(timer)
       clearTimeout(noteTimer)
       if (worker) {

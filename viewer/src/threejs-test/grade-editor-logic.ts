@@ -6,10 +6,9 @@
 import { CUBE_3D_SIZE_MAX } from './cube-format.ts'
 import type { LookMeta } from './grade-bake-host.ts'
 import type { LatticeSize } from './grade-bake.ts'
-import { HUE_LUMA_CURVE, HUE_SAT_CURVE, isDefaultToneCurve, isNeutralHueCurve } from './grade-curves.ts'
 import {
-  CURVE_CHANNELS, GRADE_RANGES, isGradeIdentity, parseGradeState, WHEEL_NAMES,
-  type GradeRange, type GradeState, type GradeTuning, type LookRef,
+  GRADE_RANGES, isGradeIdentity, parseGradeState,
+  type GradeRange, type GradeState, type GradeTuning, type LookRef, type WheelName,
 } from './grade-model.ts'
 import { lookFileName, type PastedGrade } from './grade-state.ts'
 
@@ -366,12 +365,23 @@ export const GRADE_ELEMENT_IDS = Object.freeze({
   hue: 'gradeHue',
   tones: 'gradeTones',
   look: 'gradeLook',
-  primaryHeld: 'gradePrimaryHeld',
-  curvesHeld: 'gradeCurvesHeld',
-  hueHeld: 'gradeHueHeld',
-  tonesHeld: 'gradeTonesHeld',
+  wheelMinis: 'gradeWheelMinis',
+  wheel: 'gradeWheel',
+  wheelReadout: 'gradeWheelReadout',
+  curveChannel: 'gradeCurveChannel',
+  curve: 'gradeCurve',
+  curveReadout: 'gradeCurveReadout',
+  curvePointRemove: 'gradeCurvePointRemove',
   curveReset: 'gradeCurveReset',
+  hueMode: 'gradeHueMode',
+  hueCurve: 'gradeHueCurve',
+  hueReadout: 'gradeHueReadout',
+  huePointRemove: 'gradeHuePointRemove',
   hueReset: 'gradeHueReset',
+  shadowWheel: 'gradeShadowWheel',
+  shadowReadout: 'gradeShadowReadout',
+  highlightWheel: 'gradeHighlightWheel',
+  highlightReadout: 'gradeHighlightReadout',
   pivotTrack: 'gradePivotTrack',
   importButton: 'gradeImport',
   file: 'gradeFile',
@@ -414,10 +424,10 @@ export interface GradeSliderSpec {
 }
 
 /**
- * The C3 sliders, in panel order. In Primary: the four wheels' master values (their colour
- * pucks are kept in the state; the wheels that move them come with the widgets), white balance,
- * contrast and its pivot, saturation and vibrance. In Tones: the split toning's balance and
- * blending, and the roll-off.
+ * The section's ranges, in panel order. In Primary: the four wheels' master values (one shows,
+ * under the large wheel, for the wheel picked: WHEEL_MASTER_SLIDERS; the pucks are moved by the
+ * wheels, grade-widgets.ts), white balance, contrast and its pivot, saturation and vibrance. In
+ * Tones: the split toning's balance and blending, and the roll-off.
  */
 export const GRADE_SLIDERS: readonly GradeSliderSpec[] = Object.freeze([
   { id: 'gradeLiftY', path: ['lift', 'y'], tab: 'primary', format: (v) => signed(v, 3) },
@@ -460,34 +470,26 @@ export function writePath(state: GradeState, path: GradeSliderSpec['path'], valu
   else record[path[0]][path[1]] = v
 }
 
-const joinList = (items: string[]) => items.length <= 1 ? items.join('')
-  : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+/** Each primary wheel's master range: the one under the large wheel while that wheel is picked. */
+export const WHEEL_MASTER_SLIDERS: Readonly<Record<WheelName, string>> = Object.freeze({
+  lift: 'gradeLiftY',
+  gamma: 'gradeGammaY',
+  gain: 'gradeGainY',
+  offset: 'gradeOffsetY',
+})
 
-/**
- * The parts of the state a tab cannot edit yet (C3 has no wheel, curve or hue widgets) that are
- * set anyway — by a paste, a snapshot or config — for the note on that tab; '' when none is.
- * They are graded and kept; the tab's Reset (or ⟲ Reset) clears them.
- */
-export function heldEditsNote(state: GradeState, tab: 'primary' | 'curves' | 'hue' | 'tones'): string {
-  const held: string[] = []
-  if (tab === 'primary') {
-    for (const name of WHEEL_NAMES) if (state[name].u !== 0 || state[name].v !== 0) held.push(name)
-    return held.length ? `Held colour on the ${joinList(held)} ${held.length === 1 ? 'wheel' : 'wheels'} (from a paste, a snapshot or config): graded, and kept until ⟲ Reset.` : ''
-  }
-  if (tab === 'curves') {
-    for (const channel of CURVE_CHANNELS) if (!isDefaultToneCurve(state.curves[channel])) held.push(channel)
-    return held.length ? `Held: the ${joinList(held)} ${held.length === 1 ? 'curve' : 'curves'}, graded. Reset curves clears them.` : ''
-  }
-  if (tab === 'hue') {
-    if (!isNeutralHueCurve(state.hueSat, HUE_SAT_CURVE.neutral!)) held.push(`hue vs sat (${state.hueSat.length} ${state.hueSat.length === 1 ? 'point' : 'points'})`)
-    if (!isNeutralHueCurve(state.hueLuma, HUE_LUMA_CURVE.neutral!)) held.push(`hue vs luma (${state.hueLuma.length} ${state.hueLuma.length === 1 ? 'point' : 'points'})`)
-    return held.length ? `Held: ${joinList(held)}, graded. Reset hue curves clears them.` : ''
-  }
-  const { shadows, highlights } = state.tones
-  if (shadows.u !== 0 || shadows.v !== 0) held.push('shadow')
-  if (highlights.u !== 0 || highlights.v !== 0) held.push('highlight')
-  return held.length ? `Held ${joinList(held)} tint (from a paste, a snapshot or config): graded, and kept until ⟲ Reset.` : ''
-}
+const WHEEL_TITLES: Readonly<Record<WheelName, string>> = Object.freeze({ lift: 'Lift', gamma: 'Gamma', gain: 'Gain', offset: 'Offset' })
+const CHANNEL_TITLES = Object.freeze({ master: 'RGB', red: 'red', green: 'green', blue: 'blue' })
+
+/** ARIA labels of the widget canvases: what they edit and how, for a screen reader. */
+export const wheelLabel = (name: WheelName) =>
+  `${WHEEL_TITLES[name]} colour wheel: drag to tint, Shift for fine moves; arrows nudge, 0 or a double tap resets`
+export const toneWheelLabel = (which: 'shadows' | 'highlights') =>
+  `${which === 'shadows' ? 'Shadow' : 'Highlight'} tint wheel: drag to tint, Shift for fine moves; arrows nudge, 0 or a double tap resets`
+export const curveLabel = (channel: keyof typeof CHANNEL_TITLES) =>
+  `${CHANNEL_TITLES[channel]} curve: tap to add a point, drag to move it, double tap or drag it off to remove; arrows nudge the selected point, [ and ] pick another, Delete removes it`
+export const hueCurveLabel = (mode: 'sat' | 'luma') =>
+  `Hue vs ${mode === 'sat' ? 'saturation' : 'luma'} curve: tap to add a point, drag to move it, double tap or drag it off to remove; arrows nudge the selected point, [ and ] pick another, Delete removes it`
 
 /** A switch's text in the panel's own pattern: "◐ Grade · On". */
 export const toggleText = (label: string, on: boolean) => `${label} · ${on ? 'On' : 'Off'}`

@@ -6,14 +6,18 @@ import { EXPERIENCE_CONFIG } from './config.ts'
 import type { LookMeta } from './grade-bake-host.ts'
 import { latticeSizeFor } from './grade-bake.ts'
 import {
-  createCompilePolicy, createLookStore, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS, GRADE_TABS,
-  gradeBoot, gradeStatusText, heldEditsNote, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER,
+  createCompilePolicy, createLookStore, curveLabel, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS,
+  GRADE_TABS, gradeBoot, gradeStatusText, hueCurveLabel, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER,
   lookStatusText, lookUrl, nudgeSplit, planPaste, pushSample, readPath, shouldCompileIn, signed, sliderRange,
-  splitFromPointer, summarize, toggleText, undoKeyAction, writePath, type CompileInputs, type GradeConfig,
-  type GradeStatus,
+  splitFromPointer, summarize, toggleText, toneWheelLabel, undoKeyAction, WHEEL_MASTER_SLIDERS, wheelLabel, writePath,
+  type CompileInputs, type GradeConfig, type GradeStatus,
 } from './grade-editor-logic.ts'
-import { DEFAULT_GRADE_TUNING, GRADE_RANGES, isGradeIdentity, NEUTRAL_GRADE, parseGradeState, type GradeState, type LookRef } from './grade-model.ts'
+import {
+  CURVE_CHANNELS, DEFAULT_GRADE_TUNING, GRADE_RANGES, isGradeIdentity, NEUTRAL_GRADE, parseGradeState, WHEEL_NAMES,
+  type GradeState, type LookRef,
+} from './grade-model.ts'
 import { gradeSnippet, parseGradePaste } from './grade-state.ts'
+import { HUE_MODES } from './grade-widget-logic.ts'
 
 const neutral = (): GradeState => parseGradeState({}).state
 const CONFIG = EXPERIENCE_CONFIG.grade as GradeConfig
@@ -302,21 +306,25 @@ test('readouts: signed values with a real minus and no −0, the pivot as an sRG
   assert.equal(toggleText('◧ Compare', false), '◧ Compare · Off')
 })
 
-test('heldEditsNote names what a tab cannot edit yet but the grade holds', () => {
-  const state = neutral()
-  for (const tab of ['primary', 'curves', 'hue', 'tones'] as const) assert.equal(heldEditsNote(state, tab), '')
-  state.lift.u = 0.2
-  state.gain.v = -0.1
-  state.curves.master = [[0, 0.02], [1, 1]]
-  state.curves.blue = [[0, 0], [0.5, 0.45], [1, 1]]
-  state.hueSat = [[100, 1.2]]
-  state.hueLuma = [[40, 0]]
-  state.tones.highlights = { u: 0.1, v: 0 }
-  assert.match(heldEditsNote(state, 'primary'), /lift and gain wheels/)
-  assert.match(heldEditsNote(state, 'curves'), /the master and blue curves/)
-  assert.match(heldEditsNote(state, 'hue'), /^Held: hue vs sat \(1 point\), graded/)
-  assert.doesNotMatch(heldEditsNote(state, 'hue'), /luma/, 'a hue curve at neutral is not held')
-  assert.match(heldEditsNote(state, 'tones'), /^Held highlight tint/)
+test('each wheel\'s master range is the slider that edits its y', () => {
+  assert.deepEqual(Object.keys(WHEEL_MASTER_SLIDERS), [...WHEEL_NAMES])
+  for (const name of WHEEL_NAMES) {
+    const spec = GRADE_SLIDERS.find((s) => s.id === WHEEL_MASTER_SLIDERS[name])
+    assert.ok(spec, `${WHEEL_MASTER_SLIDERS[name]} is a grade slider`)
+    assert.deepEqual([...spec!.path], [name, 'y'])
+    assert.equal(spec!.tab, 'primary')
+  }
+})
+
+test('widget labels say what each canvas edits and how', () => {
+  assert.match(wheelLabel('gamma'), /^Gamma colour wheel: drag/)
+  assert.match(toneWheelLabel('shadows'), /^Shadow tint wheel/)
+  assert.match(toneWheelLabel('highlights'), /^Highlight tint wheel/)
+  assert.match(curveLabel('master'), /^RGB curve: tap to add a point/)
+  assert.match(curveLabel('blue'), /^blue curve/)
+  assert.match(hueCurveLabel('sat'), /^Hue vs saturation curve/)
+  assert.match(hueCurveLabel('luma'), /^Hue vs luma curve/)
+  for (const label of [wheelLabel('lift'), curveLabel('red'), hueCurveLabel('luma')]) assert.match(label, /arrows/)
 })
 
 // ---- the markup (threejs-test.html) against these tables
@@ -349,6 +357,53 @@ test('the markup has every element the editor and the footer look up', () => {
   assert.match(tagOf('gradeSplit')!, /\shidden>/, 'the split overlay starts hidden')
   assert.match(tagOf('gradeFile')!, /type="file"/)
   assert.match(tagOf('gradeFile')!, /accept="\.cube,\.CUBE"/)
+})
+
+/** The markup between an element's opening tag and the next `until`. */
+function blockOf(id: string, until: string): string {
+  const start = HTML.indexOf(tagOf(id)!)
+  const end = HTML.indexOf(until, start)
+  assert.ok(start >= 0 && end > start, `#${id} … ${until}`)
+  return HTML.slice(start, end)
+}
+
+test('the markup has the widgets: canvases, wheel minis, the channel and mode switches', () => {
+  const ids = GRADE_ELEMENT_IDS
+  for (const id of [ids.wheel, ids.curve, ids.hueCurve, ids.shadowWheel, ids.highlightWheel]) {
+    const tag = tagOf(id)!
+    assert.match(tag, /^<canvas\b/, `#${id} is a canvas`)
+    assert.match(attr(tag, 'class') ?? '', /\bgrade-widget\b/, `#${id} is a grade widget`)
+    assert.equal(attr(tag, 'tabindex'), '0')
+    assert.equal(attr(tag, 'role'), 'application')
+    assert.ok(attr(tag, 'aria-label'), `#${id} has an aria-label`)
+    assert.ok(tagOf(attr(tag, 'aria-describedby')!), `#${id} is described by its readout`)
+  }
+  assert.match(attr(tagOf(ids.wheel)!, 'class')!, /\bgrade-wheel-large\b/)
+  assert.match(attr(tagOf(ids.curve)!, 'class')!, /\bgrade-curve\b/)
+  assert.match(attr(tagOf(ids.hueCurve)!, 'class')!, /\bgrade-hue\b/)
+  for (const id of [ids.shadowWheel, ids.highlightWheel]) assert.match(attr(tagOf(id)!, 'class')!, /\bgrade-wheel\b/)
+
+  const minis = blockOf(ids.wheelMinis, '</div>')
+  assert.deepEqual([...minis.matchAll(/data-wheel="(\w+)"/g)].map((m) => m[1]), [...WHEEL_NAMES], 'one mini per wheel, in order')
+  assert.equal([...minis.matchAll(/<canvas\b/g)].length, WHEEL_NAMES.length, 'each mini holds a canvas')
+  assert.equal([...minis.matchAll(/class="grade-mini on"/g)].length, 1, 'one wheel is picked at first')
+  const channels = blockOf(ids.curveChannel, '</div>')
+  assert.deepEqual([...channels.matchAll(/data-channel="(\w+)"/g)].map((m) => m[1]), [...CURVE_CHANNELS])
+  const modes = blockOf(ids.hueMode, '</div>')
+  assert.deepEqual([...modes.matchAll(/data-mode="(\w+)"/g)].map((m) => m[1]), [...HUE_MODES])
+  for (const id of [ids.curvePointRemove, ids.huePointRemove]) assert.match(tagOf(id)!, /\sdisabled[\s>]/, `#${id} starts disabled`)
+
+  // Only the first wheel's master range shows at first; the others' rows wait hidden.
+  for (const name of WHEEL_NAMES) {
+    const input = HTML.indexOf(tagOf(WHEEL_MASTER_SLIDERS[name])!)
+    const row = HTML.lastIndexOf('<div class="row"', input)
+    const rowTag = HTML.slice(row, HTML.indexOf('>', row) + 1)
+    assert.equal(/\shidden>/.test(rowTag), name !== 'lift', `${name}'s master row`)
+  }
+  // A curve on a phone stays under 40 % of the screen height; the selector has to beat
+  // canvas.grade-widget's width: 100%.
+  assert.match(HTML, /canvas\.grade-widget\.grade-curve \{ width: min\(100%, 40vh\); \}/)
+  assert.match(HTML, /#gradeSection \.row\[hidden\] \{ display: none; \}/)
 })
 
 test('the markup\'s ranges match GRADE_RANGES, and the section sits after Tone & colour', () => {
