@@ -1003,7 +1003,9 @@ export function createGroundFogLayer(opts: {
     u.wispAmount.value = params.wispAmount; u.plumeAmount.value = params.plumeAmount
     u.albedo.value = params.albedo
     u.canopyOcclusion.value = params.canopyOcclusion
-    u.rayleigh.value.set(...RAYLEIGH_SEA_LEVEL_PER_M).multiplyScalar(params.rayleighScale)
+    // Under the physical sky the aerial perspective already hazes this very path (the fog's
+    // light and the scene behind it), so the band's own air would count it twice.
+    u.rayleigh.value.set(...RAYLEIGH_SEA_LEVEL_PER_M).multiplyScalar(skyLight ? 0 : params.rayleighScale)
     u.canopyShadowStrength.value = params.canopyShadowStrength
     u.canopyShadowLodBias.value = params.canopyShadowLodBias
     applyPhase()
@@ -1031,8 +1033,11 @@ export function createGroundFogLayer(opts: {
       u.jitterOffset.value = jitterFrame * 5.588238
       if (skyLight) {
         // The atmosphere's own light: the sun through the air (and, until the clouds shadow
-        // the march themselves, through the clouds), and the sky's mean radiance.
-        sun.copy(skyLight.sun).multiplyScalar((build.cloudShadows ? 1 : skyLight.sunThroughClouds) * params.skySunScale * params.sunStrength)
+        // the march themselves, through the clouds), and the sky's mean radiance. The march's
+        // phases are normalised to a mean of 1 (× 4π); in the sky's units a radiance L shows as
+        // L·π·K, so the sun's in-scatter E·p(θ) takes a quarter of that, or the mist would
+        // shine four times brighter than the clouds and the sky around it.
+        sun.copy(skyLight.sun).multiplyScalar(0.25 * (build.cloudShadows ? 1 : skyLight.sunThroughClouds) * params.skySunScale * params.sunStrength)
         sky.copy(skyLight.skyMean).multiplyScalar(params.skyAmbientScale * params.ambientStrength)
         u.sunRadiance.value.copy(sun).multiply(params.tint)
         u.ambientRadiance.value.copy(sky).multiply(params.tint)
