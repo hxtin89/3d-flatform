@@ -1,6 +1,7 @@
-// Which drone-ortho tiles a basemap tile needs, and the turns their composes take — pure
-// logic, no DOM, so it runs under `node --test` (ortho-plan.test.ts). The data comes from pipeline/build_colour_field.py
-// `--ortho`, inside the colour field's JSON; ortho-composite.ts does the fetching.
+// Which drone-ortho tiles a basemap tile needs, when a loaded tile is ready for its ortho, and
+// how many ortho requests go out at once — pure logic, no DOM, so it runs under `node --test`
+// (ortho-plan.test.ts). The data comes from pipeline/build_colour_field.py `--ortho`, inside the
+// colour field's JSON; ortho-upgrade.ts and ortho-composite.ts do the work.
 
 /** 0 none, 1 edge (feathered or partly covered), 2 full, 3 full and under the ground patch. */
 export type OrthoKind = 0 | 1 | 2 | 3
@@ -175,27 +176,71 @@ export function createPlanner(sources: readonly OrthoSourceMeta[], options: Plan
   }
 }
 
+/** 3d-tiles-renderer's LOADED loading state (core/renderer/constants.js). */
+export const TILE_LOADED = 4
+
+const abortError = () => new DOMException('aborted', 'AbortError')
+
+/** The parts of a library tile the settle test reads. */
+export interface SettleTile {
+  internal: { loadingState: number }
+  traversal?: { visible: boolean; lastFrameVisited: number; error: number }
+  children: { length: number }
+}
+
 /**
- * Compose turns for covered tiles (ortho-composite.ts). A covered tile does its whole compose
- * inside the library's download job, so it lends that slot back to the queue (`lend(+1)`) from
- * the moment it asks for a turn until it releases the turn or leaves the line (`lend(-1)`):
- * waiting and composing tiles never count against the basemap's own slots, and with nothing
- * composing the queue is exactly what it is without the ortho. An abort leaves the line at
- * once, so a turn is never handed to a tile that is gone and never lost with it.
+ * On screen in the current traversal and the view's own detail, so worth its ortho. Left out:
+ * a parent standing in while its children load (error above the target), a tile the last
+ * traversal did not reach (stale lastFrameVisited), and hidden or off-frustum tiles. A tile at
+ * the deepest level has no children and counts whatever its error.
  */
-export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
+export function isSettledTile(tile: SettleTile, frameCount: number, errorTarget: number): boolean {
+  const t = tile.traversal
+  return !!t && tile.internal.loadingState === TILE_LOADED && t.visible === true
+    && t.lastFrameVisited === frameCount && (t.error <= errorTarget || tile.children.length === 0)
+}
+
+/**
+ * Picks candidates that have stayed candidates for `dwellMs`: a key missing from one call starts
+ * over. Higher priority first, then the longest waiting. A picked key starts over too, so a
+ * candidate offered again later dwells again.
+ */
+export function createSettlePicker<K>(dwellMs: number) {
+  const since = new Map<K, number>()
+  return {
+    get dwelling() { return since.size },
+    pick<C extends { key: K; priority: number }>(now: number, candidates: readonly C[], slots: number): C[] {
+      const present = new Set<K>()
+      for (const c of candidates) {
+        present.add(c.key)
+        if (!since.has(c.key)) since.set(c.key, now)
+      }
+      for (const key of since.keys()) if (!present.has(key)) since.delete(key)
+      if (slots <= 0) return []
+      const due = candidates.filter((c) => now - since.get(c.key)! >= dwellMs)
+      due.sort((a, b) => b.priority - a.priority || since.get(a.key)! - since.get(b.key)!)
+      const picked = due.slice(0, slots)
+      for (const c of picked) since.delete(c.key)
+      return picked
+    },
+    clear() { since.clear() },
+  }
+}
+
+/**
+ * A pull-model limit on requests in flight. `turn` only joins the line; turns are handed out by
+ * `pump`, which the caller runs only when it wants requests to go out (an idle basemap), so a
+ * request never starts on its own in the middle of a satellite burst. `release` frees a slot and
+ * hands out nothing by itself. An abort leaves the line at once.
+ */
+export function createTurnGate(max: number) {
   let inFlight = 0
-  const waiters: Array<{ grant(): void }> = []
+  const waiters: Array<{ grant(): void; fail(error: unknown): void }> = []
   return {
     get inFlight() { return inFlight },
     get waiting() { return waiters.length },
     turn(signal: AbortSignal): Promise<void> {
-      if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'))
-      lend(1)
-      if (inFlight < max) {
-        inFlight++
-        return Promise.resolve()
-      }
+      if (signal.aborted) return Promise.reject(abortError())
       return new Promise<void>((resolve, reject) => {
         const waiter = {
           grant() {
@@ -203,26 +248,36 @@ export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
             inFlight++
             resolve()
           },
+          fail(error: unknown) {
+            signal.removeEventListener('abort', onAbort)
+            reject(error)
+          },
         }
         const onAbort = () => {
           const index = waiters.indexOf(waiter)
           if (index >= 0) waiters.splice(index, 1)
-          lend(-1)
-          reject(new DOMException('aborted', 'AbortError'))
+          reject(abortError())
         }
         signal.addEventListener('abort', onAbort, { once: true })
         waiters.push(waiter)
       })
     },
-    /** Ends a turn that `turn` granted, takes its slot back, and hands free turns to the waiters in order. */
+    /** Ends a granted turn. */
     release(): void {
-      inFlight--
-      lend(-1)
-      while (inFlight < max && waiters.length) waiters.shift()!.grant()
+      inFlight = Math.max(0, inFlight - 1)
     },
-    /** Grants every waiter at once, e.g. on dispose; each still releases its turn. */
-    releaseAll(): void {
-      waiters.splice(0).forEach((waiter) => waiter.grant())
+    /** Hands out free turns, first come first served. Returns how many went out. */
+    pump(): number {
+      let granted = 0
+      while (inFlight < max && waiters.length) {
+        waiters.shift()!.grant()
+        granted++
+      }
+      return granted
+    },
+    /** Empties the line, e.g. on dispose: every waiter rejects with an AbortError. */
+    rejectAll(): void {
+      for (const waiter of waiters.splice(0)) waiter.fail(abortError())
     },
   }
 }

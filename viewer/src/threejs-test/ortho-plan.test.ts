@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
-  createComposeGate, createPlanner, decodeKinds, parseSatelliteZxy, serverTileRange, type OrthoMeta,
-  type OrthoSourceMeta,
+  createPlanner, createSettlePicker, createTurnGate, decodeKinds, isSettledTile, parseSatelliteZxy, serverTileRange,
+  TILE_LOADED, type OrthoMeta, type OrthoSourceMeta,
 } from './ortho-plan.ts'
 
 // Secret Forest's TileJSON bounds, and the tiles probed against the live server: the first
@@ -149,77 +149,89 @@ test('planner: half density, under-patch tiles and full tiles', () => {
   assert.equal(noChildren?.children[0].size, 512, 'no z+1 at the source max zoom: one tile')
 })
 
-/** A gate with a lending ledger, and a tick to let promise callbacks run. */
-function gateWithLedger(max: number) {
-  const ledger = { lent: 0 }
-  const gate = createComposeGate(max, (delta) => { ledger.lent += delta })
-  return { gate, ledger }
-}
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 const settled = (promise: Promise<unknown>) => {
-  const state = { done: false, failed: false }
-  promise.then(() => { state.done = true }, () => { state.failed = true })
+  const state = { done: false, failed: false, error: null as unknown }
+  promise.then(() => { state.done = true }, (error) => { state.failed = true; state.error = error })
   return state
 }
 
-test('gate: turns up to max at once, the rest wait; every tile in the gate lends its slot', async () => {
-  const { gate, ledger } = gateWithLedger(2)
-  const a = settled(gate.turn(new AbortController().signal))
-  const b = settled(gate.turn(new AbortController().signal))
-  const c = settled(gate.turn(new AbortController().signal))
-  await tick()
-  assert.deepEqual([a.done, b.done, c.done], [true, true, false])
-  assert.equal(gate.waiting, 1)
-  assert.equal(ledger.lent, 3, 'composing and waiting tiles alike')
-  gate.release()
-  await tick()
-  assert.equal(c.done, true)
-  assert.equal(ledger.lent, 2, 'the released turn takes its slot back; the granted one keeps lending')
-  assert.equal(gate.inFlight, 2)
-  gate.release()
-  gate.release()
-  assert.equal(ledger.lent, 0, 'with nothing composing the queue is back to its own slots')
+const settleTile = (over: { state?: number; visible?: boolean; frame?: number; error?: number; children?: number; noTraversal?: boolean } = {}) => ({
+  internal: { loadingState: over.state ?? TILE_LOADED },
+  traversal: over.noTraversal ? undefined : { visible: over.visible ?? true, lastFrameVisited: over.frame ?? 7, error: over.error ?? 0.5 },
+  children: { length: over.children ?? 4 },
 })
 
-test('gate: an aborted waiter leaves at once and never swallows a turn', async () => {
-  const { gate, ledger } = gateWithLedger(1)
-  const first = settled(gate.turn(new AbortController().signal))
+test('isSettledTile: the view\'s own detail on screen, nothing else', () => {
+  assert.equal(isSettledTile(settleTile(), 7, 1), true, 'error at or under the target')
+  assert.equal(isSettledTile(settleTile({ error: 5, children: 0 }), 7, 1), true, 'the deepest zoom, whatever its error')
+  assert.equal(isSettledTile(settleTile({ error: 3 }), 7, 1), false, 'a parent standing in while its children load')
+  assert.equal(isSettledTile(settleTile({ frame: 6 }), 7, 1), false, 'not reached by the last traversal')
+  assert.equal(isSettledTile(settleTile({ visible: false }), 7, 1), false, 'hidden')
+  assert.equal(isSettledTile(settleTile({ state: 2 }), 7, 1), false, 'still loading')
+  assert.equal(isSettledTile(settleTile({ noTraversal: true }), 7, 1), false, 'never traversed')
+})
+
+test('settle picker: dwell, priority, start-over', () => {
+  const picker = createSettlePicker<string>(1000)
+  const a = { key: 'a', priority: 1 }
+  const b = { key: 'b', priority: 5 }
+  assert.deepEqual(picker.pick(0, [a], 2), [], 'not before the dwell')
+  assert.deepEqual(picker.pick(500, [a, b], 0), [], 'no slots, but the dwell goes on')
+  assert.deepEqual(picker.pick(1000, [a, b], 2).map((c) => c.key), ['a'], 'b has dwelled 500 ms only')
+  assert.deepEqual(picker.pick(1600, [a, b], 2).map((c) => c.key), ['b'], 'a, picked at 1000, dwells again; b is due')
+  picker.pick(1700, [a], 1)
+  assert.deepEqual(picker.pick(2700, [a, b], 2).map((c) => c.key), ['a'], 'b was missing from a pick and starts over')
+  picker.clear()
+  assert.equal(picker.dwelling, 0)
+  assert.deepEqual(picker.pick(5000, [a], 1), [], 'after clear() everything dwells again')
+})
+
+test('settle picker: among equal priority the longest waiting goes first', () => {
+  const picker = createSettlePicker<string>(100)
+  picker.pick(0, [{ key: 'old', priority: 1 }], 0)
+  picker.pick(50, [{ key: 'old', priority: 1 }, { key: 'new', priority: 1 }], 0)
+  assert.deepEqual(picker.pick(200, [{ key: 'new', priority: 1 }, { key: 'old', priority: 1 }], 1).map((c) => c.key), ['old'])
+})
+
+test('turn gate: nothing goes out without a pump, then first come first served up to max', async () => {
+  const gate = createTurnGate(2)
+  const turns = [0, 1, 2].map(() => settled(gate.turn(new AbortController().signal)))
+  await tick()
+  assert.equal(turns.some((t) => t.done), false, 'turn() only queues')
+  assert.equal(gate.waiting, 3)
+  assert.equal(gate.pump(), 2)
+  await tick()
+  assert.deepEqual(turns.map((t) => t.done), [true, true, false])
+  gate.release()
+  await tick()
+  assert.equal(turns[2].done, false, 'release() frees a slot but grants nothing by itself')
+  assert.equal(gate.pump(), 1)
+  await tick()
+  assert.equal(turns[2].done, true)
+  assert.equal(gate.inFlight, 2)
+})
+
+test('turn gate: an aborted waiter leaves without using a turn; rejectAll empties the line', async () => {
+  const gate = createTurnGate(1)
   const gone = new AbortController()
   const aborted = settled(gate.turn(gone.signal))
   const next = settled(gate.turn(new AbortController().signal))
-  await tick()
-  assert.equal(ledger.lent, 3)
   gone.abort()
   await tick()
-  assert.equal(aborted.failed, true, 'the waiter rejects with the abort, not at the next release')
-  assert.equal(ledger.lent, 2, 'its slot goes back to its tile right away')
+  assert.equal(aborted.failed, true)
   assert.equal(gate.waiting, 1)
-  gate.release()
+  gate.pump()
   await tick()
-  assert.equal(first.done && next.done, true, 'the release goes to the live waiter')
-  assert.equal(gate.inFlight, 1)
-  assert.equal(ledger.lent, 1)
-  gate.release()
-  assert.equal(ledger.lent, 0)
-})
-
-test('gate: an already aborted tile is refused without lending, and releaseAll empties the line', async () => {
-  const { gate, ledger } = gateWithLedger(1)
-  const done = new AbortController()
-  done.abort()
-  const refused = settled(gate.turn(done.signal))
+  assert.equal(next.done, true, 'the turn went to the live waiter')
+  const before = new AbortController()
+  before.abort()
+  const refused = settled(gate.turn(before.signal))
+  const left = settled(gate.turn(new AbortController().signal))
+  gate.rejectAll()
   await tick()
   assert.equal(refused.failed, true)
-  assert.equal(ledger.lent, 0)
-  settled(gate.turn(new AbortController().signal))
-  const waiting = [0, 1, 2].map(() => settled(gate.turn(new AbortController().signal)))
-  await tick()
-  assert.equal(gate.waiting, 3)
-  assert.equal(ledger.lent, 4)
-  gate.releaseAll()
-  await tick()
-  assert.ok(waiting.every((w) => w.done))
-  assert.equal(gate.inFlight, 4, 'past max: releaseAll is for dispose')
-  for (let i = 0; i < 4; i++) gate.release()
-  assert.equal(ledger.lent, 0, 'and every granted tile still takes its slot back')
+  assert.equal(left.failed, true)
+  assert.equal((left.error as Error).name, 'AbortError')
+  assert.equal(gate.waiting, 0)
 })

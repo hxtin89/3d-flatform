@@ -33,7 +33,7 @@ import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
 import { Fps } from './stats'
-import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
+import { recordFrame, costReport, resetCost, installUploadProbe, arrivalsSoFar } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
 import { EXPERIENCE_CONFIG } from './config'
 import {
@@ -360,11 +360,9 @@ function applyBenchPreset(): void {
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
-  // The ortho waits for this: behind the loader the camera already sits at the landing view,
-  // over the survey, and composing there at a guessed density would spend a constrained
-  // device's bandwidth and worker on tiles it should never get, or leave a strong device the
-  // soft variant. Attaching drops the covered tiles the loader brought in; the flight goes
-  // out first, so they come back composited on the way in.
+  // The ortho waits for this: a guessed density would start the worker and fetch the field PNGs
+  // on a constrained device that should never run it. Attaching reloads nothing: the tiles the
+  // loader brought in are upgraded in place once the view settles after the entrance flight.
   orthoPresetDensity = DRONE_ORTHO.presets[preset] as OrthoDensity | 'off'
   orthoDensityKnown = true
   globe?.setOrthoDensity(orthoDensity())
@@ -3451,8 +3449,9 @@ let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets[presetOverrid
 let orthoDensityKnown = orthoForcedDensity !== null || presetOverride !== null
 /** null while the worker starts, then whether it came up. */
 let orthoAttachResult: boolean | null = null
-/** The density the last attach decided on. Decided once: a later change of link does not
- *  start the ortho, so the status line reports this, not a fresh reading. */
+/** The density the last attach attempt decided on. A later change of link does not start the
+ *  ortho by itself (only the panel's toggle asks again), so the status line reports this, not a
+ *  fresh reading. */
 let orthoDecidedDensity: OrthoDensity | 'off' | null = null
 /** Set when the colour field loaded but was built for another survey frame. */
 let colourFieldWrongFrame = false
@@ -3479,7 +3478,7 @@ function attachDroneOrtho(): void {
   // 'off' never starts the worker or fetches the field PNGs.
   const density = orthoDensity()
   orthoDecidedDensity = density
-  if (density === 'off') return
+  if (density === 'off') { globe.releaseOrthoBytes(); return }
   orthoAttached = true
   const fieldBaseUrl = new URL(
     `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}${COLOUR_MATCH.fieldDir.replace(/\/?$/, '/')}`, location.href).href
@@ -3493,6 +3492,9 @@ function attachDroneOrtho(): void {
   void globe.attachOrtho({
     meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
     config: DRONE_ORTHO, density, thinUnderPatch, debugKinds: params.has('orthokinds'),
+    // Upgrades start after the Start click and never during a flight: they wait for the view.
+    upgradesAllowed: () => loaderFlightStarted && !cameraFlight.active,
+    pointArrivals: arrivalsSoFar,
   }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
 }
 function syncColourMatch(): void {
@@ -3524,6 +3526,7 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
     else console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
     colourFieldMissing = true
     colourFieldWrongFrame = field !== null
+    globe?.releaseOrthoBytes()
     syncColourMatch()
     return
   }
@@ -3537,6 +3540,7 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
   colourFieldBasemapGain = basemapGain
   colourFieldBasemapSaturation = basemapSaturation ?? 1
   colourFieldInUse = { field, rootTransform }
+  if (!field.meta.ortho) globe?.releaseOrthoBytes()
   attachDroneOrtho()
   colourFieldZoomRatios = []
   for (const [zoom, gain] of Object.entries(field.meta.basemapGainByZoom ?? {})) {
@@ -3563,12 +3567,16 @@ function droneOrthoStatus(): string {
     }
     return 'Starting'
   }
-  if (!s.ready) return orthoAttachResult === false ? 'Not available here — see the console' : 'Starting the worker'
+  if (!s.ready) {
+    if (s.workerFailed) return 'Worker stopped — new tiles stay satellite'
+    return orthoAttachResult === false ? 'Not available here — see the console' : 'Starting the worker'
+  }
   if (!s.enabled) return 'Off — covered tiles show the satellite'
   if (s.refused) return 'Off: the ortho tiles were refused (key not allowed?)'
   if (s.density === 'off') return 'Off: Save-Data or a slow link — covered tiles show the satellite'
-  return `${s.density} · ${s.composed} tiles (${s.fullTiles} full, ${s.edgeTiles} edge) · `
+  return `${s.density} · ${s.upgraded} tiles upgraded (${s.fullTiles} full, ${s.edgeTiles} edge so far) · `
     + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
+    + `${s.pending ? ` · ${s.pending} to go` : ''}`
     + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`
     + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}`
     + `${s.childFailures ? ` · ${s.childFailures} ortho requests failed` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
@@ -4965,7 +4973,10 @@ async function main(): Promise<void> {
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
     panBudgetM: panDragBudget,
+    // Kept from the first tile on, for the drone ortho's upgrades and reverts.
+    keepSatelliteBytes: droneOrthoOn,
   })
+  if (colourFieldMissing || (colourFieldInUse && !colourFieldInUse.field.meta.ortho)) globe.releaseOrthoBytes()
   attachDroneOrtho()
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)

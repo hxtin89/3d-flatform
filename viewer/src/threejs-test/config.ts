@@ -1070,10 +1070,13 @@ export const EXPERIENCE_CONFIG = {
     },
     /**
      * The drone orthophoto (MapTiler custom tilesets from the wi-map prototype; secretForest
-     * is served down to z20, about 15 cm a pixel here), composited into the satellite's own
-     * tiles where it covers them — see ortho-composite.ts. It adds no mesh, texture, draw
-     * call or shader code, so the frame costs what it did; it costs downloads and worker time
-     * per covered tile, which is what the zoom, density and link gates below limit. The ortho
+     * is served down to z20, about 15 cm a pixel here), painted into the satellite's own
+     * tiles where it covers them — see ortho-composite.ts and ortho-upgrade.ts. Every tile
+     * loads as plain satellite, so the basemap gets sharp as fast as with the ortho off; a
+     * covered tile that has settled on screen is then upgraded in its own texture. It adds no
+     * mesh, texture, draw call or shader code; it costs downloads, worker time and one in-place
+     * upload per upgraded tile, which is what the zoom, density, link and settle gates below
+     * limit. The ortho
      * tiles are lossless WebP of ~100-120 KB each, against 54 KB at z15 down to 14 KB at z19
      * for a satellite tile, so a covered tile downloads about 2x (z15) to 8x (z19) the
      * satellite's bytes at 'half' and about 9x to 30x at 'full'; over a landing view, mostly
@@ -1099,15 +1102,21 @@ export const EXPERIENCE_CONFIG = {
       presets: { strong: 'full', medium: 'half', constrained: 'off' },
       /** Chromium reports at most 10, so 10 means "the fastest it will say". */
       fullMinDownlinkMbps: 10,
-      /** Per ortho child, body included. A child that times out leaves its quadrant to the
-       *  satellite for as long as the tile stays loaded; at 8 s, 8 of ~180 did through the dev
-       *  proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
+      /** Per ortho request, from its turn, body included. A child that times out leaves its
+       *  quadrant to the satellite for as long as the tile stays loaded; at 8 s, 8 of ~180 did
+       *  through the dev proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
       fetchTimeoutMs: 20000,
       composeTimeoutMs: 5000,
-      /** Composes in flight at once. A tile in the gate, composing or waiting, lends its download
-       *  slot back to the basemap's queue, so this bounds the worker and the ortho's requests,
-       *  not the satellite's. */
-      maxConcurrentComposes: 4,
+      /** Upgrades in flight at once. They start only while the basemap has nothing queued,
+       *  downloading or parsing; this bounds the worker's scratch (~6 MB each) and the finished
+       *  bitmaps waiting for their frame. */
+      maxConcurrentComposes: 2,
+      /** Ortho requests in flight at once, let out only while the basemap is idle. Keeps 4 of the
+       *  dev proxy's 6 HTTP/1.1 sockets for the satellite when a move starts mid-upgrade. */
+      maxOrthoRequests: 2,
+      /** How long a covered tile must be the view's own detail on screen, with the basemap idle
+       *  all the while, before its ortho is fetched: intermediate zooms of a descent never are. */
+      settleMs: 1000,
       /** 401/403 answers after which a source is switched off for the session. */
       forbiddenLimit: 3,
     },
