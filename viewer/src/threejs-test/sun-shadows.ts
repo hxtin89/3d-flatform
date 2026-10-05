@@ -320,11 +320,13 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   }
 
   // ---------------------------------------------------------------- blur
-  // Separable Gaussian, 17 taps a pass, spaced so ±3σ is covered (bilinear taps fill between
-  // them when the blur is wider than eight texels). One pass per input target: a texture
-  // node's target never changes (see the targets above).
+  // Separable Gaussian over ±3σ: one tap per texel while σ is under 8/3 texels (as many taps
+  // as that needs, 3 to 17), spaced wider beyond (bilinear taps fill between them). One pass
+  // per input target: a texture node's target never changes (see the targets above).
   const blurTexel = uniform(1)
   const blurSigma = uniform(1)
+  /** Taps on each side of the centre, 1–8. */
+  const blurTaps = uniform(8)
   const blurPass = (input: THREE.Texture, horizontal: boolean): QuadMesh => {
     const source = texture(input)
     const node = Fn(() => {
@@ -333,7 +335,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       const weight = float(0).toVar()
       const spacing = max(blurSigma.mul(3).div(8), 1)
       const step = horizontal ? vec2(blurTexel, 0) : vec2(0, blurTexel)
-      Loop({ start: int(-8), end: int(8), type: 'int', condition: '<=' }, ({ i }: { i: any }) => {
+      Loop({ start: int(blurTaps).negate(), end: int(blurTaps), type: 'int', condition: '<=' }, ({ i }: { i: any }) => {
         const offset = float(i).mul(spacing)
         const w = exp(offset.mul(offset).div(max(blurSigma.mul(blurSigma).mul(2), 1e-4)).negate())
         sum.addAssign(source.sample(st.add(step.mul(offset))).level(0).mul(w))
@@ -349,6 +351,8 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   const runBlur = (pass: QuadMesh, target: RenderTarget, sigmaTexels: number) => {
     blurTexel.value = 1 / resolution
     blurSigma.value = Math.max(sigmaTexels, 0.01)
+    const spacing = Math.max(blurSigma.value * 3 / 8, 1)
+    blurTaps.value = THREE.MathUtils.clamp(Math.ceil(blurSigma.value * 3 / spacing), 1, 8)
     renderer.setRenderTarget(target)
     pass.render(renderer)
   }
