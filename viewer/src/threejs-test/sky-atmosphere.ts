@@ -77,6 +77,10 @@ export interface SkyParams {
   adaptation: number
   /** The most the adaptation may brighten, as a factor. */
   adaptationMax: number
+  /** How much of the clouds' darkening the adaptation follows: 0 adapts to the time of day
+   *  alone (the clear sky's light), so weather reads as darker, as on film; 1 adapts to the
+   *  light actually reaching the ground, so a cloud over the sun swings the exposure. */
+  weatherAdaptation: number
   sunIntensity: number
   /** Disc size relative to the real sun (0.53°). The disc keeps its total light. */
   sunSize: number
@@ -835,7 +839,12 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       const sun = sunIlluminance(model, groundKm, elevation)
       const sunOnGround = Math.max(scratchSun.z, 0)
       const through = clouds ? light.sunThroughClouds : 1
-      const eNow = luminance(sun) * sunOnGround * through + luminance(capturedSky)
+      const eActual = luminance(sun) * sunOnGround * through + luminance(capturedSky)
+      // Under clouds the exposure adapts to a blend, geometric so it is an EV share, of the
+      // clear sky's illuminance (the sky's mean radiance × π) and the actual one.
+      const eClear = clouds ? luminance(sun) * sunOnGround + PI * luminance(light.clearSkyMean) : eActual
+      const weather = THREE.MathUtils.clamp(params.weatherAdaptation, 0, 1)
+      const eNow = Math.pow(Math.max(eClear, 1e-6), 1 - weather) * Math.pow(Math.max(eActual, 1e-6), weather)
       // Adapt toward the reference, compressed; eased over about a second.
       const targetAdaptation = THREE.MathUtils.clamp(
         Math.pow(referenceE / Math.max(eNow, 1e-6), THREE.MathUtils.clamp(params.adaptation, 0, 1)),
@@ -892,7 +901,7 @@ function makePass(node: any): { quad: QuadMesh } {
 
 /** The settings and params the config ships, as mutable copies. */
 export function defaultSkyParams(config: {
-  exposure: number; adaptation: number; adaptationMax: number; sunIntensity: number; sunSize: number
+  exposure: number; adaptation: number; adaptationMax: number; weatherAdaptation: number; sunIntensity: number; sunSize: number
   sunSharpnessPx: number; sunLimbDarkening: number; sunGlow: number; sunGlowSize: number; sunTint: number
   sunMaxRadiance: number; nightSky: number; aerialStartM: number; aerialDensity: number
   whiteBalance: number; skyBrightness: number; overcastGlow: number
@@ -901,6 +910,7 @@ export function defaultSkyParams(config: {
     exposure: config.exposure,
     adaptation: config.adaptation,
     adaptationMax: config.adaptationMax,
+    weatherAdaptation: config.weatherAdaptation,
     sunIntensity: config.sunIntensity,
     sunSize: config.sunSize,
     sunSharpnessPx: config.sunSharpnessPx,

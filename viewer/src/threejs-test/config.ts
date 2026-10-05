@@ -886,6 +886,8 @@ export const EXPERIENCE_CONFIG = {
     exposure: 1,
     adaptation: 0.6,
     adaptationMax: 4,
+    /** The share of the clouds' darkening the exposure adapts to (0 = time of day only). */
+    weatherAdaptation: 0.3,
     /** The sun disc: intensity, size against the real 0.53°, edge width in pixels, limb
      *  darkening, and an artistic glow on top of the haze's own halo. */
     sunIntensity: 1,
