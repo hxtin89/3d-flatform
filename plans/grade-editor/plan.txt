@@ -161,6 +161,13 @@ Verified in this pass (read-only, small node scripts in the scratchpad)
         // uniformFlow: a real select/ternary, both operands inline, never a branch (ConditionalNode.js:146-158)
         return vec4(select(screenUV.x.lessThan(compareSplit), before, after).uniformFlow(), display.a)
       }
+      // Built differently (C2): as written above the frame is generated twice, because
+      // ConditionalNode isolates each operand in its own node cache (ConditionalNode.js:104-105)
+      // and display.a is read outside the select; building the frame inside the uniformFlow
+      // context also turned EDL's selects into eager ternaries. grade-output.ts wraps the stage
+      // in Fn(() => { const shown = display.toVar(); const after = lutNode.sample(...).rgb.toVar();
+      // return vec4(select(...).uniformFlow(), shown.a) })(), and a shader test checks the frame
+      // texture is read once.
       return {
         stage,
         get size() { return n },
@@ -211,10 +218,14 @@ Notes on the tap
   - snapshot recall, Reset, undo/redo, paste, look import or removal, and a change of look amount.
 - It is never re-evaluated on 'input' or pointermove.
 - Effect:
-  - one post-quad recompile when the section opens with the grade on;
+  - one stage change when the section opens with the grade on;
   - one when it closes at identity;
   - one per toggle click;
   - zero during any drag.
+  - A stage change is never served from three's cache, and it is not the final quad alone (measured
+    in C2): with DoF and EDL on it is 9 node builds over two frames (the quad, DoF's five passes, a
+    new CoC blur, the EDL quad twice), 7 with DoF alone, 1 without DoF. depth-of-field.ts frees the
+    CoC blur each rebuild replaces (three r185 leaks it, also on every tone-curve change).
 - setStage(on) = depthOfField.setOutputStage(on ? gradeOutput.stage : null).
 - Boot: if config.grade.state is not identity (or a look is configured) and the grade is enabled, run one synchronous main-thread bake, upload it and set the stage before the first frame.
 
@@ -882,7 +893,9 @@ M2. GPU cost, via __three.grade.setStage
 
 M3. Recompile counter
 - 0 during 10 s drags of every slider and widget.
-- 1 on section open with the grade on; 1 on close at identity; 1 per toggle.
+- 1 'Render Pipeline' build on section open with the grade on; 1 on close at identity; 1 per toggle.
+  Count by name (wrap renderer.backend.createNodeBuilder): with DoF and EDL on each change is 9
+  builds in all, 7 with DoF alone, 1 on path B. Texture count must stay flat across repeated changes.
 - 0 on Compare toggle, split drag, same-size uploads and look amount drags.
 - A size swap should give 0; if it gives 1, note it (one hitch per import is acceptable).
 

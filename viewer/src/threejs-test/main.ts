@@ -62,7 +62,10 @@ import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
-import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
+import { createDepthOfFieldLayer, type DepthOfFieldLayer, type OutputStage } from './depth-of-field'
+import { createGradeOutput, DEFAULT_GRADE_LUT_SIZE, type GradeOutput } from './grade-output'
+import { bakeGradeTexels } from './grade-bake'
+import { isGradeIdentity, parseGradeState } from './grade-model'
 import { createGroundPatchMask } from './ground-patch-mask'
 import { createRenderBench } from './render-bench'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
@@ -557,6 +560,54 @@ const fps = new Fps()
 // Owns the frame's draw call: it either routes the scene through the DoF pass or
 // falls back to renderer.render, so there is one render path either way.
 const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scene, camera })
+// The colour grade's LUT tap (grade-output.ts), on an identity lattice. Compiled out at boot:
+// no output stage is set, so the final quad and the no-post path are what they were before
+// it existed, and its texture reaches the GPU only once a quad that reads it is drawn.
+// __three.grade below sets a stage from the console until the panel does.
+const gradeOutput: GradeOutput = createGradeOutput(DEFAULT_GRADE_LUT_SIZE)
+/** Routing only: the output transform done in the graph and nothing after it. Compiles to the
+ * same shader as no stage (grade-output.test.ts), so on the no-post path it isolates what going
+ * through the pipeline costs. One function, so setting it again recompiles nothing. */
+const passthroughStage: OutputStage = (display) => display
+type GradeStageName = 'grade' | 'passthrough'
+let gradeStageName: GradeStageName | null = null
+const gradeStats = () => ({
+  size: gradeOutput.size,
+  stage: gradeStageName,
+  stageSet: depthOfField.hasOutputStage(),
+  split: gradeOutput.split(),
+})
+/**
+ * __three.grade, the console handle for the grade's browser measurements (plan 7):
+ * - setStage('grade' | 'passthrough' | null): what runs after the output transform in the
+ *   final quad; null is the graph without a stage. Each change rebuilds that quad on the next
+ *   render, a change back to an earlier stage too; with DoF on, DoF's passes, its CoC blur and
+ *   the EDL quad are rebuilt with it (depth-of-field.ts applyOutput).
+ * - bake(state?, n?): parseGradeState and bakeGradeTexels on the main thread, then uploaded;
+ *   the frame shows it while the 'grade' stage is set. n defaults to the current lattice size;
+ *   another n swaps the texture.
+ * - setSplit(x): canvas x in [0, 1] left of which the frame shows without the grade.
+ * - stats(): the lattice size, the stage, whether one is set, the split.
+ */
+const gradeDebug = {
+  output: gradeOutput,
+  setStage(name: GradeStageName | null) {
+    if (name !== null && name !== 'grade' && name !== 'passthrough') {
+      throw new Error(`__three.grade.setStage takes 'grade', 'passthrough' or null, not ${JSON.stringify(name)}`)
+    }
+    gradeStageName = name
+    depthOfField.setOutputStage(name === 'grade' ? gradeOutput.stage : name === 'passthrough' ? passthroughStage : null)
+    return gradeStats()
+  },
+  bake(stateLike?: unknown, n: number = gradeOutput.size) {
+    const { state, warnings } = parseGradeState(stateLike ?? {})
+    const { texels, peak, ms } = bakeGradeTexels(state, null, n)
+    gradeOutput.upload(texels, n)
+    return { n, ms, peak, identity: isGradeIdentity(state, null), warnings }
+  },
+  setSplit(x: number) { gradeOutput.setSplit(x) },
+  stats: gradeStats,
+}
 
 /** Live multiplier on the drawn point size, on top of whichever mode is active. */
 let pointSizeScale = 1
@@ -4886,6 +4937,7 @@ function loop(now: number): void {
   // seconds after a tile loads.
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
+  gradeOutput.update()
   depthOfField.render()
   // Taken here, after the draw, and shown on the next frame. The animation loop resets
   // renderer.info immediately before calling this function, so anything read further up
@@ -5428,7 +5480,7 @@ async function main(): Promise<void> {
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-    groundPatchMask, depthOfField,
+    groundPatchMask, depthOfField, grade: gradeDebug,
   }
   /**
    * Where the drawn point size comes from, per band: the spacing read off the tiles, the
@@ -5588,6 +5640,7 @@ function dispose(): void {
   stream?.dispose()
   globe?.dispose()
   depthOfField.dispose()
+  gradeOutput.dispose()
   hazeLayer.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null

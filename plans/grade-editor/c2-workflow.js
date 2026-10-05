@@ -1,0 +1,57 @@
+export const meta = {
+  name: 'grade-editor-c2',
+  description: 'Build commit C2 of the grade editor (output stage after the tone curve, LUT tap, debug handle), review it against three r185, fix what survives',
+  phases: [
+    { title: 'Build', detail: 'depth-of-field.ts output stage, grade-output.ts + test, __three.grade' },
+    { title: 'Review', detail: 'four dimensions against the three r185 source' },
+    { title: 'Verify', detail: 'two skeptics per finding' },
+    { title: 'Fix', detail: 'apply confirmed findings, rerun checks' },
+  ],
+}
+
+const WT = 'C:/projects/WIDE_3d-flatform/.claude/worktrees/sbb-colour-matching'
+const V = `${WT}/viewer`
+const DIR = `${V}/src/threejs-test`
+const PLAN = `${WT}/plans/grade-editor/plan.txt`
+const THREE = `${V}/node_modules/three`
+const COMMON = `
+Worktree ${WT}, branch sbb/grade-editor, HEAD e64903e (C1, the pure grade maths, is committed: grade-model.ts, grade-curves.ts, grade-bake.ts, cube-format.ts, grade-state.ts in ${DIR}). The implementation plan is ${PLAN}; it is the spec. C2 is plan sections 1.1-1.8 (pipeline placement, depth-of-field.ts, grade-output.ts, cost, compile-in policy, the path-B fallback that is built ONLY if a later measurement fails, so not now), 4.6, 4.10, the __three.grade debug handle from 4.11, test 6.6, and the C2 bullet of section 8. The three.js source is ${THREE} (r185; read src/renderers/common/RenderPipeline.js, src/nodes/display/RenderOutputNode.js, src/nodes/accessors/TextureNode.js, Texture3DNode.js, src/nodes/math/ConditionalNode.js and whatever else you rely on - quote file:line).
+RULES:
+- Do NOT commit, stash, checkout, reset or touch git state.
+- Read viewer/CLAUDE.md conventions. Match the house style of depth-of-field.ts and main.ts (2-space indent, no semicolons, comments that state facts). UI strings English.
+- Write files with the Write/Edit tools, never with Python. Files must stay LF: the Write tool on this machine has saved CRLF before, so check every file you wrote for \\r and strip it.
+- This session's Bash refuses inline 'node -e' and commands with computed operands: put scripts in a file in your own temp folder and run them with one plain command. Tests: cd ${V} && node --experimental-strip-types --test src/threejs-test/grade-output.test.ts ; all tests: npm run bench:verify (173 tests, 172 pass + 1 skip before C2) ; types: npx tsc --noEmit -p . (clean before C2).
+- No browser, no dev server: the measurements are done separately by the main session.`
+
+const BUILD = { type: 'object', properties: { files: { type: 'string' }, design: { type: 'string', description: 'what the code does now, per file, with the exact TSL of the tap and how compile-out keeps today\'s graph' }, tests: { type: 'string' }, deviations: { type: 'string' }, measureNotes: { type: 'string', description: 'everything the browser measurements M1-M4, M7, M9 need: the debug handle API with examples, what to compare' } }, required: ['files', 'design', 'tests', 'deviations', 'measureNotes'] }
+
+phase('Build')
+const build = await agent(`${COMMON}\n\nYOUR JOB: implement C2.\n1. depth-of-field.ts: RenderPipeline instead of the deprecated PostProcessing; setOutputStage(stage | null) and hasOutputStage() per plan 1.3; while a stage is set the no-post path (DoF and EDL off) renders through the pipeline with effectNode = scenePass.getTextureNode(); with no stage the graph must be today's, object for object (outputColorTransform true, outputNode = effectNode). Switching the stage must not release or rebuild DoF/EDL targets. Update the header comment and the interface docs.\n2. grade-output.ts (new; may import three and three/tsl; no DOM): makeLutTexture and createGradeOutput per plan 1.4, with identityTexels from grade-bake.ts (copy it, never hand the cached array to three). Verify every three claim the plan makes against the source before relying on it: texture3D(tex, null, 0).sample(uvw) keeps the level (textureSampleLevel / textureLod), Data3DTexture with HalfFloatType + LinearFilter is filterable on WebGPU and WebGL2, re-upload of the same texture by swapping image.data + needsUpdate, swapping lutNode.value to a new-size texture rebinds without a recompile, select(...).uniformFlow() exists in r185 and compiles to a select, screenUV orientation. If a claim is false, implement what works and report it.\n3. grade-output.test.ts per plan 6.6 (imports three and three/tsl under node; verified importable). Add a test that a same-size upload returns the previous array and keeps the texture, a new-size upload disposes the old texture after exactly two update() calls, and that the cached identityTexels array is never the texture's data.\n4. main.ts: create the grade output after depthOfField (search for createDepthOfFieldLayer), call output.update() once per frame right before depthOfField.render() in the loop, and add __three.grade (search for '(window as any).__three = {') = { output, setStage(s: 'grade' | 'passthrough' | null), bake(stateLike?: unknown, n?: number) that runs parseGradeState + bakeGradeTexels (sync, main thread) and uploads, setSplit(x), stats() with the current lattice size and whether a stage is set }. No panel UI, no config block (C3). The grade must be compiled out at boot: nothing changes for a viewer until setStage is called from the console.\n5. Run grade-output.test.ts, the full suite and tsc; all clean.`, { label: 'build:c2', phase: 'Build', schema: BUILD })
+
+const FINDINGS = { type: 'object', properties: { findings: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, file: { type: 'string' }, line: { type: 'number' }, title: { type: 'string' }, detail: { type: 'string' }, failure: { type: 'string', description: 'concrete scenario -> wrong output, crash, leak or recompile; or the three source line the code contradicts' }, severity: { type: 'string', enum: ['high', 'medium', 'low'] }, fix: { type: 'string' } }, required: ['id', 'file', 'title', 'detail', 'failure', 'severity', 'fix'] } } }, required: ['findings'] }
+const VERDICT = { type: 'object', properties: { real: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['real', 'evidence'] }
+const REVIEW_COMMON = `${COMMON}\n\nThe C2 build report:\n${JSON.stringify(build)}\n\nYou are a REVIEWER: READ-ONLY for the repo (git diff HEAD shows C2; read the files). Throwaway node scripts in your own temp folder are fine (three and three/tsl import under node 24, so you can build the node graph and inspect it). Report only real defects you can demonstrate: a scenario and its wrong result, or a three r185 source line the code contradicts. No style nits, no speculation. Prefix ids with your dimension.`
+const DIMS = [
+  { key: 'THREE', prompt: 'Dimension THREE r185 CORRECTNESS: every three API the C2 code uses, against the source: RenderPipeline outputColorTransform=false + renderOutput() with no arguments (does the context really carry toneMapping and outputColorSpace? does the pipeline rebuild on a renderer.toneMapping change, e.g. the film slot switch in tone-mapping.ts?), the 3D texture sample with level 0, Data3DTexture HalfFloat linear filtering on WebGPU and WebGL2 (and the WebGL flipY path), value swap of a texture node, uniformFlow select, screenUV orientation on both backends, the texel-centre scale/offset maths, RenderPipeline.render vs renderer.render with the scenePass when DoF and EDL are off (same pass count? any extra MSAA, any different render target type/colour space?).' },
+  { key: 'COMPILE', prompt: 'Dimension COMPILE-OUT AND RECOMPILES: with no stage set, is the output graph exactly today\'s (compare with git show HEAD:viewer/src/threejs-test/depth-of-field.ts: same nodes, same outputColorTransform, renderer.render on the no-post path)? Does PostProcessing -> RenderPipeline change anything but the warning? Which calls recompile the post quad (setOutputStage, DoF/EDL toggles while a stage is set, setSplit, same-size upload, new-size upload, tone curve switch) and does that match plan 1.5/1.6 and M3 (zero recompiles for split and same-size uploads)? Is the order of rebuild and stage application right when DoF or EDL toggles while a stage is set?' },
+  { key: 'LIFECYCLE', prompt: 'Dimension RESOURCES AND LIFECYCLE: texture creation, re-upload, size swap and deferred disposal (frame-counted in update(); is update() really called every frame, also under ?bgclock and when the loop is stopped for measurements?), buffer ownership (identity cache never handed out, previous array returned on same-size upload), dispose() of the output and of the layer, leaks when setStage toggles repeatedly, the scenePass texture node used as effectNode on path B surviving release(), what happens to DoF/EDL targets and the pass when the stage is removed.' },
+  { key: 'WIRING', prompt: 'Dimension MAIN.TS WIRING AND TESTS: is the grade compiled out at boot in every path; is output.update() called exactly once per frame right before depthOfField.render(); does __three.grade.bake() produce a correct lattice for the current size and a valid state (try it under node with the pure modules); does setStage(\'passthrough\') give a real routing-only stage for M2; are the grade-output tests real (would a mutation in makeLutTexture, the scale/offset or the disposal count be caught)? Run the full suite and tsc and report any failure.' },
+]
+const reviewed = await pipeline(
+  DIMS,
+  (d) => agent(`${REVIEW_COMMON}\n\n${d.prompt}`, { label: `review:${d.key}`, phase: 'Review', schema: FINDINGS }),
+  (r, d) => parallel((r ? r.findings : []).map((f) => () =>
+    parallel([1, 2].map((k) => () => agent(`${REVIEW_COMMON}\n\nYou are skeptic ${k} of 2. Try to REFUTE this finding about the C2 code. Reproduce it with a script or the exact source lines; if the code is right, the spec says otherwise, or the failure cannot happen, it is not real. Default to real=false if you cannot reproduce it.\n\nFINDING: ${JSON.stringify(f)}`, { label: `verify:${f.id}:${k}`, phase: 'Verify', schema: VERDICT })))
+      .then((vs) => { const v = vs.filter(Boolean); const real = v.filter((x) => x.real).length; return { ...f, votes: v, real: real >= 1 && real >= v.length / 2 } }))),
+)
+const all = reviewed.filter(Boolean).flat().filter(Boolean)
+const confirmed = all.filter((f) => f.real)
+log(`${all.length} findings, ${confirmed.length} confirmed`)
+
+phase('Fix')
+let fix = null
+if (confirmed.length) {
+  fix = await agent(`${COMMON}\n\nYou may edit the C2 files only (depth-of-field.ts, grade-output.ts, grade-output.test.ts, the C2 parts of main.ts). Apply every confirmed finding below; each was reproduced by skeptics (evidence attached). For each, fix the code and add or tighten a test where a node test can catch it. Then run npm run bench:verify and npx tsc --noEmit -p . from ${V}; both clean, all files LF. If a confirmed finding is wrong after all, do not change the code; explain why with evidence.\n\nCONFIRMED:\n${JSON.stringify(confirmed, null, 1)}`, { label: 'fix', phase: 'Fix', schema: { type: 'object', properties: { applied: { type: 'string' }, declined: { type: 'string' }, tests: { type: 'string' }, tsc: { type: 'string' }, measureNotes: { type: 'string' } }, required: ['applied', 'declined', 'tests', 'tsc', 'measureNotes'] } })
+}
+
+return { build, confirmed: confirmed.map((f) => ({ id: f.id, severity: f.severity, title: f.title })), refuted: all.filter((f) => !f.real).map((f) => ({ id: f.id, title: f.title })), fix }
