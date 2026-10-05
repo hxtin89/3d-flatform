@@ -522,10 +522,15 @@ export function createGlobe(opts: {
   // long as the cache entries, so the cache ceiling bounds both. The value is only kept
   // so a budget snapshot has the same shape as the point cloud's and restores exactly.
   let gpuBytesTarget = 64 * 1024 * 1024
+  // A full cache refuses requests during a traversal and asks again only in the next one,
+  // and UpdateOnChangePlugin runs one only when the camera moves. So a ceiling raised under
+  // a still camera loaded nothing until the view was touched; ask for the traversal here.
+  const requestTraversal = () => tiles.dispatchEvent({ type: 'needs-update' } as any)
   const setMemoryBudget = (cacheMaxBytes: number, nextGpuBytesTarget: number) => {
     tiles.lruCache.maxBytesSize = cacheMaxBytes
     tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize, Math.round(cacheMaxBytes / (400 * 1024)))
     gpuBytesTarget = nextGpuBytesTarget
+    requestTraversal()
   }
 
   return {
@@ -559,6 +564,7 @@ export function createGlobe(opts: {
       tiles.lruCache.minBytesSize = budget.minBytesSize
       tiles.lruCache.maxSize = budget.maxSize
       gpuBytesTarget = budget.gpuBytesTarget
+      requestTraversal()
     },
     update(constrainCamera) {
       // The pointer shift belongs to one drag only. The budget clears itself once the
