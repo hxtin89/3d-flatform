@@ -272,7 +272,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     highCoverage: uniform(0), highAltitude: uniform(6), highDepth: uniform(0.3),
     offset: uniform(new THREE.Vector2()),
     sunLight: uniform(1), ambient: uniform(1), powder: uniform(0.5),
-    diffuse: uniform(0.6), diffusePenetration: uniform(0.12), ambientOcclusion: uniform(0.05), haze: uniform(0.65),
+    diffuse: uniform(2.2), diffusePenetration: uniform(0.12), ambientOcclusion: uniform(0.05), haze: uniform(0.65),
     ambientTop: uniform(new THREE.Vector3(0.05, 0.06, 0.08)),
     groundRadiance: uniform(new THREE.Vector3(0.02, 0.025, 0.02)),
     steps: uniform(48, 'int'),
@@ -409,9 +409,21 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         // enters as two-stream diffusion (Stephens): what still reaches a point through an
         // optical depth τ toward the sun falls off as 2 / (2 + (1 − g)τ), not e^(−τ) — slowly,
         // which is why an overcast's underside is grey rather than black and only a storm's
-        // hundreds of optical depths make its base dark. Isotropic, scaled by the lit side's
-        // diffuse reflectance.
-        sunScatter = sunScatter.add(float(2).div(tau.mul(u.diffusePenetration).add(2)).mul(u.diffuse).mul(1 / PI))
+        // hundreds of optical depths make its base dark. Isotropic, normalised as the phases
+        // are (1 / 4π), scaled by `diffuse`; and ramped in by (1 − e^(−τ)) of the cloud's
+        // whole depth along the sun's line through the point — toward the sun and away from it,
+        // since a sunlit face shines with what scattered back out of the cloud behind it. Only
+        // a wisp, thin both ways, has next to nothing to diffuse: lit by the octaves alone, it
+        // no longer runs bright. Three samples away from the sun, growing.
+        const tauBehind = float(0).toVar()
+        let behind = 0
+        for (const span of [1, 2, 4]) {
+          const at = behind + span * 0.5
+          behind += span
+          tauBehind.addAssign(densityAt(p.sub(u.sun.mul(lightStep.mul(at))), false).sigma.mul(lightStep.mul(span)))
+        }
+        const diffusion = float(2).div(tau.mul(u.diffusePenetration).add(2)).mul(exp(tau.add(tauBehind).negate()).oneMinus())
+        sunScatter = sunScatter.add(diffusion.mul(u.diffuse).mul(1 / (4 * PI)))
         // Powder: edges facing the sun darken (Schneider), fading as the view turns away.
         const powder = mix(float(1), float(1).sub(exp(sigma.mul(-2.5))).mul(2), u.powder.mul(cosTheta.mul(-0.5).add(0.5)))
         // Sky light from above, ground light from below; occluded by the cloud above the

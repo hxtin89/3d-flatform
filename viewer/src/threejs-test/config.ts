@@ -1005,9 +1005,10 @@ export const EXPERIENCE_CONFIG = {
     ambient: 1,
     multipleScattering: 3,
     powder: 0.4,
-    /** Deep multiple scattering (two-stream diffusion): the lit side's diffuse reflectance and
-     *  how fast it fades with the optical depth toward the sun. */
-    diffuse: 0.55,
+    /** Deep multiple scattering (two-stream diffusion): its strength against the octaves'
+     *  phases, both normalised to 1 / 4π (2.2 is the look tuned when it was 4× that, at 0.55),
+     *  and how fast it fades with the optical depth toward the sun. */
+    diffuse: 2.2,
     /** The fall-off 2 / (2 + kτ) of the diffuse light inward: (1 − g) of the droplets is 0.15;
      *  a little steeper keeps fair-weather cumulus their grey bases. */
     diffusePenetration: 0.3,

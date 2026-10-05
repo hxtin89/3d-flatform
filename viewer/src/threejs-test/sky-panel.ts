@@ -262,7 +262,7 @@ export function mountSkyPanel(opts: SkyPanelOptions): { copyValues(): Record<str
   for (const row of [
     cloudParam('sunLight', 'Sunlight', 0, 4, 0.01),
     cloudParam('ambient', 'Skylight', 0, 4, 0.01),
-    cloudParam('diffuse', 'Diffuse bounce', 0, 2, 0.01, fixed(2), 'The light so often scattered inside it forgets the sun: bright, white tops'),
+    cloudParam('diffuse', 'Diffuse bounce', 0, 6, 0.01, fixed(2), 'The light so often scattered inside it forgets the sun: bright, white tops'),
     cloudParam('diffusePenetration', 'Bounce fall-off', 0.01, 1, 0.005, fixed(3), '(1 − g) in 2 / (2 + (1 − g)τ): lower lights the bases'),
     cloudParam('powder', 'Powder', 0, 1, 0.01, percent, 'Darker edges facing the sun'),
     cloudParam('ambientOcclusion', 'Ambient occlusion', 0, 0.5, 0.005, fixed(3), 'How much the cloud above a point hides the sky: dark storm cores'),
