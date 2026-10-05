@@ -792,7 +792,7 @@ export function createGroundFogLayer(opts: {
     if (hazeParts) {
       const fogDistance = weightedDistance.div(max(transmittance.oneMinus(), 1e-4))
       light = hazeParts.aerial
-        ? hazeParts.aerial(scattered, transmittance, fogDistance, rayWorld)
+        ? hazeParts.aerial(scattered, transmittance, fogDistance, rayWorld, st)
         : mix(scattered, vec3(hazeParts.color).mul(transmittance.oneMinus()),
           max(hazeParts.amount(fogDistance), hazeParts.wall(fogDistance)))
     }

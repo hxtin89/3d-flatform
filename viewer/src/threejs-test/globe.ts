@@ -257,6 +257,9 @@ export function createGlobe(opts: {
       // Stamped like the point tiles, so one parked in the cache across an effect switch is
       // caught when it is shown again (onTileShown below).
       mat.userData.effectsVersion = cloudEffectsVersion()
+      // The ground for the physical haze: colour transmittance, and the exact ground lookup from
+      // a high camera (atmosphere-haze.ts volumeHaze).
+      mat.userData.hazeGround = true
       o.material.dispose()
       o.material = mat
     })

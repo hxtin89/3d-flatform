@@ -912,6 +912,23 @@ export const EXPERIENCE_CONFIG = {
     /** Under a full overcast the haze keeps this share of the clear sky's glow. */
     overcastGlow: 0.3,
     /**
+     * The aerial perspective from a camera volume (sky-atmosphere.ts) instead of per pixel:
+     * 32 × 32 froxels × 32 slices, drawn when the view moves. It reaches the far plane or
+     * `horizonFactor` × the horizon distance, at least `minRangeM`. From a camera between
+     * `anchorFromM` and `anchorToM` up the basemap hands over to the exact ground lookup; above
+     * `fineAboveM` every slice takes substeps; the sun has to move `sunThresholdRad` to redraw.
+     * `?apvol=0|1`.
+     */
+    aerialVolume: {
+      enabled: true,
+      horizonFactor: 1.1,
+      minRangeM: 32_000,
+      anchorFromM: 1000,
+      anchorToM: 2000,
+      fineAboveM: 1000,
+      sunThresholdRad: 1e-5,
+    },
+    /**
      * The sun and sky as light on the point cloud and the basemap (point-cloud.ts sunLight):
      * the captured colours relit by the atmosphere's sun and sky instead of the daylight
      * grade. `sunIntensity` / `skyIntensity` scale the two; `sideLight` is how much of the sun

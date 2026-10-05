@@ -24,6 +24,7 @@ export interface SkyPanelSwitches {
   clouds: { get(): boolean; set(on: boolean): void }
   fogCloudShadows: { get(): boolean; set(on: boolean): void }
   cloudShadows: { get(): boolean; set(on: boolean): void }
+  aerialVolume: { get(): boolean; set(on: boolean): void }
 }
 
 export interface SkyPanelOptions {
@@ -111,6 +112,8 @@ export function mountSkyPanel(opts: SkyPanelOptions): { copyValues(): Record<str
       note('Hillaire’s atmosphere in four small tables, a full-resolution sun disc and aerial perspective in place of the haze curve. Off is the graded sky and haze of before. ?sky=0|1')),
     make('div', { className: 'row' }, make('label', { className: 'h', textContent: 'Sun light' }), toggle('☀ Sun light', switches.sunLight),
       note('The sun and sky light the points and the basemap (the captured colours relit). Off is the daylight grade')),
+    make('div', { className: 'row' }, make('label', { className: 'h', textContent: 'Aerial perspective' }), toggle('◫ Aerial volume', switches.aerialVolume),
+      note('The haze from a 32 × 32 × 32 camera volume, drawn when the view moves and read with two lookups per pixel. Off evaluates it per pixel. ?apvol=0|1')),
   )
   heading(skyBox, 'Exposure')
   for (const row of [
@@ -291,6 +294,7 @@ export function mountSkyPanel(opts: SkyPanelOptions): { copyValues(): Record<str
         sunTint: hex(p.sunTint), sunMaxRadiance: round(p.sunMaxRadiance), nightSky: hex(p.nightSky),
         aerialStartM: round(p.aerialStartM), aerialDensity: round(p.aerialDensity),
         whiteBalance: round(p.whiteBalance), skyBrightness: round(p.skyBrightness), overcastGlow: round(p.overcastGlow),
+        aerialVolume: { enabled: switches.aerialVolume.get() },
         sunLight: {
           enabled: switches.sunLight.get(), sunIntensity: round(sunLight.sunIntensity), skyIntensity: round(sunLight.skyIntensity),
           sideLight: round(opts.sideLight.value), tint: hex(sunLight.tint), nightLevel: round(sunLight.nightLevel),

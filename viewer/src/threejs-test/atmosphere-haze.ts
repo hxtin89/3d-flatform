@@ -35,7 +35,7 @@
 import * as THREE from 'three'
 import {
   Fn, If, cameraPosition, dot, exp, float, fog, length, max, mix, normalWorldGeometry, normalize,
-  output, positionWorld, pow, renderGroup, smoothstep, uniform, vec3, vec4,
+  output, positionWorld, pow, renderGroup, screenUV, smoothstep, uniform, vec3, vec4,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import type { DaylightState } from './environment-layer'
@@ -81,7 +81,7 @@ export interface CloudHaze {
   /** Physical mode: the full composite for premultiplied light seen through `transmittance`
    *  at `distance` metres along the render-space direction `dirWorld` — the light dimmed by
    *  the air in front of it plus the air's own in-scatter over what it hides. */
-  aerial?(light: any, transmittance: any, distance: any, dirWorld: any): any
+  aerial?(light: any, transmittance: any, distance: any, dirWorld: any, screen?: any): any
 }
 
 const EARTH_RADIUS_M = 6_371_000
@@ -138,10 +138,37 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
   const buildPhysical = (atmosphere: SkyAtmosphere) => {
     const nodes = atmosphere.nodes
     physicalVersion = atmosphere.version
+    // The camera volume (sky-atmosphere.ts aerialMode), read at the fragment's own pixel: valid
+    // for this frame's main camera only, so a material drawn into another view must not take
+    // this fog node. Points and props take grey transmittance and no direction outside the far
+    // wall; the ground (userData.hazeGround, the basemap) colour transmittance and, from a high
+    // camera, the exact ground lookup.
+    const volumeHaze = (material: any, toPoint: any) => {
+      const d = length(toPoint).toVar()
+      const ground = material?.userData?.hazeGround === true
+      const direction = nodes.toEnu(toPoint.div(max(d, 1e-3)))
+      // On the ground it is read in two sibling branches, the anchor and the wall: one variable.
+      const dirEnu = ground ? direction.toVar() : direction
+      const wall = hazeWall(d)
+      const ap = nodes.aerial(d, dirEnu, { screen: screenUV, chromatic: ground, ground })
+      if (material?.blending === THREE.AdditiveBlending) {
+        return vec4(output.rgb.mul(ap.transmittance).mul(float(1).sub(wall)), output.a)
+      }
+      const hazed = output.rgb.mul(ap.transmittance).add(ap.inscatter).toVar()
+      If(wall.greaterThan(0), () => {
+        If(flatSky.greaterThan(0.5), () => {
+          hazed.assign(mix(hazed, vec3(horizonColor as any), wall))
+        }).Else(() => {
+          hazed.assign(mix(hazed, nodes.background(dirEnu, false), wall))
+        })
+      })
+      return vec4(hazed, output.a)
+    }
     physicalHaze = Fn((_inputs: unknown, builder: any) => {
       const material = builder.material
       if (material?.userData?.noHaze) return output
       const toPoint = positionWorld.sub(cameraPosition)
+      if (nodes.aerialVolume) return volumeHaze(material, toPoint)
       const d = length(toPoint)
       const dirEnu = nodes.toEnu(toPoint.div(max(d, 1e-3)))
       const wall = hazeWall(d)
@@ -165,8 +192,8 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
       amount: hazeAmount,
       wall: hazeWall,
       color: horizonColor,
-      aerial: (light: any, transmittance: any, distance: any, dirWorld: any) => {
-        const ap = nodes.aerial(distance, nodes.toEnu(dirWorld))
+      aerial: (light: any, transmittance: any, distance: any, dirWorld: any, screen?: any) => {
+        const ap = nodes.aerial(distance, nodes.toEnu(dirWorld), { screen, chromatic: true })
         return vec3(light).mul(ap.transmittance).add(ap.inscatter.mul(float(1).sub(transmittance)))
       },
     }

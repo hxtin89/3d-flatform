@@ -30,7 +30,7 @@ import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
-import { createSkyAtmosphere, defaultSkyParams, type SkyAtmosphere } from './sky-atmosphere'
+import { createSkyAtmosphere, defaultSkyParams, type AerialMode, type SkyAtmosphere } from './sky-atmosphere'
 import { createSunShadowLayer, type SunShadowLayer } from './sun-shadows'
 import { createSkyClouds, type SkyClouds } from './sky-clouds'
 import { mountSkyPanel } from './sky-panel'
@@ -1206,8 +1206,15 @@ const hazeLayer: HazeLayer = createHazeLayer({ scene, up: enuUp })
 /** The physically based sky, sun and aerial perspective (sky-atmosphere.ts), which take over
  *  the haze layer's two nodes while on. `?sky=0|1` boots it off or on whatever the config says. */
 const SKY = EXPERIENCE_CONFIG.sky
-const skyAtmosphere: SkyAtmosphere = createSkyAtmosphere({ renderer, settings: SKY.atmosphere, params: defaultSkyParams(SKY) })
+const skyAtmosphere: SkyAtmosphere = createSkyAtmosphere({ renderer, settings: SKY.atmosphere, params: defaultSkyParams(SKY), aerialVolume: SKY.aerialVolume })
 let skyEnabled: boolean = params.get('sky') === '0' ? false : params.get('sky') === '1' ? true : SKY.enabled
+/** The aerial perspective from the camera volume or per fragment: `?apvol=0|1`, and two
+ *  developer views, `ref` (a per-fragment reference march) and `dircheck` (froxel directions). */
+let aerialVolumeIntent: string = params.get('apvol') ?? (SKY.aerialVolume.enabled ? '1' : '0')
+const aerialModeFor = (intent: string): AerialMode =>
+  intent === 'ref' ? 'reference' : intent === 'dircheck' ? 'dircheck' : intent === '0' ? 'analytic' : 'volume'
+// Before the haze builds its nodes, so the first graphs come out in the right mode.
+skyAtmosphere.setAerialMode(aerialModeFor(aerialVolumeIntent))
 if (skyEnabled) hazeLayer.setPhysicalSky(skyAtmosphere)
 /** The sky's light on the points and the basemap (point-cloud.ts sunLight): compiled in before
  *  the first tile material exists, so no tile is ever built without it. */
@@ -4050,6 +4057,7 @@ function applySkyPackage(): void {
   skyAtmosphere.setClouds(cloudsEnabled ? skyClouds : null)
   // Its update only runs while it is on: let go of its targets here, as the shadows do.
   if (!cloudsEnabled) skyClouds.release()
+  skyAtmosphere.setAerialMode(aerialModeFor(aerialVolumeIntent))
   if (hazeLayer.refreshPhysicalSky()) tiles = true
   tiles = setCloudEffectEnabled('sunLight', sunLightOn) || tiles
   sunShadows.setEnabled(shadowsEnabled)
@@ -4104,6 +4112,7 @@ const skyPanel = mountSkyPanel({
     clouds: { get: () => cloudsIntent, set: (on) => { cloudsIntent = on; applySkyPackage() } },
     cloudShadows: { get: () => cloudShadowsIntent, set: (on) => { cloudShadowsIntent = on; applySkyPackage() } },
     fogCloudShadows: { get: () => fogCloudShadowsIntent, set: (on) => { fogCloudShadowsIntent = on; applySkyPackage() } },
+    aerialVolume: { get: () => aerialVolumeIntent !== '0', set: (on) => { aerialVolumeIntent = on ? '1' : '0'; applySkyPackage() } },
   },
   onPreset: (look) => skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth }),
 })
@@ -5075,6 +5084,8 @@ function updateSky(daylight: DaylightState, deltaS: number): void {
     fovDeg: camera.fov,
     bufferHeightPx: skyBufferSize.y,
     deltaS: Math.min(Math.max(deltaS, 0), 0.25),
+    camera,
+    aerialWanted: hazeLayer.isHaze(),
   })
   uniforms.sunDirectionEnu.value.copy(daylight.sunDirectionEnu)
   const light = skyAtmosphere.light
