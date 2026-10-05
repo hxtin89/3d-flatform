@@ -1100,6 +1100,9 @@ export const EXPERIENCE_CONFIG = {
        *  further where the browser reports one: Save-Data or 2g turns it off, 3g or a
        *  downlink under fullMinDownlinkMbps keeps 'full' at 'half'. */
       presets: { strong: 'full', medium: 'half', constrained: 'off' },
+      /** A density that overrides the preset and the link, so the ortho can be seen on any
+       *  device. null = follow them. The panel's Half and Full set it; ?ortho=half|full too. */
+      force: null as null | 'half' | 'full',
       /** Chromium reports at most 10, so 10 means "the fastest it will say". */
       fullMinDownlinkMbps: 10,
       /** Per ortho request, from its turn, body included. A child that times out leaves its

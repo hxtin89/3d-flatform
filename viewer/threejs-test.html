@@ -1264,9 +1264,14 @@
         <details class="design-section">
           <summary>Drone ortho</summary>
           <div class="row">
-            <label class="h" for="droneOrthoToggle">Ortho</label>
-            <button class="act on" id="droneOrthoToggle" type="button" aria-pressed="true" aria-describedby="droneOrthoNote">▦ Drone ortho · On</button>
-            <span class="weather-note" id="droneOrthoNote">The drone orthophoto (about 15 cm a pixel), painted into the satellite tiles it covers once they have settled on screen, and colour-matched to them offline — the same tiles and the same shader, so it costs downloads and one texture upload per upgraded tile, no draw call or shader. Inside the dome the ground patch covers it where the cloud is; it shows in the river, in the gaps and beyond the dome. The density follows the device preset and the link: off on constrained devices, with Save-Data or on 2g. Off repaints the covered tiles with the satellite. <code>?ortho=off</code> boots without it, <code>?ortho=half|full</code> forces a density, <code>?orthokinds</code> tints the composited tiles</span>
+            <label class="h">Ortho</label>
+            <div class="seg" id="droneOrthoModeSeg" role="group" aria-label="Drone ortho" aria-describedby="droneOrthoNote">
+              <button type="button" data-ortho-mode="0" class="on">Auto</button>
+              <button type="button" data-ortho-mode="1">Off</button>
+              <button type="button" data-ortho-mode="2">Half</button>
+              <button type="button" data-ortho-mode="3">Full</button>
+            </div>
+            <span class="weather-note" id="droneOrthoNote">The drone orthophoto (about 15 cm a pixel), painted into the satellite tiles it covers once they have settled on screen, and colour-matched to them offline — the same tiles and the same shader, so it costs downloads and one texture upload per upgraded tile, no draw call or shader. Inside the dome the ground patch covers it where the cloud is; it shows in the river, in the gaps and beyond the dome. <em>Auto</em> follows the device preset and the link: off on constrained devices, with Save-Data or on 2g. <em>Half</em> (one ortho tile per satellite tile) and <em>Full</em> (four, the full 512 px) show it on any device and link. Off repaints the covered tiles with the satellite. <code>?ortho=off</code> boots without it, <code>?ortho=half|full</code> boots with a forced density, <code>?orthokinds</code> tints the composited tiles</span>
           </div>
           <div class="row">
             <label class="h">Status</label>

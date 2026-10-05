@@ -3438,12 +3438,14 @@ let colourFieldMissing = false
 let colourFieldInUse: { field: ColourField; rootTransform: ArrayLike<number> } | null = null
 
 // Drone ortho — see design.droneOrtho. ?ortho=off boots without it (no worker, no request);
-// ?ortho=half|full forces a density whatever the bench preset; ?orthokinds tints the
-// composited tiles (red where the satellite was blended in, blue where the ortho covers all).
+// ?ortho=half|full forces a density whatever the bench preset and the link, as the panel's
+// Half and Full do; ?orthokinds tints the composited tiles (red where the satellite was blended
+// in, blue where the ortho covers all).
 const DRONE_ORTHO = DESIGN.droneOrtho
 const orthoParam = params.get('ortho')
 let droneOrthoOn: boolean = DRONE_ORTHO.enabled && orthoParam !== 'off'
-const orthoForcedDensity: OrthoDensity | null = orthoParam === 'half' || orthoParam === 'full' ? orthoParam : null
+let orthoForcedDensity: OrthoDensity | null = orthoParam === 'half' || orthoParam === 'full' ? orthoParam
+  : DRONE_ORTHO.force
 let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets[presetOverride ?? 'medium'] as OrthoDensity | 'off'
 /** Known at boot when forced by ?ortho= or ?preset=, otherwise once the loader benchmark ran. */
 let orthoDensityKnown = orthoForcedDensity !== null || presetOverride !== null
@@ -3474,7 +3476,8 @@ const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? networkCa
 function attachDroneOrtho(): void {
   const meta = colourFieldInUse?.field.meta.ortho
   if (orthoAttached || !globe || !droneOrthoOn || !meta || !colourFieldInUse) return
-  if (!orthoDensityKnown) return
+  // A forced density needs no benchmark.
+  if (!orthoDensityKnown && orthoForcedDensity === null) return
   // 'off' never starts the worker or fetches the field PNGs.
   const density = orthoDensity()
   orthoDecidedDensity = density
@@ -3565,10 +3568,11 @@ function droneOrthoStatus(): string {
     }
     if (colourFieldInUse && !colourFieldInUse.field.meta.ortho) return 'No drone ortho for this dataset'
     if (!colourFieldInUse) return 'Waiting for the colour field'
-    if (!orthoDensityKnown) return 'Waiting for the loader benchmark'
+    if (!orthoDensityKnown && orthoForcedDensity === null) return 'Waiting for the loader benchmark'
     if ((orthoDecidedDensity ?? orthoDensity()) === 'off') {
       return orthoPresetDensity === 'off'
-        ? `Off on this device (${presetOverride ?? benchPreset} preset)` : 'Off: Save-Data or a slow link at the start'
+        ? `Off on this device (${presetOverride ?? benchPreset} preset) — Half or Full shows it anyway`
+        : 'Off: Save-Data or a slow link at the start — Half or Full shows it anyway'
     }
     return 'Starting'
   }
@@ -3578,8 +3582,12 @@ function droneOrthoStatus(): string {
   }
   if (!s.enabled) return 'Off — covered tiles show the satellite'
   if (s.refused) return 'Off: the ortho tiles were refused (key not allowed?)'
-  if (s.density === 'off') return 'Off: Save-Data or a slow link — covered tiles show the satellite'
-  return `${s.density} · ${s.upgraded} tiles upgraded (${s.fullTiles} full, ${s.edgeTiles} edge so far) · `
+  if (s.density === 'off') {
+    return orthoPresetDensity === 'off'
+      ? `Off on this device (${presetOverride ?? benchPreset} preset) — Half or Full shows it anyway`
+      : 'Off: Save-Data or a slow link — Half or Full shows it anyway'
+  }
+  return `${s.density}${orthoForcedDensity ? ' (forced)' : ''} · ${s.upgraded} tiles upgraded (${s.fullTiles} full, ${s.edgeTiles} edge so far) · `
     + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
     + `${s.pending ? ` · ${s.pending} to go` : ''}`
     + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`
@@ -3592,10 +3600,30 @@ function syncDroneOrthoPanel(): void {
   const text = droneOrthoStatus()
   if (droneOrthoStatsEl.textContent !== text) droneOrthoStatsEl.textContent = text
 }
-bindEffectToggle('droneOrthoToggle', '▦ Drone ortho', droneOrthoOn, (on) => {
-  droneOrthoOn = on
-  if (on) attachDroneOrtho()
-  globe?.setOrthoEnabled(on)
+// Auto follows the preset and the link; Half and Full force a density on any device. A worker
+// that never started (an 'off' at the start) starts on the first forced pick.
+const ORTHO_MODES = ['auto', 'off', 'half', 'full'] as const
+const droneOrthoModeSeg = $<HTMLDivElement>('#droneOrthoModeSeg')
+const bootOrthoMode = !droneOrthoOn ? 'off' : orthoForcedDensity ?? 'auto'
+for (const button of droneOrthoModeSeg.querySelectorAll<HTMLButtonElement>('button')) {
+  button.classList.toggle('on', ORTHO_MODES[Number(button.dataset.orthoMode)] === bootOrthoMode)
+}
+bindSeg('droneOrthoModeSeg', 'orthoMode', (value) => {
+  const mode = ORTHO_MODES[value] ?? 'auto'
+  for (const button of droneOrthoModeSeg.querySelectorAll<HTMLButtonElement>('button')) {
+    button.setAttribute('aria-pressed', String(button.classList.contains('on')))
+  }
+  droneOrthoOn = mode !== 'off'
+  if (droneOrthoOn) {
+    orthoForcedDensity = mode === 'half' || mode === 'full' ? mode : null
+    if (orthoAttached) {
+      orthoDecidedDensity = orthoDensity()
+      globe?.setOrthoDensity(orthoDecidedDensity)
+    } else {
+      attachDroneOrtho()
+    }
+  }
+  globe?.setOrthoEnabled(droneOrthoOn)
   syncDroneOrthoPanel()
 })
 setInterval(syncDroneOrthoPanel, 1000)
@@ -3992,7 +4020,7 @@ designCopyEl.addEventListener('click', async () => {
       enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value,
       referenceBrightness: COLOUR_MATCH.referenceBrightness, fieldDir: COLOUR_MATCH.fieldDir,
     },
-    droneOrtho: { ...DRONE_ORTHO, enabled: droneOrthoOn },
+    droneOrtho: { ...DRONE_ORTHO, enabled: droneOrthoOn, force: orthoForcedDensity },
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
