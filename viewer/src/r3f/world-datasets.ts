@@ -1,4 +1,4 @@
-export type WorldDatasetId = 'peru-b2' | 'usk' | 'pantiacolla' | 'manu-z4' | 'manu-z5' | 'debug'
+export type WorldDatasetId = 'peru-b2' | 'usk' | 'pantiacolla' | 'manu-z2' | 'manu-z4' | 'manu-z5' | 'debug'
 
 export interface WorldDatasetDefinition {
   id: WorldDatasetId
@@ -14,12 +14,16 @@ export const WORLD_DATASETS: readonly WorldDatasetDefinition[] = Object.freeze([
   { id: 'usk', label: 'Usk', logicalDataset: '202508-usk-globe', hasDonationShape: false },
   { id: 'pantiacolla', label: 'Pantiacolla', logicalDataset: 'prio-z2-globe', hasDonationShape: false },
   {
+    id: 'manu-z2', label: 'Manu Z2', logicalDataset: '202606-manu-z2-globe', hasDonationShape: false,
+    overviewNeighbors: ['manu-z4', 'manu-z5'],
+  },
+  {
     id: 'manu-z4', label: 'Manu Z4', logicalDataset: '202606-manu-z4-globe', hasDonationShape: false,
-    overviewNeighbors: ['manu-z5'],
+    overviewNeighbors: ['manu-z2', 'manu-z5'],
   },
   {
     id: 'manu-z5', label: 'Manu Z5', logicalDataset: '202606-manu-z5-globe', hasDonationShape: false,
-    overviewNeighbors: ['manu-z4'],
+    overviewNeighbors: ['manu-z4', 'manu-z2'],
   },
 ])
 
