@@ -1336,6 +1336,80 @@ export const EXPERIENCE_CONFIG = {
       whitePoint: 2,
     },
   },
+  // The colour grade (the Design panel's Colour grade section, grade-editor.ts): a 3D LUT on
+  // the frame as displayed — after the tone curve and the sRGB encode, in the final quad the
+  // frame already goes through (grade-output.ts), so it adds no pass. Exposure and the film
+  // vignette stay in toneMapping above. While the state is neutral, no look is set and the
+  // section is closed, the grade is compiled out: viewers get the shader and the frame they got
+  // before it existed. Measured with it on (2026-10-05, desktop): the tap ≤ 0.01 ms; switching
+  // it in or out rebuilds the post materials once, a 12–16 ms frame with DoF and EDL on.
+  grade: {
+    /** Master switch, the panel's Grade button. Off compiles the tap out whatever the state
+     *  says. `?grade=0|1` boots with it off or on. */
+    enabled: true,
+    /** The lattice the grade bakes without a look: 33³ nodes, the size Resolve and Photoshop
+     *  exchange. Between nodes the tap interpolates; a strong grade on dark greens reads about
+     *  2 levels off the exact maths at 33, half that at 65. The size costs nothing on the GPU
+     *  (65³ measured +0.007 ms against 33³); a bigger one only bakes slower. */
+    lutSize: 33,
+    /** An imported 3D look of size N is baked on a k(N − 1) + 1 lattice, the smallest at or
+     *  above lutSize, so trilinear reproduces the look's own trilinear exactly (21³ → 41³,
+     *  32³ → 63³). Looks that would need more are resampled onto this size, with a "not 1:1"
+     *  warning; 33 resamples every look that is not 9, 17 or 33. */
+    maxLattice: 65,
+    /** While a slider is dragged, bake every second node and fill the rest (a draft) only once
+     *  the last full bake took longer than this. A desktop bakes 33³ in 5–8 ms, so it never sees
+     *  a draft; a phone may. */
+    draftWhenFinalOverMs: 8,
+    /** Bake in a module worker (grade-bake.worker.ts). Off, or where workers fail, the bake runs
+     *  on the main thread before the frame, at most one per frame. */
+    worker: true,
+    /** A .cube look applied before the controls: a file under public/grades/, fetched at boot,
+     *  and its amount 0..1. The first frames show the grade without it. */
+    look: null as null | { file: string; amount: number },
+    /** Where the before/after split sits when Compare is switched on, as a share of the canvas
+     *  width from the left; left of it shows the frame without the grade. */
+    compareSplit: 0.5,
+    /** The grade itself, as the panel's Copy values writes it (grade-model.ts GradeState, read
+     *  through parseGradeState). These are the neutral values: every one changes nothing. */
+    state: {
+      version: 1,
+      temperature: 0,
+      tint: 0,
+      lift: { y: 0, u: 0, v: 0 },
+      gamma: { y: 0, u: 0, v: 0 },
+      gain: { y: 1, u: 0, v: 0 },
+      offset: { y: 0, u: 0, v: 0 },
+      contrast: 1,
+      pivot: 0.4614,
+      saturation: 1,
+      vibrance: 0,
+      curves: { master: [[0, 0], [1, 1]], red: [[0, 0], [1, 1]], green: [[0, 0], [1, 1]], blue: [[0, 0], [1, 1]] },
+      hueSat: [],
+      hueLuma: [],
+      tones: { shadows: { u: 0, v: 0 }, highlights: { u: 0, v: 0 }, balance: 0, blending: 0.5 },
+      rollOff: 0,
+    },
+    /** How strongly each control acts at its end stop (grade-model.ts GradeTuning). Temperature
+     *  +100 moves red up and blue down by tempStops stops; tint +100 moves green down by tintStops;
+     *  a wheel's puck on its rim moves a channel by its *Chroma; the hue curves fade out under
+     *  hueChromaGate chroma, so greys and haze never move; vibrance acts half at vibranceChroma;
+     *  the soft gamut compression starts gamutThreshold below the brightest channel; roll-off 1
+     *  drops the knee by rollOffKnee. Must equal DEFAULT_GRADE_TUNING (a test checks). */
+    tuning: {
+      tempStops: 0.5,
+      tintStops: 0.4,
+      liftChroma: 0.1,
+      gammaChroma: 0.5,
+      gainChroma: 0.25,
+      offsetChroma: 0.1,
+      toneChroma: 0.1,
+      hueChromaGate: 0.05,
+      vibranceChroma: 0.3,
+      gamutThreshold: 0.8,
+      rollOffKnee: 0.3,
+    },
+  },
   // Eye-dome lighting (eye-dome-lighting.ts): depth-edge shading, the standard point-cloud
   // aid for reading shape without normals. A screen pass like DoF and shares its pipeline;
   // off drops it from that pipeline, and with DoF also off the frame is drawn straight to

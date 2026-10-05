@@ -468,6 +468,57 @@
 
       .weather-note { color: rgba(232,234,237,.48); font: 700 9px/1.35 ui-monospace, SFMono-Regular, monospace;
                       letter-spacing: .05em; }
+      .weather-note[hidden] { display: none; }
+      /* ---------- colour grade section (grade-editor.ts) ----------
+         Open, it widens the panel to 320 px on desktop. Inside min-width on purpose: unguarded,
+         its specificity would beat the phone sheet's width: 100%. */
+      @media (min-width: 701px) { body.grade-open #designPanel { width: 320px; } }
+      #gradeSection > .row + .row, #gradeSection > .grade-group + .row { margin-top: 10px; }
+      .grade-group { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+      .grade-group[hidden] { display: none; }
+      .grade-bar { display: flex; gap: 6px; }
+      .grade-bar > button.act { flex: 1 1 auto; min-width: 0; padding: 8px 6px; }
+      .grade-tools > button.act { padding: 7px 4px; font-size: 12px; }
+      .grade-tools > button.act.grade-slot { position: relative; flex: 0 0 32px; }
+      /* A stored snapshot carries a dot; the slot Store writes to, an accent edge. */
+      .grade-slot.stored::after { content: ""; position: absolute; top: 4px; right: 4px; width: 5px; height: 5px;
+                                  border-radius: 50%; background: #79b8ff; }
+      .grade-slot.selected { border-color: #1f6feb; }
+      #gradeTabs button { padding: 7px 2px; font-size: 11px; }
+      /* The widgets (wheels, curves) of the next step. */
+      canvas.grade-widget { display: block; width: 100%; touch-action: none; border: 1px solid #2d333b;
+                            border-radius: 8px; background: #0d1117; }
+      canvas.grade-widget.grade-wheel, canvas.grade-widget.grade-curve { aspect-ratio: 1; }
+      canvas.grade-widget.grade-hue { height: 140px; }
+      .grade-wheels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .grade-minis { display: flex; gap: 6px; }
+      /* Before/after split: the line and its tags over the canvas, the handle the only thing
+         that takes the pointer. Under the panels (20, 21), over the map overlays. */
+      #gradeSplit { position: fixed; inset: 0; z-index: 18; pointer-events: none; --split: 50%; --handle-top: 30vh; }
+      #gradeSplit[hidden] { display: none; }
+      #gradeSplit .line { position: absolute; top: 0; bottom: 0; left: var(--split); width: 1px; margin-left: -.5px;
+                          background: rgba(255,255,255,.7); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+      #gradeSplit .tag { position: absolute; top: calc(var(--handle-top) + 30px); padding: 4px 7px; border-radius: 999px;
+                         color: #e8eaed; background: rgba(14,17,22,.72); font: 700 9px/1 ui-monospace, SFMono-Regular, monospace;
+                         letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+      #gradeSplit .tag.before { right: calc(100% - var(--split) + 10px); }
+      #gradeSplit .tag.after { left: calc(var(--split) + 10px); }
+      #gradeSplitHandle { position: absolute; top: var(--handle-top); left: var(--split); width: 44px; height: 44px;
+                          margin: -22px 0 0 -22px; padding: 0; border-radius: 50%; pointer-events: auto; touch-action: none;
+                          cursor: ew-resize; color: #fff; background: rgba(14,17,22,.78);
+                          border: 1px solid rgba(255,255,255,.7); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+      #gradeSplitHandle::before { content: "◂ ▸"; font-size: 11px; letter-spacing: -.05em; }
+      #gradeSplitHandle:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
+      /* The panel's footer: Copy and Paste values, and the boxes they open. */
+      .design-foot { display: flex; gap: 6px; }
+      .design-foot > button.act { flex: 1 1 0; min-width: 0; }
+      .design-box { display: flex; flex-direction: column; gap: 6px; }
+      .design-box[hidden] { display: none; }
+      .design-box textarea { width: 100%; min-height: 120px; resize: vertical; padding: 7px; color: #e8eaed;
+                             background: #0d1117; border: 1px solid #2d333b; border-radius: 8px;
+                             font: 11px/1.35 ui-monospace, SFMono-Regular, monospace;
+                             user-select: text; -webkit-user-select: text; }
+      .design-box textarea:focus-visible { outline: 2px solid #1f6feb; outline-offset: 1px; }
       /* ---------- height ruler: the 2D column ----------
          The only form of this instrument. It replaced a 3D ruler of coloured bars on a mast,
          which never worked: the marks span ~660 m of elevation while working altitude shows
@@ -653,6 +704,22 @@
            taller sheet, so it wins when both are open. */
         body.panel-open #buildStamp { bottom: calc(var(--sheet-max) + 10px); }
         body.design-open #buildStamp { bottom: calc(var(--design-sheet-max) + 10px); }
+        /* Colour grade on a phone: the split handle sits above the 64vh sheet, and a curve never
+           takes more than 40 % of the screen height. */
+        #gradeSplit { --handle-top: 18vh; }
+        .grade-curve { width: min(100%, 40vh); }
+        /* Peek: while a grade control is held, the sheet clears and only that control's row
+           stays, so the frame it changes can be seen. visibility, not display, so nothing moves. */
+        body.grade-dragging #designPanel { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+                                           border-color: transparent; }
+        body.grade-dragging #designPanel > .design-title,
+        body.grade-dragging #designPanel > .close,
+        body.grade-dragging .design-section:not(#gradeSection),
+        body.grade-dragging #gradeSection > summary,
+        body.grade-dragging #gradeSection .row:not(.grade-active),
+        body.grade-dragging #designPanel > .design-box,
+        body.grade-dragging #designPanel > .design-foot { visibility: hidden; }
+        body.grade-dragging #gradeSection { border-color: transparent; background: transparent; }
         .loader-kicker, .loader-footer { left: 18px; right: 18px; }
         .temperature-marker-label { min-width: 114px; padding: 6px 8px 7px; }
         .temperature-value { font-size: 18px; }
@@ -708,6 +775,11 @@
       <rect id="foveationGuideCore" />
       <rect id="foveationGuideRamp" />
     </svg>
+
+    <!-- The colour grade's before/after split (Compare in the Colour grade section): left of the
+         line the frame without the grade. The line is drawn here; the split itself is a uniform
+         in the output pass (grade-output.ts), so dragging it recompiles nothing. -->
+    <div id="gradeSplit" hidden><i class="line"></i><span class="tag before">Before</span><span class="tag after">After</span><button id="gradeSplitHandle" type="button" role="slider" aria-label="Before/after split" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="Before on the left, after on the right"></button></div>
 
     <div id="loader" role="progressbar" aria-label="Loading point cloud" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-busy="true">
       <div class="loader-kicker"><span>Wilderness International</span><span>Canopy Field System · Peru</span></div>
@@ -1365,6 +1437,175 @@
           </div>
         </details>
 
+        <!-- Colour grade (grade-editor.ts). min/max/step of its ranges are written from
+             grade-model.ts GRADE_RANGES at boot; the values here match them (a test checks). -->
+        <details class="design-section" id="gradeSection">
+          <summary>Colour grade</summary>
+          <div class="row">
+            <span class="weather-note">Runs on the displayed frame, after Tone &amp; colour. Exposure and vignette stay there. Neutral with this section closed, it is compiled out and costs nothing. While the section is open, or whenever the grade changes anything, it is one 3D colour lookup in the pass that already draws the frame, about 0.01 ms. Switching between the two rebuilds the post shaders once, a short hitch; moving a control never does</span>
+          </div>
+          <div class="row">
+            <div class="grade-bar">
+              <button class="act on" id="gradeToggle" type="button" aria-pressed="true" aria-describedby="gradeToggleNote">◐ Grade · On</button>
+              <button class="act" id="gradeCompare" type="button" aria-pressed="false" aria-controls="gradeSplit" aria-describedby="gradeToggleNote">◧ Compare · Off</button>
+            </div>
+            <span class="weather-note" id="gradeToggleNote"><em>Grade</em> off takes the grade out whatever the controls say. <em>Compare</em> splits the frame: left of the line without the grade, right of it with. Drag the round handle, or focus it and use ← → (Shift for big steps). <code>?grade=0</code> boots with the grade off</span>
+          </div>
+          <div class="row">
+            <label class="h">Versions</label>
+            <div class="grade-bar grade-tools" role="group" aria-label="Snapshots and history">
+              <button class="act grade-slot" id="gradeSnapA" type="button" aria-label="Snapshot A: empty, tap to store">A</button>
+              <button class="act grade-slot" id="gradeSnapB" type="button" aria-label="Snapshot B: empty, tap to store">B</button>
+              <button class="act" id="gradeStore" type="button" title="Store the current grade in the slot used last">Store</button>
+              <button class="act" id="gradeUndo" type="button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled>↶</button>
+              <button class="act" id="gradeRedo" type="button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled>↷</button>
+              <button class="act" id="gradeReset" type="button" title="Every control back to neutral; the look stays">⟲ Reset</button>
+            </div>
+            <span class="weather-note"><em>A</em> and <em>B</em> hold two versions to flip between: tap an empty slot to store the grade, a stored one (dotted) to recall it. <em>Store</em> overwrites the slot used last. Each finished slider move, recall, reset, import and paste is one undo step: ↶ ↷, or Ctrl+Z and Ctrl+Shift+Z while a control here has focus. <em>Reset</em> sets every control to neutral and keeps the look</span>
+          </div>
+          <div class="row">
+            <div class="seg" id="gradeTabs" role="tablist" aria-label="Grade controls">
+              <button type="button" role="tab" data-tab="primary" class="on" aria-selected="true" aria-controls="gradePrimary">Primary</button>
+              <button type="button" role="tab" data-tab="curves" aria-selected="false" aria-controls="gradeCurves">Curves</button>
+              <button type="button" role="tab" data-tab="hue" aria-selected="false" aria-controls="gradeHue">Hue</button>
+              <button type="button" role="tab" data-tab="tones" aria-selected="false" aria-controls="gradeTones">Tones</button>
+              <button type="button" role="tab" data-tab="look" aria-selected="false" aria-controls="gradeLook">Look</button>
+            </div>
+          </div>
+
+          <div class="grade-group" id="gradePrimary" role="tabpanel" aria-label="Primary">
+            <div class="row">
+              <span class="weather-note">The colour wheels arrive in the next step; for now each wheel's master value. Applied in this order: white balance, then lift, gain and offset, then gamma, then contrast</span>
+              <span class="weather-note" id="gradePrimaryHeld" hidden></span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeLiftY">Lift · <span class="val" id="gradeLiftYVal">—</span></label>
+              <input type="range" id="gradeLiftY" min="-0.25" max="0.25" step="0.001" />
+              <span class="weather-note">Raises or lowers black while white stays put, so the shadows move most</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeGammaY">Gamma · <span class="val" id="gradeGammaYVal">—</span></label>
+              <input type="range" id="gradeGammaY" min="-1" max="1" step="0.01" />
+              <span class="weather-note">Bends the mid-tones with black and white fixed: right brightens them. The value is in stops of the power; γ is the gamma it amounts to</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeGainY">Gain · <span class="val" id="gradeGainYVal">—</span></label>
+              <input type="range" id="gradeGainY" min="0.5" max="2" step="0.01" />
+              <span class="weather-note">Scales white while black stays put, so the highlights move most. Past white it clips unless Roll-off (Tones) softens it</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeOffsetY">Offset · <span class="val" id="gradeOffsetYVal">—</span></label>
+              <input type="range" id="gradeOffsetY" min="-0.25" max="0.25" step="0.001" />
+              <span class="weather-note">Moves every tone by the same amount, black and white included</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeTemperature">Temperature · <span class="val" id="gradeTemperatureVal">—</span></label>
+              <input type="range" id="gradeTemperature" min="-100" max="100" step="1" />
+              <span class="weather-note">Warmer to the right, cooler to the left, as in Lightroom. A white balance in linear light that keeps grey's brightness; at ±100 red and blue end up a stop apart</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeTint">Tint · <span class="val" id="gradeTintVal">—</span></label>
+              <input type="range" id="gradeTint" min="-100" max="100" step="1" />
+              <span class="weather-note">Magenta to the right, green to the left, brightness kept</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeContrast">Contrast · <span class="val" id="gradeContrastVal">—</span></label>
+              <input type="range" id="gradeContrast" min="0.5" max="2" step="0.01" />
+              <span class="weather-note">An S around the pivot: black, the pivot and white stay where they are, everything between spreads apart. Below 1× it flattens straight toward the pivot and lifts black</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradePivot">Pivot · <span class="val" id="gradePivotVal">—</span></label>
+              <span class="slider-ref" id="gradePivotTrack">
+                <input type="range" id="gradePivot" min="0.2" max="0.7" step="0.001" />
+                <span class="ref-tick" aria-hidden="true"></span>
+                <span class="ref-label" aria-hidden="true">18 % grey</span>
+              </span>
+              <span class="weather-note">The tone contrast turns around, as a screen value (sRGB code). The mark is 18 % grey, sRGB 118; most of the canopy sits below it, so a lower pivot gives the canopy more of the contrast</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeSaturation">Saturation · <span class="val" id="gradeSaturationVal">—</span></label>
+              <input type="range" id="gradeSaturation" min="0" max="2" step="0.01" />
+              <span class="weather-note">Every colour toward or away from its own grey, brightness kept. 100 % is unchanged, 0 % black and white</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeVibrance">Vibrance · <span class="val" id="gradeVibranceVal">—</span></label>
+              <input type="range" id="gradeVibrance" min="-1" max="1" step="0.01" />
+              <span class="weather-note">Saturation for the dull colours first: near-greys take all of it, the saturated canopy greens about a tenth, so they do not clip. Left mutes the dull colours first</span>
+            </div>
+          </div>
+
+          <div class="grade-group" id="gradeCurves" role="tabpanel" aria-label="Curves" hidden>
+            <div class="row">
+              <span class="weather-note">The curve editors arrive in the next step: one master curve and one each for red, green and blue, after the Primary controls</span>
+              <span class="weather-note" id="gradeCurvesHeld" hidden></span>
+              <button class="act" id="gradeCurveReset" type="button">⟲ Reset curves</button>
+            </div>
+          </div>
+
+          <div class="grade-group" id="gradeHue" role="tabpanel" aria-label="Hue" hidden>
+            <div class="row">
+              <span class="weather-note">The hue curve editors arrive in the next step: saturation and brightness per hue, which leave greys and haze alone</span>
+              <span class="weather-note" id="gradeHueHeld" hidden></span>
+              <button class="act" id="gradeHueReset" type="button">⟲ Reset hue curves</button>
+            </div>
+          </div>
+
+          <div class="grade-group" id="gradeTones" role="tabpanel" aria-label="Tones" hidden>
+            <div class="row">
+              <span class="weather-note">Split toning: a tint for the shadows and one for the highlights, which leaves true black black. Their colour wheels arrive in the next step; these set where the two hand over</span>
+              <span class="weather-note" id="gradeTonesHeld" hidden></span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeBalance">Balance · <span class="val" id="gradeBalanceVal">—</span></label>
+              <input type="range" id="gradeBalance" min="-1" max="1" step="0.01" />
+              <span class="weather-note">Where the shadows end: right gives the shadow tint more of the tones, left the highlight tint</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeBlending">Blending · <span class="val" id="gradeBlendingVal">—</span></label>
+              <input type="range" id="gradeBlending" min="0" max="1" step="0.01" />
+              <span class="weather-note">How gradually they hand over: 0 % in a narrow band, 100 % across most of the tones</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeRollOff">Roll-off · <span class="val" id="gradeRollOffVal">—</span></label>
+              <input type="range" id="gradeRollOff" min="0" max="1" step="0.01" />
+              <span class="weather-note">Softens what the grade pushes past white: those highlights roll off toward white with their hue kept instead of clipping. Does nothing while nothing passes white</span>
+            </div>
+          </div>
+
+          <div class="grade-group" id="gradeLook" role="tabpanel" aria-label="Look" hidden>
+            <div class="row">
+              <label class="h" for="gradeImport">Look</label>
+              <button class="act" id="gradeImport" type="button" aria-describedby="gradeLookStatus">⤒ Import .cube</button>
+              <input type="file" id="gradeFile" accept=".cube,.CUBE" hidden />
+              <span class="weather-note" id="gradeLookStatus" aria-live="polite">—</span>
+            </div>
+            <div class="row">
+              <label class="h" for="gradeLookAmount">Look amount · <span class="val" id="gradeLookAmountVal">—</span></label>
+              <input type="range" id="gradeLookAmount" min="0" max="1" step="0.01" />
+              <button class="act" id="gradeLookRemove" type="button">✕ Remove</button>
+              <span class="weather-note">A 3D .cube from Resolve or Photoshop, applied first; every other tab acts on top of it. Amount blends it with the frame per colour, 100 % as authored. A look imported here lasts this session: Copy values names it, and saved under <code>public/grades/</code> and set as config <code>grade.look</code> it loads at boot</span>
+            </div>
+            <div class="row">
+              <label class="h">Out</label>
+              <div class="grade-bar">
+                <button class="act" id="gradeExport" type="button">⤓ Export .cube</button>
+                <button class="act" id="gradeFrame" type="button">⤓ Frame for grading</button>
+              </div>
+              <span class="weather-note"><em>Export .cube</em> writes the whole grade, look included, as the 3D LUT on screen, values past white kept. <em>Frame for grading</em> saves the frame as it is now, without the grade, as a PNG: grade that elsewhere, export a .cube and import it here</span>
+            </div>
+            <div class="row">
+              <label class="h">Round trip</label>
+              <span class="weather-note"><em>Resolve</em>: DaVinci YRGB without colour management, 3D LUT interpolation Trilinear; grade the PNG, then Generate LUT → 33 Point Cube</span>
+              <span class="weather-note"><em>Photoshop</em>: an sRGB document from the PNG, adjustment layers only, then Export → Color Lookup Tables → CUBE</span>
+              <span class="weather-note"><em>Lightroom</em> writes no .cube; a route through a HALD image comes later</span>
+            </div>
+          </div>
+
+          <div class="row">
+            <span class="weather-note" id="gradeStatus" aria-live="polite">—</span>
+          </div>
+        </details>
+
         <details class="design-section">
           <summary>Ground fog</summary>
           <div class="row">
@@ -1650,7 +1891,24 @@
           </div>
         </details>
       </div>
-      <button class="act" id="designCopy" type="button">⧉ Copy values</button>
+      <div class="design-box" id="designCopyBox" hidden>
+        <span class="weather-note">No clipboard here: the values are selected below to copy by hand (they are in the console too)</span>
+        <textarea id="designCopyText" readonly rows="6" spellcheck="false" aria-label="Copy values"></textarea>
+        <button class="act" id="designCopyClose" type="button">Close</button>
+      </div>
+      <div class="design-box" id="designPasteBox" hidden>
+        <span class="weather-note">Paste a Copy values text, its <code>grade:</code> block or grade JSON. Only the grade is applied in this version, as one undo step in Colour grade</span>
+        <textarea id="designPasteText" rows="6" spellcheck="false" aria-label="Values to paste"></textarea>
+        <div class="design-foot">
+          <button class="act primary" id="designPasteApply" type="button">Apply</button>
+          <button class="act" id="designPasteCancel" type="button">Close</button>
+        </div>
+        <span class="weather-note" id="designPasteStatus" aria-live="polite"></span>
+      </div>
+      <div class="design-foot">
+        <button class="act" id="designCopy" type="button">⧉ Copy values</button>
+        <button class="act" id="designPaste" type="button" aria-expanded="false" aria-controls="designPasteBox">⇣ Paste values</button>
+      </div>
     </div>
 
     <section id="peruTimeDock" data-phase="day" aria-label="Peru daylight controls">

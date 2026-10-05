@@ -1,0 +1,1006 @@
+// The Design panel's Colour grade section (goal 4, plan 4.9): owns the grade the LUT tap in the
+// final quad shows (grade-output.ts) — the state and the look, the undo history and the A/B
+// snapshots, the bake (a module worker, grade-bake.worker.ts, or the same code on the main
+// thread when no worker comes up), the texel buffers, when the tap is compiled in, .cube import
+// and export, Frame for grading, the before/after split and the section's sliders.
+//
+// The decisions live in grade-editor-logic.ts, where node tests reach them; this file wires them
+// to the DOM. The panel's own binders (bindDesignSlider, bindSeg, bindEffectToggle in main.ts)
+// are not used: the UI renders from the state here, because undo, snapshots and pastes change
+// many controls at once.
+//
+// Per frame, update() (main.ts, right before depthOfField.render()) disposes replaced textures,
+// runs at most one main-thread bake, and uploads the newest bake result — at most one upload a
+// frame. A slider's 'input' patches the state and asks for a bake (a draft while finals are
+// slow); its 'change' is a commit: an undo step, a final bake, and the compile-in decision.
+import { GRADE_CUBE_TITLE, gradeCubeFileName } from './cube-format.ts'
+import {
+  createGradeBakeHost, type CubeMessage, type GradeBakeHost, type HostReply, type HostRequest, type LookMeta,
+  type ParseErrorMessage, type ParsedMessage,
+} from './grade-bake-host.ts'
+import {
+  bakeGradeTexels, createBakeScheduler, createBufferPool, latticeSizeFor,
+  type BakeJob, type BakeMessage, type BakeResult, type BufferPool, type LatticeSize,
+} from './grade-bake.ts'
+import {
+  createCompilePolicy, createLookStore, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS, GRADE_TABS,
+  gradeBoot, gradeStatusText, heldEditsNote, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER, lookStatusText,
+  lookUrl, nudgeSplit, planPaste, pushSample, readPath, sliderRange, splitFromPointer, summarize, toggleText,
+  undoKeyAction, writePath, type GradeConfig, type GradeTab,
+} from './grade-editor-logic.ts'
+import { GRADE_RANGES, isGradeIdentity, parseGradeState, type GradeState, type LookRef } from './grade-model.ts'
+import type { GradeOutput } from './grade-output.ts'
+import { createHistory, createSnapshots, gradeSnippet, type GradePaste, type GradeSnapshot, type SnapshotSlot } from './grade-state.ts'
+
+export interface GradeEditorOptions {
+  /** #gradeSection, the section's <details>. */
+  root: HTMLDetailsElement
+  output: GradeOutput
+  /** Puts the tap into the final quad (true) or takes it out (false); each change rebuilds the
+   *  post materials, so the editor calls it only when its compile-in decision changes. */
+  setStage(on: boolean): void
+  /** Renders the frame again and returns the canvas, for Frame for grading. Outside the loop
+   *  only the final quad re-runs (nodeFrame does not advance), so it is the last frame. */
+  captureCanvas(): HTMLCanvasElement
+  /** config grade. */
+  initial: GradeConfig
+  /** The Grade switch at boot: `?grade=0|1` over config grade.enabled. */
+  enabled: boolean
+  /** Vite's BASE_URL; looks under public/grades/ are fetched from there. */
+  baseUrl: string
+}
+
+export interface GradeEditorStats {
+  enabled: boolean
+  compiled: boolean
+  /** Stage changes (compile in or out) since boot. */
+  stageChanges: number
+  identity: boolean
+  /** The lattice the tap reads, and the one the current grade bakes on. */
+  n: number
+  target: number
+  exact: boolean
+  mode: 'worker' | 'main thread'
+  busy: boolean
+  /** Bake times (ms, the worker's own clock or the main thread's), the upload's main-thread
+   *  part, and the time from an edit to the frame that shows it. Median and p95 of the last 200. */
+  bakeFinalMs: ReturnType<typeof summarize>
+  bakeDraftMs: ReturnType<typeof summarize>
+  uploadMs: ReturnType<typeof summarize>
+  editToFrameMs: ReturnType<typeof summarize>
+  pooledBuffers: number
+  looksHeld: string[]
+  canUndo: boolean
+  canRedo: boolean
+  compare: boolean
+  split: number
+}
+
+export interface GradeEditor {
+  /** Once per frame, right before the render. */
+  update(): void
+  /** Copies. */
+  state(): GradeState
+  look(): LookRef | null
+  isEnabled(): boolean
+  isCompiled(): boolean
+  /** The `grade:` block for Copy values (grade-state.ts gradeSnippet). */
+  snippet(): string
+  /** Applies a parsed Paste values text as one undo step. Returns notes for the status line
+   *  beside pasteSummary's (a capped lattice size, a look being fetched). */
+  applyPaste(paste: GradePaste): string[]
+  stats(): GradeEditorStats
+  dispose(): void
+}
+
+/** A look the editor holds: its text (to parse again if the worker goes), what the parse said,
+ *  and the name and file it came from. */
+interface HeldLook {
+  text: string
+  meta: LookMeta
+  name: string
+  file: string | null
+}
+
+const FLASH_MS = 1600
+const NOTE_MS = 8000
+/** A 65³ bake with a look takes 36–56 ms on a desktop, so a phone's stays far below this; a
+ *  large .cube parsed ahead of it in the worker's queue too. */
+const WORKER_SILENCE_MS = 6000
+
+export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
+  const { root, output, initial } = options
+  const doc = root.ownerDocument
+  const body = doc.body
+  const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
+    const element = doc.getElementById(id)
+    if (!element) throw new Error(`grade editor: #${id} is missing from the markup`)
+    return element as T
+  }
+  const ids = GRADE_ELEMENT_IDS
+  const el = {
+    toggle: byId<HTMLButtonElement>(ids.toggle),
+    compare: byId<HTMLButtonElement>(ids.compare),
+    snapA: byId<HTMLButtonElement>(ids.snapA),
+    snapB: byId<HTMLButtonElement>(ids.snapB),
+    store: byId<HTMLButtonElement>(ids.store),
+    undo: byId<HTMLButtonElement>(ids.undo),
+    redo: byId<HTMLButtonElement>(ids.redo),
+    reset: byId<HTMLButtonElement>(ids.reset),
+    tabs: byId(ids.tabs),
+    primaryHeld: byId(ids.primaryHeld),
+    curvesHeld: byId(ids.curvesHeld),
+    hueHeld: byId(ids.hueHeld),
+    tonesHeld: byId(ids.tonesHeld),
+    curveReset: byId<HTMLButtonElement>(ids.curveReset),
+    hueReset: byId<HTMLButtonElement>(ids.hueReset),
+    pivotTrack: byId(ids.pivotTrack),
+    importButton: byId<HTMLButtonElement>(ids.importButton),
+    file: byId<HTMLInputElement>(ids.file),
+    lookStatus: byId(ids.lookStatus),
+    lookRemove: byId<HTMLButtonElement>(ids.lookRemove),
+    exportButton: byId<HTMLButtonElement>(ids.exportButton),
+    frame: byId<HTMLButtonElement>(ids.frame),
+    status: byId(ids.status),
+    split: byId(ids.split),
+    splitHandle: byId<HTMLButtonElement>(ids.splitHandle),
+  }
+  const groups = Object.fromEntries(GRADE_TABS.map((tab) => [tab, byId(GRADE_TAB_GROUPS[tab])])) as Record<GradeTab, HTMLElement>
+
+  const cleanups: (() => void)[] = []
+  const listen = (target: EventTarget, type: string, handler: (event: any) => void, opts?: AddEventListenerOptions | boolean) => {
+    target.addEventListener(type, handler, opts)
+    cleanups.push(() => target.removeEventListener(type, handler, opts))
+  }
+
+  // ---- state
+  const boot = gradeBoot(initial, options.enabled)
+  if (boot.warnings.length > 0) console.warn('[grade] config grade:', boot.warnings.join('; '))
+  const tuning = { ...initial.tuning }
+  const maxLattice = boot.maxLattice
+  let lutSize = boot.lutSize
+  let state: GradeState = boot.state
+  let look: LookRef | null = null
+  let enabled = options.enabled
+  let compareOn = false
+  let compareAt = Math.min(Math.max(Number.isFinite(initial.compareSplit) ? initial.compareSplit : 0.5, 0), 1)
+  /** A loading or error line for the Look tab, over the look's own status. */
+  let lookNote: string | undefined
+  let bakeError: string | null = null
+  let disposed = false
+
+  const looks = createLookStore<HeldLook>()
+  let history = createHistory<GradeSnapshot>(100)
+  const snapshots = createSnapshots<GradeSnapshot>()
+  const current = (): GradeSnapshot => ({ state, look })
+
+  const metaOf = (ref: LookRef | null): LookMeta | null => (ref ? looks.peek(ref.key)?.meta ?? null : null)
+  const latticeOf = (ref: LookRef | null): LatticeSize => {
+    const meta = metaOf(ref)
+    return meta ? latticeSizeFor(meta.size, lutSize, maxLattice, meta.unitDomain) : latticeSizeFor(null, lutSize, maxLattice)
+  }
+  /** A look counts once it is held: until then (loading, or dropped) the grade bakes without it. */
+  const identity = () => {
+    const meta = metaOf(look)
+    return isGradeIdentity(state, look && meta ? { amount: look.amount, isIdentity: meta.isIdentity } : null)
+  }
+  const pinnedKeys = () => {
+    const keys: string[] = []
+    if (look) keys.push(look.key)
+    for (const slot of ['A', 'B'] as const) {
+      const held = snapshots.recall(slot)
+      if (held?.look) keys.push(held.look.key)
+    }
+    return keys
+  }
+
+  // ---- the bake: a worker, or the same host on the main thread
+  let worker: Worker | null = null
+  let host: GradeBakeHost | null = null
+  /** Main-thread mode: the bake job waiting for update(). */
+  let syncJob: BakeMessage | null = null
+  const parsing = new Map<string, { text: string; settle: ((reply: ParsedMessage | ParseErrorMessage) => void)[] }>()
+  const exporting = new Map<number, { resolve: (reply: CubeMessage) => void; reject: (error: Error) => void }>()
+  let exportId = 0
+
+  const useHost = () => {
+    host = createGradeBakeHost({ tuning })
+  }
+  const wantsWorker = initial.worker && typeof Worker !== 'undefined'
+  /** The baker starts with the first bake or parse, so a viewer who never grades loads no
+   *  worker at all. */
+  let bakerStarted = false
+  const bakeMode = (): 'worker' | 'main thread' => (worker || (!bakerStarted && wantsWorker) ? 'worker' : 'main thread')
+
+  function send(message: HostRequest, transfer: ArrayBuffer[] = []): void {
+    if (!bakerStarted) {
+      bakerStarted = true
+      if (!startWorker()) useHost()
+    }
+    if (worker) {
+      worker.postMessage(message, { transfer })
+      return
+    }
+    if (!host) useHost()
+    if (message.kind === 'bake') {
+      // At most one main-thread bake a frame, in update(), before the render.
+      syncJob = message
+      return
+    }
+    const result = host!.handle(message)
+    if (result) queueMicrotask(() => receive(result.reply))
+  }
+
+  function startWorker(): boolean {
+    if (!wantsWorker) return false
+    try {
+      worker = new Worker(new URL('./grade-bake.worker.ts', import.meta.url), { type: 'module' })
+    } catch (error) {
+      console.warn('[grade] the bake worker did not start; baking on the main thread.', error)
+      worker = null
+      return false
+    }
+    worker.onmessage = (event: MessageEvent<HostReply>) => receive(event.data)
+    worker.onerror = (event) => {
+      event.preventDefault()
+      fallBack(`bake worker error${event.message ? `: ${event.message}` : ''}`)
+    }
+    worker.onmessageerror = () => fallBack('a bake worker message could not be read')
+    worker.postMessage({ kind: 'init', tuning } satisfies HostRequest)
+    return true
+  }
+
+  /** The worker failed: bake here from now on. The looks it held go with it, so they are parsed
+   *  again from the texts the store keeps; the bake in flight is lost and asked for again. */
+  function fallBack(reason: string): void {
+    if (!worker) return
+    console.warn(`[grade] ${reason}; baking on the main thread from now on.`)
+    worker.onmessage = null
+    worker.onerror = null
+    worker.terminate()
+    worker = null
+    useHost()
+    for (const key of looks.keys()) host!.handle({ kind: 'parse', key, text: looks.peek(key)!.text })
+    for (const [key, entry] of parsing) {
+      const result = host!.handle({ kind: 'parse', key, text: entry.text })
+      if (result) queueMicrotask(() => receive(result.reply))
+    }
+    for (const [id, pending] of exporting) {
+      exporting.delete(id)
+      pending.reject(new Error('the bake worker stopped; export again'))
+    }
+    scheduler.reset()
+    requestBake(true)
+    renderStatus()
+  }
+
+  // ---- texel buffers and the scheduler
+  let pool: BufferPool = createBufferPool(output.size)
+  const poolFor = (n: number) => {
+    if (pool.n !== n) {
+      pool.clear()
+      pool = createBufferPool(n)
+    }
+    return pool
+  }
+  const give = (buffer: ArrayBufferLike) => { pool.give(buffer) }
+
+  /** When the edit behind the next posted bake happened, for edit-to-frame latency. */
+  let editAt: number | null = null
+  const editAtBySeq = new Map<number, number>()
+  /** When the bake in flight was posted: a worker that has not answered after WORKER_SILENCE_MS
+   *  (a module it could not load, a browser that never runs it) is given up on. */
+  let postedAt = 0
+  const scheduler = createBakeScheduler({
+    post(message) {
+      postedAt = performance.now()
+      editAtBySeq.set(message.seq, editAt ?? postedAt)
+      editAt = null
+      send(message, [message.out])
+    },
+    draftThresholdMs: initial.draftWhenFinalOverMs,
+    take: (n) => poolFor(n).take(),
+    give,
+  })
+
+  /** The newest result, uploaded by the next update(). */
+  let pending: BakeResult | null = null
+  const finalMs: number[] = []
+  const draftMs: number[] = []
+  const uploadMs: number[] = []
+  const latencyMs: number[] = []
+  let lastFinalMs: number | null = null
+  let lastDraftMs: number | null = null
+
+  function job(): BakeJob {
+    const lattice = latticeOf(look)
+    const held = look !== null && looks.has(look.key)
+    return {
+      // A copy: main-thread jobs wait for update(), and the state keeps changing meanwhile.
+      state: structuredClone(state),
+      look: held ? { key: look!.key, amount: look!.amount } : null,
+      n: lattice.n,
+      refinement: lattice.refinement,
+    }
+  }
+
+  function requestBake(commit: boolean): void {
+    if (disposed) return
+    if (scheduler.request(job(), { commit }) === 'skipped') editAt = null
+  }
+
+  function receive(reply: HostReply): void {
+    if (disposed) return
+    switch (reply.kind) {
+      case 'baked': {
+        const result = scheduler.onResult(reply)
+        if (!result) return
+        // A result superseded before it reached the texture goes back to the pool.
+        if (pending) give(pending.texels.buffer)
+        pending = result
+        bakeError = null
+        if (result.final) {
+          pushSample(finalMs, result.ms)
+          lastFinalMs = result.ms
+        } else {
+          pushSample(draftMs, result.ms)
+          lastDraftMs = result.ms
+        }
+        break
+      }
+      case 'bake-failed': {
+        scheduler.reset()
+        give(reply.out)
+        const held = reply.missingLook ? looks.peek(reply.missingLook) : undefined
+        if (held && reply.missingLook) {
+          // The baker lost the look (a restart): hand it the text again, then bake.
+          parseText(reply.missingLook, held.text).then(() => requestBake(true), (error) => {
+            bakeError = String(error?.message ?? error)
+            renderStatus()
+          })
+          return
+        }
+        bakeError = reply.message
+        console.warn('[grade] bake failed:', reply.message)
+        break
+      }
+      case 'parsed':
+      case 'error': {
+        const entry = parsing.get(reply.key)
+        parsing.delete(reply.key)
+        for (const settle of entry?.settle ?? []) settle(reply)
+        return
+      }
+      case 'cube':
+      case 'export-error': {
+        const waiter = exporting.get(reply.id)
+        exporting.delete(reply.id)
+        if (!waiter) return
+        if (reply.kind === 'cube') waiter.resolve(reply)
+        else waiter.reject(new Error(reply.message))
+        return
+      }
+    }
+    renderStatus()
+  }
+
+  // ---- looks
+  function parseText(key: string, text: string): Promise<LookMeta> {
+    return new Promise((resolve, reject) => {
+      let entry = parsing.get(key)
+      const first = !entry
+      if (!entry) {
+        entry = { text, settle: [] }
+        parsing.set(key, entry)
+      }
+      entry.settle.push((reply) => {
+        if (reply.kind === 'parsed') resolve(reply.meta)
+        else reject(new Error(reply.message))
+      })
+      if (first) send({ kind: 'parse', key, text })
+    })
+  }
+
+  /** Parses a look (once per key) and holds it; looks the store lets go are dropped from the
+   *  baker too. */
+  async function holdLook(key: string, text: string, name: string, file: string | null): Promise<LookMeta> {
+    const held = looks.get(key)
+    if (held) return held.meta
+    const meta = await parseText(key, text)
+    for (const dropped of looks.add(key, { text, meta, name, file }, pinnedKeys())) send({ kind: 'drop', key: dropped })
+    return meta
+  }
+
+  async function importFile(file: File): Promise<void> {
+    const key = importLookKey(file.name, file.size, file.lastModified)
+    lookNote = `Reading ${file.name} …`
+    renderLook()
+    try {
+      const meta = looks.has(key) ? looks.get(key)!.meta : await holdLook(key, await file.text(), file.name, null)
+      if (disposed) return
+      lookNote = undefined
+      look = { key, name: file.name, file: null, size: meta.size, amount: GRADE_RANGES.look.amount.default }
+      commit()
+      syncControls()
+    } catch (error) {
+      lookNote = `${file.name} was not loaded: ${String((error as Error)?.message ?? error)}`
+      renderLook()
+    }
+  }
+
+  /**
+   * A look under public/grades/: at boot (config grade.look), from a paste, or again after the
+   * store let it go. Fetching it again gives the same key, so a history entry that names it finds
+   * it. 'reload' bakes and changes nothing else; 'boot' becomes the history's starting point
+   * while nothing has been edited yet; 'paste' is its own undo step.
+   */
+  async function loadLookFile(file: string, amount: number, mode: 'boot' | 'paste' | 'reload'): Promise<void> {
+    const key = fileLookKey(file)
+    const name = file.split('/').pop() || file
+    lookNote = `Loading grades/${file} …`
+    renderLook()
+    try {
+      let meta = looks.peek(key)?.meta
+      if (!meta) {
+        const response = await fetch(lookUrl(options.baseUrl, file))
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim())
+        meta = await holdLook(key, await response.text(), name, file)
+      }
+      if (disposed) return
+      lookNote = undefined
+      if (mode === 'reload') {
+        requestBake(true)
+        evaluate()
+        renderAll()
+        return
+      }
+      look = { key, name, file, size: meta.size, amount }
+      if (mode === 'boot' && !history.canUndo() && !history.canRedo()) {
+        history = createHistory<GradeSnapshot>(100)
+        history.push(current())
+        requestBake(true)
+        evaluate()
+      } else commit()
+      syncControls()
+    } catch (error) {
+      lookNote = `grades/${file} was not loaded: ${String((error as Error)?.message ?? error)}`
+      renderLook()
+    }
+  }
+
+  // ---- compile in or out (plan 1.6)
+  const policy = createCompilePolicy((on) => options.setStage(on))
+  const panelOpen = () => body.classList.contains('design-open')
+  function evaluate(): void {
+    if (disposed) return
+    const changed = policy.evaluate({ enabled, sectionOpen: root.open, panelOpen: panelOpen(), identity: identity() })
+    // The split only means something while the section is in view and the grade is on.
+    if (compareOn && !(enabled && isEditing(root.open, panelOpen()))) setCompare(false)
+    if (changed) renderStatus()
+  }
+
+  // ---- commits, undo, snapshots
+  function commit(): void {
+    history.push(current())
+    requestBake(true)
+    evaluate()
+    renderAll()
+  }
+
+  /** Makes a history entry or a snapshot the present; the caller records it (or not). */
+  function restore(entry: GradeSnapshot): void {
+    state = entry.state
+    look = entry.look
+    if (look && !looks.has(look.key) && look.file) void loadLookFile(look.file, look.amount, 'reload')
+    requestBake(true)
+    evaluate()
+    syncControls()
+  }
+
+  const undo = () => {
+    const entry = history.undo()
+    if (entry) restore(entry)
+  }
+  const redo = () => {
+    const entry = history.redo()
+    if (entry) restore(entry)
+  }
+
+  function tapSnapshot(slot: SnapshotSlot): void {
+    const held = snapshots.tap(slot, current())
+    if (held) {
+      restore(held)
+      history.push(current())
+    }
+    renderAll()
+  }
+
+  // ---- the before/after split (plan 5.6)
+  function placeSplit(): void {
+    el.split.style.setProperty('--split', `${(compareAt * 100).toFixed(3)}%`)
+    el.splitHandle.setAttribute('aria-valuenow', String(Math.round(compareAt * 100)))
+  }
+
+  function setCompare(on: boolean): void {
+    compareOn = on && enabled
+    el.split.hidden = !compareOn
+    // A uniform: no recompile either way.
+    output.setSplit(compareOn ? compareAt : 0)
+    placeSplit()
+    renderHeader()
+  }
+
+  function moveSplit(x: number): void {
+    compareAt = x
+    if (compareOn) output.setSplit(x)
+    placeSplit()
+  }
+
+  listen(el.splitHandle, 'pointerdown', (event: PointerEvent) => {
+    event.stopPropagation()
+    event.preventDefault()
+    el.splitHandle.setPointerCapture(event.pointerId)
+    el.splitHandle.focus({ preventScroll: true })
+  })
+  listen(el.splitHandle, 'pointermove', (event: PointerEvent) => {
+    if (!el.splitHandle.hasPointerCapture(event.pointerId)) return
+    event.stopPropagation()
+    moveSplit(splitFromPointer(event.clientX, window.innerWidth))
+  })
+  const releaseHandle = (event: PointerEvent) => {
+    if (el.splitHandle.hasPointerCapture(event.pointerId)) el.splitHandle.releasePointerCapture(event.pointerId)
+  }
+  listen(el.splitHandle, 'pointerup', releaseHandle)
+  listen(el.splitHandle, 'pointercancel', releaseHandle)
+  const onHandleKey = (event: KeyboardEvent) => {
+    if (event.type === 'keydown') {
+      const next = nudgeSplit(compareAt, event.key, event.shiftKey)
+      if (next !== null) {
+        event.preventDefault()
+        moveSplit(next)
+      } else if (event.key === 'Escape') el.splitHandle.blur()
+    }
+    if (isolatesKey(event.key)) event.stopPropagation()
+  }
+  listen(el.splitHandle, 'keydown', onHandleKey)
+  listen(el.splitHandle, 'keyup', onHandleKey)
+
+  // ---- Frame for grading (plan 5.7) and Export .cube
+  function download(blob: Blob, name: string): void {
+    const url = URL.createObjectURL(blob)
+    const link = doc.createElement('a')
+    link.href = url
+    link.download = name
+    link.style.display = 'none'
+    body.appendChild(link)
+    link.click()
+    link.remove()
+    // Revoked a moment later: some browsers cancel a download whose URL goes at once.
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  const flashTimers = new Map<HTMLButtonElement, number>()
+  function flash(button: HTMLButtonElement, text: string, rest: string): void {
+    button.textContent = text
+    clearTimeout(flashTimers.get(button))
+    flashTimers.set(button, window.setTimeout(() => { button.textContent = rest }, FLASH_MS))
+  }
+
+  /**
+   * The frame as on screen without the grade, as a PNG to grade elsewhere: the split set to show
+   * "before" everywhere, the frame re-composited (only the final quad re-runs, so it is the same
+   * frame), copied in the same task — on WebGPU the canvas texture is only readable until the task
+   * ends — and the split put back before the next loop frame.
+   */
+  async function frameForGrading(): Promise<void> {
+    const before = output.split()
+    output.setSplit(2)
+    let width = 0
+    let height = 0
+    let encoded: Promise<Blob | null>
+    try {
+      const source = options.captureCanvas()
+      width = source.width
+      height = source.height
+      if (typeof OffscreenCanvas !== 'undefined') {
+        const copy = new OffscreenCanvas(width, height)
+        const context = copy.getContext('2d')
+        if (!context) throw new Error('no 2D canvas')
+        context.drawImage(source, 0, 0)
+        encoded = copy.convertToBlob({ type: 'image/png' })
+      } else {
+        const copy = doc.createElement('canvas')
+        copy.width = width
+        copy.height = height
+        const context = copy.getContext('2d')
+        if (!context) throw new Error('no 2D canvas')
+        context.drawImage(source, 0, 0)
+        encoded = new Promise((resolve) => copy.toBlob(resolve, 'image/png'))
+      }
+    } finally {
+      output.setSplit(before)
+    }
+    const blob = await encoded
+    if (!blob) throw new Error('the PNG could not be encoded')
+    download(blob, `canopy-frame-${width}x${height}.png`)
+  }
+
+  async function exportCube(): Promise<void> {
+    const { state: jobState, look: jobLook, n } = job()
+    const id = ++exportId
+    const reply = await new Promise<CubeMessage>((resolve, reject) => {
+      exporting.set(id, { resolve, reject })
+      send({ kind: 'export', id, title: GRADE_CUBE_TITLE, job: { state: jobState, look: jobLook, n } })
+    })
+    download(new Blob([reply.text], { type: 'text/plain' }), gradeCubeFileName(reply.n))
+  }
+
+  // ---- controls
+  interface BoundSlider { sync(): void }
+
+  /** A range bound to the state: its limits from GRADE_RANGES, its readout from `format`; 'input'
+   *  edits (a bake, no undo step), 'change' commits. */
+  function bindGradeSlider(id: string, range: { min: number; max: number; step: number }, format: (v: number) => string,
+    get: () => number, set: (v: number) => void): BoundSlider {
+    const input = byId<HTMLInputElement>(id)
+    const readout = byId(`${id}Val`)
+    input.min = String(range.min)
+    input.max = String(range.max)
+    input.step = String(range.step)
+    const show = () => { readout.textContent = format(get()) }
+    listen(input, 'input', () => {
+      set(Number(input.value))
+      show()
+      editAt ??= performance.now()
+      requestBake(false)
+    })
+    listen(input, 'change', () => commit())
+    return {
+      sync() {
+        input.value = String(get())
+        show()
+      },
+    }
+  }
+
+  const sliders: BoundSlider[] = GRADE_SLIDERS.map((spec) => bindGradeSlider(spec.id, sliderRange(spec), spec.format,
+    () => readPath(state, spec.path), (v) => writePath(state, spec.path, v)))
+  const lookAmountInput = byId<HTMLInputElement>(LOOK_AMOUNT_SLIDER.id)
+  const lookAmount = bindGradeSlider(LOOK_AMOUNT_SLIDER.id, LOOK_AMOUNT_SLIDER.range, LOOK_AMOUNT_SLIDER.format,
+    () => look?.amount ?? LOOK_AMOUNT_SLIDER.range.default,
+    (v) => { if (look) look.amount = Math.min(Math.max(v, 0), 1) + 0 })
+
+  // The pivot's 18 % grey mark, from the same table the slider reads.
+  {
+    const { min, max, default: grey } = GRADE_RANGES.pivot
+    el.pivotTrack.style.setProperty('--ref', `${((grey - min) / (max - min)) * 100}%`)
+  }
+
+  const tabButtons = [...el.tabs.querySelectorAll<HTMLButtonElement>('button[data-tab]')]
+  function showTab(tab: GradeTab): void {
+    for (const button of tabButtons) {
+      const on = button.dataset.tab === tab
+      button.classList.toggle('on', on)
+      button.setAttribute('aria-selected', String(on))
+    }
+    for (const name of GRADE_TABS) groups[name].hidden = name !== tab
+  }
+  for (const button of tabButtons) {
+    listen(button, 'click', () => showTab(button.dataset.tab as GradeTab))
+  }
+
+  function renderHeader(): void {
+    el.toggle.classList.toggle('on', enabled)
+    el.toggle.setAttribute('aria-pressed', String(enabled))
+    el.toggle.textContent = toggleText('◐ Grade', enabled)
+    el.compare.classList.toggle('on', compareOn)
+    el.compare.setAttribute('aria-pressed', String(compareOn))
+    el.compare.textContent = toggleText('◧ Compare', compareOn)
+    el.compare.disabled = !enabled
+    const selected = snapshots.selected()
+    for (const [slot, button] of [['A', el.snapA], ['B', el.snapB]] as const) {
+      const stored = snapshots.has(slot)
+      button.classList.toggle('stored', stored)
+      button.classList.toggle('selected', selected === slot)
+      button.setAttribute('aria-label', `Snapshot ${slot}: ${stored ? 'stored, tap to recall' : 'empty, tap to store'}`)
+    }
+    el.undo.disabled = !history.canUndo()
+    el.redo.disabled = !history.canRedo()
+  }
+
+  function renderHeld(): void {
+    const notes: [HTMLElement, string][] = [
+      [el.primaryHeld, heldEditsNote(state, 'primary')],
+      [el.curvesHeld, heldEditsNote(state, 'curves')],
+      [el.hueHeld, heldEditsNote(state, 'hue')],
+      [el.tonesHeld, heldEditsNote(state, 'tones')],
+    ]
+    for (const [note, text] of notes) {
+      note.textContent = text
+      note.hidden = text === ''
+    }
+  }
+
+  function renderLook(): void {
+    const meta = metaOf(look)
+    el.lookStatus.textContent = lookStatusText(look, meta, meta ? latticeOf(look) : null, lookNote)
+    lookAmountInput.disabled = look === null
+    el.lookRemove.disabled = look === null
+  }
+
+  function renderStatus(): void {
+    const text = gradeStatusText({
+      enabled,
+      compiled: policy.compiled,
+      editing: isEditing(root.open, panelOpen()),
+      identity: identity(),
+      n: output.size,
+      target: latticeOf(look).n,
+      lastFinalMs,
+      lastDraftMs,
+      mode: bakeMode(),
+      busy: scheduler.busy,
+    })
+    el.status.textContent = bakeError ? `${text} · bake failed: ${bakeError}` : text
+  }
+
+  function renderAll(): void {
+    renderHeader()
+    renderHeld()
+    renderLook()
+    renderStatus()
+  }
+
+  function syncControls(): void {
+    for (const slider of sliders) slider.sync()
+    lookAmount.sync()
+    renderAll()
+  }
+
+  // ---- header and tab buttons
+  listen(el.toggle, 'click', () => {
+    enabled = !enabled
+    if (!enabled) setCompare(false)
+    // While off nothing was baked for the tap to show, maybe; covered requests are skipped.
+    requestBake(true)
+    evaluate()
+    renderAll()
+  })
+  listen(el.compare, 'click', () => setCompare(!compareOn))
+  listen(el.snapA, 'click', () => tapSnapshot('A'))
+  listen(el.snapB, 'click', () => tapSnapshot('B'))
+  listen(el.store, 'click', () => {
+    snapshots.store(current())
+    renderHeader()
+  })
+  listen(el.undo, 'click', undo)
+  listen(el.redo, 'click', redo)
+  listen(el.reset, 'click', () => {
+    // The controls to neutral; the look stays (✕ Remove takes it off).
+    state = parseGradeState({}).state
+    commit()
+    syncControls()
+  })
+  listen(el.curveReset, 'click', () => {
+    state.curves = parseGradeState({}).state.curves
+    commit()
+    syncControls()
+  })
+  listen(el.hueReset, 'click', () => {
+    state.hueSat = []
+    state.hueLuma = []
+    commit()
+    syncControls()
+  })
+  listen(el.importButton, 'click', () => el.file.click())
+  listen(el.file, 'change', () => {
+    const file = el.file.files?.[0]
+    // Cleared, so choosing the same file again fires 'change' again.
+    el.file.value = ''
+    if (file) void importFile(file)
+  })
+  listen(el.lookRemove, 'click', () => {
+    look = null
+    lookNote = undefined
+    commit()
+    syncControls()
+  })
+  /** An export or frame failure shows in the Look status for a while, then the look's own
+   *  status comes back. */
+  let noteTimer = 0
+  const noteBriefly = (text: string) => {
+    lookNote = text
+    renderLook()
+    clearTimeout(noteTimer)
+    noteTimer = window.setTimeout(() => {
+      if (lookNote !== text) return
+      lookNote = undefined
+      renderLook()
+    }, NOTE_MS)
+  }
+  listen(el.exportButton, 'click', () => {
+    el.exportButton.disabled = true
+    exportCube().then(
+      () => flash(el.exportButton, '✓ Exported', '⤓ Export .cube'),
+      (error) => noteBriefly(`Export failed: ${String(error?.message ?? error)}`),
+    ).finally(() => { el.exportButton.disabled = false })
+  })
+  listen(el.frame, 'click', () => {
+    frameForGrading().then(
+      () => flash(el.frame, '✓ Saved', '⤓ Frame for grading'),
+      (error) => noteBriefly(`Frame for grading failed: ${String(error?.message ?? error)}`),
+    )
+  })
+
+  // ---- keys (plan 5.2, 5.8): undo and redo inside the section; no key but Tab leaves it, so the
+  // camera's keys stay with the camera only while no grade control has focus. Escape lets go.
+  const onSectionKey = (event: KeyboardEvent) => {
+    const target = event.target as HTMLElement | null
+    if (event.type === 'keydown') {
+      const action = undoKeyAction(event, target instanceof HTMLTextAreaElement)
+      if (action) {
+        event.preventDefault()
+        if (action === 'undo') undo()
+        else redo()
+      } else if (event.key === 'Escape' && target && target !== body) target.blur()
+    }
+    if (isolatesKey(event.key)) event.stopPropagation()
+  }
+  listen(root, 'keydown', onSectionKey)
+  listen(root, 'keyup', onSectionKey)
+
+  // ---- peek (plan 4.12): on a phone the sheet clears while a grade slider is held, leaving
+  // its row; the CSS only acts under 700 px.
+  let endPeek: (() => void) | null = null
+  listen(root, 'pointerdown', (event: PointerEvent) => {
+    const target = event.target
+    if (!(target instanceof HTMLInputElement) || target.type !== 'range') return
+    endPeek?.()
+    const row = target.closest('.row')
+    row?.classList.add('grade-active')
+    body.classList.add('grade-dragging')
+    const end = () => {
+      row?.classList.remove('grade-active')
+      body.classList.remove('grade-dragging')
+      window.removeEventListener('pointerup', end, true)
+      window.removeEventListener('pointercancel', end, true)
+      endPeek = null
+    }
+    window.addEventListener('pointerup', end, true)
+    window.addEventListener('pointercancel', end, true)
+    endPeek = end
+  })
+
+  // ---- the section and the panel
+  listen(root, 'toggle', () => {
+    body.classList.toggle('grade-open', root.open)
+    evaluate()
+    renderStatus()
+  })
+  // The Design chip and the panel's close button toggle body.design-open in main.ts; watching the
+  // class covers both without touching them.
+  const observer = new MutationObserver(() => evaluate())
+  observer.observe(body, { attributes: true, attributeFilter: ['class'] })
+
+  // ---- boot
+  history.push(current())
+  body.classList.toggle('grade-open', root.open)
+  showTab('primary')
+  placeSplit()
+  el.split.hidden = true
+  if (boot.bakeNow) {
+    // One main-thread bake before the first frame, so a configured grade is on screen from the
+    // start; the stage is set by evaluate() below.
+    const { n } = latticeOf(null)
+    const { texels, ms } = bakeGradeTexels(state, null, n, 1, undefined, { tuning })
+    const replaced = output.upload(texels, n)
+    if (replaced) poolFor(n).give(replaced.buffer)
+    pushSample(finalMs, ms)
+    lastFinalMs = ms
+    scheduler.setLastFinalMs(ms)
+  }
+  evaluate()
+  syncControls()
+  if (boot.look) void loadLookFile(boot.look.file, boot.look.amount, 'boot')
+
+  return {
+    update() {
+      output.update()
+      if (worker && scheduler.busy && performance.now() - postedAt > WORKER_SILENCE_MS) {
+        fallBack(`the bake worker did not answer in ${WORKER_SILENCE_MS / 1000} s`)
+      }
+      if (syncJob && host) {
+        const message = syncJob
+        syncJob = null
+        const result = host.handle(message)
+        if (result) receive(result.reply)
+      }
+      if (!pending) return
+      const result = pending
+      pending = null
+      const start = performance.now()
+      const replaced = output.upload(result.texels, result.n)
+      const now = performance.now()
+      pushSample(uploadMs, now - start)
+      if (replaced) poolFor(result.n).give(replaced.buffer)
+      const editedAt = editAtBySeq.get(result.seq)
+      if (editedAt !== undefined) pushSample(latencyMs, now - editedAt)
+      for (const seq of editAtBySeq.keys()) if (seq <= result.seq) editAtBySeq.delete(seq)
+      renderStatus()
+    },
+    state: () => structuredClone(state),
+    look: () => (look ? { ...look } : null),
+    isEnabled: () => enabled,
+    isCompiled: () => policy.compiled,
+    snippet: () => gradeSnippet(enabled, lutSize, look ? { name: look.name, file: look.file, amount: look.amount } : null, state),
+    applyPaste(paste) {
+      if (!paste.grade) return []
+      const held = looks.keys().map((key) => {
+        const entry = looks.peek(key)!
+        return { key, name: entry.name, file: entry.file }
+      })
+      const plan = planPaste(paste.grade, held, maxLattice)
+      state = plan.state
+      if (plan.enabled !== undefined && plan.enabled !== enabled) {
+        enabled = plan.enabled
+        if (!enabled) setCompare(false)
+      }
+      if (plan.lutSize !== undefined) lutSize = plan.lutSize
+      if (plan.look.action === 'clear') look = null
+      else if (plan.look.action === 'use') {
+        const entry = looks.peek(plan.look.key)!
+        look = { key: plan.look.key, name: entry.name, file: entry.file, size: entry.meta.size, amount: plan.look.amount }
+      }
+      commit()
+      syncControls()
+      if (plan.look.action === 'fetch') void loadLookFile(plan.look.file, plan.look.amount, 'paste')
+      return plan.notes
+    },
+    stats() {
+      const lattice = latticeOf(look)
+      return {
+        enabled,
+        compiled: policy.compiled,
+        stageChanges: policy.changes,
+        identity: identity(),
+        n: output.size,
+        target: lattice.n,
+        exact: lattice.exact,
+        mode: bakeMode(),
+        busy: scheduler.busy,
+        bakeFinalMs: summarize(finalMs),
+        bakeDraftMs: summarize(draftMs),
+        uploadMs: summarize(uploadMs),
+        editToFrameMs: summarize(latencyMs),
+        pooledBuffers: pool.count,
+        looksHeld: looks.keys(),
+        canUndo: history.canUndo(),
+        canRedo: history.canRedo(),
+        compare: compareOn,
+        split: output.split(),
+      }
+    },
+    dispose() {
+      disposed = true
+      observer.disconnect()
+      for (const cleanup of cleanups) cleanup()
+      cleanups.length = 0
+      endPeek?.()
+      for (const timer of flashTimers.values()) clearTimeout(timer)
+      clearTimeout(noteTimer)
+      if (worker) {
+        worker.onmessage = null
+        worker.onerror = null
+        worker.terminate()
+        worker = null
+      }
+      for (const pendingExport of exporting.values()) pendingExport.reject(new Error('the grade editor was disposed'))
+      exporting.clear()
+      parsing.clear()
+      pool.clear()
+      pending = null
+      syncJob = null
+      body.classList.remove('grade-open', 'grade-dragging')
+    },
+  }
+}

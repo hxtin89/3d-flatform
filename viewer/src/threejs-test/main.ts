@@ -63,9 +63,11 @@ import { createModelTransformEditor, type ModelTransformEditor } from './model-t
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor } from './flight-quality'
 import { createDepthOfFieldLayer, type DepthOfFieldLayer, type OutputStage } from './depth-of-field'
-import { createGradeOutput, DEFAULT_GRADE_LUT_SIZE, type GradeOutput } from './grade-output'
+import { createGradeOutput, type GradeOutput } from './grade-output'
 import { bakeGradeTexels } from './grade-bake'
 import { isGradeIdentity, parseGradeState } from './grade-model'
+import { createGradeEditor, type GradeEditor } from './grade-editor'
+import { parseGradePaste, pasteSummary } from './grade-state'
 import { createGroundPatchMask } from './ground-patch-mask'
 import { createRenderBench } from './render-bench'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
@@ -560,11 +562,12 @@ const fps = new Fps()
 // Owns the frame's draw call: it either routes the scene through the DoF pass or
 // falls back to renderer.render, so there is one render path either way.
 const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scene, camera })
-// The colour grade's LUT tap (grade-output.ts), on an identity lattice. Compiled out at boot:
-// no output stage is set, so the final quad and the no-post path are what they were before
-// it existed, and its texture reaches the GPU only once a quad that reads it is drawn.
-// __three.grade below sets a stage from the console until the panel does.
-const gradeOutput: GradeOutput = createGradeOutput(DEFAULT_GRADE_LUT_SIZE)
+// The colour grade's LUT tap (grade-output.ts), on an identity lattice. The Colour grade
+// section (grade-editor.ts, created with the panel below) decides when it is compiled in: never
+// at boot while config grade is neutral, so the final quad and the no-post path are what they
+// were before it existed, and its texture reaches the GPU only once a quad that reads it is
+// drawn. __three.grade below can still set a stage by hand for measurements.
+const gradeOutput: GradeOutput = createGradeOutput(EXPERIENCE_CONFIG.grade.lutSize)
 /** Routing only: the output transform done in the graph and nothing after it. Compiles to the
  * same shader as no stage (grade-output.test.ts), so on the no-post path it isolates what going
  * through the pipeline costs. One function, so setting it again recompiles nothing. */
@@ -588,9 +591,13 @@ const gradeStats = () => ({
  *   another n swaps the texture.
  * - setSplit(x): canvas x in [0, 1] left of which the frame shows without the grade.
  * - stats(): the lattice size, the stage, whether one is set, the split.
+ * - editor: the Colour grade section (grade-editor.ts); editor.stats() has its bake, upload and
+ *   edit-to-frame times. setStage and bake above go past it: the editor does not see them, sets
+ *   the stage again only when its own decision changes, and its next bake replaces a hand-made one.
  */
 const gradeDebug = {
   output: gradeOutput,
+  editor: null as GradeEditor | null,
   setStage(name: GradeStageName | null) {
     if (name !== null && name !== 'grade' && name !== 'passthrough') {
       throw new Error(`__three.grade.setStage takes 'grade', 'passthrough' or null, not ${JSON.stringify(name)}`)
@@ -4016,6 +4023,30 @@ bindDesignSlider('eyeDomeStrength', EDL.strength, asFactor, (v) => depthOfField.
 bindDesignSlider('eyeDomeRadius', EDL.radiusPx, asPixels, (v) => depthOfField.setEyeDomeRadius(v))
 bindDesignSlider('eyeDomeFloor', EDL.floor, asPercent, (v) => depthOfField.setEyeDomeFloor(v))
 
+// Colour grade: the section after Tone & colour. It runs on the frame those produce, in the
+// final quad (grade-output.ts), and keeps its own state, undo and bake (grade-editor.ts); its
+// controls do not use the binders above. Here, after the DoF and EDL switches, because the stage
+// it sets goes into their pipeline and `?grade=` shares bootSwitch with them.
+const gradeEditor: GradeEditor = createGradeEditor({
+  root: $<HTMLDetailsElement>('#gradeSection'),
+  output: gradeOutput,
+  setStage: (on) => {
+    // Kept in step with __three.grade, so its stats() report what the editor set.
+    gradeStageName = on ? 'grade' : null
+    depthOfField.setOutputStage(on ? gradeOutput.stage : null)
+  },
+  // Outside the loop nodeFrame does not advance, so this re-runs only the final quad: the PNG
+  // is the last loop frame, which is what Frame for grading wants.
+  captureCanvas: () => {
+    depthOfField.render()
+    return renderer.domElement
+  },
+  initial: EXPERIENCE_CONFIG.grade,
+  enabled: bootSwitch('grade', EXPERIENCE_CONFIG.grade.enabled),
+  baseUrl: import.meta.env.BASE_URL,
+})
+gradeDebug.editor = gradeEditor
+
 // Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
 // through the environment layer, which rewrites that uniform from the daylight
 // ramp on every pass and would otherwise overwrite the slider immediately.
@@ -4146,6 +4177,7 @@ toneMapping: ${JSON.stringify({
       whitePoint: FILM.whitePoint,
     },
   }, null, 2)}
+grade: ${gradeEditor.snippet()}
 eyeDomeLighting: ${JSON.stringify({
     enabled: depthOfField.isEyeDome(),
     strength: Number($<HTMLInputElement>('#eyeDomeStrength').value),
@@ -4163,11 +4195,45 @@ depthOfField: ${JSON.stringify({
   try {
     await navigator.clipboard.writeText(snippet)
     designCopyEl.textContent = '✓ Copied'
+    designCopyBoxEl.hidden = true
   } catch {
+    // No clipboard (plain HTTP on a phone, a denied permission): the text goes into a
+    // selectable box above the buttons, preselected, and to the console as before.
     console.info(`[design]\n${snippet}`)
-    designCopyEl.textContent = '⧉ To console'
+    designCopyTextEl.value = snippet
+    designCopyBoxEl.hidden = false
+    designCopyTextEl.focus()
+    designCopyTextEl.select()
+    designCopyEl.textContent = '⧉ Copy by hand'
   }
   setTimeout(() => { designCopyEl.textContent = '⧉ Copy values' }, 1600)
+})
+const designCopyBoxEl = $<HTMLDivElement>('#designCopyBox')
+const designCopyTextEl = $<HTMLTextAreaElement>('#designCopyText')
+$('#designCopyClose').addEventListener('click', () => { designCopyBoxEl.hidden = true })
+// Paste values: a Copy values text (or its grade: block, or grade JSON) back into the panel.
+// Only the grade is applied in this version (grade-state.ts parseGradePaste), as one undo step
+// in the Colour grade section; the other blocks are listed as not applied.
+const designPasteEl = $<HTMLButtonElement>('#designPaste')
+const designPasteBoxEl = $<HTMLDivElement>('#designPasteBox')
+const designPasteTextEl = $<HTMLTextAreaElement>('#designPasteText')
+const designPasteStatusEl = $('#designPasteStatus')
+const setPasteBoxOpen = (open: boolean) => {
+  designPasteBoxEl.hidden = !open
+  designPasteEl.setAttribute('aria-expanded', String(open))
+  designPasteEl.classList.toggle('on', open)
+  if (open) {
+    designPasteStatusEl.textContent = ''
+    designPasteTextEl.focus()
+  }
+}
+designPasteEl.addEventListener('click', () => setPasteBoxOpen(designPasteBoxEl.hidden))
+$('#designPasteCancel').addEventListener('click', () => setPasteBoxOpen(false))
+$('#designPasteApply').addEventListener('click', () => {
+  const paste = parseGradePaste(designPasteTextEl.value)
+  const notes = gradeEditor.applyPaste(paste)
+  designPasteStatusEl.textContent = [pasteSummary(paste), ...notes].join(' ')
+  if (paste.grade) designPasteTextEl.value = ''
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(
   reducedMotion
@@ -4937,7 +5003,9 @@ function loop(now: number): void {
   // seconds after a tile loads.
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
-  gradeOutput.update()
+  // Disposes replaced LUT textures, runs at most one main-thread bake and uploads the newest
+  // bake result: at most one upload a frame, right before the frame that shows it.
+  gradeEditor.update()
   depthOfField.render()
   // Taken here, after the draw, and shown on the next frame. The animation loop resets
   // renderer.info immediately before calling this function, so anything read further up
@@ -5640,6 +5708,7 @@ function dispose(): void {
   stream?.dispose()
   globe?.dispose()
   depthOfField.dispose()
+  gradeEditor.dispose()
   gradeOutput.dispose()
   hazeLayer.dispose()
   cloudNoiseTexture?.dispose()
