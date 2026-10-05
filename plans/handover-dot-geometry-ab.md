@@ -281,6 +281,9 @@ Claims the ranking pass checked in the code:
 - **Measure:** spans around updateStreaming and globe.update at still nadir and tilt poses and during a pan; stats() must match an ungated run.
 
 #### 2.3 Single-copy point tiles (pulled feed)
+- **Superseded 2026-10-05:** do not build this as written. The prefix breaks the exact pivot, an
+  emptied `image.data` throws on WebGPU, and the gains below were overstated. See the recheck in
+  `plans/handover-quick-wins.md`, section 9.
 - **Change:**
   - Wait for two events: the texture's first upload (`texture.onUpdate`, Textures.js:365) and a new ground-patch `onTileDone`.
   - Then replace the carrier view with a prefix copy of at most 6000 points, and empty `texture.image.data`.

@@ -9,8 +9,8 @@ Covers the work of 2026-09-24 to 2026-09-30 on the ranked optimisation list (the
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | `01ef721` | Pushed. Holds rounds 1 and 2 below, plus `e996937` (panels start minimized). `sbb-prod` builds from it; the user rebuilds the server herself. |
-| `sbb/quick-wins` | `bdc8c68` | Local only: not pushed, not merged. Round 3 below, six commits on top of `01ef721`. `origin/sbb/quick-wins` is still at `c1aa244`. |
+| `sbb-main` | `ec64335` | Pushed 2026-10-05. Holds rounds 1-3 below, `e996937` (panels start minimized) and `e1eb4a1` (measured model heights). `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may still be at `e1eb4a1`: `git merge --ff-only origin/sbb-main` there. |
+| `sbb/quick-wins` | `c74862f` + docs | `c74862f` raises the strong map ceiling (section 3), local, not merged or pushed. Pushed up to `ec64335`. |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
   on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
@@ -24,7 +24,9 @@ Covers the work of 2026-09-24 to 2026-09-30 on the ranked optimisation list (the
   sessions: check `git status` there before any merge, and never switch its branch.
 - Checks: `npx tsc --noEmit` and `npm run bench:verify` (84 tests) pass on `bdc8c68`;
   `npm run build` succeeds.
-- **Waiting on the user:** merge round 3 into `sbb-main` and push? Then `sbb-prod` needs a rebuild.
+- Round 3 was merged on 2026-10-05 as `ec64335` (the user's call), built on a detached HEAD in this
+  worktree and pushed with `git push origin HEAD:sbb-main`: a worktree-isolated session may not run
+  git in the main folder. `sbb-prod` needs a rebuild.
 - Merge procedure used for rounds 1 and 2 (ask before pushing):
   1. `sbb-main` = `origin/sbb-main`, and `git status` in the main folder is clean.
   2. Temp worktree: `git worktree add --detach <tmp> sbb-main`.
@@ -94,9 +96,9 @@ measured on a phone or in a visible window yet.
 | Freeze power check | Confirms the Start-screen saving | A normal Chrome window, GPU column in Windows Task Manager after ~15 s on the Start screen vs a quick Start |
 | First pivot press (~100 ms in the pane) | Confirms or refutes a first-press hitch | Visible Chrome window: rotate, read `__wild.pivotDebug.pickMs` |
 | Phone and visible-window runs of all of the above | Real numbers instead of pane ratios | A device; the pane cannot run the entrance flight (loader stays in "finishing") |
-| Merge round 3 + push | Ships 1.8, 1.10, 1.11, 2.1, 2.2 | User decision; then `sbb-prod` rebuild |
-| Basemap cache ceiling (new finding) | Sharper map at the landing view | User decision: raise the ceiling (costs GPU memory, 1 MiB a tile) or accept. Knobs: `globe.setMemoryBudget` in `main.ts` ~469 (strong, 256 MiB) and ~480 (medium, 192 MiB); defaults in `globe.ts` ~167-170 (256 MiB, `maxSize` 320, itself below the 330-338 needed). `gpuBytesTarget` in `globe.ts` is vestigial since 1.8 (snapshots only) |
-| 2.3 One copy of each point tile | −95 to −250 MiB CPU memory at rest | Design: the stream's UnloadTilesPlugin (`streaming.ts` ~525) re-uploads hidden tiles from their data, so the texture must never be re-uploaded first (or that plugin replaced by the LRU); gate the runtime feed A/B; fix `arrival-cost.ts:165` (reads `image.data` after upload); rewire HUD gpuBytes and setMemoryBudget. Keep the geometry-dispose and VAO fixes. Hidden tiles are freed only above `bytesTarget`, so force budget pressure to test re-uploads. Spec: `plans/handover-dot-geometry-ab.md` §2.3 |
+| Merge `c74862f` + push | Ships the strong map ceiling | Ask first; then `sbb-prod` rebuild |
+| Map ceiling, medium and constrained | Same sharpening on those tiers | Not measured. The user chose strong only (2026-10-05): 256 → 352 MiB at the landing view gave 251 → 337 map tiles and 68 → 136 drawn, +88 MiB GPU; only the band beyond the dome changed (3 % of the frame, the horizon rows most). `setMemoryBudget` now also asks for a traversal (`c74862f`), so a raised ceiling loads under a still camera |
+| 2.3 One copy of each point tile | Parked: no evidence that memory is short | Rechecked 2026-10-05, see section 9. Do not build the spec. First: a small memory instrument, read during the pending phone calibration |
 | 3.2 Tile preparation in a worker | −0.6 to −2.5 ms main thread per arriving tile | Measure first in a visible window (`__cost.report()` over a pan): do arrival frames now lead p95/p99 on the pulled default? Mainly for phones |
 | 3.1 Culling inside tiles | −0.15 to −0.35 ms GPU | Projection instrument: only if ≥ 40 % of points are cut at nadir; pulled feed only. See `plans/plan-gpu-point-culling.md` |
 | 3.3 Ground-patch edge softening | up to 0.6 ms on phones | A phone A/B with the ground patch on/off |
@@ -132,7 +134,10 @@ temporary (separate issue).
 - **The camera is not bit-still after a wheel zoom:** the controls re-decompose the camera matrix
   every frame until the pointer moves. Exact camera comparisons fail there; use a tolerance.
 - **The globe cache can stall at its ceiling while the camera is still:** with UpdateOnChangePlugin
-  a full cache retries its refused requests only when the camera moves (latent; not changed).
+  a full cache retries its refused requests only when the camera moves. Confirmed 2026-10-05 (a
+  raised ceiling loaded nothing for 11 s) and fixed for budget changes in `c74862f`. Space that an
+  eviction frees under a still camera is still used only at the next move (the stream reopens its
+  still-frame gate on `dispose-model`; the globe has no such hook).
 - three r185 traps: `updateWorldMatrix(true, false)` recomputes only flagged or forced matrices;
   node materials with the same graph share one NodeBuilderState, so a stale texture binding can
   briefly re-create an evicted map (harmless, the 1.8 tripwire now ignores it);
@@ -187,3 +192,72 @@ top.
   `quick-wins-branch.md`, `canopy-quick-wins-artifact.md`, `browser-pane-throttles-raf.md`,
   `old-vs-new-ab-technique.md`, `session-worktree-resets-branch.md`, `maptiler-local-key-ports.md`.
   `basemap-cache-floor-deferred.md` predates the ceiling finding above.
+
+## 9. 2.3 rechecked against `ec64335` (2026-10-05)
+
+The user asked whether 2.3 still makes sense before building it. A read-only workflow checked it
+against the code at `ec64335`, the other branches (`sky`, `sbb/colour-matching`, `sbb/ortho-upgrade`,
+`sbb/volumetric-ground-fog`, `sbb/tone-mapping`, `sbb/grade-editor`) and the three r185 and
+3d-tiles-renderer 0.4.28 sources: four readers, three independent designs, two adversarial reviewers.
+
+**Verdict: do not build 2.3 as specified, and do not build any variant yet.**
+
+The spec no longer holds:
+- **The 6000-point prefix breaks the exact pivot (`de20359`).** `pickFirstPoint` reads every drawn
+  point of every walked tile on each press (`cloud-pick.ts` ~178-235), about 850k points at the
+  landing view. Run on a prefix in node with the real function, 86 % of hits became misses.
+- **Emptying `image.data` throws on WebGPU** through a re-upload path the spec did not list. All
+  pulled tiles share one node graph; a new render object's cloned binding still holds the texture of
+  the tile that first built the graph, and `Bindings._createBindings` uploads it (Bindings.js:209)
+  before `_update` swaps in the tile's own (:148). Once that first tile is evicted, its texture is
+  rebuilt from `image.data`, and `writeTexture` with null data throws.
+- **The pulled→instanced feed switch** unpacks the whole carrier (`restoreCarrierArrays`); a prefix
+  overruns it.
+- **The numbers were off.** GPU at rest rises +0 / +17 / +9 MiB (strong / medium / constrained), not
+  +8..+29. There is no peak cost at the cache ceilings: the cache drains to its byte floor after every
+  update. The CPU gain applies only to the drawn share of a cache that has reached its floor. That
+  share, d, is unmeasured; one pose drew 47 of 61 traversed tiles.
+
+And it is not needed now:
+- No memory figure exists for any phone, and there are no crash or reload reports. The trigger for
+  2.3 ("pulled must not cost extra CPU heap", written at 47 B/pt) was met when pulled reached 16 B/pt,
+  the same as instanced.
+- Phones only ever get medium or constrained: the mobile stress caps at 900k points, below
+  `strongMinPoints` 2.4 M. The strong-tier gain (−139..−165 MiB) is desktop RAM.
+- The current work (sky, fog, tone, colour matching, ortho, grade editor) reads no CPU point data.
+  Jan's flight anchor, database wildlife on the measured ground and terrain floors need the ground
+  probe, which already caps at about 6000 strided samples per tile; only the pivot and the feed
+  switch rule out a prefix.
+- On a phone (one memory pool), every variant removes the same thing: the GPU-resident duplicate.
+  Lowering the stream's `gpuBytesTarget` on medium and constrained ("L1", two numbers in `main.ts`
+  ~477/490) removes it from the GPU side in half a day and matches or beats the 8-day variants at
+  d = 0.9. It costs re-uploads when hidden tiles return (test with rotations), and does nothing if
+  iOS kills by the WebContent heap alone.
+
+Order if memory ever becomes the question:
+1. **Instrument (S).** Next to `__wild.dots.state` (CPU bytes per point already exist there): d,
+   uploaded point-texture bytes counted from three's `Info.memoryMap` for `cloudPointData` textures
+   (not the plugin's `estimatedGpuBytes`, which undercounts), and the tab footprint. Read it in the
+   pending phone calibration session. Safari's Memory timeline probably omits GPU-process (WebGPU)
+   memory, so the footprint needs a GPU-inclusive reading.
+2. **Gate.** Proposed (not agreed): a reload or crash in a 5-minute roam, or an iPhone footprint of
+   1.0 GB or more (two thirds of WebKit's ~1.5 GB WebContent soft limit, bug 277848), with point data
+   at least 30 % of it.
+3. **L1 first**, measured on rotations.
+4. **Only if L1 fails** (iOS counts only the heap, or re-uploads stutter): build the quantised twin.
+   Each drawn pulled tile keeps uint16 xyz against its own box for boxes up to ~256 m (p99 2 mm,
+   0.37 % of picks change dot) and Float32 xyz above (uint16 on 1-2 km tiles changes 2-5 % of picks),
+   drops colour, and marks its texture `source.dataReady = false` after the first upload (three skips
+   the data write at Textures.js:355 on both backends, so a stray re-create gives a zero texture
+   instead of an exception). Also: a permanent placeholder as the shared graph's template texture,
+   every CPU reader on one point view, the cloud's UnloadTilesPlugin never registered (boot flag
+   only), a cross-feed switch that calls `reloadTiles`, the mask finished before a tile is trimmed,
+   and the tripwire count-only (never evict from inside render). About 8 days.
+
+Separate from 2.3, inferred from source and not yet seen at runtime: the template binding above
+leaks one texture per pulled graph today (GPU copy plus the 1.2 MB Float32Array kept alive through
+the NodeBuilderState) once the template tile is evicted. Confirm with the arrival-cost `reCount`
+under forced eviction before fixing; it is bounded by the number of cached pulled graphs.
+
+The full workflow output (readers, designs, reviews, node benches) was in this session's scratchpad
+(`wf23-result.json`) and goes when the session closes; this section is the record.
