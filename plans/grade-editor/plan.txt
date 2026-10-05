@@ -928,6 +928,36 @@ M9. Hitch
 - The frame time of the compile-in frame on section open, per backend and on the phone.
 - If it is over 100 ms on a phone, schedule the compileAsync pre-warm (later).
 
+MEASURED AFTER C2 (2026-10-05, desktop, hidden pane with ?bgclock, 1408×880 path A / 1280×800 path B,
+loop and three's animation stopped, one manual render per frame id, timestamps read per render
+context; Chrome quantises them to 0.066 ms, so means over 25 renders × 4–8 interleaved
+baseline/arm/baseline blocks)
+- M2, path A (DoF + EDL on), the final quad alone (base 0.032–0.040 ms):
+  identity grade +0.006, busy grade +0.005, busy + split 0.5 +0.004, 41³ vs 33³ +0.004,
+  65³ vs 33³ +0.007 ms. Noise floor: passthrough, whose shader equals no stage, reads −0.008
+  (−0.021…0). So the tap costs ≤ ~0.01 ms: target ≤ 0.05 met; lattice size is free.
+  Whole-frame deltas are buried in the scene pass's clock drift (±0.1–0.5 ms per block).
+- M2, path B (?dof=0&edl=0, base 1.36 ms): routing (passthrough vs renderer.render)
+  −0.016 ± 0.010 ms (8 reps), busy grade in all +0.007 ± 0.014 ms. Gate ≤ 0.02 met: the
+  film-slot fallback (1.7) is not built.
+- M3: path A, every stage change 9 builds ('Render Pipeline' 1, DoF CoC / CoC Blur / Gaussian /
+  Blur64 / Blur16 / Composite 1 each, 'RTT' 2), a change back too; 0 for the same stage, the
+  split (single or 10 drags), same-size bakes and size swaps 33↔41. Path B: 1 build to the grade,
+  0 back. Textures flat (125 with the LUT on path A after dozens of switches; 101 on path B).
+- M4: an identity LUT changes 9.5 % of pixels on WebGPU and 10.4 % on WebGL2, all by 1 level
+  (mean 0.03): the filter's fixed-point weights tip values that sit on an 8-bit rounding edge.
+  More than the 3 % estimated, invisible; it only runs while the section is open at identity.
+  Passthrough vs no stage: 0 pixels on both backends.
+- M7 and tap exactness (exact inputs: a test stage feeds a ramp from screenUV through the real
+  tap; the CPU trilinears the same half lattice): busy grade, clamp grade (gain 2, offset −0.1,
+  nodes up to 1.9) and identity all within 1 level, mean 0.02–0.03, 0 % over 1 level, on WebGPU
+  and WebGL2; the ramp written without the LUT has the same floor (max 1, mean 0.03). No NaN, no
+  garbage, the canvas clamps per pixel. (Comparing against an 8-bit capture of the frame instead
+  reads 2–4 levels: the tap sees the unrounded float frame, and steep grades amplify the capture's
+  ±0.5 level. M5 needs exact inputs for the same reason.)
+- M9, desktop CPU: the render after a stage change takes 12–16 ms, the next 5.6–6.7 ms (the second
+  RTT build), steady 2.1–2.4 ms. Phone unmeasured.
+
 M10. Responsiveness
 - __three.grade.editor.stats(): median and p95 for draft and final bake ms, upload ms, and input-to-frame latency.
 - PerformanceObserver('longtask') during drags: expect nothing attributable to the grade. Desktop and a phone.
