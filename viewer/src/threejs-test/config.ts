@@ -1115,7 +1115,9 @@ export const EXPERIENCE_CONFIG = {
        *  dev proxy's 6 HTTP/1.1 sockets for the satellite when a move starts mid-upgrade. */
       maxOrthoRequests: 2,
       /** How long a covered tile must be the view's own detail on screen, with the basemap idle
-       *  all the while, before its ortho is fetched: intermediate zooms of a descent never are. */
+       *  all the while, before its ortho is fetched: intermediate zooms of a descent never are.
+       *  A tile evicted and loaded again composes again, but its ortho tiles then come from the
+       *  browser's HTTP cache (measured: 51 of 52 repeats, no MapTiler request). */
       settleMs: 1000,
       /** 401/403 answers after which a source is switched off for the session. */
       forbiddenLimit: 3,
