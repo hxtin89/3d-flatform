@@ -113,13 +113,16 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   const lit = isCloudEffectEnabled('sunLight')
   const enu = (uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz
   const canopy = lit && isCloudEffectEnabled('canopyShadows') ? canopyTransmittance(enu, float(0)) : float(1)
-  const clouds = lit && isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
-    ? cloudTransmittance(enu) : float(1)
+  // The sky's cloud shadows with or without the sun light, as on the points.
+  const skyClouds = isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
+  const clouds = skyClouds ? cloudTransmittance(enu) : float(1)
   const graded = lit
     ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), (canopy as any).mul(clouds)))
-    : gradeImageryNode(uniforms, raw)
-      .mul(uniforms.daylightColor)
-      .mul(uniforms.daylightIntensity)
+    : skyClouds
+      ? gradeImageryNode(uniforms, raw).mul(uniforms.daylightColor).mul(uniforms.daylightIntensity).mul(clouds)
+      : gradeImageryNode(uniforms, raw)
+        .mul(uniforms.daylightColor)
+        .mul(uniforms.daylightIntensity)
   const fog = groundFogNode(uniforms)
   const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
   const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)

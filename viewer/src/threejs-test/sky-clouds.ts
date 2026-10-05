@@ -127,6 +127,9 @@ export interface SkyClouds extends SkyCloudSource {
   /** The cloud-shadow optical-depth map, for the debug view. */
   shadowTexture(): THREE.Texture
   bakeProgress(): number
+  /** Switched off: hand the panoramas and the shadow map back to the GPU (the next bake makes
+   *  them again). */
+  release(): void
   dispose(): void
 }
 
@@ -252,6 +255,9 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     shapeNode.value = s
     ready = true
     dirty = true
+    // Both fields are in; the worker's thread and heap are not needed again. `baker` stays
+    // set, so the clouds never bake them twice.
+    baker?.dispose()
   }
 
   // ---------------------------------------------------------------- uniforms (bake)
@@ -460,7 +466,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     const alpha = transmittance.oneMinus()
     // Aerial perspective at the clouds' transmittance-weighted distance from the eye.
     const meanDistance = weighted.div(max(alpha, 1e-4))
-    const haze = pow(nodes.airTransmittance(u.eyeRadius, dir.z, meanDistance), vec3(u.haze))
+    const haze = pow(max(nodes.airTransmittance(u.eyeRadius, dir.z, meanDistance), vec3(1e-20)), vec3(u.haze))
     const hazeGrey = haze.x.add(haze.y).add(haze.z).div(3)
     return vec4(light.mul(haze), alpha.mul(hazeGrey))
   })()
@@ -522,13 +528,18 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       const clearColour = renderer.getClearColor(new THREE.Color())
       const clearAlpha = renderer.getClearAlpha()
       renderer.setClearColor(0x000000, 0)
-      for (const target of panoramas) { renderer.setRenderTarget(target); renderer.clear() }
+      // The shadow map too: first drawn at the bake's end, sampled (faded out) before.
+      for (const target of [...panoramas, shadowTarget]) { renderer.setRenderTarget(target); renderer.clear() }
       renderer.setRenderTarget(previous)
       renderer.setClearColor(clearColour, clearAlpha)
       panoramasCleared = true
       finished = 0
       visible.value = 0
       baked.value = 0
+      // A bake running into the old size would scissor past the new one (a negative height
+      // throws on WebGPU, every frame): start over.
+      bakeActive = false
+      bakeRow = 0
       dirty = true
     }
   }
@@ -570,6 +581,10 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   const blend = group(uniform(1))
   const cameraKm = group(uniform(new THREE.Vector3(0, 0, 0.3)))
   const midRadius = group(uniform(6361.5))
+  /** What the bake under way will switch to at rotate(): the display's mid shell, the shadow
+   *  map's base height and the haze in front of the sun's clouds. */
+  let pendingMidRadius = 6361.5
+  const pendingShadow = { baseZ: 0, sunOcclusionHaze: 1 }
   const eyeRadiusShared = group(uniform(6360.3))
   const eyeXYShared = group(uniform(new THREE.Vector2()))
   const altitudeFade = group(uniform(1))
@@ -676,7 +691,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     u.ambientOcclusion.value = Math.max(params.ambientOcclusion, 0)
     u.haze.value = THREE.MathUtils.clamp(params.haze, 0, 1)
     u.steps.value = Math.max(8, Math.round(params.bakeSteps))
-    midRadius.value = air.bottom.value + look.baseKm + look.thicknessKm * 0.5
+    pendingMidRadius = air.bottom.value + look.baseKm + look.thicknessKm * 0.5
     cloudShadow.strength.value = params.shadowStrength
     cloudShadow.lodBias.value = params.shadowSoftness
   }
@@ -688,13 +703,25 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     const previous = renderer.getRenderTarget()
     renderer.setRenderTarget(currentTarget)
     denoiseQuad.render(renderer)
+    // The shadows and the display's lookup switch together with the clouds they belong to:
+    // the bake's uniforms are still the ones this panorama was made with.
+    renderer.setRenderTarget(shadowTarget)
+    shadowQuad.render(renderer)
     renderer.setRenderTarget(previous)
+    cloudShadow.centre.value.copy(shadowCentre.value)
+    cloudShadow.half.value = shadowHalf.value
+    cloudShadow.baseZ.value = pendingShadow.baseZ
+    cloudShadow.sun.value.copy(u.sun.value)
+    cloudShadow.fade.value = 1
+    sunOcclusionHaze.value = pendingShadow.sunOcclusionHaze
+    midRadius.value = pendingMidRadius
     finished++
     blendValue = 0
     blend.value = 0
     visible.value = 1
   }
   const scratchColor = new THREE.Color()
+  const bakeClearColour = new THREE.Color()
 
   // The mean of the sun's transmittance over the shadow map: a 4 × 4 grid on its coarse mips.
   const meanOf = (gate: any) => {
@@ -720,14 +747,30 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       if (!look) return null
       params.preset = name
       params.look = look
+      // A bake under way belongs to the old weather: start the new one at once.
+      bakeActive = false
       dirty = true
       return look
     },
     invalidate() { dirty = true },
     shadowTexture: () => shadowTarget.texture,
     bakeProgress: () => (bakeActive ? bakeRow / Math.max(params.bakeHeight, 1) : 1),
+    release() {
+      visible.value = 0
+      baked.value = 0
+      cloudShadow.fade.value = 0
+      if (!panoramasCleared) return
+      // The three panoramas (38 MB at the default size) and the shadow map go back to the GPU;
+      // the next bake makes them again, as a resize does.
+      for (const target of panoramas) target.dispose()
+      shadowTarget.dispose()
+      panoramasCleared = false
+      bakeActive = false
+      bakeRow = 0
+      dirty = true
+    },
     update(input) {
-      if (!params.enabled) { visible.value = 0; cloudShadow.fade.value = 0; return }
+      if (!params.enabled) { layer.release(); return }
       startNoise()
       if (!ready) return
       cloudShadow.mean.value = sky.light.cloudSunMean
@@ -739,7 +782,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       altitudeFade.value = 1 - THREE.MathUtils.smoothstep(input.cameraEnuKm.z, look.baseKm, look.baseKm + look.thicknessKm * 0.5)
       // A bake is due when the sun has moved half a degree, or anything else changed.
       const key = JSON.stringify(look) + `|${params.sunLight}|${params.ambient}|${params.powder}|${params.diffuse}|${params.diffusePenetration}|${params.ambientOcclusion}|${params.haze}|${params.bakeSteps}|${params.shadowStrength}`
-      if (key !== lookKey) { lookKey = key; dirty = true }
+      if (key !== lookKey) { lookKey = key; dirty = true; bakeActive = false }
       if (lastSun.angleTo(sun) > 0.0087) dirty = true
       if (dirty && !bakeActive) {
         dirty = false
@@ -761,7 +804,9 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         // K and the white balance, and the display applies both again (π·K·balance).
         const toRelative = nodes.radianceScale.value as THREE.Vector3
         const albedo = EXPERIENCE_CONFIG.sky.atmosphere.groundAlbedo
-        scratchColor.copy(light.sun).multiplyScalar(Math.max(sun.z, 0)).add(light.sky)
+        // The sun on that ground as the clouds let it through, on average (the sky term is
+        // already the clouded one).
+        scratchColor.copy(light.sun).multiplyScalar(Math.max(sun.z, 0) * light.cloudSunMean).add(light.sky)
         u.groundRadiance.value.set(
           scratchColor.r / Math.max(toRelative.x, 1e-6) * albedo[0],
           scratchColor.g / Math.max(toRelative.y, 1e-6) * albedo[1],
@@ -772,38 +817,36 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         const baseM = look.baseKm * 1000
         shadowCentre.value.set(sun.x / sz * baseM, sun.y / sz * baseM)
         shadowHalf.value = CONFIG.shadowHalfExtentM
-        const previous = renderer.getRenderTarget()
-        renderer.setRenderTarget(shadowTarget)
-        shadowQuad.render(renderer)
-        renderer.setRenderTarget(previous)
-        cloudShadow.centre.value.copy(shadowCentre.value)
-        cloudShadow.half.value = shadowHalf.value
-        cloudShadow.baseZ.value = baseM + cloudBaseOffsetZ
-        cloudShadow.sun.value.copy(u.sun.value)
-        cloudShadow.fade.value = 1
+        pendingShadow.baseZ = baseM + cloudBaseOffsetZ
         // Haze in front of the sun's clouds, for recovering their opacity in the display.
         const meanKm = (look.baseKm + look.thicknessKm * 0.5) / Math.max(sun.z, 0.05)
-        sunOcclusionHaze.value = Math.max(Math.exp(-0.06 * params.haze * Math.min(meanKm, 200)), 0.05)
+        pendingShadow.sunOcclusionHaze = Math.max(Math.exp(-0.06 * params.haze * Math.min(meanKm, 200)), 0.05)
       }
       if (bakeActive) {
         // A strip of rows this frame, scissored, into the panorama being baked.
         const target = backTarget
         const rows = Math.max(1, Math.ceil(target.height / Math.max(params.bakeFrames, 1)))
-        const previous = renderer.getRenderTarget()
-        const autoClear = renderer.autoClear
-        const clearColour = renderer.getClearColor(new THREE.Color())
-        const clearAlpha = renderer.getClearAlpha()
-        renderer.autoClear = bakeRow === 0
-        if (bakeRow === 0) renderer.setClearColor(0x000000, 0)
-        target.scissor.set(0, bakeRow, target.width, Math.min(rows, target.height - bakeRow))
-        renderer.setScissorTest(true)
-        renderer.setRenderTarget(target)
-        bakeQuad.render(renderer)
-        renderer.setScissorTest(false)
-        target.scissor.set(0, 0, target.width, target.height)
-        renderer.setRenderTarget(previous)
-        renderer.autoClear = autoClear
-        renderer.setClearColor(clearColour, clearAlpha)
+        const strip = Math.min(rows, target.height - bakeRow)
+        if (strip > 0) {
+          const previous = renderer.getRenderTarget()
+          const autoClear = renderer.autoClear
+          renderer.getClearColor(bakeClearColour)
+          const clearAlpha = renderer.getClearAlpha()
+          try {
+            renderer.autoClear = bakeRow === 0
+            if (bakeRow === 0) renderer.setClearColor(0x000000, 0)
+            target.scissor.set(0, bakeRow, target.width, strip)
+            renderer.setScissorTest(true)
+            renderer.setRenderTarget(target)
+            bakeQuad.render(renderer)
+          } finally {
+            renderer.setScissorTest(false)
+            target.scissor.set(0, 0, target.width, target.height)
+            renderer.setRenderTarget(previous)
+            renderer.autoClear = autoClear
+            renderer.setClearColor(bakeClearColour, clearAlpha)
+          }
+        }
         bakeRow += rows
         if (bakeRow >= target.height) {
           bakeActive = false
@@ -826,6 +869,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       denoiseMaterial.dispose()
       shadowMaterial.dispose()
       baker?.dispose()
+      for (const t of new Set<THREE.Texture>([weatherNode.value, shapeNode.value, weatherTexture, shapeTexture])) t.dispose()
       cloudShadow.map.value = placeholder
       cloudShadow.fade.value = 0
     },

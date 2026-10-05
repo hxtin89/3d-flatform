@@ -912,6 +912,10 @@ export function dropPulledCloudGraphs(): void {
   for (const key of [...cloudGraphCache.keys()]) {
     if (key.startsWith('pulled-')) cloudGraphCache.delete(key)
   }
+  // The shadow pass's pulled graphs hold their last proxy's point data the same way.
+  for (const key of [...casterGraphCache.keys()]) {
+    if (key.startsWith('caster|pulled-')) casterGraphCache.delete(key)
+  }
 }
 
 /**
@@ -1387,7 +1391,9 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
   // κ s² / (π r² sin e): a full layer at spacing s adds κ / sin e along the slanted ray.
   const weight: any = c.density.mul(energy).mul(fade)
     .div(c.splatScale.mul(c.splatScale).mul(Math.PI).mul(sz))
-  const ndc: any = q.sub(c.centre).add(corner.mul(drawnRadius.mul(2))).div(c.halfExtent)
+  // A point the dome has melted away weighs nothing: drawn at zero size, it costs no fragment.
+  const splatRadius: any = effects.sphereFade ? drawnRadius.mul(step(1e-4, fade)) : drawnRadius
+  const ndc: any = q.sub(c.centre).add(corner.mul(splatRadius.mul(2))).div(c.halfExtent)
   const weightV: any = varying(weight, 'v_casterWeight')
   const heightV: any = varying(height.mul(c.bandHeightInv), 'v_casterHeight')
   const uvV: any = varying(corner.mul(2), 'v_casterUv')

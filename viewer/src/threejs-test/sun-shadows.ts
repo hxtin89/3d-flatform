@@ -215,6 +215,8 @@ interface Proxy {
   graphKey: string
   lastUsed: number
   count: number
+  /** Takes the dispose listener off the tile's material. */
+  release: () => void
 }
 
 export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUniforms }): SunShadowLayer {
@@ -272,19 +274,24 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
     t.generateMipmaps = mips
     return target
   }
+  /** The inner cascade's map size: a texel while one cascade is on (it is bound, never drawn). */
+  let innerSize = 0
   const releaseTargets = () => {
     for (const target of [...accum, ...finals, blurTemp]) target?.dispose()
     resolution = 0
+    innerSize = 0
   }
   const ensureTargets = () => {
     const size = THREE.MathUtils.clamp(2 ** Math.round(Math.log2(Math.max(params.resolution, 256))), 256, 4096)
-    if (size === resolution) return
+    const inner = params.cascades >= 2 ? size : 1
+    if (size === resolution && inner === innerSize) return
     resolution = size
+    innerSize = inner
     if (!blurTemp) {
       // One accumulation and one blur target, shared by the cascades (drawn one after the
       // other); a final, mipmapped map per cascade.
       accum.push(makeTarget(size, false, 'canopy-shadow-accum'))
-      for (let c = 0; c < 2; c++) finals.push(makeTarget(size, true, `canopy-shadow-${c}`))
+      for (let c = 0; c < 2; c++) finals.push(makeTarget(c === 0 ? inner : size, true, `canopy-shadow-${c}`))
       blurTemp = makeTarget(size, false, 'canopy-shadow-blur')
       canopyShadow.maps[0].value = finals[0].texture
       canopyShadow.maps[1].value = finals[1].texture
@@ -293,7 +300,8 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
         vertical: blurPass(blurTemp.texture, false),
       }
     } else {
-      for (const target of [...accum, ...finals, blurTemp]) target.setSize(size, size)
+      for (const target of [...accum, finals[1], blurTemp]) target.setSize(size, size)
+      finals[0].setSize(inner, inner)
     }
     forceUpdate = true
   }
@@ -369,6 +377,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
     return { material, key: graph.key }
   }
   const dropProxy = (proxy: Proxy) => {
+    proxy.release()
     shadowScene.remove(proxy.mesh)
     proxy.material.dispose()
     proxies.delete(proxy.source)
@@ -389,7 +398,14 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       mesh.frustumCulled = false
       mesh.matrixAutoUpdate = false
       mesh.name = 'canopy-shadow-proxy'
-      const created: Proxy = { mesh, source, material: built.material, sourceMaterial, graphKey: built.key, lastUsed: frame, count: 0 }
+      // Gone with the tile's material (an UnloadTilesPlugin hide, an eviction): the proxy must not
+      // keep the tile's scene, arrays and point data alive. Cheap to make again on the next show.
+      const onSourceDisposed = () => { if (proxies.get(source) === created) dropProxy(created) }
+      sourceMaterial.addEventListener('dispose', onSourceDisposed)
+      const created: Proxy = {
+        mesh, source, material: built.material, sourceMaterial, graphKey: built.key, lastUsed: frame, count: 0,
+        release: () => sourceMaterial.removeEventListener('dispose', onSourceDisposed),
+      }
       // The geometry is the tile's own: draw a prefix of it for the shadow pass and put the
       // tile's count back right after, so the main pass never sees the change.
       let saved = 0
@@ -420,6 +436,9 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   const centreEnu = new THREE.Vector3()
   const scratch = new THREE.Vector3()
   const fitCentre = new THREE.Vector2()
+  const scratchAzimuth = new THREE.Vector2()
+  const scratchCentre = new THREE.Vector2()
+  const scratchClear = new THREE.Color()
 
   const layer: SunShadowLayer = {
     params,
@@ -472,7 +491,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       centreEnu.copy(input.domeCentre ?? input.fallbackCentre).applyMatrix4(input.enuInverse)
       const radius = input.domeCentre ? input.domeRadius : input.fallbackRadius
       const slope = Math.hypot(sun.x, sun.y) / sz
-      const azimuth = Math.hypot(sun.x, sun.y) > 1e-4 ? new THREE.Vector2(sun.x, sun.y).normalize() : new THREE.Vector2()
+      const azimuth = Math.hypot(sun.x, sun.y) > 1e-4 ? scratchAzimuth.set(sun.x, sun.y).normalize() : scratchAzimuth.set(0, 0)
       const belowFloor = Math.max(input.floorZ - centreEnu.z, 0)
       const towardSun = radius + slope * belowFloor
       const awayFromSun = radius + slope * bandH
@@ -537,7 +556,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
 
       const previousTarget = renderer.getRenderTarget()
       const previousAutoClear = renderer.autoClear
-      const previousClear = new THREE.Color()
+      const previousClear = scratchClear
       renderer.getClearColor(previousClear)
       const previousAlpha = renderer.getClearAlpha()
       renderer.autoClear = true
@@ -548,7 +567,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
         const index = cascadeCount === 2 && c === 0 ? 0 : 1
         const half = index === 0 ? quantisedHalf * THREE.MathUtils.clamp(params.cascadeSplit, 0.1, 0.9) : quantisedHalf
         const texel = half * 2 / resolution
-        const centre = new THREE.Vector2(Math.round(fitCentre.x / texel) * texel, Math.round(fitCentre.y / texel) * texel)
+        const centre = scratchCentre.set(Math.round(fitCentre.x / texel) * texel, Math.round(fitCentre.y / texel) * texel)
         caster.centre.value.copy(centre)
         caster.halfExtent.value = half
         caster.texelM.value = texel

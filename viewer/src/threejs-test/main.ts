@@ -4048,6 +4048,8 @@ function applySkyPackage(): void {
   if (hazeLayer.setPhysicalSky(skyEnabled ? skyAtmosphere : null)) tiles = true
   skyClouds.params.enabled = cloudsEnabled
   skyAtmosphere.setClouds(cloudsEnabled ? skyClouds : null)
+  // Its update only runs while it is on: let go of its targets here, as the shadows do.
+  if (!cloudsEnabled) skyClouds.release()
   if (hazeLayer.refreshPhysicalSky()) tiles = true
   tiles = setCloudEffectEnabled('sunLight', sunLightOn) || tiles
   sunShadows.setEnabled(shadowsEnabled)
