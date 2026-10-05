@@ -92,7 +92,7 @@ export interface Globe {
   /** Switch the ortho for new tiles and reload the covered ones that are loaded. */
   setOrthoEnabled(on: boolean): void
   /** `reload: false` applies the density to tiles loaded from now on only. */
-  setOrthoDensity(density: OrthoDensity | 'off', options?: { reload?: boolean }): void
+  setOrthoDensity(density: OrthoDensity | 'off'): void
   orthoStats(): OrthoStats | null
   dispose(): void
 }
@@ -225,8 +225,11 @@ export function createGlobe(opts: {
 
   /**
    * Drop the loaded tiles the ortho covers so they are fetched again — with the ortho or
-   * without it, whichever is now asked for. Only covered tiles: their loaded ancestors keep
-   * the ground drawn while they come back, so this shows as a brief blur, never as sky.
+   * without it, whichever is now asked for. Their loaded ancestors keep the ground drawn
+   * while they come back, so this shows as a brief blur, never as sky. Dropping a covered tile
+   * also cuts off its loaded descendants, covered or not (the image plugin's disposeTile
+   * clears its children): those stay drawn until the cache evicts them, usually within a few
+   * frames, and load again as new tiles when the parent is back.
    */
   function reloadOrthoTiles(): number {
     if (!orthoMeta) return 0
@@ -658,10 +661,10 @@ export function createGlobe(opts: {
       ortho.setEnabled(on)
       reloadOrthoTiles()
     },
-    setOrthoDensity(density, options) {
+    setOrthoDensity(density) {
       if (!ortho || ortho.stats().density === density) return
       ortho.setDensity(density)
-      if (options?.reload !== false) reloadOrthoTiles()
+      reloadOrthoTiles()
     },
     orthoStats() {
       return ortho?.stats() ?? null

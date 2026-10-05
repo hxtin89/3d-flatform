@@ -34,9 +34,10 @@ interface RetryableTiles {
   stats: { failed: number }
 }
 
-/** The server refused the tile (it is missing, or not ours): retrying cannot help. */
+/** The server refused the tile (it is missing, or not ours): retrying cannot help. 408 and 429
+ *  (timeout, rate limit) are passing and get the backoff like any other failure. */
 function refused(error: unknown): boolean {
-  return /error code 4\d\d\b/.test(String((error as Error)?.message ?? error))
+  return /error code 4(?!08\b|29\b)\d\d\b/.test(String((error as Error)?.message ?? error))
 }
 
 /** Retry `tiles`' transiently failed downloads, each with its own backoff. Returns the teardown. */

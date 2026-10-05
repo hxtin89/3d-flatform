@@ -84,6 +84,23 @@ test('a refused tile (4xx) is left alone', () => {
   } finally { c.restore() }
 })
 
+test('a timed-out (408) or rate-limited (429) tile is retried, not left alone', () => {
+  const c = clock()
+  try {
+    const { tiles, fail } = fakeTiles()
+    const stop = retryFailedTiles(tiles, 'test')
+    const late = { internal: { loadingState: 0 } }
+    const limited = { internal: { loadingState: 0 } }
+    fail(late, new Error('Failed to load model with error code 408'))
+    fail(limited, new Error('Failed to load model with error code 429'))
+    c.advance(2_100)
+    assert.equal(late.internal.loadingState, UNLOADED)
+    assert.equal(limited.internal.loadingState, UNLOADED)
+    assert.equal(tiles.stats.failed, 0)
+    stop()
+  } finally { c.restore() }
+})
+
 test('the same tile waits twice as long after every further failure, and starts over once it loads', () => {
   const c = clock()
   try {

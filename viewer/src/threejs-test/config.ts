@@ -1074,9 +1074,10 @@ export const EXPERIENCE_CONFIG = {
      * tiles where it covers them — see ortho-composite.ts. It adds no mesh, texture, draw
      * call or shader code, so the frame costs what it did; it costs downloads and worker time
      * per covered tile, which is what the zoom, density and link gates below limit. The ortho
-     * tiles are lossless WebP of ~100-120 KB each, against 14-54 KB for a satellite tile
-     * (z19-z15), so a covered tile downloads 6-8x the satellite's bytes at 'half' and 22-30x
-     * at 'full'. Colour-matched offline into the raw satellite's colour
+     * tiles are lossless WebP of ~100-120 KB each, against 54 KB at z15 down to 14 KB at z19
+     * for a satellite tile, so a covered tile downloads about 2x (z15) to 8x (z19) the
+     * satellite's bytes at 'half' and about 9x to 30x at 'full'; over a landing view, mostly
+     * z18-19 tiles, that is 6-8x and 22-30x. Colour-matched offline into the raw satellite's colour
      * (build_colour_field.py --ortho), so the colour match, fog and ground patch treat it as
      * satellite. Inside the dome the ground patch covers it where the cloud is; it shows in
      * the river and the gaps there, and everywhere beyond the dome, where the points have
@@ -1103,8 +1104,10 @@ export const EXPERIENCE_CONFIG = {
        *  proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
       fetchTimeoutMs: 20000,
       composeTimeoutMs: 5000,
+      /** Composes in flight at once. A tile in the gate, composing or waiting, lends its download
+       *  slot back to the basemap's queue, so this bounds the worker and the ortho's requests,
+       *  not the satellite's. */
       maxConcurrentComposes: 4,
-      extraDownloadJobs: 4,
       /** 401/403 answers after which a source is switched off for the session. */
       forbiddenLimit: 3,
     },

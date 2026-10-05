@@ -162,7 +162,7 @@ const settled = (promise: Promise<unknown>) => {
   return state
 }
 
-test('gate: turns up to max at once, the rest wait with their slot lent back', async () => {
+test('gate: turns up to max at once, the rest wait; every tile in the gate lends its slot', async () => {
   const { gate, ledger } = gateWithLedger(2)
   const a = settled(gate.turn(new AbortController().signal))
   const b = settled(gate.turn(new AbortController().signal))
@@ -170,12 +170,15 @@ test('gate: turns up to max at once, the rest wait with their slot lent back', a
   await tick()
   assert.deepEqual([a.done, b.done, c.done], [true, true, false])
   assert.equal(gate.waiting, 1)
-  assert.equal(ledger.lent, 1, 'the waiting tile lends its download slot')
+  assert.equal(ledger.lent, 3, 'composing and waiting tiles alike')
   gate.release()
   await tick()
   assert.equal(c.done, true)
-  assert.equal(ledger.lent, 0, 'and takes it back with the turn')
+  assert.equal(ledger.lent, 2, 'the released turn takes its slot back; the granted one keeps lending')
   assert.equal(gate.inFlight, 2)
+  gate.release()
+  gate.release()
+  assert.equal(ledger.lent, 0, 'with nothing composing the queue is back to its own slots')
 })
 
 test('gate: an aborted waiter leaves at once and never swallows a turn', async () => {
@@ -185,16 +188,18 @@ test('gate: an aborted waiter leaves at once and never swallows a turn', async (
   const aborted = settled(gate.turn(gone.signal))
   const next = settled(gate.turn(new AbortController().signal))
   await tick()
-  assert.equal(ledger.lent, 2)
+  assert.equal(ledger.lent, 3)
   gone.abort()
   await tick()
   assert.equal(aborted.failed, true, 'the waiter rejects with the abort, not at the next release')
-  assert.equal(ledger.lent, 1, 'its slot goes back to its tile right away')
+  assert.equal(ledger.lent, 2, 'its slot goes back to its tile right away')
   assert.equal(gate.waiting, 1)
   gate.release()
   await tick()
   assert.equal(first.done && next.done, true, 'the release goes to the live waiter')
   assert.equal(gate.inFlight, 1)
+  assert.equal(ledger.lent, 1)
+  gate.release()
   assert.equal(ledger.lent, 0)
 })
 
@@ -210,8 +215,11 @@ test('gate: an already aborted tile is refused without lending, and releaseAll e
   const waiting = [0, 1, 2].map(() => settled(gate.turn(new AbortController().signal)))
   await tick()
   assert.equal(gate.waiting, 3)
+  assert.equal(ledger.lent, 4)
   gate.releaseAll()
   await tick()
   assert.ok(waiting.every((w) => w.done))
-  assert.equal(ledger.lent, 0)
+  assert.equal(gate.inFlight, 4, 'past max: releaseAll is for dispose')
+  for (let i = 0; i < 4; i++) gate.release()
+  assert.equal(ledger.lent, 0, 'and every granted tile still takes its slot back')
 })

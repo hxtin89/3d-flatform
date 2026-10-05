@@ -176,10 +176,12 @@ export function createPlanner(sources: readonly OrthoSourceMeta[], options: Plan
 }
 
 /**
- * Compose turns for covered tiles (ortho-composite.ts). A tile waiting for a turn sits inside
- * the library's download job, so `lend(+1)` gives its slot back to the queue for the wait and
- * `lend(-1)` takes it back when the tile leaves the line. An abort leaves the line at once,
- * so a turn is never handed to a tile that is gone and never lost with it.
+ * Compose turns for covered tiles (ortho-composite.ts). A covered tile does its whole compose
+ * inside the library's download job, so it lends that slot back to the queue (`lend(+1)`) from
+ * the moment it asks for a turn until it releases the turn or leaves the line (`lend(-1)`):
+ * waiting and composing tiles never count against the basemap's own slots, and with nothing
+ * composing the queue is exactly what it is without the ortho. An abort leaves the line at
+ * once, so a turn is never handed to a tile that is gone and never lost with it.
  */
 export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
   let inFlight = 0
@@ -189,18 +191,15 @@ export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
     get waiting() { return waiters.length },
     turn(signal: AbortSignal): Promise<void> {
       if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'))
+      lend(1)
       if (inFlight < max) {
         inFlight++
         return Promise.resolve()
       }
       return new Promise<void>((resolve, reject) => {
-        const leave = () => {
-          signal.removeEventListener('abort', onAbort)
-          lend(-1)
-        }
         const waiter = {
           grant() {
-            leave()
+            signal.removeEventListener('abort', onAbort)
             inFlight++
             resolve()
           },
@@ -208,20 +207,20 @@ export function createComposeGate(max: number, lend: (delta: 1 | -1) => void) {
         const onAbort = () => {
           const index = waiters.indexOf(waiter)
           if (index >= 0) waiters.splice(index, 1)
-          leave()
+          lend(-1)
           reject(new DOMException('aborted', 'AbortError'))
         }
         signal.addEventListener('abort', onAbort, { once: true })
         waiters.push(waiter)
-        lend(1)
       })
     },
-    /** Ends a turn that `turn` granted, and hands free turns to the waiters in order. */
+    /** Ends a turn that `turn` granted, takes its slot back, and hands free turns to the waiters in order. */
     release(): void {
       inFlight--
+      lend(-1)
       while (inFlight < max && waiters.length) waiters.shift()!.grant()
     },
-    /** Grants every waiter at once, e.g. on dispose. */
+    /** Grants every waiter at once, e.g. on dispose; each still releases its turn. */
     releaseAll(): void {
       waiters.splice(0).forEach((waiter) => waiter.grant())
     },

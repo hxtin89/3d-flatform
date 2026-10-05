@@ -213,6 +213,8 @@ async function composeInto(msg: ComposeMessage, scratch: Scratch): Promise<void>
   const t0 = performance.now()
   const { id, z, x, y } = msg
   const { lin, lat, lctx, out } = scratch
+  /** Children that came back as an image but would not decode; their part stays satellite. */
+  let undecodable = 0
   const cover = msg.sat ? null : scratch.cover.fill(0)
   if (msg.sat) {
     const sat = await pixelsOf(msg.sat, SIZE, SIZE)
@@ -238,7 +240,14 @@ async function composeInto(msg: ComposeMessage, scratch: Scratch): Promise<void>
     if (!s) continue
     lctx.clearRect(0, 0, SIZE, SIZE)
     for (const child of bySource.get(index)!) {
-      const bitmap = await createImageBitmap(child.blob!, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+      let bitmap: ImageBitmap
+      try {
+        bitmap = await createImageBitmap(child.blob!, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+      } catch {
+        // Its quadrant stays transparent: a tile planned as covered then asks for the satellite.
+        undecodable++
+        continue
+      }
       if (child.size === 512) lctx.drawImage(bitmap, 0, 0, SIZE, SIZE)
       else lctx.drawImage(bitmap, child.dx * 256, child.dy * 256, 256, 256)
       bitmap.close()
@@ -312,7 +321,7 @@ async function composeInto(msg: ComposeMessage, scratch: Scratch): Promise<void>
   }
   const bitmap = await createImageBitmap(out, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
   if (cancelled.has(id)) { bitmap.close(); return }
-  postMessage({ type: 'done', id, bitmap, ms: performance.now() - t0 }, { transfer: [bitmap] })
+  postMessage({ type: 'done', id, bitmap, ms: performance.now() - t0, undecodable }, { transfer: [bitmap] })
 }
 
 self.onmessage = (event: MessageEvent<InitMessage | ComposeMessage | CancelMessage>) => {

@@ -3451,10 +3451,16 @@ let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets[presetOverrid
 let orthoDensityKnown = orthoForcedDensity !== null || presetOverride !== null
 /** null while the worker starts, then whether it came up. */
 let orthoAttachResult: boolean | null = null
+/** The density the last attach decided on. Decided once: a later change of link does not
+ *  start the ortho, so the status line reports this, not a fresh reading. */
+let orthoDecidedDensity: OrthoDensity | 'off' | null = null
+/** Set when the colour field loaded but was built for another survey frame. */
+let colourFieldWrongFrame = false
 let orthoAttached = false
 /** The link's say in the density, where the browser tells (Network Information API, Chromium
- *  only; elsewhere the preset alone decides). A covered tile costs 6-8x a satellite tile's
- *  bytes at 'half' and 22-30x at 'full', on the same link the point tiles arrive over. */
+ *  only; elsewhere the preset alone decides). At z18-19, where most of a view's tiles are, a
+ *  covered tile costs 6-8x a satellite tile's bytes at 'half' and 22-30x at 'full', on the
+ *  same link the point tiles arrive over. */
 function networkCappedDensity(density: OrthoDensity | 'off'): OrthoDensity | 'off' {
   const connection = (navigator as any).connection
   if (!connection || density === 'off') return density
@@ -3469,18 +3475,24 @@ const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? networkCa
 function attachDroneOrtho(): void {
   const meta = colourFieldInUse?.field.meta.ortho
   if (orthoAttached || !globe || !droneOrthoOn || !meta || !colourFieldInUse) return
-  // 'off' never starts the worker, fetches the field PNGs or widens the download queue.
-  if (!orthoDensityKnown || orthoDensity() === 'off') return
+  if (!orthoDensityKnown) return
+  // 'off' never starts the worker or fetches the field PNGs.
+  const density = orthoDensity()
+  orthoDecidedDensity = density
+  if (density === 'off') return
   orthoAttached = true
   const fieldBaseUrl = new URL(
     `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}${COLOUR_MATCH.fieldDir.replace(/\/?$/, '/')}`, location.href).href
   // With the dome on, the ground patch covers the view centre only, and a cached tile is
-  // seen from everywhere; only a patch over the whole survey hides the ortho under it.
+  // seen from everywhere; only an opaque patch over the whole survey hides the ortho under it.
+  // Decided once at attach from the config; the panel's dome and patch controls do not re-plan
+  // tiles already composited.
   const patch = DESIGN.groundPatch
-  const thinUnderPatch = patch.enabled && patch.amount >= 1 && !EXPERIENCE_CONFIG.lod.sphereFade.enabled
+  const thinUnderPatch = patch.enabled && patch.amount >= 1 && patch.colorMix >= 1
+    && !EXPERIENCE_CONFIG.lod.sphereFade.enabled
   void globe.attachOrtho({
     meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
-    config: DRONE_ORTHO, density: orthoDensity(), thinUnderPatch, debugKinds: params.has('orthokinds'),
+    config: DRONE_ORTHO, density, thinUnderPatch, debugKinds: params.has('orthokinds'),
   }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
 }
 function syncColourMatch(): void {
@@ -3499,7 +3511,8 @@ function syncColourMatch(): void {
   if (setCloudEffectEnabled('colourField', on)) stream?.refreshEffects()
   if (colourFieldMissing) {
     const button = $<HTMLButtonElement>('#colourMatchToggle')
-    button.textContent = '◈ Colour match · no field for this dataset'
+    button.textContent = colourFieldWrongFrame
+      ? '◈ Colour match · field is for another survey frame' : '◈ Colour match · no field for this dataset'
     button.disabled = true
     $<HTMLInputElement>('#colourMatchStrength').disabled = true
   }
@@ -3510,6 +3523,7 @@ function applyColourField(field: ColourField | null, rootTransform: ArrayLike<nu
     if (field) console.warn('[colour match] the colour field was built for another ENU frame; the cloud stays as captured.')
     else console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
     colourFieldMissing = true
+    colourFieldWrongFrame = field !== null
     syncColourMatch()
     return
   }
@@ -3537,19 +3551,22 @@ function droneOrthoStatus(): string {
   const s = globe?.orthoStats()
   if (!s) {
     if (!droneOrthoOn) return orthoParam === 'off' ? 'Off (?ortho=off)' : 'Off'
-    if (colourFieldMissing) return 'No colour field for this dataset'
+    if (colourFieldMissing) {
+      return colourFieldWrongFrame ? 'The colour field is for another survey frame' : 'No colour field for this dataset'
+    }
     if (colourFieldInUse && !colourFieldInUse.field.meta.ortho) return 'No drone ortho for this dataset'
     if (!colourFieldInUse) return 'Waiting for the colour field'
     if (!orthoDensityKnown) return 'Waiting for the loader benchmark'
-    if (orthoDensity() === 'off') {
+    if ((orthoDecidedDensity ?? orthoDensity()) === 'off') {
       return orthoPresetDensity === 'off'
-        ? `Off on this device (${presetOverride ?? benchPreset} preset)` : 'Off: Save-Data or a slow link'
+        ? `Off on this device (${presetOverride ?? benchPreset} preset)` : 'Off: Save-Data or a slow link at the start'
     }
     return 'Starting'
   }
   if (!s.ready) return orthoAttachResult === false ? 'Not available here — see the console' : 'Starting the worker'
   if (!s.enabled) return 'Off — covered tiles show the satellite'
-  if (s.density === 'off') return 'Off for tiles loaded from now on'
+  if (s.refused) return 'Off: the ortho tiles were refused (key not allowed?)'
+  if (s.density === 'off') return 'Off: Save-Data or a slow link — covered tiles show the satellite'
   return `${s.density} · ${s.composed} tiles (${s.fullTiles} full, ${s.edgeTiles} edge) · `
     + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
     + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`

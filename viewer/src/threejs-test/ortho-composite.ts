@@ -9,12 +9,13 @@
 // time per covered tile, and that is where its gates are (zoom, density, concurrency).
 //
 // The ortho happens inside `fetchData`, so a covered tile holds one of the basemap's download
-// slots for its whole compose, never one of its parse slots; the queue gets
-// `extraDownloadJobs` more slots for the composes in flight. A covered tile waiting for a
-// compose turn lends its slot back to the queue until it gets one, so tiles outside the ortho
-// never queue behind the wait. A failed ortho child leaves its part of the tile to the satellite; a tile whose
-// children all fail, or whose worker fails or times out, is the plain satellite tile; only a
-// satellite failure fails a tile, as before. Plans come from the builder's per-zoom
+// slots for its whole compose, never one of its parse slots. From the moment it asks for a
+// compose turn until it is done, it lends that slot back to the queue (createComposeGate), so
+// tiles outside the ortho never queue behind it and with nothing composing the queue is what
+// it is without the ortho. A failed or undecodable ortho child leaves its part of the tile to
+// the satellite; a tile whose children all fail, or whose worker fails or times out, is the
+// plain satellite tile; only a satellite failure (a timed-out one included) fails a tile, as
+// before, and tile-retry.ts asks for it again. Plans come from the builder's per-zoom
 // tile-kind grid (ortho-plan.ts), so no out-of-bounds request is made, and at 'full' no
 // child the grid one zoom down marks empty; at the source's top zoom, where there is no
 // grid below, an empty child can still cost one ~72 B answer.
@@ -30,9 +31,6 @@ export interface OrthoCompositeConfig {
   composeTimeoutMs: number
   /** Ortho composites allowed in flight at once; further covered tiles wait for a turn. */
   maxConcurrentComposes: number
-  /** Download slots added to the basemap's queue while the ortho is active, since a composing
-   *  tile holds its slot through five downloads and the worker. Matches maxConcurrentComposes. */
-  extraDownloadJobs: number
   /** 401/403 responses after which a source is switched off for the session. */
   forbiddenLimit: number
 }
@@ -45,9 +43,12 @@ export interface OrthoStats {
   fullTiles: number
   edgeTiles: number
   fallbacks: number
-  /** Ortho children that failed (network, timeout, 5xx); their part of the tile shows the satellite. */
+  /** Ortho children that failed (network, timeout, 5xx, undecodable); their part of the tile
+   *  shows the satellite. */
   childFailures: number
   forbidden: number
+  /** Every source answered 401/403 often enough to be switched off for the session. */
+  refused: boolean
   outOfBounds: number
   inFlight: number
   waiting: number
@@ -87,7 +88,7 @@ export interface OrthoCompositeOptions {
 type WorkerReply =
   | { type: 'ready' }
   | { type: 'init-failed'; reason: string }
-  | { type: 'done'; id: number; bitmap: ImageBitmap; ms: number }
+  | { type: 'done'; id: number; bitmap: ImageBitmap; ms: number; undecodable: number }
   | { type: 'need-satellite'; id: number }
   | { type: 'failed'; id: number; reason: string }
 
@@ -101,7 +102,8 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
   let disposed = false
   const disabled = new Set<number>()
   const forbiddenBySource = new Map<number, number>()
-  const makePlanner = () => density === 'off' ? null : createPlanner(meta.sources, {
+  const allRefused = () => meta.sources.every((_, index) => disabled.has(index))
+  const makePlanner = () => density === 'off' || allRefused() ? null : createPlanner(meta.sources, {
     minZoom: config.minZoom, density, disabled, thinUnderPatch: options.thinUnderPatch,
   })
   let planner = makePlanner()
@@ -116,7 +118,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
   }
   /** The basemap's download queue, once the plugin is registered. */
   let queue: { maxJobs: number; scheduleJobRun?: () => void } | null = null
-  let extraSlotsApplied = 0
   const gate = createComposeGate(config.maxConcurrentComposes, (delta) => {
     if (!queue) return
     queue.maxJobs += delta
@@ -138,10 +139,17 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       resolve(false)
       return
     }
-    const timer = setTimeout(() => { console.warn('[drone ortho] worker did not come up in time; satellite only.'); resolve(false) }, 15000)
+    // Final: a worker that comes up later would start the ortho on a link that has just proved
+    // too slow for it, without the reload that attaching does.
+    const timer = setTimeout(() => {
+      console.warn('[drone ortho] worker did not come up in time; satellite only.')
+      worker?.terminate()
+      worker = null
+      resolve(false)
+    }, 15000)
     worker.onmessage = (event: MessageEvent<WorkerReply>) => {
       const reply = event.data
-      if (reply.type === 'ready') { clearTimeout(timer); ready = true; syncExtraSlots(); resolve(true); return }
+      if (reply.type === 'ready') { clearTimeout(timer); ready = true; resolve(true); return }
       if (reply.type === 'init-failed') {
         clearTimeout(timer)
         console.warn(`[drone ortho] ${reply.reason}; the basemap stays satellite only.`)
@@ -155,7 +163,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       clearTimeout(timer)
       console.warn('[drone ortho] worker error; new tiles stay satellite only.', event.message)
       ready = false
-      syncExtraSlots()
       resolve(false)
       for (const settle of pendingReplies.values()) settle({ type: 'failed', id: -1, reason: 'worker error' })
       pendingReplies.clear()
@@ -205,15 +212,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     })
   }
 
-  /** The extra slots exist only while the ortho can compose: not while it is off, failed or gone. */
-  function syncExtraSlots(): void {
-    if (!queue) return
-    const wanted = enabled && ready && planner && !disposed ? config.extraDownloadJobs : 0
-    queue.maxJobs += wanted - extraSlotsApplied
-    extraSlotsApplied = wanted
-    queue.scheduleJobRun?.()
-  }
-
   async function fetchChild(source: number, z: number, x: number, y: number, signal: AbortSignal): Promise<Blob | null> {
     const s = meta.sources[source]
     const controller = new AbortController()
@@ -252,9 +250,25 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     }
   }
 
-  async function satelliteBlob(url: string, init: RequestInit): Promise<Blob | Response> {
-    const response = await fetch(url, init)
-    return response.ok ? response.blob() : response
+  /** The satellite tile, as a Blob, or the failed Response. Bounded like the children: inside a
+   *  compose turn a stalled satellite would hold the turn, and every covered tile behind it. A
+   *  timeout answers 504, which fails the tile, and tile-retry.ts asks for it again. */
+  async function satelliteBlob(url: string, init: RequestInit & { signal: AbortSignal }): Promise<Blob | Response> {
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    init.signal.addEventListener('abort', onAbort, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; controller.abort() }, config.fetchTimeoutMs)
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal })
+      return response.ok ? await response.blob() : response
+    } catch (error) {
+      if (timedOut && !init.signal.aborted) return new Response(null, { status: 504, statusText: 'satellite timed out' })
+      throw error
+    } finally {
+      clearTimeout(timer)
+      init.signal.removeEventListener('abort', onAbort)
+    }
   }
 
   async function compose(url: string, init: RequestInit & { signal: AbortSignal }, plan: TilePlan): Promise<Response | ArrayBuffer> {
@@ -264,6 +278,8 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       if (disposed) return fetch(url, init)
       let sat: Blob | Response | null = null
       const satPromise = plan.needsSatellite ? satelliteBlob(url, init) : null
+      // A child abort skips the await below; that rejection is not an unhandled one.
+      satPromise?.catch(() => {})
       const children = await Promise.all(plan.children.map(async (child) => ({
         ...child, blob: await fetchChild(child.source, child.z, child.x, child.y, signal),
       })))
@@ -281,6 +297,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
           throw abortError()
         }
         if (reply.type === 'done') {
+          counts.childFailures += reply.undecodable
           workerMs.push(reply.ms)
           if (workerMs.length > 400) workerMs.splice(0, workerMs.length - 400)
           counts.composed++
@@ -316,7 +333,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
 
   function rebuildPlanner(): void {
     planner = makePlanner()
-    syncExtraSlots()
   }
 
   const plugin = {
@@ -336,7 +352,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
         return texture
       }
       queue = tiles.downloadQueue ?? null
-      syncExtraSlots()
     },
     fetchData(url: string, init: RequestInit & { signal: AbortSignal }) {
       if (!enabled || !ready || !planner || disposed) return undefined
@@ -352,7 +367,6 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     ready: ready$,
     setEnabled(on) {
       enabled = on
-      syncExtraSlots()
     },
     setDensity(next) {
       if (next === density) return
@@ -363,13 +377,12 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       const sorted = [...workerMs].sort((a, b) => a - b)
       const pick = (q: number) => sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]) : 0
       return {
-        ready, enabled, density, ...counts, inFlight: gate.inFlight, waiting: gate.waiting,
+        ready, enabled, density, ...counts, refused: allRefused(), inFlight: gate.inFlight, waiting: gate.waiting,
         workerMsP50: pick(0.5), workerMsP95: pick(0.95),
       }
     },
     dispose() {
       disposed = true
-      syncExtraSlots()
       worker?.terminate()
       worker = null
       for (const settle of pendingReplies.values()) settle({ type: 'failed', id: -1, reason: 'disposed' })
