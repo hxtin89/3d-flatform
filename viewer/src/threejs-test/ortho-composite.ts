@@ -82,6 +82,8 @@ export interface OrthoCompositeOptions {
   upgradesAllowed: () => boolean
   /** Point tiles arrived so far (arrival-cost.ts). */
   pointArrivals: () => number
+  /** The point stream has tiles queued, downloading or parsing. */
+  pointsBusy: () => boolean
   meta: OrthoMeta
   /** The survey's ENU→ECEF matrix (column-major), the frame the fields are placed in. */
   rootTransform: ArrayLike<number>
@@ -318,6 +320,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     decodeSatellite,
     upload: options.upload,
     pointArrivals: options.pointArrivals,
+    pointsBusy: options.pointsBusy,
     upgradesAllowed: options.upgradesAllowed,
     settleMs: config.settleMs,
     maxConcurrentComposes: config.maxConcurrentComposes,

@@ -92,8 +92,10 @@ export interface Globe {
     config: OrthoCompositeConfig; density: OrthoDensity | 'off'; thinUnderPatch: boolean; debugKinds: boolean
     /** False until the Start click and while a camera flight runs. */
     upgradesAllowed: () => boolean
-    /** Point tiles arrived so far, so a swap never shares a frame with one's first upload. */
+    /** Point tiles arrived so far: a swap waits out a frame that uploads an arriving point tile. */
     pointArrivals: () => number
+    /** The point stream has tiles queued, downloading or parsing: ortho requests wait for it. */
+    pointsBusy: () => boolean
   }): Promise<boolean>
   /** Off puts the satellite back into upgraded tiles from their kept bytes; On upgrades again. */
   setOrthoEnabled(on: boolean): void
@@ -641,7 +643,7 @@ export function createGlobe(opts: {
     },
     async attachOrtho(options) {
       if (ortho) return true
-      // A toggle-on after ?ortho=off or a preset 'off': only tiles from now on have bytes.
+      const hadBytes = satellite.capturing
       satellite.setCapturing(true)
       const covers = createPlanner(options.meta.sources, { minZoom: options.config.minZoom, density: 'half', disabled: new Set() })
       orthoCovers = (tile) => {
@@ -656,13 +658,33 @@ export function createGlobe(opts: {
         ...options,
         tiles,
         satellite,
-        upload: (texture) => renderer.initTexture?.(texture as THREE.Texture),
+        // Only a texture three holds a GPU copy of: a freed one is rebuilt at its next draw
+        // anyway, from whatever image it has then.
+        upload: (texture) => {
+          if ((renderer as any)._textures?.has?.(texture) === false) return
+          renderer.initTexture?.(texture as THREE.Texture)
+        },
         orthoTileUrl: (id, format, z, x, y) =>
           `${MAPTILER_BASE}/tiles/${id}/${z}/${x}/${y}.${format}?key=${encodeURIComponent(maptilerKey)}`,
       })
       const ok = await ortho.ready
-      // Nothing was or will be composited.
-      if (!ok) satellite.setCapturing(false)
+      if (!ok) {
+        // Nothing was or will be composited.
+        satellite.setCapturing(false)
+        return ok
+      }
+      // Turned on after ?ortho=off or an 'off' at the start: the covered tiles already loaded
+      // kept no bytes, so they are loaded again (their parents keep the ground drawn meanwhile)
+      // and come back with them, to be upgraded like any other.
+      if (!hadBytes) {
+        const cache = (tiles as any).lruCache
+        for (const tile of Array.isArray(cache?.itemList) ? cache.itemList.slice() : []) {
+          const map = tile?.engineData?.scene?.material?.map
+          if (!map || satellite.get(map) || zoomOfTileUrl(tile?.content?.uri) < ORTHO_MIN_ZOOM || !orthoCovers(tile)) continue
+          cache.remove(tile)
+        }
+        tiles.dispatchEvent({ type: 'needs-update' })
+      }
       return ok
     },
     setOrthoEnabled(on) {

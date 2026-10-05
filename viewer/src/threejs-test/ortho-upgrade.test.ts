@@ -6,8 +6,11 @@ import { createOrthoUpgrader, keepSatelliteBytes, type ComposeOutcome } from './
 
 // --- fakes -------------------------------------------------------------------------------
 
-/** Open and closed bitmaps, so every test can check that nothing leaks or closes twice. */
-const ledger = { created: 0, closed: 0, doubleClosed: 0 }
+/** Every bitmap and texture the tests make, so the last test can check that nothing leaked:
+ *  an open bitmap must be some texture's current image. */
+const allBitmaps: FakeBitmap[] = []
+const allTextures: FakeTexture[] = []
+let doubleClosed = 0
 class FakeBitmap {
   label: string
   width: number
@@ -17,21 +20,23 @@ class FakeBitmap {
     this.label = label
     this.width = size
     this.height = size
-    ledger.created++
+    allBitmaps.push(this)
   }
   close() {
-    if (this.closed) { ledger.doubleClosed++; return }
+    if (this.closed) { doubleClosed++; return }
     this.closed = true
     this.width = 0
     this.height = 0
-    ledger.closed++
   }
 }
 
 class FakeTexture {
   version = 0
   image: FakeBitmap
-  constructor(image: FakeBitmap) { this.image = image }
+  constructor(image: FakeBitmap) {
+    this.image = image
+    allTextures.push(this)
+  }
   set needsUpdate(on: boolean) { if (on) this.version++ }
   get needsUpdate() { return false }
 }
@@ -42,15 +47,25 @@ function fakeTile(opts: { z?: number; error?: number; children?: number } = {}) 
   const texture = new FakeTexture(new FakeBitmap(`sat-${x}`))
   const scene = { material: { map: texture } }
   return {
+    x,
     texture,
     tile: {
       internal: { loadingState: TILE_LOADED },
       traversal: { visible: true, lastFrameVisited: 1, error: opts.error ?? 0.5 },
-      children: { length: opts.children ?? 4 },
+      children: { length: opts.children ?? 4 } as any,
+      parent: null as any,
       content: { uri: `/maptiler/maps/satellite-v4/${opts.z ?? 18}/${x}/2000.jpg?key=k` },
-      engineData: { scene, textures: [texture] },
+      engineData: { scene, textures: [texture] } as any,
     },
   }
+}
+
+/** What the library does when it unloads a tile: dispose-model, then close the texture's image. */
+function unload(s: ReturnType<typeof setup>, made: ReturnType<typeof fakeTile>) {
+  s.tiles.fire('dispose-model', { tile: made.tile })
+  made.tile.internal.loadingState = 0
+  s.tiles.visibleTiles.delete(made.tile)
+  made.texture.image.close()
 }
 
 function fakeTiles() {
@@ -72,12 +87,12 @@ function fakeTiles() {
   return tiles
 }
 
-const plan = (children = 1): TilePlan => ({
-  z: 18, x: 0, y: 0, needsSatellite: true,
+const planFor = (x: number, children = 1): TilePlan => ({
+  z: 18, x, y: 2000, needsSatellite: true,
   children: Array.from({ length: children }, (_, i) => ({ source: 0, z: 19, x: i, y: 0, dx: (i & 1) as 0 | 1, dy: (i >> 1) as 0 | 1, size: 256 as const })),
 })
 
-/** An engine whose composes the test settles by hand. */
+/** An engine whose composes the test settles by hand. Each call carries its tile's x. */
 function fakeEngine() {
   const calls: Array<{ signal: AbortSignal; onGrant: () => void; resolve(out: ComposeOutcome): void; plan: TilePlan }> = []
   const engine = {
@@ -86,7 +101,7 @@ function fakeEngine() {
     children: 1,
     pumps: 0,
     requestsWaiting: 0,
-    plan(z: number) { return this.covered && z >= 15 ? plan(this.children) : null },
+    plan(z: number, x: number) { return this.covered && z >= 15 ? planFor(x, this.children) : null },
     compose(p: TilePlan, _bytes: ArrayBuffer, signal: AbortSignal, onGrant: () => void) {
       return new Promise<ComposeOutcome>((resolve) => { calls.push({ signal, onGrant, resolve, plan: p }) })
     },
@@ -95,7 +110,7 @@ function fakeEngine() {
   return { engine, calls }
 }
 
-function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; maxConcurrent?: number } = {}) {
+function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; maxConcurrent?: number; failDecode?: boolean } = {}) {
   const tiles = fakeTiles()
   const { engine, calls } = fakeEngine()
   const bytes = new Map<object, ArrayBuffer>()
@@ -103,19 +118,26 @@ function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; max
     get: (t: object) => bytes.get(t),
     drop: (t: object) => { bytes.delete(t) },
     setCapturing() {},
+    capturing: true,
   }
   const clock = { now: 0 }
   const env = {
     allowed: over.allowed ?? true,
     points: 0,
+    pointsBusy: false,
     uploads: [] as any[],
     decodes: 0,
   }
   const upgrader = createOrthoUpgrader({
     tiles, satellite, engine: engine as any,
-    decodeSatellite: async () => { env.decodes++; return new FakeBitmap('revert') },
+    decodeSatellite: async () => {
+      env.decodes++
+      if (over.failDecode) throw new Error('decode failed')
+      return new FakeBitmap('revert')
+    },
     upload: (texture) => { env.uploads.push(texture) },
     pointArrivals: () => env.points,
+    pointsBusy: () => env.pointsBusy,
     upgradesAllowed: () => env.allowed,
     settleMs: 1000,
     maxConcurrentComposes: over.maxConcurrent ?? 2,
@@ -131,10 +153,13 @@ function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; max
   const tickAt = (ms: number) => { clock.now = ms; tiles.fire('update-after') }
   /** Ticks every 250 ms from `from` to `to`, both included. */
   const tickRange = (from: number, to: number) => { for (let t = from; t <= to; t += 250) tickAt(t) }
-  return { tiles, engine, calls, satellite, bytes, env, upgrader, add, tickAt, tickRange, clock }
+  /** The basemap traversed this tick: the view moved, or a tile loaded. */
+  const move = () => { tiles.frameCount++; for (const tile of tiles.visibleTiles) tile.traversal.lastFrameVisited = tiles.frameCount }
+  return { tiles, engine, calls, satellite, bytes, env, upgrader, add, tickAt, tickRange, clock, move }
 }
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+const xs = (calls: Array<{ plan: TilePlan }>) => new Set(calls.map((c) => c.plan.x))
 
 // --- tests -------------------------------------------------------------------------------
 
@@ -176,37 +201,53 @@ test('before the Start click or during a flight nothing starts and no request is
 
 test('stand-ins, orphans and hidden tiles never start; the deepest zoom does; larger error first, capped', () => {
   const s = setup({ maxConcurrent: 2 })
-  const standIn = s.add({ error: 3, children: 4 })
+  s.add({ error: 3, children: 4 })
   const orphan = s.add()
   orphan.tile.traversal.lastFrameVisited = 0
   const hidden = s.add()
   hidden.tile.traversal.visible = false
   const deepest = s.add({ z: 19, error: 5, children: 0 })
-  const small = s.add({ error: 0.2 })
+  s.add({ error: 0.2 })
   const big = s.add({ error: 0.9 })
   s.tickRange(0, 1000)
-  assert.equal(s.calls.length, 2, 'maxConcurrentComposes')
-  const started = s.upgrader.stats()
-  assert.equal(started.inFlight, 2)
-  // deepest (error 5) and big (0.9) beat small (0.2)
-  assert.equal(s.calls.length, 2)
-  assert.ok(!s.calls.some(() => false))
-  assert.equal(s.upgrader.stats().pending, 3, 'standIn, orphan and hidden are not candidates')
-  void standIn; void deepest; void small; void big
+  assert.deepEqual(xs(s.calls), new Set([deepest.x, big.x]), 'deepest (error 5) and big (0.9) beat small (0.2); capped at 2')
+  assert.equal(s.upgrader.stats().pending, 3, 'stand-in, orphan and hidden are not candidates')
   s.upgrader.dispose()
 })
 
-test('a tile that leaves the view before all its requests went out is aborted; one that got them all completes', async () => {
+test('a tile next to an upgraded one starts without the dwell once the view is still', async () => {
+  const s = setup()
+  const child = s.add({ z: 19, children: 0 })
+  s.tickRange(0, 1000)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('child'), edge: false })
+  await flush()
+  s.tickAt(1250)
+  assert.equal(s.upgrader.stats().upgraded, 1)
+  // Zoom out one step: the parent shows now, the child is cached but hidden.
+  const parent = s.add()
+  parent.tile.children = [child.tile]
+  child.tile.parent = parent.tile
+  child.tile.traversal.visible = false
+  s.tiles.visibleTiles.delete(child.tile)
+  s.move()
+  s.tickAt(1300)
+  assert.equal(s.calls.length, 1, 'not while the view is moving')
+  s.tickAt(1700)
+  assert.deepEqual([...xs(s.calls.slice(1))], [parent.x], 'still for 300 ms: no 1 s dwell next to an upgraded child')
+  s.upgrader.dispose()
+})
+
+test('a tile that leaves the view before all its requests went out is aborted; one that got them all completes', () => {
   const s = setup()
   s.engine.children = 4
   const a = s.add()
   const b = s.add()
   s.tickRange(0, 1000)
   assert.equal(s.calls.length, 2)
-  const [ca, cb] = s.calls
+  const ca = s.calls.find((c) => c.plan.x === a.x)!
+  const cb = s.calls.find((c) => c.plan.x === b.x)!
   for (let i = 0; i < 4; i++) cb.onGrant()
   ca.onGrant()
-  // both leave the view's detail
   a.tile.traversal.visible = false
   b.tile.traversal.visible = false
   s.tiles.frameCount = 2
@@ -217,8 +258,25 @@ test('a tile that leaves the view before all its requests went out is aborted; o
   s.upgrader.dispose()
 })
 
-test('the swap installs the composite in the same texture, closes the satellite once, uploads on screen, one per tick, never in an arrival tick', async () => {
-  const before = { ...ledger }
+test('ortho requests wait while point tiles load, and go out anyway after 8 s', () => {
+  const s = setup()
+  s.add()
+  s.env.pointsBusy = true
+  s.tickRange(0, 1000)
+  assert.equal(s.calls.length, 1, 'the compose starts and joins the line')
+  const pumpsWhileBusy = s.engine.pumps
+  s.tickRange(1250, 7750)
+  assert.equal(s.engine.pumps, pumpsWhileBusy, 'no request goes out while the point stream is busy')
+  s.tickRange(8000, 8250)
+  assert.ok(s.engine.pumps > pumpsWhileBusy, 'a stream that never drains does not starve the ortho')
+  s.env.pointsBusy = false
+  const before = s.engine.pumps
+  s.tickAt(8500)
+  assert.equal(s.engine.pumps, before + 1)
+  s.upgrader.dispose()
+})
+
+test('the swap installs the composite in the same texture, closes the satellite once, one per tick, never in an arrival tick', async () => {
   const s = setup()
   const a = s.add()
   const b = s.add()
@@ -227,8 +285,8 @@ test('the swap installs the composite in the same texture, closes the satellite 
   assert.equal(s.calls.length, 2)
   const compA = new FakeBitmap('compA')
   const compB = new FakeBitmap('compB')
-  s.calls[0].resolve({ type: 'done', bitmap: compA, edge: true })
-  s.calls[1].resolve({ type: 'done', bitmap: compB, edge: false })
+  s.calls.find((c) => c.plan.x === a.x)!.resolve({ type: 'done', bitmap: compA, edge: true })
+  s.calls.find((c) => c.plan.x === b.x)!.resolve({ type: 'done', bitmap: compB, edge: false })
   await flush()
   s.tiles.fire('load-model')
   s.tickAt(1250)
@@ -236,12 +294,14 @@ test('the swap installs the composite in the same texture, closes the satellite 
   s.env.points++
   s.tickAt(1500)
   assert.equal(a.texture.image, satA, 'a point tile arrived: no swap')
+  s.tiles.fire('tile-visibility-change', { visible: true })
+  s.tickAt(1600)
+  assert.equal(a.texture.image, satA, 'a basemap tile turned visible: three uploads it this frame')
   s.tickAt(1750)
-  const swappedFirst = a.texture.image === compA ? a : b
-  const other = swappedFirst === a ? b : a
-  assert.notEqual(other.texture.image, compA === swappedFirst.texture.image ? compB : compA, 'one per tick')
-  assert.equal(swappedFirst.texture.version, 1)
-  assert.equal(s.env.uploads.length, 1, 'uploaded at once, on screen')
+  const installed = [a, b].filter((t) => t.texture.image === compA || t.texture.image === compB)
+  assert.equal(installed.length, 1, 'one per tick')
+  assert.equal(installed[0].texture.version, 1)
+  assert.equal(s.env.uploads.length, 1, 'uploaded in the swap tick')
   s.tickAt(2000)
   assert.equal(a.texture.image, compA)
   assert.equal(b.texture.image, compB)
@@ -249,14 +309,68 @@ test('the swap installs the composite in the same texture, closes the satellite 
   const st = s.upgrader.stats()
   assert.equal(st.composed, 2)
   assert.equal(st.edgeTiles + st.fullTiles, 2)
-  assert.equal(st.swapDeferrals, 2)
+  assert.equal(st.swapDeferrals, 3)
   assert.equal(st.upgraded, 2)
-  assert.equal(ledger.doubleClosed, before.doubleClosed)
   assert.equal(compA.closed || compB.closed, false, 'the installed images stay open')
   s.upgrader.dispose()
 })
 
-test('a composite of another size is closed and the texture left alone', async () => {
+test('a swap waits for a still view, and for the end of a flight; a revert only for arrivals', async () => {
+  const s = setup()
+  const a = s.add()
+  const sat = a.texture.image
+  s.tickRange(0, 1000)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  s.move()
+  s.tickAt(1250)
+  s.tickRange(1500, 2000)
+  assert.equal(a.texture.image, sat, 'the view moved at 1250: held for settleMs')
+  s.env.allowed = false
+  s.tickRange(2250, 4000)
+  assert.equal(a.texture.image, sat, 'held during a flight')
+  s.env.allowed = true
+  s.tickAt(4250)
+  assert.equal(a.texture.image.label, 'comp')
+  // Off while the view keeps moving: the revert lands anyway.
+  s.upgrader.setEnabled(false)
+  s.move()
+  s.tickAt(4300)
+  await flush()
+  s.move()
+  s.tickAt(4350)
+  assert.equal(a.texture.image.label, 'revert')
+  s.upgrader.dispose()
+})
+
+test('a hidden tile is uploaded in its swap tick too, not at some later draw', async () => {
+  const s = setup()
+  const a = s.add()
+  s.tickRange(0, 1000)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  a.tile.traversal.visible = false
+  s.tiles.visibleTiles.delete(a.tile)
+  s.tickAt(1250)
+  assert.equal(a.texture.image.label, 'comp')
+  assert.equal(s.env.uploads.length, 1)
+  s.upgrader.dispose()
+})
+
+test('finished composites waiting for their frame hold their upgrade slot', async () => {
+  const s = setup({ maxConcurrent: 2 })
+  for (let i = 0; i < 6; i++) s.add()
+  s.tickRange(0, 1000)
+  assert.equal(s.calls.length, 2)
+  for (const call of s.calls) call.resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  // A point tile arrives on every tick: the swaps stay queued, so nothing new starts.
+  for (let t = 1250; t <= 4000; t += 250) { s.env.points++; s.tickAt(t) }
+  assert.equal(s.calls.length, 2)
+  s.upgrader.dispose()
+})
+
+test('a composite of another size is closed, the texture left alone, and not composed again', async () => {
   const s = setup()
   const a = s.add()
   const sat = a.texture.image
@@ -268,36 +382,54 @@ test('a composite of another size is closed and the texture left alone', async (
   assert.equal(a.texture.image, sat)
   assert.equal(wrong.closed, true)
   assert.equal(s.upgrader.stats().sizeMismatch, 1)
+  s.tickRange(1500, 4000)
+  assert.equal(s.calls.length, 1)
   s.upgrader.dispose()
 })
 
-test('a tile disposed mid-compose: aborted, and a late composite is closed, never installed; a reloaded texture is never written', async () => {
+test('a tile unloaded mid-compose and reloaded as the same object: the old result is closed, the new job kept', async () => {
   const s = setup()
   const a = s.add()
   s.tickRange(0, 1000)
-  const call = s.calls[0]
-  s.tiles.fire('dispose-model', { tile: a.tile })
-  // What the library does next: the tile is unloaded and no longer drawn.
-  a.tile.internal.loadingState = 0
-  s.tiles.visibleTiles.delete(a.tile)
-  assert.equal(call.signal.aborted, true)
+  const first = s.calls[0]
+  unload(s, a)
+  assert.equal(first.signal.aborted, true)
+  // The library brings the same tile object back, with a new texture.
+  const texture = new FakeTexture(new FakeBitmap('sat-reloaded'))
+  a.tile.internal.loadingState = TILE_LOADED
+  a.tile.engineData = { scene: { material: { map: texture } }, textures: [texture] }
+  s.bytes.set(texture, new ArrayBuffer(28))
+  s.tiles.visibleTiles.add(a.tile)
+  s.tickRange(1250, 2250)
+  assert.equal(s.calls.length, 2)
   const late = new FakeBitmap('late')
-  call.resolve({ type: 'done', bitmap: late, edge: true })
+  first.resolve({ type: 'done', bitmap: late, edge: true })
   await flush()
-  s.tickAt(1250)
   assert.equal(late.closed, true)
-  // The same tile object reloaded with a new texture: an old swap must not land in it.
-  const b = s.add()
-  s.tickRange(1500, 2500)
-  const callB = s.calls[1]
-  const newTexture = new FakeTexture(new FakeBitmap('sat-reloaded'))
-  b.tile.engineData = { scene: { material: { map: newTexture } }, textures: [newTexture] }
-  const comp = new FakeBitmap('for-old-texture')
-  callB.resolve({ type: 'done', bitmap: comp, edge: true })
+  assert.equal(s.upgrader.stats().inFlight, 1, "the old job's finally did not take the new job with it")
+  s.tickRange(2500, 4000)
+  assert.equal(s.calls.length, 2)
+  const comp = new FakeBitmap('comp')
+  s.calls[1].resolve({ type: 'done', bitmap: comp, edge: true })
   await flush()
-  s.tickAt(2750)
+  s.tickAt(4250)
+  assert.equal(texture.image, comp)
+  s.upgrader.dispose()
+})
+
+test('a queued swap is closed when its tile is unloaded', async () => {
+  const s = setup()
+  const a = s.add()
+  s.tickRange(0, 1000)
+  const comp = new FakeBitmap('queued')
+  s.calls[0].resolve({ type: 'done', bitmap: comp, edge: true })
+  await flush()
+  s.tiles.fire('load-model')
+  s.tickAt(1250)
+  const dropped = s.upgrader.stats().dropped
+  unload(s, a)
   assert.equal(comp.closed, true)
-  assert.notEqual(newTexture.image, comp)
+  assert.equal(s.upgrader.stats().dropped, dropped + 1)
   s.upgrader.dispose()
 })
 
@@ -336,7 +468,22 @@ test('Off puts the satellite back from the kept bytes, even with the worker dead
   s.upgrader.setEnabled(true)
   await flush()
   s.tickAt(3750)
-  assert.equal(a.texture.image, comp2, 'the revert was cancelled')
+  assert.equal(a.texture.image, comp2, 'the revert was cancelled and its bitmap closed')
+  s.upgrader.dispose()
+})
+
+test('a revert that keeps failing is given up after 3 tries, not retried every frame', async () => {
+  const s = setup({ failDecode: true })
+  const a = s.add()
+  s.tickRange(0, 1000)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  s.tickAt(1250)
+  s.upgrader.setEnabled(false)
+  for (let t = 1500; t <= 6000; t += 250) { s.tickAt(t); await flush() }
+  assert.equal(s.env.decodes, 3)
+  assert.equal(s.upgrader.stats().revertFailures, 3)
+  assert.equal(a.texture.image.label, 'comp', 'the tile keeps its composite')
   s.upgrader.dispose()
 })
 
@@ -365,20 +512,24 @@ test('an empty tile is given up for good at that density; a failed one waits for
   const empty = s.add()
   const failed = s.add()
   s.tickRange(0, 1000)
-  s.calls[0].resolve({ type: 'empty' })
-  s.calls[1].resolve({ type: 'failed' })
+  s.calls.find((c) => c.plan.x === empty.x)!.resolve({ type: 'empty' })
+  s.calls.find((c) => c.plan.x === failed.x)!.resolve({ type: 'failed' })
   await flush()
   s.tickRange(1250, 4000)
   assert.equal(s.calls.length, 2, 'neither is tried again while loaded')
   assert.equal(s.upgrader.stats().givenUp, 1)
-  // Both reloaded with new textures (same URL, same tile object here).
   for (const t of [empty, failed]) {
+    unload(s, t)
     const texture = new FakeTexture(new FakeBitmap('sat-new'))
+    t.tile.internal.loadingState = TILE_LOADED
     t.tile.engineData = { scene: { material: { map: texture } }, textures: [texture] }
     s.bytes.set(texture, new ArrayBuffer(28))
+    s.tiles.visibleTiles.add(t.tile)
   }
   s.tickRange(4250, 5500)
-  assert.equal(s.calls.length, 3, 'only the failed one is tried again')
+  assert.deepEqual([...xs(s.calls.slice(2))], [failed.x], 'only the failed one is tried again')
+  s.calls[2].resolve({ type: 'failed' })
+  await flush()
   s.upgrader.dispose()
 })
 
@@ -395,12 +546,13 @@ test('dispose closes every queued bitmap and removes its listeners; twice is fin
   s.upgrader.dispose()
   s.upgrader.dispose()
   assert.equal(comp.closed, true)
-  assert.equal(s.tiles.listenerCount(), listenersBefore - 3)
+  assert.equal(s.tiles.listenerCount(), listenersBefore - 4)
 })
 
 test('keepSatelliteBytes keeps the buffer by texture, skips empty ones, drops and forgets', async () => {
   const source = { async processBufferToTexture(buffer: ArrayBuffer) { return { from: buffer.byteLength } } }
   const kept = keepSatelliteBytes(source, true)
+  assert.equal(kept.capturing, true)
   const buffer = new ArrayBuffer(28)
   const texture = await source.processBufferToTexture(buffer)
   assert.equal(kept.get(texture), buffer)
@@ -410,13 +562,17 @@ test('keepSatelliteBytes keeps the buffer by texture, skips empty ones, drops an
   assert.equal(kept.get(texture), undefined)
   const again = await source.processBufferToTexture(new ArrayBuffer(10))
   kept.setCapturing(false)
+  assert.equal(kept.capturing, false)
   assert.equal(kept.get(again), undefined, 'switching capture off forgets everything')
   const after = await source.processBufferToTexture(new ArrayBuffer(10))
   assert.equal(kept.get(after), undefined)
 })
 
-test('no bitmap leaks and none is closed twice across all the tests above', () => {
-  assert.equal(ledger.doubleClosed, 0)
+test('across all the tests above: no bitmap closed twice, and every open bitmap is some texture\'s image', () => {
+  assert.equal(doubleClosed, 0)
+  const installed = new Set(allTextures.map((t) => t.image))
+  const leaked = allBitmaps.filter((b) => !b.closed && !installed.has(b)).map((b) => b.label)
+  assert.deepEqual(leaked, [])
 })
 
 test('the library facts this relies on still hold (3d-tiles-renderer 0.4.28)', () => {
@@ -430,4 +586,5 @@ test('the library facts this relies on still hold (3d-tiles-renderer 0.4.28)', (
   const base = read('core/renderer/tiles/TilesRendererBase.js')
   assert.equal(base.match(/type: 'update-after'/g)?.length, 2, 'update-after on both the skip path and after a traversal')
   assert.match(base, /arrayBuffer\(\)[\s\S]{0,400}stats\.downloading --/, 'downloading counts until the body is read')
+  assert.match(base, /type: 'tile-visibility-change'/)
 })

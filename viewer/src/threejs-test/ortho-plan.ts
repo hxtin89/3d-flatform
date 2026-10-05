@@ -201,15 +201,15 @@ export function isSettledTile(tile: SettleTile, frameCount: number, errorTarget:
 }
 
 /**
- * Picks candidates that have stayed candidates for `dwellMs`: a key missing from one call starts
- * over. Higher priority first, then the longest waiting. A picked key starts over too, so a
- * candidate offered again later dwells again.
+ * Picks candidates that have stayed candidates for `dwellMs`, or are marked urgent: a key missing
+ * from one call starts over. Urgent first, then higher priority, then the longest waiting. A
+ * picked key starts over too, so a candidate offered again later dwells again.
  */
 export function createSettlePicker<K>(dwellMs: number) {
   const since = new Map<K, number>()
   return {
     get dwelling() { return since.size },
-    pick<C extends { key: K; priority: number }>(now: number, candidates: readonly C[], slots: number): C[] {
+    pick<C extends { key: K; priority: number; urgent?: boolean }>(now: number, candidates: readonly C[], slots: number): C[] {
       const present = new Set<K>()
       for (const c of candidates) {
         present.add(c.key)
@@ -217,8 +217,9 @@ export function createSettlePicker<K>(dwellMs: number) {
       }
       for (const key of since.keys()) if (!present.has(key)) since.delete(key)
       if (slots <= 0) return []
-      const due = candidates.filter((c) => now - since.get(c.key)! >= dwellMs)
-      due.sort((a, b) => b.priority - a.priority || since.get(a.key)! - since.get(b.key)!)
+      const due = candidates.filter((c) => c.urgent === true || now - since.get(c.key)! >= dwellMs)
+      due.sort((a, b) => Number(b.urgent === true) - Number(a.urgent === true) || b.priority - a.priority
+        || since.get(a.key)! - since.get(b.key)!)
       const picked = due.slice(0, slots)
       for (const c of picked) since.delete(c.key)
       return picked

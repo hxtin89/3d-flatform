@@ -42,8 +42,8 @@ let lastFrameAt = 0
 /** Point tiles arrived since the page loaded, never reset by resetCost. */
 let arrivalsTotal = 0
 
-/** A cheap "has a point tile arrived since": the drone ortho never swaps a texture in a frame
- *  that uploads an arriving tile. */
+/** A cheap "has a point tile arrived since": the drone ortho holds its swaps in a frame that
+ *  uploads an arriving point tile. */
 export const arrivalsSoFar = (): number => arrivalsTotal
 
 /**
@@ -134,16 +134,17 @@ let worstSwapFrameMs = 0
 let swapCollisions = 0
 let collisionFrame = -1
 
-/**
- * Wrap the renderer's attribute upload. Safe to call more than once, and a no-op if the
- * backend does not expose `_attributes` — these are r185 internals, not public API, and a
- * measurement must never be the thing that breaks the app.
- */
+/** Book a point-tile first upload in this frame, and a collision if a swap already ran in it. */
 function markPointFirst(): void {
   pointFirstFrame = frameOrdinal
   if (imagerySwapFrame === frameOrdinal && collisionFrame !== frameOrdinal) { swapCollisions++; collisionFrame = frameOrdinal }
 }
 
+/**
+ * Wrap the renderer's attribute upload. Safe to call more than once, and a no-op if the
+ * backend does not expose `_attributes` — these are r185 internals, not public API, and a
+ * measurement must never be the thing that breaks the app.
+ */
 export function installUploadProbe(renderer: any): boolean {
   if (uploadProbeInstalled) return true
   const attributes = renderer?._attributes
@@ -332,7 +333,8 @@ export interface CostReport {
     reuploads: { n: number; totalMs: number; max: number }
     /** The longest frame that carried a swap. */
     worstSwapFrameMs: number
-    /** Frames in which a swap shared the upload with an arriving imagery or point tile: 0 by design. */
+    /** Frames in which a swap shared the upload with an arriving imagery or point tile. Swaps wait
+     *  for arrivals, newly shown basemap tiles and a still view, so this stays at or near 0. */
     swapCollisions: number
   }
 }

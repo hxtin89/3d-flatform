@@ -3495,6 +3495,11 @@ function attachDroneOrtho(): void {
     // Upgrades start after the Start click and never during a flight: they wait for the view.
     upgradesAllowed: () => loaderFlightStarted && !cameraFlight.active,
     pointArrivals: arrivalsSoFar,
+    pointsBusy: () => {
+      // The library's own counters (TilesRendererBase.stats), which its types leave out.
+      const s = (stream?.tiles as any)?.stats
+      return !!s && s.queued + s.downloading + s.parsing > 0
+    },
   }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
 }
 function syncColourMatch(): void {
@@ -3578,6 +3583,7 @@ function droneOrthoStatus(): string {
     + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
     + `${s.pending ? ` · ${s.pending} to go` : ''}`
     + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`
+    + `${s.requestsWaiting ? ` · ${s.requestsWaiting} ortho requests queued` : ''}`
     + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}`
     + `${s.childFailures ? ` · ${s.childFailures} ortho requests failed` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
 }
