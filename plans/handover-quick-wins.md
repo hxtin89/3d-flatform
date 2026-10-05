@@ -10,7 +10,7 @@ Covers the work of 2026-09-24 to 2026-09-30 on the ranked optimisation list (the
 | Line | Head | State |
 |---|---|---|
 | `sbb-main` | `ec64335` | Pushed 2026-10-05. Holds rounds 1-3 below, `e996937` (panels start minimized) and `e1eb4a1` (measured model heights). `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may still be at `e1eb4a1`: `git merge --ff-only origin/sbb-main` there. |
-| `sbb/quick-wins` | `c74862f` + docs | `c74862f` raises the strong map ceiling (section 3), local, not merged or pushed. Pushed up to `ec64335`. |
+| `sbb/quick-wins` | `09052c3` + docs | Local, not merged or pushed: `c74862f` raises the strong map ceiling (section 3), `c884f06` records the 2.3 recheck (section 9), `09052c3` fixes the evicted point texture leak (section 9). Pushed up to `ec64335`. |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
   on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
@@ -96,7 +96,7 @@ measured on a phone or in a visible window yet.
 | Freeze power check | Confirms the Start-screen saving | A normal Chrome window, GPU column in Windows Task Manager after ~15 s on the Start screen vs a quick Start |
 | First pivot press (~100 ms in the pane) | Confirms or refutes a first-press hitch | Visible Chrome window: rotate, read `__wild.pivotDebug.pickMs` |
 | Phone and visible-window runs of all of the above | Real numbers instead of pane ratios | A device; the pane cannot run the entrance flight (loader stays in "finishing") |
-| Merge `c74862f` + push | Ships the strong map ceiling | Ask first; then `sbb-prod` rebuild |
+| Merge `c74862f`..`09052c3` + push | Ships the strong map ceiling and the texture leak fix | Ask first; then `sbb-prod` rebuild |
 | Map ceiling, medium and constrained | Same sharpening on those tiers | Not measured. The user chose strong only (2026-10-05): 256 → 352 MiB at the landing view gave 251 → 337 map tiles and 68 → 136 drawn, +88 MiB GPU; only the band beyond the dome changed (3 % of the frame, the horizon rows most). `setMemoryBudget` now also asks for a traversal (`c74862f`), so a raised ceiling loads under a still camera |
 | 2.3 One copy of each point tile | Parked: no evidence that memory is short | Rechecked 2026-10-05, see section 9. Do not build the spec. First: a small memory instrument, read during the pending phone calibration |
 | 3.2 Tile preparation in a worker | −0.6 to −2.5 ms main thread per arriving tile | Measure first in a visible window (`__cost.report()` over a pan): do arrival frames now lead p95/p99 on the pulled default? Mainly for phones |
@@ -108,7 +108,7 @@ measured on a phone or in a visible window yet.
 | 3.7 Fewer basemap tiles under the ground patch | 10-20 MB, fewer MapTiler requests | Count requests per landing first |
 | 3.8 Android label layout thrash | unknown | A phone trace |
 | 1.6b One mesh per parrot | 36 → 12 draws; the flock costs ~0.5 ms render CPU in the pane | A shader change (texture chosen per vertex); small |
-| Tile Leak Register entry | Records the 1.8 material finding below | Add it as B7 to https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ (read, then republish via url) |
+| Tile Leak Register entries | Records B7 (the 1.8 material finding) and B8 (the evicted point texture) | Added 2026-10-05 to https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ |
 
 Watch: 1.10's 32 cells cover one site. When several sites load at once, look for the
 `[ground-patch] all N cells are in use` warning and raise `maskMaxCells` in `config.ts` if it shows.
@@ -254,10 +254,15 @@ Order if memory ever becomes the question:
    only), a cross-feed switch that calls `reloadTiles`, the mask finished before a tile is trimmed,
    and the tripwire count-only (never evict from inside render). About 8 days.
 
-Separate from 2.3, inferred from source and not yet seen at runtime: the template binding above
-leaks one texture per pulled graph today (GPU copy plus the 1.2 MB Float32Array kept alive through
-the NodeBuilderState) once the template tile is evicted. Confirm with the arrival-cost `reCount`
-under forced eviction before fixing; it is bounded by the number of cached pulled graphs.
+Separate from 2.3, the template binding above did leak, confirmed and fixed on 2026-10-05 in `09052c3`.
+The test: evict only the tile whose texture the shared pulled graph was built with, while 33 render
+objects still used that graph, plus 6 neighbours so replacements arrive. The next arrival re-created
+the evicted texture on the GPU (arrival-cost `reCount` +1, 1.21 MB). It then stayed, belonging to no
+tile, with its 1.2 MB array alive. Evicting every tile (`reloadTiles`) does not show it, because three
+frees a NodeBuilderState once no render object uses it. The fix is `retirePointDataTexture` in
+`dot-geometry.ts`: on `dispose-model`, and on a pulled→instanced switch, the texture gets a 1×1 image
+before it is disposed. The re-creation is now 16 bytes, and the upload probe skips it. Same test after
+the fix: 1×1 re-created, `reCount` 0, the cloud draws normally, and the feed round trip works.
 
 The full workflow output (readers, designs, reviews, node benches) was in this session's scratchpad
 (`wf23-result.json`) and goes when the session closes; this section is the record.
