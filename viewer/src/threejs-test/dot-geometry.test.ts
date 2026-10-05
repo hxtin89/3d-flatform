@@ -3,8 +3,8 @@ import test from 'node:test'
 import * as THREE from 'three'
 import {
   applyDotShape, applyDotShapeToGeometry, buildPulledGeometry, dotAreaFactor, dotCorners,
-  drawnPoints, initDotState, loadedPoints, packPointData, POINT_DATA_WIDTH, setDrawnPoints,
-  shapeAreaFactor,
+  drawnPoints, initDotState, loadedPoints, packPointData, POINT_DATA_WIDTH, retirePointDataTexture,
+  setDrawnPoints, shapeAreaFactor,
 } from './dot-geometry.ts'
 import { EXPERIENCE_CONFIG } from './config.ts'
 
@@ -164,6 +164,20 @@ test('point data packs xyz and the colour as an exact integer, one texel per poi
   assert.equal((one.image.data as Float32Array)[3], 10 * 65536 + 20 * 256 + 30)
   const bare = packPointData(new THREE.BufferAttribute(new Float32Array([1, 2, 3]), 3), null)
   assert.equal((bare.image.data as Float32Array)[3], 0, 'black, like the instanced feed')
+})
+
+test('a retired point texture keeps its format but shrinks to one texel', () => {
+  const tex = packPointData(new THREE.BufferAttribute(new Float32Array(3 * 5000), 3), null)
+  const version = tex.version
+  retirePointDataTexture(tex)
+  assert.equal(tex.image.width, 1)
+  assert.equal(tex.image.height, 1)
+  assert.equal((tex.image.data as Float32Array).length, 4, 'one RGBA32F texel')
+  assert.equal(tex.type, THREE.FloatType)
+  assert.equal(tex.format, THREE.RGBAFormat)
+  assert.equal(tex.version, version, 'no upload asked for: only a re-creation would read it')
+  assert.equal(tex.userData.retired, true)
+  assert.equal(tex.userData.cloudPointData, true)
 })
 
 test('a pulled geometry has no attributes and draws k vertices per point', () => {

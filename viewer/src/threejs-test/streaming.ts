@@ -17,7 +17,7 @@ import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import {
   applyDotShape, applyDotShapeToGeometry, buildPulledGeometry, dotAreaFactor, dotState,
   drawnPoints, initDotState, isDotMesh, loadedPoints, packPointData, prepareSharedQuadIndex,
-  sameDotMode, setDrawnPoints, type DotMode,
+  retirePointDataTexture, sameDotMode, setDrawnPoints, type DotMode,
 } from './dot-geometry'
 import {
   adoptPointData, computeCarrierBounds, newPointBounds, packPointsForPulling, pointDataForCarrier,
@@ -1017,6 +1017,8 @@ export function createStreamingCloud(opts: {
       // Deleted rather than set to null, so the material's cache key matches a tile that
       // was instanced from the start.
       delete material[POINT_DATA_PROPERTY]
+      // The carrier has its own arrays again; a switch back packs a fresh texture.
+      retirePointDataTexture(previousTexture)
       previousTexture.dispose()
       if (Array.isArray(engineData?.textures)) {
         const at = engineData.textures.indexOf(previousTexture)
@@ -1162,6 +1164,12 @@ export function createStreamingCloud(opts: {
     if (opts.onPointTileDisposed) {
       scene?.traverse?.((object: any) => { if (object.isPoints) opts.onPointTileDisposed!(object) })
     }
+    // Evicted for good, unlike a tile the unload plugin hides, so its point data can go
+    // before the library disposes the texture — see retirePointDataTexture.
+    scene?.traverse?.((object: any) => {
+      const texture = object.material?.[POINT_DATA_PROPERTY]
+      if (texture?.userData?.cloudPointData) retirePointDataTexture(texture)
+    })
     tileStats.delete(tile)
   })
   // A missing tile is a gap in the published data, not a crash, and the

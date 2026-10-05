@@ -259,6 +259,27 @@ export function makePointDataTexture(data: Float32Array, points: number): THREE.
 }
 
 /**
+ * Shrink a point-data texture that will never draw again, right before it is disposed.
+ *
+ * Disposing frees the GPU copy, but the texture can come back. Every pulled tile shares one
+ * shader, and three r185 sets up each new render object with the bindings the shader was
+ * built with, which still hold the texture of the tile that built it:
+ * Bindings._createBindings uploads that texture before the object's own replaces it. So once
+ * the building tile is evicted, the next arrival re-creates its texture from `image.data`,
+ * and it stays, held by nothing but the shader: 1.2 MB on the GPU plus the CPU array it
+ * keeps alive. Measured 2026-10-05 by evicting that tile alone. A 1×1 image makes the copy
+ * 16 bytes and lets the array go.
+ *
+ * Only for an evicted tile, or a carrier unpacked for the instanced feed. A tile the unload
+ * plugin merely hides needs its data for the re-upload when it is shown again.
+ */
+export function retirePointDataTexture(texture: THREE.DataTexture): void {
+  texture.image = { data: new Float32Array(4), width: 1, height: 1 }
+  // The upload probe in arrival-cost.ts leaves the 16-byte re-creation out of its re-uploads.
+  texture.userData.retired = true
+}
+
+/**
  * Pack any position and colour layout into a point-data texture — the general path.
  *
  * The arrival path does not come here: `packPointsForPulling` in point-order.ts writes the

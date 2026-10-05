@@ -466,7 +466,13 @@ function applyBenchPreset(): void {
       // at errorTarget 1 measured 94 tiles of ~1.02 MB. Under that, the cache fills
       // with tiles it may not evict and stops requesting the ones still missing,
       // which shows as sky through the map. See globe.ts for the measurement.
-      globe?.setMemoryBudget(256 * 1024 * 1024, 160 * 1024 * 1024)
+      //
+      // Strong also clears the landing view's whole set. Measured 2026-10-05 there: the
+      // traversal holds 337 tiles (344 MiB) once nothing refuses it; at the old 256 MiB
+      // 251 fit and the rest fell back to coarser parents, blurring the band between the
+      // dome edge and the horizon. Since a tile's image is closed after upload, each one
+      // costs its GPU texture only.
+      globe?.setMemoryBudget(352 * 1024 * 1024, 160 * 1024 * 1024)
     }
   } else if (preset === 'medium') {
     setMaskMode(EXPERIENCE_CONFIG.design.maskMode)

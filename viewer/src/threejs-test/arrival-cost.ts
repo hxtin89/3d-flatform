@@ -152,7 +152,7 @@ export function installUploadProbe(renderer: any): boolean {
     const originalTexture = textures.updateTexture.bind(textures)
     const seenTextures = new WeakSet<object>()
     textures.updateTexture = (texture: any, options: any) => {
-      if (!texture?.userData?.cloudPointData) return originalTexture(texture, options)
+      if (!texture?.userData?.cloudPointData || texture.userData.retired) return originalTexture(texture, options)
       let pending = true
       try {
         const data = textures.get(texture)
