@@ -7,9 +7,10 @@
 //     zenith angle. Redrawn only when the air's parameters change.
 //   · multiple scattering, 32 × 32: Hillaire's closed-form sum of every scattering order past
 //     the first, per height and sun angle. Same schedule.
-//   · sky view at the camera's altitude, 192 × 108, twice: the molecules' light with their
-//     phase applied and the multiple scattering added (A), and the aerosols' single
-//     scattering without its phase (B). Redrawn every frame — about 21 k texels × 30 steps.
+//   · sky view at the camera's altitude, 192 × 108, in two parts from one march (one pass
+//     into two targets): the molecules' light with their phase applied and the multiple
+//     scattering added (A), and the aerosols' single scattering without its phase (B).
+//     Redrawn when the camera's height or up, or the sun, moved — about 21 k texels × 30 steps.
 //     Splitting the aerosol phase out is Bruneton's trick: the sharp forward glow around the
 //     sun is evaluated per pixel, so the low-resolution table does not blur it.
 //   · sky view at the ground, 64 × 36, the same two parts: what the capture below integrates.
@@ -45,7 +46,7 @@ import { AP_N, apSpanKm, spectralK } from './aerial-volume-math'
 // TSL's typings reject most of the mixed scalar / vector arithmetic WGSL and GLSL accept, so
 // the graph is built loosely typed, as elsewhere in this codebase.
 const {
-  Fn, If, Loop, abs, asin, clamp, cos, dot, exp, float, floor, int, length, log, max, min, mix, normalize, pow,
+  Fn, If, Loop, abs, asin, clamp, cos, dot, exp, float, floor, int, length, log, max, min, mix, mrt, normalize, pow,
   renderGroup, screenUV, select, sin, smoothstep, sqrt, texture, uniform, uv, vec2, vec3, vec4,
 } = TSL as any
 
@@ -521,8 +522,13 @@ export function createSkyAtmosphere(opts: {
     })
     return { A, B }
   }
-  /** The sky-view table's (u, v) → view ray and its light, for one of the two parts. */
-  const skyViewNode = (radius: any, part: 'A' | 'B', size: readonly [number, number], steps: number, muS: any) => Fn(() => {
+  /** The sky-view table's (u, v) → view ray and its light: both parts from one march, into
+   *  the two targets of one pass. The march runs in the first output's inline function; the
+   *  second output reads its B, which that function declared in the same shader body (three
+   *  builds the outputs in order, setup and code alike). */
+  const skyViewNode = (radius: any, size: readonly [number, number], steps: number, muS: any) => {
+    const shared: { B: any } = { B: null }
+    const partA = Fn(() => {
     const st = uv()
     const u = fromSubUvToUnit(st.x, size[0])
     const v = fromSubUvToUnit(st.y, size[1])
@@ -538,16 +544,18 @@ export function createSkyAtmosphere(opts: {
     const sinLight = sqrt(max(cosLight.mul(cosLight).oneMinus(), 0))
     const dir = vec3(sin(viewZenith).mul(cosLight), sin(viewZenith).mul(sinLight), cos(viewZenith))
     const result = integrateView(r, dir, muS, steps)
-    return vec4(part === 'A' ? result.A : result.B, 1)
-  })()
-  const skyViewA = makeTarget(SKY_VIEW_SIZE[0], SKY_VIEW_SIZE[1], 'sky-view-a')
-  const skyViewB = makeTarget(SKY_VIEW_SIZE[0], SKY_VIEW_SIZE[1], 'sky-view-b')
-  const groundViewA = makeTarget(GROUND_VIEW_SIZE[0], GROUND_VIEW_SIZE[1], 'sky-ground-view-a')
-  const groundViewB = makeTarget(GROUND_VIEW_SIZE[0], GROUND_VIEW_SIZE[1], 'sky-ground-view-b')
-  const skyViewATexture = texture(skyViewA.texture)
-  const skyViewBTexture = texture(skyViewB.texture)
-  const groundViewATexture = texture(groundViewA.texture)
-  const groundViewBTexture = texture(groundViewB.texture)
+    shared.B = result.B
+    return vec4(result.A, 1)
+    })()
+    const partB = Fn(() => vec4(shared.B, 1))()
+    return mrt({ output: partA, partB })
+  }
+  const skyView = makeTarget(SKY_VIEW_SIZE[0], SKY_VIEW_SIZE[1], 'sky-view', 2)
+  const groundView = makeTarget(GROUND_VIEW_SIZE[0], GROUND_VIEW_SIZE[1], 'sky-ground-view', 2)
+  const skyViewATexture = texture(skyView.textures[0])
+  const skyViewBTexture = texture(skyView.textures[1])
+  const groundViewATexture = texture(groundView.textures[0])
+  const groundViewBTexture = texture(groundView.textures[1])
 
   /** (u, v) in a sky-view table for an ENU direction seen from radius r. */
   const skyViewUv = (r: any, dirEnu: any, size: readonly [number, number], up: any) => {
@@ -879,7 +887,9 @@ export function createSkyAtmosphere(opts: {
   // survey, 3 its mean over the surroundings, 4 the clear sky's mean radiance (no clouds: what
   // lights the clouds' own tops). One fragment each, a 16 × 32 grid of directions over the
   // upper hemisphere.
-  const captureTarget = new RenderTarget(8, 1, { type: THREE.FloatType, depthBuffer: false })
+  // Half float, as every other table here: a 32-bit float target needs EXT_color_buffer_float
+  // on WebGL2, which some devices with half-float targets lack (they would read zeros).
+  const captureTarget = new RenderTarget(8, 1, { type: THREE.HalfFloatType, depthBuffer: false })
   captureTarget.texture.minFilter = captureTarget.texture.magFilter = THREE.NearestFilter
   const buildCaptureNode = () => Fn(() => {
     const index = uv().x.mul(8).floor()
@@ -888,15 +898,16 @@ export function createSkyAtmosphere(opts: {
     const clearMean = vec3(0).toVar()
     const rows = 16
     const columns = 32
-    let sunThrough: any = float(1)
-    let sunMean: any = float(1)
+    // Variables assigned up front, so the clouds' lookups are declared in the main body.
+    const sunThrough = float(1).toVar()
+    const sunMean = float(1).toVar()
     // The haze's glow under the clouds, from this very capture's view of them rather than from
     // the eased display uniform, which only follows the readback afterwards.
-    let airLight: any = float(1)
+    const airLight = float(1).toVar()
     if (clouds) {
-      sunThrough = float(1).sub(clouds.captureSample(sunDirection).sunOcclusion)
-      sunMean = clouds.captureMeanSunTransmittance().toVar()
-      airLight = sunMean.add(float(1).sub(sunMean).mul(overcastGlow))
+      sunThrough.assign(float(1).sub(clouds.captureSample(sunDirection).sunOcclusion))
+      sunMean.assign(clouds.captureMeanSunTransmittance())
+      airLight.assign(sunMean.add(float(1).sub(sunMean).mul(overcastGlow)))
     }
     Loop(rows, columns, ({ i, j }: { i: any; j: any }) => {
       // Elevation by equal solid angle bands: sin(el) uniform in (0, 1].
@@ -915,20 +926,23 @@ export function createSkyAtmosphere(opts: {
       mean.addAssign(L)
     })
     const dOmega = (2 * PI) / (rows * columns)
-    return select(index.lessThan(0.5), vec4(irradiance.mul(dOmega), 1),
-      select(index.lessThan(1.5), vec4(mean.div(rows * columns), 1),
-        select(index.lessThan(2.5), vec4(sunThrough, sunThrough, sunThrough, 1),
-          select(index.lessThan(3.5), vec4(sunMean, sunMean, sunMean, 1), vec4(clearMean.div(rows * columns), 1)))))
+    // Statements, not a select() chain: WebGL's builder asks the returned node for its type
+    // before it has a stack, and a select over these variables then fails to build (the pass
+    // wrote zeros there, so the sun read as fully behind the clouds).
+    const result = vec4(clearMean.div(rows * columns), 1).toVar()
+    If(index.lessThan(3.5), () => { result.assign(vec4(sunMean, sunMean, sunMean, 1)) })
+    If(index.lessThan(2.5), () => { result.assign(vec4(sunThrough, sunThrough, sunThrough, 1)) })
+    If(index.lessThan(1.5), () => { result.assign(vec4(mean.div(rows * columns), 1)) })
+    If(index.lessThan(0.5), () => { result.assign(vec4(irradiance.mul(dOmega), 1)) })
+    return result
   })()
 
   // ---------------------------------------------------------------- passes
   const passes = {
     transmittance: makePass(transmittanceNode),
     multi: makePass(multiNode),
-    skyA: makePass(skyViewNode(cameraRadius, 'A', SKY_VIEW_SIZE, 30, dot(sunDirection, cameraUp))),
-    skyB: makePass(skyViewNode(cameraRadius, 'B', SKY_VIEW_SIZE, 30, dot(sunDirection, cameraUp))),
-    groundA: makePass(skyViewNode(groundRadius, 'A', GROUND_VIEW_SIZE, 24, sunDirection.z)),
-    groundB: makePass(skyViewNode(groundRadius, 'B', GROUND_VIEW_SIZE, 24, sunDirection.z)),
+    skyView: makePass(skyViewNode(cameraRadius, SKY_VIEW_SIZE, 30, dot(sunDirection, cameraUp))),
+    groundView: makePass(skyViewNode(groundRadius, GROUND_VIEW_SIZE, 24, sunDirection.z)),
     capture: makePass(buildCaptureNode()),
     aerial: makePass(buildAerialNode('volume')),
   }
@@ -982,15 +996,18 @@ export function createSkyAtmosphere(opts: {
     captureInFlight = true
     const generation = captureGeneration
     try {
-      const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, 8, 1) as Float32Array
-      const valid = pixels && pixels.length >= 20 && generation === captureGeneration
-        && [0, 1, 2, 4, 5, 6, 8, 12, 16, 17, 18].every((i) => Number.isFinite(pixels[i]))
+      const raw = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, 8, 1) as Float32Array | Uint16Array
+      // Half-float texels come back as their bits (both backends).
+      const pixel = raw instanceof Uint16Array ? (i: number) => THREE.DataUtils.fromHalfFloat(raw[i]) : (i: number) => raw[i]
+      // Every texel writes alpha 1: an unrenderable target reads back zeros, not a dark sky.
+      const valid = raw && raw.length >= 20 && generation === captureGeneration && Math.abs(pixel(3) - 1) < 0.01
+        && [0, 1, 2, 4, 5, 6, 8, 12, 16, 17, 18].every((i) => Number.isFinite(pixel(i)))
       if (valid) {
-        capturedSky[0] = pixels[0]; capturedSky[1] = pixels[1]; capturedSky[2] = pixels[2]
-        capturedMean[0] = pixels[4]; capturedMean[1] = pixels[5]; capturedMean[2] = pixels[6]
-        light.sunThroughClouds = THREE.MathUtils.clamp(pixels[8], 0, 1)
-        light.cloudSunMean = THREE.MathUtils.clamp(pixels[12], 0, 1)
-        light.clearSkyMean = [pixels[16], pixels[17], pixels[18]]
+        capturedSky[0] = pixel(0); capturedSky[1] = pixel(1); capturedSky[2] = pixel(2)
+        capturedMean[0] = pixel(4); capturedMean[1] = pixel(5); capturedMean[2] = pixel(6)
+        light.sunThroughClouds = THREE.MathUtils.clamp(pixel(8), 0, 1)
+        light.cloudSunMean = THREE.MathUtils.clamp(pixel(12), 0, 1)
+        light.clearSkyMean = [pixel(16), pixel(17), pixel(18)]
       }
     } catch {
       // A lost device or a disposed target: keep the last values.
@@ -1053,8 +1070,8 @@ export function createSkyAtmosphere(opts: {
     textures: {
       transmittance: transmittanceTarget.texture,
       multiScattering: multiTarget.texture,
-      skyViewA: skyViewA.texture,
-      skyViewB: skyViewB.texture,
+      skyViewA: skyView.textures[0],
+      skyViewB: skyView.textures[1],
       aerialVolume: apTarget.texture,
     },
     aerialDebug,
@@ -1096,8 +1113,11 @@ export function createSkyAtmosphere(opts: {
     },
     invalidateCapture() { captureDirty = true },
     async debugRead(table) {
-      const target = { transmittance: transmittanceTarget, multi: multiTarget, skyA: skyViewA, skyB: skyViewB, groundA: groundViewA, capture: captureTarget, aerial: apTarget }[table]
-      const data = await renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height)
+      const [target, index] = ({
+        transmittance: [transmittanceTarget, 0], multi: [multiTarget, 0], skyA: [skyView, 0], skyB: [skyView, 1],
+        groundA: [groundView, 0], capture: [captureTarget, 0], aerial: [apTarget, 0],
+      } as Record<string, [RenderTarget, number]>)[table]
+      const data = await renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, index)
       return { width: target.width, height: target.height, data }
     },
     update(input) {
@@ -1133,8 +1153,7 @@ export function createSkyAtmosphere(opts: {
         lastView.radius = cameraRadius.value
         lastView.up.copy(cameraUp.value)
         lastView.sun.copy(scratchSun)
-        draw(passes.skyA, skyViewA)
-        draw(passes.skyB, skyViewB)
+        draw(passes.skyView, skyView)
       }
 
       // The aerial volume, while something reads it. Its pass and lookup uniforms are written
@@ -1195,8 +1214,7 @@ export function createSkyAtmosphere(opts: {
         captureDirty = false
         lastCaptureMs = now
         lastCaptureSun.copy(scratchSun)
-        draw(passes.groundA, groundViewA)
-        draw(passes.groundB, groundViewB)
+        draw(passes.groundView, groundView)
         draw(passes.capture, captureTarget)
         void readCapture()
       }
@@ -1254,7 +1272,7 @@ export function createSkyAtmosphere(opts: {
     },
     dispose() {
       for (const pass of Object.values(passes)) (pass.quad.material as NodeMaterial).dispose()
-      for (const target of [transmittanceTarget, multiTarget, skyViewA, skyViewB, groundViewA, groundViewB, captureTarget, apTarget]) target.dispose()
+      for (const target of [transmittanceTarget, multiTarget, skyView, groundView, captureTarget, apTarget]) target.dispose()
     },
   }
   writeAir()
@@ -1262,20 +1280,25 @@ export function createSkyAtmosphere(opts: {
   return layer
 }
 
-function makeTarget(width: number, height: number, name: string): RenderTarget {
-  const target = new RenderTarget(width, height, { type: THREE.HalfFloatType, depthBuffer: false })
-  target.texture.minFilter = THREE.LinearFilter
-  target.texture.magFilter = THREE.LinearFilter
-  target.texture.wrapS = THREE.ClampToEdgeWrapping
-  target.texture.wrapT = THREE.ClampToEdgeWrapping
-  target.texture.generateMipmaps = false
-  target.texture.name = name
+/** A half-float table. With `count` 2 it holds two textures, written by one pass through
+ *  mrt(): `output` and `partB` (an MRT output finds its texture by name). */
+function makeTarget(width: number, height: number, name: string, count = 1): RenderTarget {
+  const target = new RenderTarget(width, height, { type: THREE.HalfFloatType, depthBuffer: false, count })
+  target.textures.forEach((t, i) => {
+    t.minFilter = THREE.LinearFilter
+    t.magFilter = THREE.LinearFilter
+    t.wrapS = THREE.ClampToEdgeWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+    t.generateMipmaps = false
+    t.name = count > 1 ? (i === 0 ? 'output' : 'partB') : name
+  })
   return target
 }
 
 function makePass(node: any): { quad: QuadMesh } {
   const material = new NodeMaterial()
   material.fragmentNode = node
+  material.blending = THREE.NoBlending
   material.name = 'sky-pass'
   return { quad: new QuadMesh(material) }
 }
