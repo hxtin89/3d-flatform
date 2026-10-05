@@ -734,6 +734,9 @@ const effects = {
   /** Cloud shadows from the sky's clouds (sky-clouds.ts) in place of the drifting noise slice:
    *  the clouds you see are the shadows you get. */
   skyCloudShadows: false,
+  /** The sky's dome clouds are drawn: the old drifting noise-slice shadows, which match no
+   *  visible cloud, are compiled out. */
+  skyClouds: false,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -1207,7 +1210,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const cloudShadow = float(1).toVar()
     if (effects.cloudShadows && effects.skyCloudShadows) {
       cloudShadow.assign(cloudTransmittance(enu))
-    } else if (effects.cloudShadows && cloudShadowTextureNode) {
+    } else if (effects.cloudShadows && !effects.skyClouds && cloudShadowTextureNode) {
       const sunZ = max(u.sunDirectionEnu.z, float(0.15))
       const toDeck = u.cloudDeckHeight.sub(enu.z).div(sunZ)
       const deckXY = enu.xy.add(u.sunDirectionEnu.xy.mul(toDeck))

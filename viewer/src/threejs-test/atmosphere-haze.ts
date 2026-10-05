@@ -102,6 +102,9 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
   // The caller's vector itself, not a copy: main.ts fills it in once the survey frame is known.
   const up = uniform(opts.up).setGroup(renderGroup)
   const dip = uniform(0.003).setGroup(renderGroup)
+  /** 1 while the sky gradient is off: the physical haze's far wall then meets the flat
+   *  scene.background colour (copied into horizonColor), as the graded mode does. */
+  const flatSky = uniform(CONFIG.skyGradient ? 0 : 1).setGroup(renderGroup)
   let horizonBlend: number = CONFIG.horizonBlend
 
   // 1 − e^(−(d − start)/distance), scaled by strength, then forced to 1 over the last
@@ -149,7 +152,11 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
       const hazed = output.rgb.mul(ap.transmittance).add(ap.inscatter).toVar()
       // Only near the far plane, so the background's own lookups run for few fragments.
       If(wall.greaterThan(0), () => {
-        hazed.assign(mix(hazed, nodes.background(dirEnu, false), wall))
+        If(flatSky.greaterThan(0.5), () => {
+          hazed.assign(mix(hazed, vec3(horizonColor as any), wall))
+        }).Else(() => {
+          hazed.assign(mix(hazed, nodes.background(dirEnu, false), wall))
+        })
       })
       return vec4(hazed, output.a)
     })()
@@ -165,6 +172,7 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
     }
   }
   const apply = () => {
+    flatSky.value = sky ? 0 : 1
     if (physical) {
       sceneNodes.fogNode = haze ? physicalHaze : null
       sceneNodes.backgroundNode = sky ? physicalSky : null

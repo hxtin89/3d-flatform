@@ -11,7 +11,7 @@ import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin, UnloadTilesPlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
-  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, isCloudEffectEnabled, sunLight,
+  applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, isCloudEffectEnabled, sunLight, effectMaterialStale,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -210,6 +210,14 @@ export function createGlobe(opts: {
   tiles.setCamera(camera)
   scene.add(tiles.group)
 
+  // The backstop under refreshEffects: a tile shown again with a graph older than the effect
+  // flags is rebuilt before it draws (the event fires inside tiles.update(), before the render).
+  const onTileShown = ({ scene: s, visible }: any) => {
+    if (!visible || !s) return
+    s.traverse((o: any) => { if (effectMaterialStale(o.material)) rebuildEffectMaterial(o.material) })
+  }
+  tiles.addEventListener('tile-visibility-change', onTileShown)
+
   // The image plugin pre-flips tiles via createImageBitmap({imageOrientation:'flipY'})
   // because WebGL ignores Texture.flipY for ImageBitmaps. three's WebGPU backend,
   // however, DOES honour flipY for ImageBitmaps (in-shader UV flip) → double flip →
@@ -243,6 +251,9 @@ export function createGlobe(opts: {
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
       mat.colorNode = imageryColorNode(uniforms)
       mat.userData.rebuildEffectGraph = () => { mat.colorNode = imageryColorNode(uniforms) }
+      // Stamped like the point tiles, so one parked in the cache across an effect switch is
+      // caught when it is shown again (onTileShown below).
+      mat.userData.effectsVersion = cloudEffectsVersion()
       o.material.dispose()
       o.material = mat
     })
@@ -567,7 +578,11 @@ export function createGlobe(opts: {
     },
     setResolution,
     refreshEffects() {
-      tiles.group.traverse((object: any) => rebuildEffectMaterial(object.material))
+      // Every loaded tile, not only the shown ones: 3d-tiles-renderer takes hidden tiles out of
+      // the group, and they would come back with the graph from before the switch.
+      tiles.forEachLoadedModel((model: THREE.Object3D) => {
+        model.traverse((object: any) => rebuildEffectMaterial(object.material))
+      })
     },
     setImageryEnabled(enabled) {
       if (enabled === imageryEnabled) return
@@ -590,6 +605,7 @@ export function createGlobe(opts: {
       }
     },
     dispose() {
+      tiles.removeEventListener('tile-visibility-change', onTileShown)
       stopRetrying()
       detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)

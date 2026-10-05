@@ -992,6 +992,8 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
       case 'daylightGrading':
         environmentLayer?.setGradingEnabled(effective.daylightGrading)
         hazeLayer.setNeutral(!effective.daylightGrading)
+        // The sky's light follows the switch too: neutral light while grading is off.
+        applySkyPackage()
         break
       case 'fieldModels':
         fieldModelLayer?.setVisible(effective.fieldModels)
@@ -1234,7 +1236,7 @@ const SUN_SHADOWS = EXPERIENCE_CONFIG.sunShadows
 const sunShadows: SunShadowLayer = createSunShadowLayer({ renderer, uniforms })
 let shadowsIntent: boolean = params.get('shadows') === '0' ? false : params.get('shadows') === '1' ? true : SUN_SHADOWS.enabled
 let shadowsEnabled: boolean = skyEnabled && SKY.sunLight.enabled && shadowsIntent
-let fogShadowsIntent = true
+let fogShadowsIntent: boolean = SUN_SHADOWS.fog
 sunShadows.setEnabled(shadowsEnabled)
 setCloudEffectEnabled('canopyShadows', shadowsEnabled)
 groundFog.setBuildOption('canopyShadows', shadowsEnabled)
@@ -1244,8 +1246,10 @@ const SKY_CLOUDS = EXPERIENCE_CONFIG.skyClouds
 const skyClouds: SkyClouds = createSkyClouds({ renderer, sky: skyAtmosphere })
 let cloudsEnabled: boolean
 let cloudsIntent = true
-let fogCloudShadowsIntent = true
-let cloudShadowsIntent = true
+let fogCloudShadowsIntent: boolean = SKY_CLOUDS.fogCloudShadows
+let cloudShadowsIntent: boolean = SKY_CLOUDS.cloudShadows
+/** The old cloud-shadow button's choice (master over every cloud shadow). */
+let legacyCloudShadowsIntent: boolean = EXPERIENCE_CONFIG.pointLighting.cloudShadowsEnabled
 {
   const value = params.get('clouds')
   cloudsIntent = value === '0' ? false : value ? true : SKY_CLOUDS.enabled
@@ -3588,9 +3592,12 @@ function bindShaderEffectToggle(
 }
 
 bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog', DESIGN.groundFog.enabled)
-bindShaderEffectToggle(
-  'cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows', EXPERIENCE_CONFIG.pointLighting.cloudShadowsEnabled,
-)
+// The master switch over every cloud shadow, the sky's or the old noise deck's: an intent the
+// sky package resolves (applySkyPackage), so the two can never disagree about the flag.
+bindEffectToggle('cloudShadowToggle', '☁ Cloud shadows', legacyCloudShadowsIntent, (on) => {
+  legacyCloudShadowsIntent = on
+  applySkyPackage()
+})
 // Distance fog is three's own scene fog, so switching it off is a matter of taking
 // it off the scene — with no fog there, the node materials build without it. The
 // device tier can also disable it (see the fogAtmosphere case), and that still wins.
@@ -4032,7 +4039,9 @@ const setFogValue = (key: FogSlider['key'], value: number) => {
  * the shadows the sun light, the clouds the sky.
  */
 function applySkyPackage(): void {
-  const sunLightOn = skyEnabled && sunLightIntent
+  // Daylight grading off (the compare mode) means neutral light: no sun light, no shadows.
+  const grading = renderOptions.effective().daylightGrading
+  const sunLightOn = skyEnabled && sunLightIntent && grading
   shadowsEnabled = sunLightOn && shadowsIntent
   cloudsEnabled = skyEnabled && cloudsIntent
   let tiles = false
@@ -4043,17 +4052,35 @@ function applySkyPackage(): void {
   tiles = setCloudEffectEnabled('sunLight', sunLightOn) || tiles
   sunShadows.setEnabled(shadowsEnabled)
   tiles = setCloudEffectEnabled('canopyShadows', shadowsEnabled) || tiles
-  const cloudShadowsOn = cloudsEnabled && cloudShadowsIntent
+  const cloudShadowsOn = cloudsEnabled && cloudShadowsIntent && grading
   tiles = setCloudEffectEnabled('skyCloudShadows', cloudShadowsOn) || tiles
-  if (cloudShadowsOn) tiles = setCloudEffectEnabled('cloudShadows', true) || tiles
+  tiles = setCloudEffectEnabled('skyClouds', cloudsEnabled) || tiles
+  // Under the dome clouds only their own shadows; without them the old deck, as before.
+  tiles = setCloudEffectEnabled('cloudShadows', legacyCloudShadowsIntent && (!cloudsEnabled || cloudShadowsOn)) || tiles
   groundFog.setSkyLight(skyEnabled ? skyAtmosphere.light : null)
   let fogGraph = groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
   fogGraph = groundFog.setBuildOption('canopyShadows', shadowsEnabled && fogShadowsIntent) || fogGraph
-  fogGraph = groundFog.setBuildOption('cloudShadows', cloudsEnabled && fogCloudShadowsIntent) || fogGraph
+  fogGraph = groundFog.setBuildOption('cloudShadows', cloudsEnabled && fogCloudShadowsIntent && grading) || fogGraph
   environmentLayer?.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
-  if (cloudsEnabled) environmentLayer?.setCloudIntent(false, false)
+  syncBoxClouds()
   if (tiles) refreshEffectShaders()
   if (fogGraph && groundFog.isEnabled()) refreshGroundFog()
+}
+/** The box clouds' intent from before the sky's clouds suppressed them; null while they are
+ *  not suppressed. Suppressed on the sky clouds' off → on, restored on on → off (only if they
+ *  were on, and never over a choice made with the cloud button meanwhile). */
+let boxCloudIntentBeforeSky: boolean | null = null
+function syncBoxClouds(): void {
+  if (!environmentLayer) return
+  if (cloudsEnabled && boxCloudIntentBeforeSky === null) {
+    boxCloudIntentBeforeSky = environmentLayer.getCloudState().intent
+    environmentLayer.setCloudIntent(false, false)
+  } else if (!cloudsEnabled && boxCloudIntentBeforeSky !== null) {
+    const state = environmentLayer.getCloudState()
+    const restore = boxCloudIntentBeforeSky && !state.intent && state.tier !== 'constrained'
+    boxCloudIntentBeforeSky = null
+    if (restore) environmentLayer.setCloudIntent(true, false)
+  }
 }
 const skyPanel = mountSkyPanel({
   containers: {
@@ -4078,6 +4105,8 @@ const skyPanel = mountSkyPanel({
   },
   onPreset: (look) => skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth }),
 })
+// Once everything the package touches exists: one consistent set of flags from the start.
+applySkyPackage()
 /** Re-read the sliders the loader preset may have moved. */
 function syncGroundFogQualityControls(): void {
   fogSliderRefresh.get('steps')?.()
@@ -5048,7 +5077,7 @@ function updateSky(daylight: DaylightState, deltaS: number): void {
   uniforms.sunDirectionEnu.value.copy(daylight.sunDirectionEnu)
   const light = skyAtmosphere.light
   // With the clouds' own shadows on the receivers the sun is not dimmed twice.
-  const cloudsShadowLocally = cloudsEnabled && isCloudEffectEnabled('cloudShadows')
+  const cloudsShadowLocally = isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
   uniforms.sunLightColor.value.copy(light.sun).multiply(sunLightParams.tint)
     .multiplyScalar(sunLightParams.sunIntensity * (cloudsShadowLocally ? 1 : light.sunThroughClouds))
   uniforms.skyLightColor.value.copy(light.sky).multiplyScalar(sunLightParams.skyIntensity)
@@ -5450,8 +5479,8 @@ async function main(): Promise<void> {
     onCloudStateChange: updateCloudControls,
   })
   environmentLayer.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
-  // The sky's clouds replace the box clouds: off for this session, the stored choice kept.
-  if (cloudsEnabled) environmentLayer.setCloudIntent(false, false)
+  // The sky's clouds replace the box clouds: off while they are on, the stored choice kept.
+  syncBoxClouds()
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
   // Hand over anything dialled in while the layer did not exist yet — both of

@@ -957,7 +957,8 @@ export const EXPERIENCE_CONFIG = {
     /** The shadows fade in as the sun climbs from 2° to 8°. */
     fadeStartDeg: 2,
     fadeEndDeg: 8,
-    /** Volumetric shadows in the fog's march: optical-depth multiplier and the mip bias. */
+    /** Volumetric shadows in the fog's march: on, optical-depth multiplier and mip bias. */
+    fog: true,
     fogStrength: 1,
     fogLodBias: 1,
   },
@@ -970,6 +971,9 @@ export const EXPERIENCE_CONFIG = {
   skyClouds: {
     enabled: true,
     preset: 'fair',
+    /** The clouds' shadows on the points and the basemap, and in the fog's march. */
+    cloudShadows: true,
+    fogCloudShadows: true,
     /** Panorama size (azimuth × elevation, rows packed toward the horizon), steps per ray, and
      *  the frames one bake is spread over. */
     bakeWidth: 2048,

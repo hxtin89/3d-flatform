@@ -44,6 +44,9 @@ const {
 } = TSL as any
 
 const TRANSMITTANCE_SIZE = [256, 64] as const
+const WGS84_A = 6_378_137
+const WGS84_B = 6_356_752.314245
+const scratchUp = new THREE.Vector3()
 const MULTI_SCATTERING_SIZE = 32
 const SKY_VIEW_SIZE = [192, 108] as const
 const GROUND_VIEW_SIZE = [64, 36] as const
@@ -58,6 +61,10 @@ export interface SkyCloudSource {
   /** The sun's mean transmittance through the clouds over the surroundings (a node): how much
    *  of the air around is in sunlight at all. */
   meanSunTransmittance(): any
+  /** The same two as the capture sees them: from the survey's ground, the newest finished
+   *  clouds, no display fades. */
+  captureSample(dirEnu: any): { radiance: any; skyOcclusion: any; sunOcclusion: any }
+  captureMeanSunTransmittance(): any
   /** Bumped whenever `sample` would build different nodes. */
   readonly version: number
 }
@@ -261,6 +268,10 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   const worldToEnu = group(uniform(new THREE.Matrix3()))
   const sunDirection = group(uniform(new THREE.Vector3(0, 0, 1)))
   const cameraRadius = group(uniform(model.bottomRadiusKm + 0.3))
+  /** The camera's local zenith in the survey's ENU frame: away from the survey the planet's
+   *  up tilts against ENU z (1.2° at the entrance flight's start, 132 km out), and the horizon,
+   *  limb glow and ground split follow the camera's up, not the survey's. */
+  const cameraUp = group(uniform(new THREE.Vector3(0, 0, 1)))
   const groundRadius = group(uniform(model.bottomRadiusKm))
   const radianceScale = group(uniform(new THREE.Vector3(PI, PI, PI)))
   const skyBrightness = group(uniform(1))
@@ -444,7 +455,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     return { A, B }
   }
   /** The sky-view table's (u, v) → view ray and its light, for one of the two parts. */
-  const skyViewNode = (radius: any, part: 'A' | 'B', size: readonly [number, number], steps: number) => Fn(() => {
+  const skyViewNode = (radius: any, part: 'A' | 'B', size: readonly [number, number], steps: number, muS: any) => Fn(() => {
     const st = uv()
     const u = fromSubUvToUnit(st.x, size[0])
     const v = fromSubUvToUnit(st.y, size[1])
@@ -459,7 +470,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     const cosLight = u.mul(u).mul(2).sub(1).negate()
     const sinLight = sqrt(max(cosLight.mul(cosLight).oneMinus(), 0))
     const dir = vec3(sin(viewZenith).mul(cosLight), sin(viewZenith).mul(sinLight), cos(viewZenith))
-    const result = integrateView(r, dir, sunDirection.z, steps)
+    const result = integrateView(r, dir, muS, steps)
     return vec4(part === 'A' ? result.A : result.B, 1)
   })()
   const skyViewA = makeTarget(SKY_VIEW_SIZE[0], SKY_VIEW_SIZE[1], 'sky-view-a')
@@ -472,12 +483,12 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   const groundViewBTexture = texture(groundViewB.texture)
 
   /** (u, v) in a sky-view table for an ENU direction seen from radius r. */
-  const skyViewUv = (r: any, dirEnu: any, size: readonly [number, number]) => {
+  const skyViewUv = (r: any, dirEnu: any, size: readonly [number, number], up: any) => {
     const vHorizon = sqrt(max(r.mul(r).sub(air.bottom.mul(air.bottom)), 0))
     const cosBeta = vHorizon.div(r)
     const beta = cosBeta.acos()
     const zenithHorizon = float(PI).sub(beta)
-    const mu = clamp(dirEnu.z, -1, 1)
+    const mu = clamp(dot(dirEnu, up), -1, 1)
     const viewZenith = mu.acos()
     const groundHit = mu.lessThan(cosBeta.negate())
     const vUp = float(1).sub(sqrt(max(float(1).sub(viewZenith.div(zenithHorizon)), 0))).mul(0.5)
@@ -485,8 +496,8 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     const v = select(groundHit, vDown, vUp)
     // Azimuth between the view and the sun, in the horizontal plane; undefined straight up or
     // with the sun at the zenith, where the sky is symmetric anyway.
-    const viewXY = dirEnu.xy
-    const sunXY = sunDirection.xy
+    const viewXY = dirEnu.sub(up.mul(dot(dirEnu, up)))
+    const sunXY = sunDirection.sub(up.mul(dot(sunDirection, up)))
     const lv = length(viewXY)
     const ls = length(sunXY)
     const cosLight = select(lv.mul(ls).greaterThan(1e-5), dot(viewXY, sunXY).div(max(lv.mul(ls), 1e-9)), float(1))
@@ -495,14 +506,14 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   }
   const miePhase = (cosTheta: any) => cornetteShanks(cosTheta, air.mieG)
   const skyRadiance = (dirEnu: any) => {
-    const st = skyViewUv(cameraRadius, dirEnu, SKY_VIEW_SIZE)
+    const st = skyViewUv(cameraRadius, dirEnu, SKY_VIEW_SIZE, cameraUp)
     const A = skyViewATexture.sample(st).level(0).rgb
     const B = skyViewBTexture.sample(st).level(0).rgb
     return A.add(B.mul(miePhase(dot(dirEnu, sunDirection)))).mul(skyBrightness).mul(cloudLight)
   }
   /** The clear sky seen from the ground, as if there were no clouds at all. */
   const clearGroundSkyRadiance = (dirEnu: any) => {
-    const st = skyViewUv(groundRadius.add(0.01), dirEnu, GROUND_VIEW_SIZE)
+    const st = skyViewUv(groundRadius.add(0.01), dirEnu, GROUND_VIEW_SIZE, vec3(0, 0, 1))
     const A = groundViewATexture.sample(st).level(0).rgb
     const B = groundViewBTexture.sample(st).level(0).rgb
     return A.add(B.mul(miePhase(dot(dirEnu, sunDirection))))
@@ -513,7 +524,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
    *  distance; (1, −1) for a ray that does not. */
   const toGround = (dirEnu: any) => {
     const r = cameraRadius
-    const mu = dirEnu.z
+    const mu = dot(dirEnu, cameraUp)
     const disc = r.mul(r).mul(mu.mul(mu).sub(1)).add(air.bottom.mul(air.bottom))
     const hit = mu.lessThan(0).and(disc.greaterThanEqual(0))
     const d = r.negate().mul(mu).sub(sqrt(max(disc, 0)))
@@ -544,7 +555,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   }
   const aerial = (distanceM: any, dirEnu: any) => {
     const r0 = cameraRadius
-    const mu0 = dirEnu.z
+    const mu0 = dot(dirEnu, cameraUp)
     const dKm = max(distanceM.sub(aerialStart), 0).div(1000)
     const radiusAt = (t: any) => sqrt(r0.mul(r0).add(t.mul(t)).add(r0.mul(mu0).mul(t).mul(2)))
     const startKm = min(aerialStart.div(1000), distanceM.div(1000))
@@ -587,7 +598,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       const cosTheta = dot(dirEnu, sunDirection)
       // The angle from the sun's centre, precise for the small angles the disc spans.
       const theta = asin(min(length(dirEnu.sub(sunDirection)).mul(0.5), 1)).mul(2)
-      const viewT = select(ground.hit, vec3(0), transmittanceAt(cameraRadius, dirEnu.z))
+      const viewT = select(ground.hit, vec3(0), transmittanceAt(cameraRadius, dot(dirEnu, cameraUp)))
       const edge = max(sunSharpness.mul(pixelAngle), 1e-6)
       const mask = float(1).sub(smoothstep(sunRadius.sub(edge.mul(0.5)), sunRadius.add(edge.mul(0.5)), theta))
       // Limb darkening (Hestroffer & Magnan 1998): I(μ) = 1 − u(1 − μ^0.8), normalised so the
@@ -630,7 +641,7 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
       clearMean.addAssign(clearGroundSkyRadiance(dir))
       let L: any = groundSkyRadiance(dir)
       if (clouds) {
-        const c = clouds.sample(dir)
+        const c = clouds.captureSample(dir)
         L = L.mul(float(1).sub(c.skyOcclusion)).add(c.radiance)
       }
       // Each sample stands for 2π / (rows · columns) sr.
@@ -641,8 +652,8 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     let sunThrough: any = float(1)
     let sunMean: any = float(1)
     if (clouds) {
-      sunThrough = float(1).sub(clouds.sample(sunDirection).sunOcclusion)
-      sunMean = clouds.meanSunTransmittance()
+      sunThrough = float(1).sub(clouds.captureSample(sunDirection).sunOcclusion)
+      sunMean = clouds.captureMeanSunTransmittance()
     }
     return select(index.lessThan(0.5), vec4(irradiance.mul(dOmega), 1),
       select(index.lessThan(1.5), vec4(mean.div(rows * columns), 1),
@@ -654,10 +665,10 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
   const passes = {
     transmittance: makePass(transmittanceNode),
     multi: makePass(multiNode),
-    skyA: makePass(skyViewNode(cameraRadius, 'A', SKY_VIEW_SIZE, 30)),
-    skyB: makePass(skyViewNode(cameraRadius, 'B', SKY_VIEW_SIZE, 30)),
-    groundA: makePass(skyViewNode(groundRadius, 'A', GROUND_VIEW_SIZE, 24)),
-    groundB: makePass(skyViewNode(groundRadius, 'B', GROUND_VIEW_SIZE, 24)),
+    skyA: makePass(skyViewNode(cameraRadius, 'A', SKY_VIEW_SIZE, 30, dot(sunDirection, cameraUp))),
+    skyB: makePass(skyViewNode(cameraRadius, 'B', SKY_VIEW_SIZE, 30, dot(sunDirection, cameraUp))),
+    groundA: makePass(skyViewNode(groundRadius, 'A', GROUND_VIEW_SIZE, 24, sunDirection.z)),
+    groundB: makePass(skyViewNode(groundRadius, 'B', GROUND_VIEW_SIZE, 24, sunDirection.z)),
     capture: makePass(buildCaptureNode()),
   }
   const draw = (pass: { quad: QuadMesh }, target: RenderTarget) => {
@@ -782,6 +793,11 @@ export function createSkyAtmosphere(opts: { renderer: any; settings: AtmosphereS
     update(input) {
       applyParams()
       worldToEnu.value.copy(input.worldToEnu)
+      // The geodetic normal at the camera, rotated into the survey's ENU frame.
+      const c = input.cameraEcef
+      scratchUp.set(c.x / (WGS84_A * WGS84_A), c.y / (WGS84_A * WGS84_A), c.z / (WGS84_B * WGS84_B)).normalize()
+        .applyMatrix3(input.worldToEnu).normalize()
+      if (Number.isFinite(scratchUp.x)) cameraUp.value.copy(scratchUp)
       scratchSun.copy(input.sunDirectionEnu).normalize()
       sunDirection.value.copy(scratchSun)
       const heightM = ellipsoidHeight(input.cameraEcef.x, input.cameraEcef.y, input.cameraEcef.z)

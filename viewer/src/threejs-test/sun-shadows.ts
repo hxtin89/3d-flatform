@@ -47,7 +47,7 @@ import { EXPERIENCE_CONFIG } from './config'
 import { cloudCasterGraphFor, type CloudUniforms, type ShadowCasterUniforms } from './point-cloud'
 import { dotModeOf, drawnPoints, setDrawnPoints } from './dot-geometry'
 
-const { Fn, Loop, abs, clamp, exp, float, int, max, min, mix, renderGroup, select, smoothstep, sqrt, texture, uniform, uv, vec2, vec4 } = TSL as any
+const { Fn, If, Loop, abs, clamp, exp, float, int, max, min, mix, renderGroup, select, smoothstep, sqrt, texture, uniform, uv, vec2, vec4 } = TSL as any
 
 const CONFIG = EXPERIENCE_CONFIG.sunShadows
 
@@ -143,20 +143,24 @@ const opticalDepthAbove = (m: any, hRel: any) => {
  * `level`, when given, picks the mip (the fog reads blurrier levels).
  */
 export function canopyTransmittance(enu: any, lift: any, level: any = null, strength: any = null): any {
-  const hRel = enu.z.sub(canopyShadow.floorZ).add(lift).mul(canopyShadow.bandHeightInv)
-  const read = (map: any, st: any) => (level === null ? map.sample(st).level(0) : map.sample(st).level(level))
-  const st1 = floorUv(enu, canopyShadow.centre1, canopyShadow.half1)
-  const edge = (st: any) => {
-    const d = max(abs(st.x.sub(0.5)), abs(st.y.sub(0.5)))
-    return float(1).sub(smoothstep(0.44, 0.5, d))
-  }
-  const tau1 = opticalDepthAbove(read(canopyShadow.maps[1], st1), hRel)
-  const st0 = floorUv(enu, canopyShadow.centre0, canopyShadow.half0)
-  const tau0 = opticalDepthAbove(read(canopyShadow.maps[0], st0), hRel)
-  // The inner cascade where it covers the receiver, blending into the outer one at its rim.
-  const inner = select(canopyShadow.cascades.greaterThan(1.5), edge(st0), float(0))
-  const tau = mix(tau1.mul(edge(st1)), tau0, inner)
-  return exp(tau.mul(strength ?? canopyShadow.strength).mul(canopyShadow.fade).negate())
+  // Its own function body, so the inner cascade's read is a real branch: with one cascade
+  // (the default) no receiver pays for the second map.
+  return Fn(() => {
+    const hRel = enu.z.sub(canopyShadow.floorZ).add(lift).mul(canopyShadow.bandHeightInv)
+    const read = (map: any, st: any) => (level === null ? map.sample(st).level(0) : map.sample(st).level(level))
+    const edge = (st: any) => {
+      const d = max(abs(st.x.sub(0.5)), abs(st.y.sub(0.5)))
+      return float(1).sub(smoothstep(0.44, 0.5, d))
+    }
+    const st1 = floorUv(enu, canopyShadow.centre1, canopyShadow.half1)
+    const tau = opticalDepthAbove(read(canopyShadow.maps[1], st1), hRel).mul(edge(st1)).toVar()
+    If(canopyShadow.cascades.greaterThan(1.5), () => {
+      // The inner cascade where it covers the receiver, blending into the outer one at its rim.
+      const st0 = floorUv(enu, canopyShadow.centre0, canopyShadow.half0)
+      tau.assign(mix(tau, opticalDepthAbove(read(canopyShadow.maps[0], st0), hRel), edge(st0)))
+    })
+    return exp(tau.mul(strength ?? canopyShadow.strength).mul(canopyShadow.fade).negate())
+  })()
 }
 
 // ---------------------------------------------------------------- the layer
@@ -450,20 +454,31 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       const bandH = Math.max(input.bandHeightM, 10)
       canopyShadow.bandHeightInv.value = 1 / bandH
       canopyShadow.minSpread.value = Math.max(params.minSpreadM, 0.1) / bandH
-      if (fade <= 0) return
+      if (fade <= 0) {
+        // No shadow pass tonight, but the proxies go on ageing, so tiles evicted meanwhile are
+        // not held by them.
+        for (const proxy of [...proxies.values()]) {
+          proxy.mesh.visible = false
+          if (frame - proxy.lastUsed > 600) dropProxy(proxy)
+        }
+        return
+      }
 
-      // The region: the dome around its centre on the floor, stretched toward where the
-      // canopy's height throws its shadow at this sun.
+      // The region: every receiver in the dome, projected onto the floor along the sun. The
+      // basemap under the lifted floor projects toward the sun, the canopy up to its top away
+      // from it, each by slope × height (the same sun.z clamp as the projection itself); the
+      // map spans both, square, a little beyond so the rim stays out of the edge fade.
       const sz = Math.max(sun.z, 0.08)
       centreEnu.copy(input.domeCentre ?? input.fallbackCentre).applyMatrix4(input.enuInverse)
       const radius = input.domeCentre ? input.domeRadius : input.fallbackRadius
-      const throwM = Math.min(bandH / sz * Math.hypot(sun.x, sun.y), 6 * bandH)
+      const slope = Math.hypot(sun.x, sun.y) / sz
       const azimuth = Math.hypot(sun.x, sun.y) > 1e-4 ? new THREE.Vector2(sun.x, sun.y).normalize() : new THREE.Vector2()
-      fitCentre.set(
-        centreEnu.x - sun.x / sz * (centreEnu.z - input.floorZ) - azimuth.x * throwM * 0.5,
-        centreEnu.y - sun.y / sz * (centreEnu.z - input.floorZ) - azimuth.y * throwM * 0.5,
-      )
-      const wantedHalf = Math.max(radius + throwM * 0.5, 50) * 1.05
+      const belowFloor = Math.max(input.floorZ - centreEnu.z, 0)
+      const towardSun = radius + slope * belowFloor
+      const awayFromSun = radius + slope * bandH
+      const shift = (towardSun - awayFromSun) * 0.5
+      fitCentre.set(centreEnu.x + azimuth.x * shift, centreEnu.y + azimuth.y * shift)
+      const wantedHalf = Math.max((towardSun + awayFromSun) * 0.5, 50) * 1.05 / 0.88
       // Quarter-octave steps; grow at once, shrink only once well below the step.
       const step = 2 ** (Math.ceil(Math.log2(wantedHalf) * 4) / 4)
       if (step > quantisedHalf || step < quantisedHalf / 1.35 || !quantisedHalf) quantisedHalf = step
@@ -499,7 +514,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
 
       const sunMoved = lastSun.angleTo(sun) > 0.0009
       const moved = !lastCentre.equals(fitCentre)
-      const signatureText = `${signature}|${casters}|${quantisedHalf}|${resolution}`
+      const signatureText = `${signature}|${casters}|${quantisedHalf}|${resolution}|${input.floorZ.toFixed(2)}|${bandH.toFixed(1)}`
       const changed = forceUpdate || sunMoved || moved || signatureText !== lastSignature
       const due = frame - lastUpdateFrame >= Math.max(1, Math.round(params.updateEvery))
       if (!changed || !due) return

@@ -224,11 +224,17 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   shapeTexture.needsUpdate = true
   const weatherNode = texture(weatherTexture)
   const shapeNode = texture3D(shapeTexture, vec3(0), 0)
-  const baker = createCloudNoiseBaker()
-  void Promise.all([
-    baker.bake({ kind: 'weather', size: CONFIG.weatherSize, seed: 11 }),
-    baker.bake({ kind: 'shape', size: CONFIG.shapeSize, seed: 7 }),
-  ]).then(([weather, shape]) => {
+  // Baked the first time the clouds are on, so a session with them off starts no worker.
+  let baker: ReturnType<typeof createCloudNoiseBaker> | null = null
+  const startNoise = () => {
+    if (baker) return
+    baker = createCloudNoiseBaker()
+    void Promise.all([
+      baker.bake({ kind: 'weather', size: CONFIG.weatherSize, seed: 11 }),
+      baker.bake({ kind: 'shape', size: CONFIG.shapeSize, seed: 7 }),
+    ]).then(([weather, shape]) => noiseReady(weather, shape))
+  }
+  const noiseReady = (weather: Uint8Array, shape: Uint8Array) => {
     const w = new THREE.DataTexture(weather, CONFIG.weatherSize, CONFIG.weatherSize, THREE.RGBAFormat, THREE.UnsignedByteType)
     w.wrapS = w.wrapT = THREE.RepeatWrapping
     w.magFilter = THREE.LinearFilter
@@ -246,7 +252,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     shapeNode.value = s
     ready = true
     dirty = true
-  })
+  }
 
   // ---------------------------------------------------------------- uniforms (bake)
   const u = {
@@ -522,6 +528,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       panoramasCleared = true
       finished = 0
       visible.value = 0
+      baked.value = 0
       dirty = true
     }
   }
@@ -568,6 +575,8 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   const altitudeFade = group(uniform(1))
   const visible = group(uniform(0))
   const sunOcclusionHaze = group(uniform(1))
+  /** 1 once a bake has finished into the current panorama (the capture's gate). */
+  const baked = group(uniform(0))
   /** Bakes finished since the panoramas were made: 0 shows nothing, 1 fades the first in. */
   let finished = 0
 
@@ -609,6 +618,17 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     const c = node.sample(vec2(h0.x, h1.y).mul(inv)).level(0)
     const d = node.sample(vec2(h1.x, h1.y).mul(inv)).level(0)
     return mix(mix(a, b, g1.x), mix(c, d, g1.x), g1.y)
+  }
+  /** The capture's view (sky-atmosphere.ts): from the bake's eye itself — the survey's ground,
+   *  whatever the camera does — through the newest finished panorama, with none of the
+   *  display's fades. The light the sky casts on the ground must not depend on where the
+   *  camera flies or on a cross-fade in progress. */
+  const captureSample = (dirEnu: any) => {
+    const azimuth = atan(dirEnu.x, dirEnu.y).div(2 * PI).add(0.5)
+    const st = vec2(azimuth, sqrt(TSL.asin(clamp(dirEnu.z, 0, 1)).div(PI / 2)))
+    const c = bicubic(currentNode, st)
+    const fade = baked.mul(smoothstep(-0.03, 0.0, dirEnu.z))
+    return { radiance: c.xyz.mul(fade), skyOcclusion: c.w.mul(fade), sunOcclusion: clamp(c.w.div(sunOcclusionHaze), 0, 1).mul(fade) }
   }
   const sample = (dirEnu: any) => {
     const { st, below } = lookupUv(dirEnu)
@@ -677,13 +697,13 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   const scratchColor = new THREE.Color()
 
   // The mean of the sun's transmittance over the shadow map: a 4 × 4 grid on its coarse mips.
-  const meanSunTransmittance = () => {
+  const meanOf = (gate: any) => {
     let sum: any = float(0)
     for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
       const tau = cloudShadow.map.sample(vec2((i + 0.5) / 4, (j + 0.5) / 4)).level(5).r
       sum = sum.add(exp(tau.mul(cloudShadow.strength).negate()))
     }
-    return mix(float(1), sum.div(16), cloudShadow.fade.mul(visible))
+    return mix(float(1), sum.div(16), cloudShadow.fade.mul(gate))
   }
 
   const layer: SkyClouds = {
@@ -691,7 +711,9 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     get ready() { return ready },
     get version() { return 0 },
     sample,
-    meanSunTransmittance,
+    meanSunTransmittance: () => meanOf(visible),
+    captureSample,
+    captureMeanSunTransmittance: () => meanOf(baked),
     presets: () => Object.keys(CONFIG.presets),
     applyPreset(name) {
       const look = presetLook(name)
@@ -706,6 +728,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     bakeProgress: () => (bakeActive ? bakeRow / Math.max(params.bakeHeight, 1) : 1),
     update(input) {
       if (!params.enabled) { visible.value = 0; cloudShadow.fade.value = 0; return }
+      startNoise()
       if (!ready) return
       cloudShadow.mean.value = sky.light.cloudSunMean
       ensurePanoramas()
@@ -731,12 +754,19 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         eyeXYShared.value.set(0, 0)
         // Ambient for the bake: the clear sky's mean radiance above, the ground's below.
         const light = sky.light
-        const K = Math.max(light.illuminanceScale, 1e-6)
         // The clouds' tops see the clear sky above them, not the clouds' own glow: the capture's
         // cloud-free mean, so the bake cannot feed on its own previous result.
         u.ambientTop.value.set(...light.clearSkyMean).multiplyScalar(1.2)
-        scratchColor.copy(light.sun).multiplyScalar(Math.max(sun.z, 0)).add(light.sky).multiplyScalar(1 / K)
-        u.groundRadiance.value.set(scratchColor.r, scratchColor.g, scratchColor.b).multiply(new THREE.Vector3(...EXPERIENCE_CONFIG.sky.atmosphere.groundAlbedo)).multiplyScalar(1 / PI)
+        // The ground below, back in relative units channel by channel: the light uniforms carry
+        // K and the white balance, and the display applies both again (π·K·balance).
+        const toRelative = nodes.radianceScale.value as THREE.Vector3
+        const albedo = EXPERIENCE_CONFIG.sky.atmosphere.groundAlbedo
+        scratchColor.copy(light.sun).multiplyScalar(Math.max(sun.z, 0)).add(light.sky)
+        u.groundRadiance.value.set(
+          scratchColor.r / Math.max(toRelative.x, 1e-6) * albedo[0],
+          scratchColor.g / Math.max(toRelative.y, 1e-6) * albedo[1],
+          scratchColor.b / Math.max(toRelative.z, 1e-6) * albedo[2],
+        )
         // The shadow map: once per bake, centred where the survey's sun rays cross the base.
         const sz = Math.max(sun.z, 0.05)
         const baseM = look.baseKm * 1000
@@ -778,6 +808,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         if (bakeRow >= target.height) {
           bakeActive = false
           rotate()
+          baked.value = 1
           sky.invalidateCapture()
         }
       }
@@ -794,7 +825,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       bakeMaterial.dispose()
       denoiseMaterial.dispose()
       shadowMaterial.dispose()
-      baker.dispose()
+      baker?.dispose()
       cloudShadow.map.value = placeholder
       cloudShadow.fade.value = 0
     },
