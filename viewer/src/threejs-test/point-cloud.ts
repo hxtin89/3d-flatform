@@ -846,6 +846,11 @@ const tileThinScale = uniform(1).onObjectUpdate(
 const tileSpacingMetres = uniform(SHARED_FALLBACK_SPACING_M).onObjectUpdate(
   ({ material }: any) => material?.userData?.spacingMetres?.value ?? SHARED_FALLBACK_SPACING_M,
 )
+/** The tile's own spacing, fixed when it arrives — not the eased spacing of the drawn stack
+ *  above, which follows the camera. The canopy shadow pass weighs its splats by it. */
+const tileOwnSpacing = uniform(SHARED_FALLBACK_SPACING_M).onObjectUpdate(
+  ({ material }: any) => material?.userData?.ownSpacingMetres ?? SHARED_FALLBACK_SPACING_M,
+)
 // Vector and colour uniforms mutate `self.value` rather than returning a new object, which
 // is the pattern three uses for modelNormalMatrix — returning a fresh instance every frame
 // would allocate once per tile per frame.
@@ -1329,18 +1334,24 @@ export interface ShadowCasterUniforms {
   fraction: any
   density: any
   minTexels: any
+  /** sin e / κ: turns a splat's optical depth back into its plain coverage, the fourth
+   *  channel (how many layers of points overlap there). */
+  unitScale: any
 }
 
 const casterGraphCache = new Map<string, { vertexNode: any; fragmentNode: any; key: string }>()
 
 /**
  * The canopy shadow pass's graph for one dot mode (sun-shadows.ts). The same point the colour
- * graph draws — the pulled texel or the instanced attribute, melted toward the map by the
- * dome — but projected along the sun onto the floor plane in clip space directly, as a splat
- * of world size from the point's spacing, weighed so a fully covered layer adds the
- * configured optical depth along the slanted ray whatever the spacing, thinning or the share
- * of points drawn. The fragment writes the weight times a smooth radial profile and the
- * profile-weighted height and height², added up by the blend.
+ * graph draws — the pulled texel or the instanced attribute, where the data put it: no dome
+ * melt, so the shadows do not follow the view — projected along the sun onto the floor plane
+ * in clip space directly, as a splat of world size from the tile's own spacing, weighed so the
+ * tile's points add up to one fully covered layer of the configured optical depth along the
+ * slanted ray. Nothing here depends on the camera: not the thinning, not the eased stack
+ * spacing, not the share the main pass draws. The fragment writes the weight times a smooth
+ * radial profile, the profile-weighted height and height², and the plain coverage, added up by
+ * the blend; the receivers divide by the coverage's layer count, so the levels of the
+ * hierarchy that overlap at a spot (ADD refinement) count once.
  */
 export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode, c: ShadowCasterUniforms) {
   const feedKey = mode.feed === 'pulled' ? `pulled-${mode.shape}` : `${colorItemSize}`
@@ -1368,32 +1379,21 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
     pointLocal = attribute(POINT_POSITION_ATTRIBUTE, 'vec3')
     corner = (attribute('position', 'vec3') as any).xy
   }
-  let local: any = pointLocal
-  let fade: any = float(1)
-  if (effects.sphereFade) {
-    const world0: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
-    const enu0: any = u.enuInverse.mul(vec4(world0, 1)).xyz
-    fade = sphereFadeFactor(u, enu0)
-    const localUp: any = transformDirection(u.sphereFadeUpWorld, modelWorldMatrixInverse)
-    local = pointLocal.add(localUp.mul(u.sphereFadeCentre.z.sub(enu0.z).mul(float(1).sub(fade))))
-  }
-  const world: any = modelWorldMatrix.mul(vec4(local, 1)).xyz
+  const world: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
   const enu: any = u.enuInverse.mul(vec4(world, 1)).xyz
   const sz: any = max(c.sun.z, float(0.08))
   const height: any = enu.z.sub(c.floorZ)
   const q: any = enu.xy.sub(c.sun.xy.div(sz).mul(height))
-  // The drawn points' spacing (the whole stack at this spot, thinned), then the spacing among
-  // the share the shadow pass draws.
-  const spacing: any = tileSpacingMetres.mul(tileThinScale).div((c.fraction as any).sqrt())
+  // The tile's own spacing, then the spacing among the share of its loaded points the shadow
+  // pass draws.
+  const spacing: any = tileOwnSpacing.div((c.fraction as any).sqrt())
   const radius: any = spacing.mul(c.splatScale)
   const drawnRadius: any = max(radius, c.texelM.mul(c.minTexels))
   const energy: any = radius.div(drawnRadius).pow(2)
   // κ s² / (π r² sin e): a full layer at spacing s adds κ / sin e along the slanted ray.
-  const weight: any = c.density.mul(energy).mul(fade)
+  const weight: any = c.density.mul(energy)
     .div(c.splatScale.mul(c.splatScale).mul(Math.PI).mul(sz))
-  // A point the dome has melted away weighs nothing: drawn at zero size, it costs no fragment.
-  const splatRadius: any = effects.sphereFade ? drawnRadius.mul(step(1e-4, fade)) : drawnRadius
-  const ndc: any = q.sub(c.centre).add(corner.mul(splatRadius.mul(2))).div(c.halfExtent)
+  const ndc: any = q.sub(c.centre).add(corner.mul(drawnRadius.mul(2))).div(c.halfExtent)
   const weightV: any = varying(weight, 'v_casterWeight')
   const heightV: any = varying(height.mul(c.bandHeightInv), 'v_casterHeight')
   const uvV: any = varying(corner.mul(2), 'v_casterUv')
@@ -1403,7 +1403,7 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
     // (1 − ρ²)², three times its mean over the disc so the splat integrates to its weight.
     const profile: any = max(float(1).sub(rho2), float(0)).pow(2).mul(3)
     const w: any = weightV.mul(profile)
-    return vec4(w, w.mul(heightV), w.mul(heightV).mul(heightV), 0)
+    return vec4(w, w.mul(heightV), w.mul(heightV).mul(heightV), w.mul(c.unitScale))
   })()
   const graph = { vertexNode, fragmentNode, key }
   casterGraphCache.set(key, graph)
@@ -1458,6 +1458,8 @@ export function createCloudMaterial(
    */
   material.userData.thinScale = { value: 1 }
   material.userData.spacingMetres = { value: spacingM }
+  // The arrival value, kept: streaming.ts eases spacingMetres toward the stack's spacing.
+  material.userData.ownSpacingMetres = spacingM
   material.userData.debugTile = { value: new THREE.Vector4(debug.level, debug.isLeaf ? 1 : 0, 1, 1) }
   material.userData.debugTint = new THREE.Color(debug.tint)
 

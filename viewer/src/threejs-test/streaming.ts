@@ -126,6 +126,13 @@ export interface StreamingCloud {
    *  gate. For passes that draw the same points from elsewhere (the canopy shadows). */
   forEachDrawnQuad(visit: (mesh: THREE.Mesh) => void): void
   /**
+   * Every loaded tile's dot meshes, shown or not, with the world matrix each would draw with.
+   * `attached` is false for a tile the renderer has taken out of the scene (hidden: out of
+   * the frustum or no longer needed at this distance); its matrix is rebuilt from the tile
+   * group, since a detached object's own matrixWorld goes stale (the floating origin moves).
+   */
+  forEachLoadedQuad(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void
+  /**
    * Hold freshly built tiles back and release a few per frame, instead of letting every
    * tile that arrived in one frame upload and compile in that same frame.
    *
@@ -1219,6 +1226,23 @@ export function createStreamingCloud(opts: {
     }
   }
 
+  const detachedMatrix = new THREE.Matrix4()
+  function forEachLoadedQuad(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void {
+    tiles.forEachLoadedModel((scene: THREE.Object3D, tile: any) => {
+      const stats = tileStats.get(tile)
+      if (!stats) return
+      const attached = scene.parent === tiles.group
+      for (const mesh of stats.quads) {
+        if (attached) { visit(mesh, true, mesh.matrixWorld); continue }
+        // The local chain up to the tile's scene root, then the group's current world matrix.
+        detachedMatrix.copy(mesh.matrix)
+        for (let node = mesh.parent; node; node = node.parent) detachedMatrix.premultiply(node.matrix)
+        detachedMatrix.premultiply(tiles.group.matrixWorld)
+        visit(mesh, false, detachedMatrix)
+      }
+    })
+  }
+
   function applyRenderGate(): void {
     renderGateHidden = 0
     renderGateTiles = 0
@@ -1247,6 +1271,7 @@ export function createStreamingCloud(opts: {
     tiles,
     group: tiles.group,
     forEachDrawnQuad,
+    forEachLoadedQuad,
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {

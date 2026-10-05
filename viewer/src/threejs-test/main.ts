@@ -5125,7 +5125,7 @@ function updateSunShadows(daylight: DaylightState): void {
     fallbackRadius: 1500,
     floorZ: groundFogFloorZ,
     bandHeightM: uniforms.canopyTopZ.value - groundFogFloorZ + 10,
-    forEachCaster: (visit) => stream?.forEachDrawnQuad(visit),
+    forEachCaster: (visit) => stream?.forEachLoadedQuad(visit),
   })
 }
 

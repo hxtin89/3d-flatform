@@ -35,17 +35,23 @@
 // level the same number of texels across the view — the job cascades usually do. An optional
 // inner cascade over the dome's middle sharpens close-ups further.
 //
-// Casters. The tiles already selected and drawn for the camera (no second traversal), each as
-// a proxy in a private scene that shares the tile's geometry and point data and draws only a
-// prefix of its points: the arrival reorder makes any prefix a fair sample, and each splat's
-// weight rises by the share left out, so thinning the shadow pass does not lighten it. Same
-// melt toward the map as the drawn points, so shadows follow the dome.
+// Casters. Every loaded tile whose points are on the GPU — shown, or hidden since it was last
+// shown and not yet released — each as a proxy in a private scene that shares the tile's
+// geometry and point data and draws a fixed share of its loaded points: the arrival reorder
+// makes any prefix a fair sample, and each splat's weight rises by the share left out. None of
+// it follows the camera. It used to: the casters were the tiles drawn this frame, at the count
+// the thinning drew, weighed by the stack spacing the streaming eases — so a turn dropped the
+// tiles leaving the frustum and their shadows with them, and for seconds after every move the
+// dissolve's drifting counts redrew the map with a different sample every other frame (the
+// shimmer that looked like loading). The levels of the hierarchy overlap where a tile is
+// refined (ADD); a fourth channel counts them and the receivers divide by it, so refinement
+// changes the shadows' detail, never their depth. No dome melt in the shadow pass either.
 import * as THREE from 'three'
 import { NodeMaterial, QuadMesh, RenderTarget } from 'three/webgpu'
 import * as TSL from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import { cloudCasterGraphFor, type CloudUniforms, type ShadowCasterUniforms } from './point-cloud'
-import { dotModeOf, drawnPoints, setDrawnPoints } from './dot-geometry'
+import { dotModeOf, drawnPoints, loadedPoints, setDrawnPoints } from './dot-geometry'
 
 const { Fn, If, Loop, abs, clamp, exp, float, int, max, min, mix, renderGroup, select, smoothstep, sqrt, texture, uniform, uv, vec2, vec4 } = TSL as any
 
@@ -129,7 +135,8 @@ const floorUv = (enu: any, centre: any, half: any) => {
 
 /** Optical depth above height `hRel` (canopy units) from one texel's moments. */
 const opticalDepthAbove = (m: any, hRel: any) => {
-  const total = max(m.x, 0)
+  // Divided by the number of overlapping hierarchy levels (one where a tile is not refined).
+  const total = max(m.x, 0).div(max(m.w, 1))
   const mean = m.y.div(max(m.x, 1e-5))
   const variance = max(m.z.div(max(m.x, 1e-5)).sub(mean.mul(mean)), canopyShadow.minSpread.mul(canopyShadow.minSpread))
   const spread = sqrt(variance).mul(1.7320508)
@@ -179,13 +186,16 @@ export interface SunShadowInput {
   /** Floor of the point cloud and its height span above it, raw ENU metres. */
   floorZ: number
   bandHeightM: number
-  /** Visits every dot mesh drawn this frame. */
-  forEachCaster(visit: (mesh: THREE.Mesh) => void): void
+  /** Visits every loaded dot mesh (streaming.ts forEachLoadedQuad): `attached` false for a
+   *  tile the renderer has hidden, with the world matrix it would draw with. */
+  forEachCaster(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void
 }
 
 export interface SunShadowStats {
   enabled: boolean
   casters: number
+  /** Of those, hidden tiles (out of the frustum or not needed at this distance). */
+  hiddenCasters: number
   pointsDrawn: number
   updates: number
   lastUpdateFrame: number
@@ -203,6 +213,8 @@ export interface SunShadowLayer {
   invalidate(): void
   /** The outer map, for the debug view. */
   debugTexture(): THREE.Texture
+  /** Debugging: the outer map's texels (Σw, Σw·h, Σw·h², layers), as stored. */
+  debugRead(): Promise<{ width: number; height: number; data: Float32Array | Uint16Array } | null>
   stats(): SunShadowStats
   dispose(): void
 }
@@ -254,6 +266,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
     fraction: group(uniform(params.pointFraction)),
     density: group(uniform(params.density)),
     minTexels: group(uniform(params.minSplatTexels)),
+    unitScale: group(uniform(1)),
   }
 
   // ---------------------------------------------------------------- targets
@@ -400,7 +413,12 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       mesh.name = 'canopy-shadow-proxy'
       // Gone with the tile's material (an UnloadTilesPlugin hide, an eviction): the proxy must not
       // keep the tile's scene, arrays and point data alive. Cheap to make again on the next show.
-      const onSourceDisposed = () => { if (proxies.get(source) === created) dropProxy(created) }
+      // Marked too: a hidden tile whose GPU copy was released must not be drawn back up by
+      // the shadow pass. Shown again, it uploads itself and casts again.
+      const onSourceDisposed = () => {
+        ;(sourceMaterial as any).userData.shadowReleased = true
+        if (proxies.get(source) === created) dropProxy(created)
+      }
       sourceMaterial.addEventListener('dispose', onSourceDisposed)
       const created: Proxy = {
         mesh, source, material: built.material, sourceMaterial, graphKey: built.key, lastUsed: frame, count: 0,
@@ -430,6 +448,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
   let quantisedHalf = 0
   let lastPointsDrawn = 0
   let lastCasters = 0
+  let lastHiddenCasters = 0
   const lastSun = new THREE.Vector3()
   const lastCentre = new THREE.Vector2(Infinity, Infinity)
   let lastSignature = ''
@@ -455,8 +474,14 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
     },
     invalidate() { forceUpdate = true },
     debugTexture: () => finals[1]?.texture ?? placeholder,
+    async debugRead() {
+      const target = finals[1]
+      if (!target || !resolution) return null
+      const data = await renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height)
+      return { width: target.width, height: target.height, data }
+    },
     stats: () => ({
-      enabled, casters: lastCasters, pointsDrawn: lastPointsDrawn, updates, lastUpdateFrame,
+      enabled, casters: lastCasters, hiddenCasters: lastHiddenCasters, pointsDrawn: lastPointsDrawn, updates, lastUpdateFrame,
       halfExtentM: quantisedHalf, texelM: quantisedHalf * 2 / Math.max(resolution, 1),
     }),
     update(input) {
@@ -504,20 +529,31 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       const texelM = quantisedHalf * 2 / resolution
       fitCentre.set(Math.round(fitCentre.x / texelM) * texelM, Math.round(fitCentre.y / texelM) * texelM)
 
-      // What gets drawn: every caster's prefix, weighed for the share left out.
+      // What gets drawn: a fixed share of every caster's loaded points, weighed for the rest.
       const fraction = THREE.MathUtils.clamp(params.pointFraction, 0.02, 1)
       let casters = 0
+      let hiddenCasters = 0
       let points = 0
       let signature = 0
-      input.forEachCaster((mesh) => {
+      input.forEachCaster((mesh, attached, matrixWorld) => {
+        const data = (mesh.material as any)?.userData
+        if (!data) return
+        if (attached) {
+          data.shadowSeen = true
+          data.shadowReleased = false
+        } else if (!data.shadowSeen || data.shadowReleased) {
+          // Never shown (its points were never uploaded), or its GPU copy is gone.
+          return
+        }
         const proxy = proxyFor(mesh)
         if (!proxy) return
         proxy.lastUsed = frame
-        proxy.mesh.matrixWorld.copy(mesh.matrixWorld)
+        proxy.mesh.matrixWorld.copy(matrixWorld)
         if (proxy.mesh.parent !== shadowScene) shadowScene.add(proxy.mesh)
         proxy.mesh.visible = true
-        proxy.count = Math.max(1, Math.ceil(drawnPoints(mesh) * fraction))
+        proxy.count = Math.max(1, Math.ceil(loadedPoints(mesh) * fraction))
         casters++
+        if (!attached) hiddenCasters++
         points += proxy.count
         signature = (signature * 31 + proxy.count + mesh.id * 7) % 2_147_483_647
       })
@@ -529,6 +565,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
         }
       }
       lastCasters = casters
+      lastHiddenCasters = hiddenCasters
       lastPointsDrawn = points
 
       const sunMoved = lastSun.angleTo(sun) > 0.0009
@@ -551,6 +588,7 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
       caster.fraction.value = fraction
       caster.density.value = params.density
       caster.minTexels.value = params.minSplatTexels
+      caster.unitScale.value = sz / Math.max(params.density, 1e-6)
       canopyShadow.sun.value.copy(sun)
       canopyShadow.floorZ.value = input.floorZ
 
