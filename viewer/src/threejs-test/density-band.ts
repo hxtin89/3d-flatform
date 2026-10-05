@@ -25,10 +25,6 @@ export function densityBandForUri(uri: string): DensityBand {
   return 'Overview p02'
 }
 
-export function denserBand(a: DensityBand, b: DensityBand): DensityBand {
-  return bandRank(b) > bandRank(a) ? b : a
-}
-
 /**
  * The level index the debug views and the isolate switch work in: APH node depth, or
  * 0/1/2 for the One-LOD tiers. Unlike `bandRank` this is not a comparison key — it is
@@ -74,7 +70,13 @@ export function shortBandLabel(band: DensityBand): string {
   return band.replace('APH ', '')
 }
 
-function bandRank(band: DensityBand): number {
+/** Band names in order, with depths compared as numbers (APH d9 before d10). One collator
+ *  for every call: `localeCompare` with options builds a new one per comparison. */
+export const compareBands = new Intl.Collator(undefined, { numeric: true }).compare
+
+/** Comparison key: the higher, the denser. A tile's is fixed, so callers that compare
+ *  every frame keep it rather than parsing the band again. */
+export function bandRank(band: DensityBand): number {
   // APH depth outranks every One-LOD band; the two never appear together.
   const depth = /^APH d(\d+)$/.exec(band)
   if (depth) return 10 + Number(depth[1])

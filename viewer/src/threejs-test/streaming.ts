@@ -11,7 +11,7 @@ import {
   POINT_COLOR_ATTRIBUTE, POINT_DATA_PROPERTY, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
-  denserBand, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
+  bandRank, compareBands, densityBandForUri, densityLevel, densityLevelColor, type DensityBand,
 } from './density-band'
 import { ViewerRequestVolumePlugin } from './viewer-request-volume'
 import {
@@ -27,6 +27,7 @@ import {
 import { EXPERIENCE_CONFIG } from './config'
 import { sampleGroundHeights, type GroundSample } from './ground-sample'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { createStillFrameGate, type StillFrameGate, type StillFrameInputs } from './still-frame'
 
 export interface StreamingStats {
   visible: number
@@ -101,6 +102,10 @@ export interface StreamingCloud {
   /** Diagnostics only. */
   debugVolume: { blockedByCeiling: number[]; inside: number[]; outside: number[]; noVolume: number[] }
   update(): void
+  /** While `bypass` holds, the traversal runs every frame; otherwise frames that would
+   *  only repeat the last traversal skip it (still-frame.ts). */
+  setStillFrameGate(bypass: boolean): void
+  stillFrameStats(): ReturnType<StillFrameGate['stats']>
   setErrorTarget(v: number): void
   /** Diagnostic mode: no mask gate and large resident/worker limits so every
    * APH leaf selected by the camera frustum can finish loading. */
@@ -523,11 +528,63 @@ export function createStreamingCloud(opts: {
   })
   tiles.registerPlugin(unloadPlugin as any)
 
+  // Skips the traversal on frames that would only repeat the last one — see still-frame.ts.
+  // Before each update the library asks every plugin whether one is needed and walks the
+  // tree only if one says yes; this is the only plugin here that answers, so it decides.
+  // A loaded tile or a newly processed tileset node sends 'needs-update', which reopens it.
+  const stillGate = createStillFrameGate()
+  let traverseNow = true
+  let stillGateBypass = false
+  let densityCeilingLevel = NaN
+  tiles.registerPlugin({
+    name: 'STILL_FRAME_GATE',
+    doTilesNeedUpdate: () => traverseNow,
+    preprocessNode: () => stillGate.invalidate(),
+  } as any)
+  tiles.addEventListener('needs-update', () => stillGate.invalidate())
+  tiles.addEventListener('camera-resolution-change', () => stillGate.invalidate())
+  // An eviction makes room in a cache that refused requests, and only a traversal
+  // requests them again; so a full cache need not keep the gate open every frame.
+  tiles.addEventListener('dispose-model', () => stillGate.invalidate())
+  const stillView = new THREE.Matrix4()
+  const stillGroupInverse = new THREE.Matrix4()
+  const stillSpheres: number[] = []
+  /** Everything the traversal reads, beyond the tile tree itself. */
+  function stillFrameInputs(): StillFrameInputs {
+    // The camera's pose in the tiles' own frame, so an origin rebase, which moves both, is
+    // no change. This way round a turn changes only the rotation terms: the other way
+    // round (the tiles in camera space) the translation would carry the tiles' origin,
+    // the Earth's centre 6,400 km off, and magnify every turn by that lever.
+    stillGroupInverse.copy(tiles.group.matrixWorld).invert()
+    stillView.multiplyMatrices(stillGroupInverse, camera.matrixWorld)
+    stillSpheres.length = 0
+    if (maskActive) {
+      const c = maskRegion.sphere.center
+      stillSpheres.push(c.x, c.y, c.z, maskRadiusRequested)
+    }
+    if (povActive) stillSpheres.push(povEye.x, povEye.y, povEye.z, povBudget)
+    // The dome band reaches the traversal only through the rim-detail view error.
+    if (renderGateActive && domeBand && domeBand.rimDetailFactor > 1) {
+      const c = renderSphere.center
+      stillSpheres.push(c.x, c.y, c.z, renderSphere.radius, domeBand.rampM, domeBand.fadeIn, domeBand.fadeOut, domeBand.rimDetailFactor)
+    }
+    return {
+      view: stillView.elements,
+      projection: camera.projectionMatrix.elements,
+      errorTarget: tiles.errorTarget,
+      spheres: stillSpheres,
+      mode: `${maskActive ? 'mask ' : ''}${povActive ? 'pov ' : ''}${renderGateActive ? 'dome ' : ''}${leafLoading ? 'leaf' : ''}`,
+    }
+  }
+
   /** `debugTiles` are this tile's own materials, kept so the false-colour inspector can
    *  write their per-frame uniforms without traversing the scene graph every frame. */
   const tileStats = new WeakMap<object, {
     points: number
     density: DensityBand
+    /** bandRank(density), kept because stats() compares it for every visible tile every
+     *  frame and the band would otherwise be parsed again each time. */
+    rank: number
     debugTiles: any[]
     /** The quad meshes this tile draws, for measuring the area they cover. Kept as a
      *  list because one tile can carry several point sources. */
@@ -1010,9 +1067,9 @@ export function createStreamingCloud(opts: {
     )
     const debugTiles: any[] = []
     const quads: THREE.Mesh[] = []
-    // The PNTS loader keeps the tile's whole decoded ArrayBuffer alive here, and that is
-    // the buffer `reorderForPrefixSampling` copies out of — position and colour are both
-    // views into it. Dropping the reference is what makes the reorder memory-neutral:
+    // The PNTS loader keeps the tile's whole fetched body alive here (read in place, see
+    // pnts-parse.ts), and that is the buffer `reorderForPrefixSampling` copies out of —
+    // position and colour are both views into it. Dropping the reference is what makes the reorder memory-neutral:
     // 15 bytes per point are released against the 16 the new arrays take. Nothing in the
     // viewer reads `featureTable`, and in 3d-tiles-renderer only the B3DM path does, so
     // this is dead weight for a PNTS tile either way.
@@ -1085,7 +1142,7 @@ export function createStreamingCloud(opts: {
       if (Array.isArray(source.material)) source.material.forEach((material: any) => material?.dispose?.())
       else (source.material as any)?.dispose?.()
     }
-    tileStats.set(tile, { points, density, debugTiles, quads })
+    tileStats.set(tile, { points, density, rank: bandRank(density), debugTiles, quads })
     recordArrival(performance.now() - arrivalStartedAt, points)
   })
   // Fired before 3d-tiles-renderer disposes the tile, while its scene is still whole. Both
@@ -1155,8 +1212,13 @@ export function createStreamingCloud(opts: {
     povCandidateCount = 0
     povPoints = 0
     const root = (tiles as any).root
-    const info = (tiles as any).cameraInfo?.[0]
-    if (!root || !info || !(info.sseDenominator > 0)) return Infinity
+    // From the live camera, as prepareForTraversal works it out, not from cameraInfo: that
+    // is written inside tiles.update(), which runs after this, so it would still hold the
+    // last traversal's resolution — after a resize that could be many frames old.
+    const resolution = (tiles as any).cameraMap?.get(camera)
+    const projection = camera.projectionMatrix.elements
+    const sseDenominator = resolution?.height > 0 ? (2 / projection[5]) / resolution.height : -1
+    if (!root || !(sseDenominator > 0)) return Infinity
     const target = tiles.errorTarget
     const sphere = maskRegion.sphere
     const visit = (tile: any): void => {
@@ -1171,7 +1233,7 @@ export function createStreamingCloud(opts: {
         entry.points = points
         povCandidateCount++
       }
-      const error = distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * info.sseDenominator)
+      const error = distance === 0 ? Infinity : (tile.geometricError ?? 0) / (distance * sseDenominator)
       if (!(error > target) && !tile?.internal?.hasUnrenderableContent) return
       const children = tile.children
       if (!Array.isArray(children)) return
@@ -1239,16 +1301,25 @@ export function createStreamingCloud(opts: {
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
-      loadGateCut = 0
-      // The point-of-view load runs the mask at the largest radius the point cap allows;
-      // everything else runs it at the radius asked for.
-      if (maskActive) {
-        maskRegion.sphere.radius = maskRadiusRequested
-        if (povActive && Number.isFinite(povBudget)) {
-          povRadius = solvePovRadius()
-          maskRegion.sphere.radius = Math.min(maskRadiusRequested, povRadius)
-        } else {
-          povRadius = Infinity
+      // Loading keeps it running: the library clears isLoading only at the end of a
+      // traversal. A full cache does not: requests it refused are retried by the traversal
+      // that the next eviction triggers ('dispose-model' above).
+      traverseNow = stillGate.decide(
+        stillFrameInputs(), performance.now(), Boolean((tiles as any).isLoading), stillGateBypass,
+      )
+      if (traverseNow) {
+        // Only when it runs: the count describes the last traversal, and the panel reads it.
+        loadGateCut = 0
+        // The point-of-view load runs the mask at the largest radius the point cap allows;
+        // everything else runs it at the radius asked for.
+        if (maskActive) {
+          maskRegion.sphere.radius = maskRadiusRequested
+          if (povActive && Number.isFinite(povBudget)) {
+            povRadius = solvePovRadius()
+            maskRegion.sphere.radius = Math.min(maskRadiusRequested, povRadius)
+          } else {
+            povRadius = Infinity
+          }
         }
       }
       tiles.update()
@@ -1268,6 +1339,10 @@ export function createStreamingCloud(opts: {
       // After the release, so a tile released this frame is gated in this frame too.
       applyRenderGate()
     },
+    setStillFrameGate(bypass: boolean) {
+      stillGateBypass = bypass
+    },
+    stillFrameStats: () => stillGate.stats(),
     setArrivalBudget(perFrame: number) {
       arrivalBudget = Math.max(0, Math.floor(perFrame))
       if (arrivalBudget === 0) {
@@ -1282,14 +1357,17 @@ export function createStreamingCloud(opts: {
       }
     },
     setParseBudget(maxJobs: number) {
+      stillGate.invalidate()
       parseBudget = Math.max(1, Math.floor(maxJobs))
       // Leaf loading deliberately runs the queue wide open; it restores this value on exit.
       if (!leafLoading) tiles.parseQueue.maxJobs = parseBudget
     },
     setErrorTarget(value: number) {
+      stillGate.invalidate()
       tiles.errorTarget = value
     },
     setLeafLoading(enabled: boolean) {
+      stillGate.invalidate()
       if (enabled === leafLoading) return
       leafLoading = enabled
       if (enabled) {
@@ -1332,6 +1410,11 @@ export function createStreamingCloud(opts: {
       }
     },
     setDensityCeiling(level: number) {
+      // Called every frame, so only a real change reopens the gate.
+      if (level !== densityCeilingLevel) {
+        densityCeilingLevel = level
+        stillGate.invalidate()
+      }
       requestVolumePlugin?.setDensityCeiling(level)
     },
     /**
@@ -1372,6 +1455,7 @@ export function createStreamingCloud(opts: {
       }
     },
     setMemoryBudget(cacheMaxBytes: number, gpuBytesTarget: number) {
+      stillGate.invalidate()
       tiles.lruCache.maxBytesSize = cacheMaxBytes
       // The floor is where the cache comes to rest, so it has to stay clear of the
       // ceiling: clamped to `cacheMaxBytes` itself, the medium and constrained tiers
@@ -1392,6 +1476,7 @@ export function createStreamingCloud(opts: {
       }
     },
     setMemoryBudgetExact(budget: MemoryBudgetSnapshot) {
+      stillGate.invalidate()
       // setMemoryBudget() only ever grows maxSize / shrinks minBytesSize, so a
       // snapshot restore (compare mode off) needs plain assignment.
       tiles.lruCache.maxBytesSize = budget.maxBytesSize
@@ -1490,13 +1575,15 @@ export function createStreamingCloud(opts: {
     stats() {
       let points = 0
       let density: DensityBand = 'Overview p02'
+      let densityRank = bandRank(density)
       let leafTiles = 0
       const mix = new Map<DensityBand, { tiles: number; points: number }>()
       for (const tile of tiles.visibleTiles) {
         const stats = tileStats.get(tile)
         if (!stats) continue
         points += stats.points
-        density = denserBand(density, stats.density)
+        // The first of the densest wins, as a strict '>' makes it.
+        if (stats.rank > densityRank) { densityRank = stats.rank; density = stats.density }
         // Terminal = refinement stopped here, i.e. no child of this tile is also on
         // screen. Checked against the visible set rather than a traversal flag because
         // that is what the eye sees: a drawn tile with drawn children is an ancestor
@@ -1526,7 +1613,7 @@ export function createStreamingCloud(opts: {
         // Coarsest first, so the readout reads like the ladder it is.
         terminalLevels: [...mix.entries()]
           .map(([band, entry]) => ({ band, tiles: entry.tiles, points: entry.points }))
-          .sort((a, b) => a.band.localeCompare(b.band, undefined, { numeric: true })),
+          .sort((a, b) => compareBands(a.band, b.band)),
         cacheBytes: (tiles.lruCache as any).cachedBytes ?? 0,
         gpuBytes: (unloadPlugin as any).estimatedGpuBytes ?? 0,
         cacheTiles: (tiles.lruCache as any).itemSet?.size ?? 0,
@@ -1690,6 +1777,7 @@ export function createStreamingCloud(opts: {
       return { shrunk, tiles: spacingEntries.length }
     },
     reloadTiles() {
+      stillGate.invalidate()
       const cache = (tiles as any).lruCache
       const itemList: any[] = cache?.itemList
       if (!Array.isArray(itemList)) return 0

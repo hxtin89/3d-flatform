@@ -33,6 +33,7 @@ import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
+import { installPntsParseInPlace, pntsParseCounts } from './pnts-parse'
 import { EXPERIENCE_CONFIG } from './config'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
@@ -118,6 +119,8 @@ const originEnabled = !params.has('noorigin')
  * from it.
  */
 const gpuTiming = params.has('gputime')
+/** `?stillgate=off` runs the point-cloud traversal every frame, as before still-frame.ts. */
+const stillGateOff = params.get('stillgate') === 'off'
 /** `?preset=strong|medium|constrained` overrides whatever the loader benchmark
  * measures. The benchmark samples frame times while tiles are still streaming,
  * so a hitch can collapse the median past its 60 fps threshold and pin a
@@ -2338,6 +2341,8 @@ function stopForGraphicsFailure(message: string): void {
   graphicsFailed = true
   renderer.setAnimationLoop(null)
   document.body.classList.add('hud-open')
+  // No frame follows to fill the card it just opened, so fill it once here.
+  try { updateHud(lastStreamStats) } catch { /* a lost device: keep whatever the rows hold */ }
   setStatus(message)
   if (bootLoading) showLoadError(message)
 }
@@ -4223,6 +4228,13 @@ function updateStreaming(now: number): StreamingStats | null {
     stream.setPovLoad(null)
   }
   foveation?.beginFrame()
+  // The still-frame gate stands aside while a debug view-error tool is on — each changes
+  // what the traversal selects without the gate seeing it, and foveation keeps per-frame
+  // counters — and while the loader benchmark is still measuring, so that it sees the
+  // main thread as it always was.
+  stream.setStillFrameGate(stillGateOff || foveationSettings.enabled
+    || Boolean(viewAngle?.settings.enabled) || Boolean(viewDepth?.settings.enabled)
+    || (bootLoading && !benchPresetApplied))
   stream.update()
   // After the traversal, so the error and the stopped-here flag the inspector paints
   // come from the selection that is about to be drawn rather than the previous frame's.
@@ -4363,11 +4375,7 @@ function errorTargetLabel(): string {
  */
 function updateOverdrawReadout(points: number): void {
   const canvas = renderer.domElement as HTMLCanvasElement
-  const bufferPixels = canvas.width * canvas.height
-  // Read the ratio off the canvas rather than from the renderer or devicePixelRatio:
-  // the startup resolution cap can put the backbuffer well below the device ratio, and
-  // the backbuffer is what actually gets shaded.
-  const ratio = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
+  const { bufferPixels, ratio, measured } = measureOverdraw(points)
   // Written before the guard below, because it describes the canvas and not the cloud.
   // Behind it, the row went blank through boot and any time the stream was null — the
   // one moment the backbuffer size is worth reading.
@@ -4375,23 +4383,11 @@ function updateOverdrawReadout(points: number): void {
     ? `${ratio.toFixed(2)}× · ${canvas.width}×${canvas.height}`
     : '—'
 
-  const target = stream?.tiles.errorTarget ?? 0
-  if (!points || !bufferPixels || !(target > 0)) {
+  if (!measured) {
     overdrawEl.textContent = '—'
     stackingEl.textContent = '—'
-    lastOverdraw = 0
-    lastAreaPerPoint = 0
     return
   }
-  // Measured per tile and summed. The mirror works in CSS pixels, so one ratio² at the
-  // end converts the whole area to backbuffer pixels rather than every diameter. The
-  // point count comes back with it: tiles wholly behind the camera are in neither, and
-  // dividing this area by the full count would report dots that had shrunk.
-  const covered = stream?.shadedPixelArea(drawnDiameterCssPx)
-  const shadedPx = (covered?.areaPx ?? 0) * ratio * ratio
-  const coveredPoints = covered?.points ?? 0
-  lastOverdraw = shadedPx / bufferPixels
-  lastAreaPerPoint = coveredPoints ? shadedPx / coveredPoints : 0
   overdrawEl.textContent = `${lastOverdraw.toFixed(1)}×`
   // 1 is the ideal and unreachable; up to 3 is ordinary canopy depth. Past 8 the frame is
   // mostly repainting ground it has already covered, which is the whole subject of the
@@ -4409,6 +4405,43 @@ function updateOverdrawReadout(points: number): void {
   // 1.00, so both ends are worth flagging. Below it the ground is sampled thinner than
   // asked for and holes open; well above it, levels are stacking.
   setState(stackingEl, perPixel >= 3 ? 'bad' : perPixel > 1.2 || perPixel < 0.25 ? 'warn' : 'ok')
+}
+
+/**
+ * The overdraw figures for this many drawn points, into lastOverdraw and lastAreaPerPoint.
+ * Its own function because the HUD and the render bench both want them and the HUD is
+ * often closed: the sum walks every visible tile, so it runs only when one of them asks.
+ */
+function measureOverdraw(points: number): { bufferPixels: number; ratio: number; measured: boolean } {
+  const canvas = renderer.domElement as HTMLCanvasElement
+  const bufferPixels = canvas.width * canvas.height
+  // Read the ratio off the canvas rather than from the renderer or devicePixelRatio:
+  // the startup resolution cap can put the backbuffer well below the device ratio, and
+  // the backbuffer is what actually gets shaded.
+  const ratio = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1
+  const target = stream?.tiles.errorTarget ?? 0
+  if (!points || !bufferPixels || !(target > 0)) {
+    lastOverdraw = 0
+    lastAreaPerPoint = 0
+    return { bufferPixels, ratio, measured: false }
+  }
+  // Measured per tile and summed. The mirror works in CSS pixels, so one ratio² at the
+  // end converts the whole area to backbuffer pixels rather than every diameter. The
+  // point count comes back with it: tiles wholly behind the camera are in neither, and
+  // dividing this area by the full count would report dots that had shrunk.
+  const covered = stream?.shadedPixelArea(drawnDiameterCssPx)
+  const shadedPx = (covered?.areaPx ?? 0) * ratio * ratio
+  const coveredPoints = covered?.points ?? 0
+  lastOverdraw = shadedPx / bufferPixels
+  lastAreaPerPoint = coveredPoints ? shadedPx / coveredPoints : 0
+  return { bufferPixels, ratio, measured: true }
+}
+
+/** Points actually submitted this frame, as the HUD and the bench count them: none while
+ *  the cloud is parked for the entrance flight, and the thinned count once thinning is on. */
+function drawnPointCount(stats: StreamingStats | null): number {
+  if (!stats || !pointCloudRevealed) return 0
+  return lastThinning ? lastThinning.drawn : stats.points
 }
 
 /**
@@ -4463,8 +4496,7 @@ let gpuMsResolved = false
 /** Draw calls of the frame just drawn — see the end of the render loop for why it
  *  cannot be read from `renderer.info` at HUD time. */
 let lastDrawCalls = 0
-/** The overdraw readout's own numbers, kept so the bench can record them without
- *  recomputing the sum over every visible tile a second time. */
+/** The overdraw figures, written by measureOverdraw for the HUD row and the bench. */
 let lastOverdraw = 0
 let lastAreaPerPoint = 0
 function pollGpuMs(): void {
@@ -4484,7 +4516,50 @@ function pollGpuMs(): void {
 }
 
 function updateHud(stats: StreamingStats | null): void {
-  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, gpuBytes: 0, cacheBytesCeiling: 0 }
+  // Always, whatever is open: the chip stays on screen, the GPU-time poll feeds the
+  // bench, and the foveation outlines are drawn over the map itself.
+  pollGpuMs()
+  const value = fps.fps
+  // 58 rather than 60: a 60 Hz display that is holding its rate reports 59-point-something
+  // all day, and a row that blinks amber on a perfectly smooth frame trains you to ignore
+  // it. Below 40 the drop is visible rather than measurable, so that end is red.
+  const state: ValueState = value >= 58 ? 'ok' : value >= 40 ? 'warn' : 'bad'
+  chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
+  chipFpsEl.className = state
+  // The outlines follow the camera, so they need refreshing beyond slider changes.
+  // A few times a second is enough to read them and keeps the DOM churn off the
+  // frame budget.
+  if ((foveationTilesOn || foveationBoxesOn) && performance.now() - lastFoveationTilesMs > 160) {
+    lastFoveationTilesMs = performance.now()
+    updateFoveationTiles()
+    foveation?.updateBoxes()
+  }
+
+  // Everything else lives in the settings panel or the HUD card, and both start closed
+  // (display: none) until their chip is pressed, so their rows are only written while
+  // open. Nothing is lost by it: the click lands between frames, and the next frame
+  // fills the card before it is painted (stopForGraphicsFailure, after which no frame
+  // follows, fills it itself).
+  const cards = document.body.classList
+  if (cards.contains('panel-open')) {
+    // The dome's two gates, in the panel next to their sliders rather than on the HUD.
+    sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
+      ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
+        + ` · radius ${Math.round(sphereFade.innerRadius())} m`
+        + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
+        + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
+        + (initialPovActive()
+          ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
+            ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
+          : '')
+        + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
+      : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
+    updateFoveationReadout()
+    updateDebugLegend(stats?.terminalLevels ?? [])
+  }
+  if (!cards.contains('hud-open')) return
+
+  const globeStats = globe?.stats() ?? { visible: 0, cacheBytes: 0, cacheBytesCeiling: 0, reuploadsAfterClose: 0 }
   // While the cloud is parked for the entrance flight, updateStreaming returns the last
   // pre-flight snapshot and the group is hidden — so these rows described a selection
   // that was not being drawn. Blanked instead: nothing is a truer answer than a stale
@@ -4498,32 +4573,20 @@ function updateHud(stats: StreamingStats | null): void {
   setState(lodEl, !cloudDrawn ? '' : (foveationSettings.enabled || sseAuto > sseTarget + 0.5) ? 'warn' : '')
   // What is actually submitted, which is not what is loaded once thinning is on. The
   // share is shown beside it rather than left to be worked out from two rows.
-  const drawnPoints = lastThinning ? lastThinning.drawn : (stats?.points ?? 0)
+  const drawnPoints = drawnPointCount(stats)
   const thinned = Boolean(lastThinning) && lastThinning!.drawn < lastThinning!.loaded
   visibleEl.textContent = !cloudDrawn ? dash
     : thinned
       ? `${fmtInt(drawnPoints)} · ${Math.round(100 * drawnPoints / lastThinning!.loaded)}%`
       : fmtInt(drawnPoints)
   setState(visibleEl, thinned ? 'ok' : '')
-  // The dome's two gates, in the panel next to their sliders rather than on the HUD.
-  sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
-    ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
-      + ` · radius ${Math.round(sphereFade.innerRadius())} m`
-      + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
-      + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
-      + (initialPovActive()
-        ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
-          ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
-        : '')
-      + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
-    : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
   const mapVisible = renderOptions.effective().basemapImagery ? globeStats.visible : 0
   pointTilesEl.textContent = cloudDrawn
     ? `${stats!.visible} pt · ${mapVisible} map`
     : `— · ${mapVisible} map`
-  updateOverdrawReadout(cloudDrawn ? drawnPoints : 0)
+  updateOverdrawReadout(drawnPoints)
   // Against the ceiling, not a floor: the ceiling is the limit that silently stops
   // downloads and leaves holes in the ground. The floors are a drain target the cache
   // legitimately sits far above, and they live in the diagnostics block.
@@ -4552,12 +4615,10 @@ function updateHud(stats: StreamingStats | null): void {
   diagLeavesEl.textContent = cloudDrawn && terminal
     ? `${stats!.leafTiles} of ${terminal}`
     : dash
-  updateDebugLegend(mix)
 
   // Both belong to the previous frame: this runs ahead of the draw, and the GPU
   // timestamps need a round trip before they resolve.
   drawCallsEl.textContent = String(lastDrawCalls)
-  pollGpuMs()
   gpuMsEl.textContent = !gpuTiming
     ? '?gputime'
     : gpuMsResolved
@@ -4573,27 +4634,10 @@ function updateHud(stats: StreamingStats | null): void {
 
   // One row for both: they are reciprocals, and the chip carries the frame rate
   // permanently anyway, so two rows spent one of them saying the same thing twice.
-  const value = fps.fps
   frameTimeEl.textContent = fps.frameMs
     ? `${fps.frameMs.toFixed(1)} ms · ${value ? value.toFixed(0) : '—'} fps`
     : '—'
-  // 58 rather than 60: a 60 Hz display that is holding its rate reports 59-point-something
-  // all day, and a row that blinks amber on a perfectly smooth frame trains you to ignore
-  // it. Below 40 the drop is visible rather than measurable, so that end is red.
-  const state: ValueState = value >= 58 ? 'ok' : value >= 40 ? 'warn' : 'bad'
   setState(frameTimeEl, state)
-  chipFpsEl.textContent = value ? `${value.toFixed(0)} fps` : '—'
-  chipFpsEl.className = state
-
-  updateFoveationReadout()
-  // The outlines follow the camera, so they need refreshing beyond slider changes.
-  // A few times a second is enough to read them and keeps the DOM churn off the
-  // frame budget.
-  if ((foveationTilesOn || foveationBoxesOn) && performance.now() - lastFoveationTilesMs > 160) {
-    lastFoveationTilesMs = performance.now()
-    updateFoveationTiles()
-    foveation?.updateBoxes()
-  }
 
   if (!showDiagnostics) return
   const missing = stats?.missingTiles ?? 0
@@ -4846,6 +4890,10 @@ async function main(): Promise<void> {
   // Before the first render: without it, a tile geometry's GPU buffers are freed on its
   // first unload only. See geometry-dispose.ts.
   installGeometryDisposeFix(renderer)
+  // Settles in a few microtasks, long before the first tile has been fetched. See pnts-parse.ts.
+  void installPntsParseInPlace().then(({ on, reason }) => {
+    console.info(`[pnts] parse in place: ${on ? 'on' : `off (${reason})`}`)
+  })
 
   // One shared density volume drives both the volumetric clouds and the drifting
   // canopy shadows in the point-cloud material. It must be registered before the
@@ -5034,6 +5082,8 @@ async function main(): Promise<void> {
   ;(window as any).__wild = {
     stream,
     camera,
+    /** Still-frame gate: frames, traversals run, and why each ran. `?stillgate=off` to A/B. */
+    get stillGate() { return stream?.stillFrameStats() },
     get flight() { return cameraFlight.active },
     get sse() { return sseAuto },
     get range() { return rangeDebug },
@@ -5473,20 +5523,24 @@ async function main(): Promise<void> {
   // rather than at wherever the camera happened to stop. See render-bench.ts.
   ;(window as any).__poses = createRenderBench({
     camera,
-    sample: () => ({
-      points: lastStreamStats?.points ?? 0,
-      tiles: lastStreamStats?.visible ?? 0,
-      drawCalls: lastDrawCalls,
-      overdraw: Number(lastOverdraw.toFixed(2)),
-      areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
-      dots: roundDots ? 'A round' : 'B square',
-      // What the stream actually draws, after the Square rule. Overdraw and area per point
-      // change units between the shapes (the triangle rasterises 1.325 d², the quad 1 d²),
-      // so a sample that does not say which one produced it cannot be compared. Read from
-      // the stream rather than the request, which can run ahead of it.
-      dotShape: stream?.dotMode().shape ?? effectiveDotShape(),
-      dotFeed: stream?.dotMode().feed ?? requestedDotFeed,
-    }),
+    sample: () => {
+      // Measured here rather than read from the HUD, which is usually closed.
+      measureOverdraw(drawnPointCount(lastStreamStats))
+      return {
+        points: lastStreamStats?.points ?? 0,
+        tiles: lastStreamStats?.visible ?? 0,
+        drawCalls: lastDrawCalls,
+        overdraw: Number(lastOverdraw.toFixed(2)),
+        areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
+        dots: roundDots ? 'A round' : 'B square',
+        // What the stream actually draws, after the Square rule. Overdraw and area per point
+        // change units between the shapes (the triangle rasterises 1.325 d², the quad 1 d²),
+        // so a sample that does not say which one produced it cannot be compared. Read from
+        // the stream rather than the request, which can run ahead of it.
+        dotShape: stream?.dotMode().shape ?? effectiveDotShape(),
+        dotFeed: stream?.dotMode().feed ?? requestedDotFeed,
+      }
+    },
     // The boot and flight brakes hold the error target far above the working band, so a
     // measurement taken under them describes the brake and not the setting being tested.
     // `bootLoading` stays true until the entrance is started, so this reads as "press
@@ -5511,6 +5565,8 @@ async function main(): Promise<void> {
   ;(window as any).__cost = {
     report: () => costReport(renderer),
     reset: () => resetCost(),
+    /** Tiles parsed in place versus through the library's copying parse. */
+    pnts: () => pntsParseCounts(),
   }
   ;(window as any).__bench = async (frames = 60) => {
     const started = performance.now()
