@@ -241,9 +241,11 @@ Notes on the tap
 
     Δ̂(u,v) = (1.5748 v, −0.18732 u − 0.46812 v, 1.8556 u) / 1.8556
 
-  - luma(Δ̂) = 0 exactly.
+  - luma(Δ̂) = 0 exactly. Built: the green coefficients are derived from the luma weights
+    (−Kb/Kg, −Kr·1.5748/(Kg·1.8556)); the rounded figures above leave luma at about 1.6e-6.
   - u = puck x (towards Cb, blue to the right); v = −puck y on screen (towards Cr, red up).
-  - Red sits at about 103°, green at 241°, blue at 347°.
+  - Red sits at about 103°, green at 230°, blue at 355° (this formula; 241°/347° are the NTSC
+    Y'UV vectorscope figures).
 - snapPuck: |puck| < 0.02 → exactly (0,0). It is applied on every set, and a double-tap resets.
 - Tuning constants live in config grade.tuning and are referenced as k* below.
 
@@ -288,7 +290,9 @@ Stage 0: Look (optional)
 
 Stage 1: per channel, on y = v_c. Every step is skipped at its neutral value.
 - Without a look, these are exact tables at the n node values (3·n evaluations).
-- With a look, they are dense tables of 4096 entries over [−0.25, 1.5] with linear interpolation (error well under 0.01 LSB).
+- With a look, they are dense tables of 4096 entries over [−0.25, 1.5] with linear interpolation. Built: cells where
+  stage 1 bends hard (second difference / 8 above 1e-6, plus one cell each side) are evaluated exactly, which keeps the
+  error under 0.001 LSB; plain linear tables measured up to 1.46 LSB on a step curve.
 
 1a. White balance
 - t = temperature/100 and τ = tint/100.
@@ -352,7 +356,8 @@ Stage 2: cross-channel, on y = (r, g, b), with the stage input v as the gamut re
 
 2c. Split toning ("Tones")
 - Y'' = luma after 2b; mc = 0.5 + 0.25·balance; bw = 0.2 + 0.6·blending.
-- w_h = smoothstep(mc − bw/2, mc + bw/2, Y''); w_s = (1 − w_h)·smoothstep(0, 0.06, Y'').
+- S = smoothstep(mc − bw/2, mc + bw/2, Y''), B = smoothstep(0, 0.06, Y''); w_h = S·B, w_s = (1 − S)·B.
+  (Built this way: the earlier w_h = S tinted true black whenever the hand-over's lower edge reached below 0.06.)
 - y ← y + kTone·(w_s·Δ̂(shadows) + w_h·Δ̂(highlights)), kTone 0.10.
 - It is additive and zero-luma. True black stays black; the film's lifted black (about 0.1) is tinted.
 
@@ -361,7 +366,11 @@ Stage 2: cross-channel, on y = (r, g, b), with the stage input v as the gamut re
 - Per channel:
   - d = (a − y_c)/a, d_v = (a_v − v_c)/a_v, t = max(kGamut, d_v), kGamut 0.8.
   - If d > t and t < 1: y_c = a·(1 − (t + (1−t)·tanh((d − t)/(1 − t)))).
-- C1 at the threshold, never below 0, and colours the input already saturates are left alone.
+- C1 at the threshold, and colours the input already saturates are left alone. Not "never below 0": a
+  channel that is exactly 0 at the input (a lattice face) is left alone and may go negative. Measured
+  through the tap, that negative face value is what keeps dark canopy greens accurate (0.25 LSB max at
+  saturation 1.1, against 1.1 LSB and 7 % of values over 1 LSB with the face held at 0). The canvas
+  clamps per pixel; a .cube export carries the negative values, which stage 4 allows.
 
 Stage 3: highlight roll-off, a second pass over the stored floats
 - k = 1 − kRollKnee·rollOff, kRollKnee 0.3.
@@ -387,7 +396,10 @@ Stage 4: storage
 - All four curves are the default two points.
 - Each hue curve is empty or all its points sit exactly at neutral y.
 - The look is null, or amount === 0, or isIdentityLattice(cube, 1e-5).
-- rollOff is ignored, because a neutral grade has no value above 1.
+- rollOff is ignored, because a neutral grade has no value above 1. So are pivot (contrast 1 is skipped) and Tones
+  balance and blending (both pucks at 0 add exactly 0): moving those alone bakes the identity lattice bit for bit, and
+  must not compile an identity LUT in.
+- A look counts as identity only if its domain covers [0,1] on every channel: a narrow-domain identity cube clamps.
 
 A neutral bake equals identityTexels(n) bit for bit; every i/(n−1) is exact in half for n = 17, 33, 65.
 
@@ -398,7 +410,10 @@ A neutral bake equals identityTexels(n) bit for bit; every i/(n−1) is exact in
   - Trilinear on a refined lattice reproduces the cube's own trilinear exactly, also with amount < 1 and with controls on top. Measured within 0.10 LSB, which is half rounding only.
   - So moving a control on a loaded look causes no jump. Resampling to 33 would move outputs by up to 15-26 LSB.
 - N > 65, a non-unit domain, or maxLattice lowered to 33 after measurement: the cube is resampled onto the lattice and a visible "not 1:1" warning is shown.
-- Draft: draftStride(L) = the smallest s ≥ 2 with (L−1) % s == 0 and (L−1)/s+1 ≥ 9, else 1. For 33 that is s = 2 (17³ nodes); for refined lattices it gives the cube's own nodes.
+- Draft: draftStride(L, refinement) = the smallest s ≥ 2 that divides the refinement k (L−1 = k(N−1)) and leaves
+  (L−1)/s+1 ≥ 9 nodes, else 1. latticeSizeFor returns the refinement; callers pass it into the bake job. For 33 that
+  is s = 2 (17³ nodes); a refined look gets a stride on its own nodes (13³ → 37: 3, 15³ → 43: 3) or no draft
+  (4³ → 34: 1), so a draft of an exact look never pops.
   - The bake fills the skipped nodes with a separable r → g → b multilinear fill, which is exactly what a coarse texture would render.
   - Drafts are used only while dragging, and only if the last final bake took longer than config grade.draftWhenFinalOverMs (8). A desktop at about 5-8 ms therefore never shows a draft-to-final pop.
 
@@ -773,7 +788,9 @@ CSS:
 - Draft: stride 2 plus fill equals the trilinear of a real 17 bake within 1e-6; even nodes equal the full bake; roll-off is applied before the fill.
 - Gamut compression:
   - inactive when the grade adds no chroma (saturation 1, lift 0.01);
-  - never negative for in-gamut stage input;
+  - never negative for in-gamut stage input away from the faces; at a face (a channel exactly 0) the
+    negative value is kept on purpose (see 2d) and a guard test holds canopy greens through the tap
+    within 0.5 LSB;
   - lift ε moves sRGB (24,51,3) by at most ε·255·1.01 LSB.
 - Roll-off: identity when peak ≤ 1; with gain 2, every node max ≤ 1+1e-6; values below the knee are untouched.
 - Fuzz: 200 seeded random states within the ranges, each with and without a look, give only finite values within [−16, 16].
