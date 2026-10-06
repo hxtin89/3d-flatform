@@ -3,6 +3,20 @@
 // pass is needed — DoF is the exception: a circle of confusion needs to read
 // neighbouring pixels, which a per-fragment colour node cannot do.
 //
+// Eye-dome lighting (eye-dome-lighting.ts) is the other exception for the same reason
+// — it reads neighbouring depth — and rides in the same pipeline so the scene is drawn
+// into a pass once whichever of the two is on. EDL runs first, so DoF blurs shaded
+// edges rather than EDL outlining blurred ones. With both off and no output stage the
+// frame goes straight to the canvas and neither graph exists.
+//
+// An output stage (setOutputStage; the colour grade's LUT tap in grade-output.ts) works on
+// the displayed frame: after the tone curve and the sRGB encode, in the same final quad, so
+// it adds no pass. While one is set the pipeline's own output transform is off and the graph
+// does it with renderOutput, which reads the tone mapping and colour space the pipeline puts
+// into its context; the no-post path then renders through the pipeline as well, scene pass
+// then quad. With no stage set the graph is the one from before stages existed, object for
+// object, and the no-post path is a plain renderer.render again.
+//
 // A per-point version was tried and dropped: growing each sprite by its own
 // circle of confusion is cheaper, but the point cloud is rendered opaque with
 // depthWrite on, so grown discs cannot blend and the effect degenerates into a
@@ -12,14 +26,25 @@
 // WebGL2 fallback (`?webgl`) without a second code path. The renderer is created
 // with `antialias: false`, so routing through a pass costs no MSAA.
 import * as THREE from 'three'
-import { PostProcessing } from 'three/webgpu'
-import { pass, uniform } from 'three/tsl'
+// RenderPipeline is what PostProcessing was renamed to in r183; PostProcessing is now a
+// subclass that only adds a deprecation warning (renderers/common/PostProcessing.js).
+import { NodeUpdateType, RenderPipeline } from 'three/webgpu'
+import { pass, renderOutput, rtt, uniform } from 'three/tsl'
 import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js'
 import { EXPERIENCE_CONFIG } from './config'
+import { eyeDomeLighting } from './eye-dome-lighting'
+
+/**
+ * A node function for the end of the final quad. It gets the frame as displayed — a vec4
+ * after the tone curve and the sRGB encode, what a screenshot shows, alpha 1 — and returns
+ * what the canvas gets.
+ */
+export type OutputStage = (display: any) => any
 
 export interface DepthOfFieldLayer {
-  /** Draw the frame. Falls back to a plain renderer.render when disabled, so
-   * turning DoF off costs exactly what it did before this module existed. */
+  /** Draw the frame. Falls back to a plain renderer.render while DoF and eye-dome
+   * lighting are both off and no output stage is set, so that costs exactly what it did
+   * before this module existed. */
   render(): void
   /** Advance the auto-focus toward `groundRangeM`. Call once per frame before
    * render(); ignored while autoFocus is off. */
@@ -34,6 +59,21 @@ export interface DepthOfFieldLayer {
   setFocalLength(metres: number): void
   setBokehScale(scale: number): void
   setFocusSmoothing(factor: number): void
+  /** Eye-dome lighting. Off drops it from the graph; with DoF also off, from the frame. */
+  setEyeDome(enabled: boolean): void
+  isEyeDome(): boolean
+  setEyeDomeStrength(strength: number): void
+  setEyeDomeRadius(pixels: number): void
+  /** Darkest shade EDL may apply, 0–1 of the original brightness. */
+  setEyeDomeFloor(fraction: number): void
+  /** A stage after the output transform (tone curve + sRGB encode) in the final quad; null
+   * restores the graph from before stages existed. While one is set, the no-post path also
+   * renders through the pipeline. Compared by reference: setting the same function again does
+   * nothing; any other one, null included, rebuilds the final quad on the next render, never
+   * from three's cache. With DoF on that rebuild also rebuilds DoF's passes, its CoC blur and
+   * the EDL quad (see applyOutput). DoF's and EDL's render targets are kept. */
+  setOutputStage(stage: OutputStage | null): void
+  hasOutputStage(): boolean
   dispose(): void
 }
 
@@ -63,14 +103,106 @@ export function createDepthOfFieldLayer(opts: {
   const focalLengthUniform = uniform(CONFIG.focalLengthM)
   const bokehScaleUniform = uniform(CONFIG.bokehScale)
 
-  const postProcessing = new PostProcessing(renderer)
-  postProcessing.outputNode = dof(
-    scenePass.getTextureNode(),
-    scenePass.getViewZNode(),
-    focusDistanceUniform,
-    focalLengthUniform,
-    bokehScaleUniform,
-  )
+  const EDL = EXPERIENCE_CONFIG.eyeDomeLighting
+  let eyeDome: boolean = EDL.enabled
+  const eyeDomeStrength = uniform(EDL.strength)
+  const eyeDomeRadius = uniform(Math.max(Math.round(EDL.radiusPx), 1))
+  const eyeDomeFloor = uniform(EDL.floor)
+
+  const pipeline = new RenderPipeline(renderer)
+  // The end of the effect chain (scene pass, EDL, DoF) as rebuild() last left it, and the
+  // stage after the output transform, if any. applyOutput() puts the two into the pipeline.
+  let effectNode: any = null
+  let outputStage: OutputStage | null = null
+  // What the current graph owns and nothing else frees. A DoF node carries six render
+  // targets (40–60 MB at full resolution) and its CoC blur two more; the EDL texture that
+  // feeds DoF is one more full-resolution target. The graph is rebuilt on every switch,
+  // so each rebuild must release the previous one, or toggling for an fps A/B leaks VRAM.
+  let dofNode: any = null
+  let eyeDomeTexture: any = null
+  // The CoC blur the last pipeline render drew. DoF's setup() makes a new one, with two new
+  // render targets the size and type of the full-resolution CoC map, every time the quad that
+  // holds DoF is built again (DepthOfFieldNode.js:381, GaussianBlurNode.js:80-89, :183-188):
+  // on an output stage change and a renderer.toneMapping change too, not only after rebuild().
+  // Nothing in three frees the blur it replaces, so render() does.
+  let cocBlur: any = null
+  const freeReplacedBlur = () => {
+    const blur = dofNode?._CoCBlurredMaterial?.colorNode ?? null
+    if (cocBlur && cocBlur !== blur) cocBlur.dispose()
+    cocBlur = blur
+  }
+  const release = () => {
+    if (dofNode) {
+      // DoF's own dispose() skips the gaussianBlur it builds for the CoC.
+      const blur = dofNode._CoCBlurredMaterial?.colorNode
+      blur?.dispose?.()
+      if (cocBlur && cocBlur !== blur) cocBlur.dispose()
+      dofNode.dispose()
+      dofNode = null
+    }
+    cocBlur = null
+    if (eyeDomeTexture) {
+      // RTTNode has no dispose(): free its target and the quad material it draws with.
+      eyeDomeTexture.renderTarget.dispose()
+      eyeDomeTexture._quadMesh?.material?.dispose()
+      eyeDomeTexture = null
+    }
+  }
+  // Changes what the final quad holds; the effect chain and the targets release() frees stay.
+  // The next render builds the quad again, never from three's cache: the pipeline wraps its
+  // output in a new context node on every update (RenderPipeline.js:200-226) and a node's cache
+  // key is its id (Node.js:470-474), so even a change back to an earlier stage is a new build.
+  // With DoF in the chain the rebuild is not the quad alone. The new builder runs DoF's setup()
+  // again, which gives its five pass materials new nodes and a new CoC blur
+  // (DepthOfFieldNode.js:375-470), and with EDL on the EDL quad follows (RTTNode.js:150-154):
+  // nine node builds over two frames with both on, seven with DoF alone, one without DoF.
+  const applyOutput = () => {
+    if (outputStage) {
+      // renderOutput without arguments takes the tone mapping and the output colour space
+      // from the context, which the pipeline fills in when its own transform is off
+      // (RenderPipeline.js:214-219, RenderOutputNode.js:119-121). The pipeline still
+      // rebuilds on a renderer.toneMapping change (RenderPipeline.js:181-186), so switching
+      // the film curve or its parts keeps working with a stage set.
+      pipeline.outputColorTransform = false
+      pipeline.outputNode = outputStage(renderOutput(effectNode))
+    } else {
+      // The graph from before stages existed: three's own output transform around the chain.
+      pipeline.outputColorTransform = true
+      pipeline.outputNode = effectNode
+    }
+    pipeline.needsUpdate = true
+  }
+  const drawingBufferSize = new THREE.Vector2()
+  // Rebuilt only when an effect is switched, never per frame. Each switch changes the
+  // graph's shape, so the pipeline recompiles its output material once. The old graph is
+  // released first: the next render swaps the new one in before drawing anything.
+  const rebuild = () => {
+    release()
+    let node: any = scenePass.getTextureNode()
+    if (eyeDome) {
+      node = eyeDomeLighting(node, scenePass.getTextureNode('depth'), camera, eyeDomeStrength, eyeDomeRadius, eyeDomeFloor)
+      if (enabled) {
+        // DoF samples its input from three separate draws. Left to dof()'s own
+        // convertToTexture, the EDL quad re-rendered for each of them; an explicit target
+        // updated once per frame renders it once. Sized now, because DoF sizes its own
+        // targets from this one on its first frame.
+        eyeDomeTexture = rtt(node, null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+        eyeDomeTexture.updateBeforeType = NodeUpdateType.FRAME
+        renderer.getDrawingBufferSize(drawingBufferSize)
+        eyeDomeTexture.setSize(drawingBufferSize.x, drawingBufferSize.y)
+        node = eyeDomeTexture
+      }
+    }
+    if (enabled) {
+      dofNode = dof(node, scenePass.getViewZNode(), focusDistanceUniform, focalLengthUniform, bokehScaleUniform)
+      node = dofNode
+    }
+    // With both effects off this is the scene pass's texture, which release() never frees:
+    // the chain a stage gets on the no-post path.
+    effectNode = node
+    applyOutput()
+  }
+  rebuild()
 
   const applyFocus = () => {
     // Metres in front of the camera the focal plane sits. Clamped off zero: a
@@ -83,8 +215,14 @@ export function createDepthOfFieldLayer(opts: {
 
   return {
     render() {
-      if (enabled) postProcessing.render()
-      else renderer.render(scene, camera)
+      if (!enabled && !eyeDome && !outputStage) {
+        renderer.render(scene, camera)
+        return
+      }
+      pipeline.render()
+      // A rebuilt quad has run DoF's setup() before DoF drew (Renderer.js:3692-3712: the build
+      // comes before updateBefore), so the blur it replaced was not drawn in this render.
+      freeReplacedBlur()
     },
     update(groundRangeM) {
       if (!enabled || !autoFocus) return
@@ -97,7 +235,11 @@ export function createDepthOfFieldLayer(opts: {
       )
       applyFocus()
     },
-    setEnabled(next) { enabled = next },
+    setEnabled(next) {
+      if (next === enabled) return
+      enabled = next
+      rebuild()
+    },
     isEnabled() { return enabled },
     setAutoFocus(next) { autoFocus = next; applyFocus() },
     isAutoFocus() { return autoFocus },
@@ -105,8 +247,26 @@ export function createDepthOfFieldLayer(opts: {
     setFocalLength(metres) { focalLengthUniform.value = Math.max(metres, 1) },
     setBokehScale(scale) { bokehScaleUniform.value = scale },
     setFocusSmoothing(factor) { focusSmoothing = THREE.MathUtils.clamp(factor, 0.005, 1) },
+    setEyeDome(next) {
+      if (next === eyeDome) return
+      eyeDome = next
+      rebuild()
+    },
+    isEyeDome() { return eyeDome },
+    setEyeDomeStrength(strength) { eyeDomeStrength.value = Math.max(strength, 0) },
+    setEyeDomeRadius(pixels) { eyeDomeRadius.value = Math.max(Math.round(pixels), 1) },
+    setEyeDomeFloor(fraction) { eyeDomeFloor.value = THREE.MathUtils.clamp(fraction, 0, 1) },
+    setOutputStage(stage) {
+      if (stage === outputStage) return
+      outputStage = stage
+      // No release() and no rebuild(): the chain stays. With DoF on, the quad's rebuild still
+      // re-runs DoF's setup() (applyOutput), and render() frees the CoC blur it replaces.
+      applyOutput()
+    },
+    hasOutputStage() { return outputStage !== null },
     dispose() {
-      postProcessing.dispose?.()
+      release()
+      pipeline.dispose()
     },
   }
 }

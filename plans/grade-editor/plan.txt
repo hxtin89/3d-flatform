@@ -1,0 +1,1072 @@
+FINAL IMPLEMENTATION PLAN: COLOUR GRADE EDITOR (goal 4)
+
+0. BASIS AND DECISIONS
+
+Where the work happens
+- Worktree: C:/projects/WIDE_3d-flatform/.claude/worktrees/sbb-colour-matching, branch sbb/grade-editor.
+- The real HEAD is 81ccfab. The task text says 2def41d, but 81ccfab is just 2def41d plus plans/handover-grade-editor.md and plans/grade-editor/. Commit on top of 81ccfab.
+- Leave .claude/launch.json uncommitted.
+- Do not merge into main.
+- Commit messages: a subject plus at most one sentence. The user's rule in memory says no Co-Authored-By trailer, and it overrides the harness reminder.
+- Edit files with the Edit tool. Python's write_text turns LF files into CRLF here.
+
+Approach
+- Base: the shared display-LUT placement. This is display-lut's small footprint with editor-first's maths and interop.
+- Taken from editor-first:
+  - refined import lattice;
+  - unclamped half storage;
+  - input-relative soft gamut compression;
+  - linear fade for contrast below 1;
+  - Resolve-style relative wheels;
+  - draft bake;
+  - pure scheduler;
+  - phone peek;
+  - textarea Copy fallback.
+- Taken from display-lut:
+  - Tone & colour stays untouched;
+  - no exposure inside the grade;
+  - texture-flag test;
+  - Adobe scan test;
+  - capture via an all-before split;
+  - config `grade` block and `?grade`.
+- Taken from unified: no kinks inside a LUT cell (powC1 with a quadratic toe, a vibrance weight without max/min).
+- Both judges' blocking issues are fixed below. Where a fix depends on a measurement, the gate and its fallback are written out.
+
+What stays unchanged in v1
+- tone-mapping.ts, point-cloud.ts, eye-dome-lighting.ts and atmosphere-haze.ts.
+- The existing binders bindDesignSlider, bindSeg and bindEffectToggle.
+- The Tone & colour section and its Copy values block.
+- Exposure and the film vignette stay in Tone & colour.
+
+Verified in this pass (read-only, small node scripts in the scratchpad)
+- depth-of-field.ts (whole file, rebuild() at 111-134, render() at 147-149) and RenderPipeline.js:121-232:
+  - render() saves and restores toneMapping around the quad;
+  - _update puts toneMapping and outputColorSpace into the context when outputColorTransform is false;
+  - _update rebuilds on a renderer.toneMapping change.
+- Renderer.render never advances nodeFrame; only Animation.js:77 and compileAsync do. So re-rendering outside the loop re-composites the last frame, because FRAME-updated passes are skipped.
+- toneMappingModeOf already scales with FILM_PART_ORDER.length (tone-mapping.ts:209). The readers were wrong to call it hard-coded.
+- 'three/tsl' and 'three/webgpu' import under node 24 (texture3D, screenUV, renderOutput, RenderPipeline all resolve), so grade-output.test.ts is feasible.
+- node 24 has Float16Array and Math.f16round.
+- powC1 (section 2.2) checked numerically for g in {0.5, 0.71, 1, 1.25, 1.41, 2}:
+  - f(0) = 0 and f(1) = 1;
+  - C1 at the toe and at 0;
+  - monotone;
+  - bit-exact identity at g = 1.
+- Two-sided contrast keeps 0, the pivot and 1 fixed and has slope c on both sides of the pivot.
+- Gamut compression on sRGB (24, 51, 3): saturation 1.1 gives blue +0.43 instead of −0.88. Saturation 1 and 1.0001 are unchanged.
+
+1. PIPELINE PLACEMENT
+
+1.1 Where the tap sits
+- One trilinear 3D-texture tap, display-referred.
+- It sits after three's renderOutput (tone fn, then the sRGB OETF; RenderOutputNode.js:108-141) and before the canvas write, in the single full-screen quad of the RenderPipeline.
+- The input is the encoded frame in [0,1] that a screenshot shows.
+- Alpha is 1 everywhere, so un/premultiply are no-ops.
+- The grade works with every tone curve and with the tone stage off.
+
+1.2 The two paths
+- Path A (DoF and/or EDL on, the shipping default): no new pass. The existing final quad gains the tap.
+- Path B (DoF and EDL off): while the grade is compiled in, the frame goes through the same RenderPipeline with effectNode = scenePass.getTextureNode(). That is scene → PassNode HalfFloat RT → one quad, the same pass count as renderer.render.
+- While the grade is compiled out, path B is renderer.render exactly as today, so the ?dof=0&edl=0 fps baseline is unchanged.
+- Gate M2 (section 7): if the routing delta (passthrough stage vs renderer.render) is over 0.02 ms, path B switches to the film-slot fallback (section 1.7).
+
+1.3 depth-of-field.ts (the only render-path edit; about 30 lines)
+- Imports:
+
+    import { NodeUpdateType, RenderPipeline } from 'three/webgpu'      // replaces the deprecated PostProcessing (a warnOnce subclass)
+    import { pass, renderOutput, rtt, uniform } from 'three/tsl'
+    export type OutputStage = (display: any) => any
+
+- Interface additions to DepthOfFieldLayer:
+
+    /** A stage after the output transform (tone curve + sRGB encode) in the final quad. null
+     * restores today's graph. While set, the no-post path also renders through the pipeline. */
+    setOutputStage(stage: OutputStage | null): void
+    hasOutputStage(): boolean
+
+- Body: rename postProcessing to pipeline throughout (constructor, render, dispose), then:
+
+    const pipeline = new RenderPipeline(renderer)
+    let effectNode: any = null
+    let outputStage: OutputStage | null = null
+    const applyOutput = () => {
+      if (outputStage) {
+        // No arguments: renderOutput reads toneMapping/outputColorSpace from the pipeline context
+        // (RenderPipeline.js:214-219, RenderOutputNode.js:119-121); _update still rebuilds on a
+        // renderer.toneMapping change (:181-193), so film slot switches keep working.
+        pipeline.outputColorTransform = false
+        pipeline.outputNode = outputStage(renderOutput(effectNode))
+      } else {
+        pipeline.outputColorTransform = true          // today's graph, object for object
+        pipeline.outputNode = effectNode
+      }
+      pipeline.needsUpdate = true
+    }
+    const rebuild = () => {
+      release()
+      let node: any = scenePass.getTextureNode()
+      /* existing EDL / rtt / DoF chain, unchanged */
+      effectNode = node
+      applyOutput()
+    }
+    render() { if (enabled || eyeDome || outputStage) pipeline.render(); else renderer.render(scene, camera) }
+    setOutputStage(stage) { if (stage === outputStage) return; outputStage = stage; applyOutput() }   // no release(): DoF/EDL targets survive
+    hasOutputStage() { return outputStage !== null }
+
+- Header comment update: "With both off and no output stage the frame goes straight to the canvas."
+- Already verified elsewhere:
+  - release() frees only dofNode and the EDL rtt, so scenePass.getTextureNode() stays valid as the path-B effectNode;
+  - the only reader of context.outputColorSpace is ColorSpaceNode's OUTPUT placeholder, so flipping outputColorTransform changes nothing upstream.
+
+1.4 grade-output.ts (new; three/TSL; node-importable, no DOM; imports grade-bake.ts with the .ts extension)
+
+    import * as THREE from 'three'
+    import { clamp, screenUV, select, texture3D, uniform, vec4 } from 'three/tsl'
+    import { identityTexels } from './grade-bake.ts'
+
+    export function makeLutTexture(n: number, texels: Uint16Array): THREE.Data3DTexture {
+      const t = new THREE.Data3DTexture(texels, n, n, n)         // 4·n³ half bits, R fastest (= .cube order)
+      t.format = THREE.RGBAFormat; t.type = THREE.HalfFloatType   // rgba16float / RGBA16F: filterable on WebGPU core and WebGL2
+      t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter   // default Nearest would compile to textureLoad
+      t.wrapS = t.wrapT = t.wrapR = THREE.ClampToEdgeWrapping
+      t.generateMipmaps = false; t.unpackAlignment = 1; t.colorSpace = THREE.NoColorSpace
+      t.name = 'grade-lut'; t.needsUpdate = true
+      return t
+    }
+
+    export interface GradeOutput {
+      readonly stage: (display: any) => any      // stable reference, so setOutputStage's identity check works
+      readonly size: number
+      /** Same n: swaps the data into the same GPU texture and returns the array it replaced (for the pool).
+       *  New n: a new texture, the node value swapped, the old one disposed two frames later; returns null. */
+      upload(texels: Uint16Array, n: number): Uint16Array | null
+      setSplit(x: number): void                  // canvas x in [0,1]; left of it shows "before". 0 = all graded, 2 = all before
+      split(): number
+      update(): void                             // once per frame, before render: deferred disposal
+      dispose(): void
+    }
+
+    export function createGradeOutput(n0: number): GradeOutput {
+      let n = n0
+      let lut = makeLutTexture(n, identityTexels(n).slice())     // a copy: the cached identity is never handed to three or transferred
+      const lutNode = texture3D(lut, null, 0)                   // level 0 → textureSampleLevel / textureLod (precedent environment-layer.ts:366)
+      const lutScale = uniform((n - 1) / n)
+      const lutOffset = uniform(0.5 / n)                        // (rgb·(N−1)+0.5)/N: texel centres for lattice points i/(N−1)
+      const compareSplit = uniform(0)
+      const retired: { tex: THREE.Data3DTexture; frames: number }[] = []
+      const stage = (display: any) => {
+        const before = display.rgb.toVar()
+        const uvw = clamp(before, 0, 1).mul(lutScale).add(lutOffset)
+        const after = lutNode.sample(uvw).rgb                   // the clone keeps levelNode; no derivatives, Firefox-uniformity safe
+        // uniformFlow: a real select/ternary, both operands inline, never a branch (ConditionalNode.js:146-158)
+        return vec4(select(screenUV.x.lessThan(compareSplit), before, after).uniformFlow(), display.a)
+      }
+      // Built differently (C2): as written above the frame is generated twice, because
+      // ConditionalNode isolates each operand in its own node cache (ConditionalNode.js:104-105)
+      // and display.a is read outside the select; building the frame inside the uniformFlow
+      // context also turned EDL's selects into eager ternaries. grade-output.ts wraps the stage
+      // in Fn(() => { const shown = display.toVar(); const after = lutNode.sample(...).rgb.toVar();
+      // return vec4(select(...).uniformFlow(), shown.a) })(), and a shader test checks the frame
+      // texture is read once.
+      return {
+        stage,
+        get size() { return n },
+        upload(texels, size) {
+          if (size === n) {
+            const prev = lut.image.data as Uint16Array
+            lut.image.data = texels; lut.needsUpdate = true     // re-upload into the same GPU texture (Textures.js:346-355)
+            return prev
+          }
+          retired.push({ tex: lut, frames: 2 })
+          n = size; lut = makeLutTexture(n, texels)
+          lutNode.value = lut                                   // sample() clones read .value via referenceNode; NodeSampledTexture rebinds
+          lutScale.value = (n - 1) / n; lutOffset.value = 0.5 / n
+          return null
+        },
+        setSplit(x) { compareSplit.value = x },
+        split() { return compareSplit.value },
+        update() {
+          for (let i = retired.length - 1; i >= 0; i--) {
+            if (--retired[i].frames <= 0) { retired[i].tex.dispose(); retired.splice(i, 1) }
+          }
+        },
+        dispose() { lut.dispose(); for (const r of retired) r.tex.dispose(); retired.length = 0 },
+      }
+    }
+
+Notes on the tap
+- Disposal is frame-counted in update(), not deferred by rAF, so it also works under ?bgclock and does not depend on the order of rAF callbacks.
+- WebGL: the flipY select in TextureNode.setupUV evaluates false for a Data3DTexture.
+- screenUV is top-left on both backends. #view is fixed at inset 0, so clientX/innerWidth equals the split's x.
+
+1.5 Cost when on
+- In the existing quad: one clamp, one fma, one RGBA16F trilinear 3D tap, one compare and one select. On WebGL, also one constant-false flipY select.
+- The number of controls changes nothing.
+- The split is always compiled with the tap, so toggling compare or dragging the split never recompiles.
+
+1.6 Compile-in policy (grade-editor.ts)
+- Rule:
+
+    compiledIn = enabled && (editing || !isGradeIdentity(state, look))
+    editing    = gradeSection.open && document.body.classList.contains('design-open')
+
+- It is re-evaluated only on these events:
+  - the Grade toggle;
+  - the details 'toggle' event;
+  - a body class change (a MutationObserver with attributeFilter ['class'], which covers the design chip and the close button without touching main.ts:476-481);
+  - a commit (range 'change', widget pointerup, keyboard-nudge debounce end);
+  - snapshot recall, Reset, undo/redo, paste, look import or removal, and a change of look amount.
+- It is never re-evaluated on 'input' or pointermove.
+- Effect:
+  - one stage change when the section opens with the grade on;
+  - one when it closes at identity;
+  - one per toggle click;
+  - zero during any drag.
+  - A stage change is never served from three's cache, and it is not the final quad alone (measured
+    in C2): with DoF and EDL on it is 9 node builds over two frames (the quad, DoF's five passes, a
+    new CoC blur, the EDL quad twice), 7 with DoF alone, 1 without DoF. depth-of-field.ts frees the
+    CoC blur each rebuild replaces (three r185 leaks it, also on every tone-curve change).
+- setStage(on) = depthOfField.setOutputStage(on ? gradeOutput.stage : null).
+- Boot: if config.grade.state is not identity (or a look is configured) and the grade is enabled, run one synchronous main-thread bake, upload it and set the stage before the first frame.
+
+1.7 Path-B fallback (built only if gate M2 fails)
+- tone-mapping.ts gains part 'grade' as bit 4 of FILM_PART_ORDER. toneMappingModeOf needs no change; it scales.
+- The film Fn ends with `if (parts.grade) c = sRGBTransferEOTF(gradeTapRgb(sRGBTransferOETF(c)))`. gradeTapRgb is the same lutNode/scale/offset/split code, exported from grade-output.ts, so both paths share one function.
+- The OETF/EOTF round trip deviates by at most about 0.0014 LSB.
+- It is used only on path B while film is picked and the stage is on. Any other curve, or the stage off, still routes through the pipeline.
+
+1.8 Outside the grade
+- Exposure (renderer.toneMappingExposure, scene-linear, Tone & colour).
+- The film vignette and lift.
+- The point and imagery grades (per layer).
+- DOM overlays.
+- The loader eagle and the splat layer (their own renderers).
+
+2. GRADE MODEL (display-referred; all maths pure, in grade-model.ts / grade-curves.ts / grade-bake.ts)
+
+2.1 Conventions
+- x is the display-encoded sRGB value of a lattice node, in [0,1].
+- Y' = 0.2126 R + 0.7152 G + 0.0722 B on the values at hand (Rec.709, the same weights as the film and point grades).
+- srgbEotf and srgbOetf are the exact piecewise transfer (0.04045 / 12.92 / 2.4), odd-extended: f(−x) = −f(x).
+- Wheel delta, the inverse Rec.709 Y'CbCr with Y' = 0, normalised so blue at u = 1 is 1:
+
+    Δ̂(u,v) = (1.5748 v, −0.18732 u − 0.46812 v, 1.8556 u) / 1.8556
+
+  - luma(Δ̂) = 0 exactly. Built: the green coefficients are derived from the luma weights
+    (−Kb/Kg, −Kr·1.5748/(Kg·1.8556)); the rounded figures above leave luma at about 1.6e-6.
+  - u = puck x (towards Cb, blue to the right); v = −puck y on screen (towards Cr, red up).
+  - Red sits at about 103°, green at 230°, blue at 355° (this formula; 241°/347° are the NTSC
+    Y'UV vectorscope figures).
+- snapPuck: |puck| < 0.02 → exactly (0,0). It is applied on every set, and a double-tap resets.
+- Tuning constants live in config grade.tuning and are referenced as k* below.
+
+2.2 powC1(t, g), the C1 power, E = 1/64, valid for g in (0, 2]
+
+    t ≥ E      : t^g
+    0 ≤ t < E  : E^g · ((2−g)·(t/E) + (g−1)·(t/E)²)     (quadratic toe through 0, C1 at E)
+    t < 0      : E^g · (2−g) · (t/E)                     (linear, C1 at 0)
+
+- f(0) = 0, f(1) = 1, monotone and C1.
+- Bit-exact identity at g = 1, because E is a power of two.
+- This replaces `y > 0 ? y^(1/γ) : y`, which had a kink at 0 (judge 1, blocker 2).
+
+2.3 GradeState v1: fields, ranges, defaults, steps
+
+    temperature   −100..100      0      step 1     (+ warmer, Lightroom sign)
+    tint          −100..100      0      step 1     (+ magenta)
+    lift   {y,u,v}  y −0.25..0.25  0   step 0.001; puck in the unit disc, 0
+    gamma  {y,u,v}  y −1..1        0   step 0.01  (log2 of gamma; + brightens mids)
+    gain   {y,u,v}  y 0.5..2       1   step 0.01
+    offset {y,u,v}  y −0.25..0.25  0   step 0.001
+    contrast      0.5..2         1      step 0.01
+    pivot         0.2..0.7       0.4614 step 0.001 (= OETF(0.18); shown as sRGB code, 118 = 18 % grey)
+    saturation    0..2           1      step 0.01
+    vibrance      −1..1          0      step 0.01
+    curves {master, red, green, blue}   each 2..12 points [x,y], default [[0,0],[1,1]];
+                  ends pinned at x = 0 and 1 (y free 0..1), interior x strictly increasing, gap ≥ 0.01
+    hueSat        0..12 points [hue° 0..360, 0..2],  default []  (flat = neutral 1)
+    hueLuma       0..12 points [hue°, −1..1 stops],   default []  (flat = neutral 0)
+    tones { shadows {u,v} 0, highlights {u,v} 0, balance −1..1 0, blending 0..1 0.5 }
+    rollOff       0..1           0      step 0.01
+    version       1
+
+The look is held beside the state, not inside it: `{ key, name, file | null, size, amount 0..1 (default 1) } | null`. The undo history stores the state and the look ref together.
+
+2.4 Bake order per lattice node (i, j, k) → x = (i, j, k)/(n−1)
+
+Stage 0: Look (optional)
+- v = x + amount·(C(x) − x).
+- C is the trilinear sample of the imported cube over its domain: u = clamp((x − dmin)/(dmax − dmin), 0, 1).
+- Without a look, v = x.
+
+Stage 1: per channel, on y = v_c. Every step is skipped at its neutral value.
+- Without a look, these are exact tables at the n node values (3·n evaluations).
+- With a look, they are dense tables of 4096 entries over [−0.25, 1.5] with linear interpolation. Built: cells where
+  stage 1 bends hard (second difference / 8 above 1e-6, plus one cell each side) are evaluated exactly, which keeps the
+  error under 0.001 LSB; plain linear tables measured up to 1.46 LSB on a step curve.
+
+1a. White balance
+- t = temperature/100 and τ = tint/100.
+- Exponents in stops: e = (kTemp·t + kTint·τ/3, −2·kTint·τ/3, −kTemp·t + kTint·τ/3), with kTemp 0.5 and kTint 0.4.
+- Gains: w_c = 2^e_c / (0.2126·2^e_r + 0.7152·2^e_g + 0.0722·2^e_b), so grey keeps its luminance.
+- y = srgbOetf(w_c · srgbEotf(y)).
+
+1b. Lift, gamma, gain, offset (Nuke Grade, equal to ASC CDL)
+- Per channel:
+  - L_c = lift.y + kLift·Δ̂_c(lift), kLift 0.10
+  - G_c = gain.y · (1 + kGain·Δ̂_c(gain)), kGain 0.25
+  - g_c = clamp(gamma.y + kGamma·Δ̂_c(gamma), −1, 1), kGamma 0.5
+  - O_c = offset.y + kOffset·Δ̂_c(offset), kOffset 0.10
+- Formula:
+
+    y = y·(G_c − L_c) + L_c + O_c
+    y = powC1(y, 2^(−g_c))                          (exponent clamped to [0.5, 2] by the g_c clamp)
+
+- Lift moves black with white fixed, gain moves white with black fixed, gamma bends the mids.
+- For later CDL export: slope = G − L, offset = L + O, power = 2^(−g).
+
+1c. Contrast c about pivot p
+
+    c ≥ 1 : y ≤ p → p·powC1(y/p, c);   y > p → 1 − (1−p)·powC1((1−y)/(1−p), c)
+    c < 1 : y = p + c·(y − p)            (linear fade; no infinite end slopes; black rises to p(1−c))
+
+- 0, p and 1 stay fixed for c ≥ 1, with slope c at the pivot.
+- Above 1 and below 0 the curve extends C1.
+- c = 1 is skipped.
+
+1d. Curves: y = curve_ch(curve_master(y))
+- Spline: Fritsch–Carlson monotone cubic Hermite.
+  - Secants d_k.
+  - Tangents: m_0 = d_0, m_last = d_last; interior m_k = (d_{k−1}+d_k)/2 if d_{k−1}·d_k > 0, else 0.
+  - If d_k = 0, then m_k = m_{k+1} = 0.
+  - If α² + β² > 9, scale both by 3/√(α²+β²).
+  - Basis: h00 = 2t³−3t²+1, h10 = t³−2t²+t, h01 = −2t³+3t², h11 = t³−t².
+- Linear extension beyond the ends with the end tangent.
+- The default two-point curve returns null (skipped).
+
+Stage 2: cross-channel, on y = (r, g, b), with the stage input v as the gamut reference. Computed once from the stage-2 input y:
+- M = max, m = min, C = M − m, Y'.
+- Hexcone hue H in degrees (undefined when C = 0).
+- Hue gate q = smoothstep(0, kHueGate, C), kHueGate 0.05: greys and haze never move.
+- Vibrance weight w_v = 1/(1 + Cq²/kVib²), kVib 0.3, where
+  Cq² = ((r−g)² + (g−b)² + (b−r)²) / (2·(max(Y',0) + 0.02)²).
+  This is smooth, uses no max/min, and gives saturated canopy about 0.1 and grey 1.
+
+2a. Saturation, vibrance and hue-vs-sat in one affine step
+
+    s = max(saturation · (1 + vibrance·w_v), 0) · (1 + q·(f_s(H) − 1))
+    y ← Y' + s·(y − Y')
+
+  For fixed s this is affine, so trilinear is exact until something clips.
+
+2b. Hue vs luma
+- y ← y + Y'·(2^(q·f_l(H)) − 1).
+- This shifts all channels equally, so chroma differences are kept.
+- f_s and f_l are periodic Fritsch–Carlson curves: points copied one period each side, tabulated to 361 entries (t[0] = t[360]), linear between entries.
+- 0 points means skipped. One point is a constant.
+
+2c. Split toning ("Tones")
+- Y'' = luma after 2b; mc = 0.5 + 0.25·balance; bw = 0.2 + 0.6·blending.
+- S = smoothstep(mc − bw/2, mc + bw/2, Y''), B = smoothstep(0, 0.06, Y''); w_h = S·B, w_s = (1 − S)·B.
+  (Built this way: the earlier w_h = S tinted true black whenever the hand-over's lower edge reached below 0.06.)
+- y ← y + kTone·(w_s·Δ̂(shadows) + w_h·Δ̂(highlights)), kTone 0.10.
+- It is additive and zero-luma. True black stays black; the film's lifted black (about 0.1) is tinted.
+
+2d. Input-relative soft gamut compression (no control; inactive unless the grade adds chroma)
+- a = max(y), a_v = max(v). Skipped if a ≤ 1e-6 or a_v ≤ 1e-6.
+- Per channel:
+  - d = (a − y_c)/a, d_v = (a_v − v_c)/a_v, t = max(kGamut, d_v), kGamut 0.8.
+  - If d > t and t < 1: y_c = a·(1 − (t + (1−t)·tanh((d − t)/(1 − t)))).
+- C1 at the threshold, and colours the input already saturates are left alone. Not "never below 0": a
+  channel that is exactly 0 at the input (a lattice face) is left alone and may go negative. Measured
+  through the tap, that negative face value is what keeps dark canopy greens accurate (0.25 LSB max at
+  saturation 1.1, against 1.1 LSB and 7 % of values over 1 LSB with the face held at 0). The canvas
+  clamps per pixel; a .cube export carries the negative values, which stage 4 allows.
+
+Stage 3: highlight roll-off, a second pass over the stored floats
+- k = 1 − kRollKnee·rollOff, kRollKnee 0.3.
+- W = max(1, peak), where peak = max over nodes of max(y).
+- Skipped when rollOff = 0 or W ≤ 1.
+- For a node with m = max(y) > k:
+  - t = min((m−k)/(W−k), 1), n = (W−k)/(1−k);
+  - m' = k + (1−k)·(1 − (1−t)^n);
+  - y ← y·m'/m.
+- This is the film shoulder's form: hue kept, C1 at the knee.
+- It runs before the draft fill (section 2.6).
+
+Stage 4: storage
+- Finite check, clamp to [−16, 16], then round-to-nearest-even half.
+- The fast path is Float16Array; otherwise a u32-view packer that is bit-identical.
+- Alpha is 0x3c00.
+- Values are NOT clamped to [0,1]. The 8-bit unorm canvas clamps per pixel after interpolation, so imported >1 values and hard clips interpolate as authored.
+- three's truncating DataUtils.toHalfFloat is not used.
+
+2.5 Identity: isGradeIdentity(state, look) is true when all of these hold
+- Every scalar === its neutral value.
+- All pucks are exactly 0.
+- All four curves are the default two points.
+- Each hue curve is empty or all its points sit exactly at neutral y.
+- The look is null, or amount === 0, or isIdentityLattice(cube, 1e-5).
+- rollOff is ignored, because a neutral grade has no value above 1. So are pivot (contrast 1 is skipped) and Tones
+  balance and blending (both pucks at 0 add exactly 0): moving those alone bakes the identity lattice bit for bit, and
+  must not compile an identity LUT in.
+- A look counts as identity only if its domain covers [0,1] on every channel: a narrow-domain identity cube clamps.
+
+A neutral bake equals identityTexels(n) bit for bit; every i/(n−1) is exact in half for n = 17, 33, 65.
+
+2.6 Lattice size and draft
+- Own lattice: config grade.lutSize, 33.
+- With a 3D look of size N whose domain is [0,1]: L = latticeSizeFor(N) = the smallest k(N−1)+1 ≥ 33, capped at config grade.maxLattice (65).
+  - 33 → 33, 17 → 33, 9 → 33, 21 → 41, 16 → 46, 32 → 63, 64 → 64, 65 → 65.
+  - Trilinear on a refined lattice reproduces the cube's own trilinear exactly, also with amount < 1 and with controls on top. Measured within 0.10 LSB, which is half rounding only.
+  - So moving a control on a loaded look causes no jump. Resampling to 33 would move outputs by up to 15-26 LSB.
+- N > 65, a non-unit domain, or maxLattice lowered to 33 after measurement: the cube is resampled onto the lattice and a visible "not 1:1" warning is shown.
+- Draft: draftStride(L, refinement) = the smallest s ≥ 2 that divides the refinement k (L−1 = k(N−1)) and leaves
+  (L−1)/s+1 ≥ 9 nodes, else 1. latticeSizeFor returns the refinement; callers pass it into the bake job. For 33 that
+  is s = 2 (17³ nodes); a refined look gets a stride on its own nodes (13³ → 37: 3, 15³ → 43: 3) or no draft
+  (4³ → 34: 1), so a draft of an exact look never pops.
+  - The bake fills the skipped nodes with a separable r → g → b multilinear fill, which is exactly what a coarse texture would render.
+  - Drafts are used only while dragging, and only if the last final bake took longer than config grade.draftWhenFinalOverMs (8). A desktop at about 5-8 ms therefore never shows a draft-to-final pop.
+
+2.7 Bake cost
+- Measured by the design prototypes of this model (node 24, this desktop):
+  - 33³ final: 5.0-7.5 ms with every control on;
+  - 17³ draft: about 1.3-2.4 ms;
+  - 41³: about 10 ms;
+  - 65³: about 36-56 ms;
+  - pack: 0.25 ms (Float16Array), 1.1 ms (u32 packer).
+- A neutral grade costs nothing: the cached identity is copied.
+- Phones are estimated 4-6× slower, off the main thread.
+
+3. .cube PARSER AND WRITER (cube-format.ts, pure)
+
+parseCube(text): CubeFile
+
+    { title: string | null, kind: '3d' | '1d' | '1d+3d',
+      size: number (3D N, 0 if none), domainMin: [r,g,b], domainMax: [r,g,b], data: Float32Array (RGB, red fastest),
+      lut1d: { size, domainMin, domainMax, data: Float32Array } | null, warnings: string[] }
+
+How it reads a file:
+- Lines split on /\r\n|\r|\n/.
+- TITLE is handled first, so a quoted title may contain '#'; quoted and unquoted titles are both accepted.
+- Everything after '#' is a comment. Lines are trimmed; blank lines are skipped anywhere, including after the data.
+- Tokens are split on /[ \t]+/.
+- Keywords are matched case-insensitively: TITLE, LUT_1D_SIZE, LUT_3D_SIZE, DOMAIN_MIN, DOMAIN_MAX, LUT_1D_INPUT_RANGE, LUT_3D_INPUT_RANGE.
+- A scalar INPUT_RANGE becomes the domain on all channels. DOMAIN wins over INPUT_RANGE, with a warning.
+- Unknown keywords before the data are ignored with a warning.
+- Numbers must match /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/ and be finite. Signs and exponents are allowed; NaN and Infinity are rejected.
+- Data rows are exactly 3 numbers. Values outside [0,1] are kept; nothing wraps.
+- With both sizes present, the first N1 rows are 1D and the next N3³ rows are 3D.
+
+It throws CubeParseError(message, line) on:
+- a keyword after the data;
+- a row that is not exactly 3 numbers;
+- a non-number;
+- a count that is not exactly N³ (+N1 when a 1D table is present), with expected and found counts in the message;
+- a 3D size outside 2..256 or a 1D size outside 2..65536;
+- no size keyword.
+
+Import acceptance in v1:
+- kind '3d' only.
+- kind '1d' or '1d+3d' is rejected in the Look status line: "This .cube has a 1D table (LUT_1D_SIZE n). 1D and shaper LUTs are not supported yet; export a 3D LUT (for example 33 point) instead." It is parsed correctly, never misread.
+
+Other functions:
+- sampleLattice(data, n, rgb, out): CPU trilinear with clamp to the lattice.
+- isIdentityLattice(data, n, eps = 1e-5).
+- serializeCube(lattice: Float32Array, n, { title, comments }) writes:
+  - LF only;
+  - comment lines only at the top:
+    - "# SCHNELLE BUNTE BILDER · Canopy colour grade"
+    - "# Input: the displayed frame, sRGB-encoded, after the film look. Take the screenshot with the grade off."
+    - "# Interpolation: trilinear"
+  - TITLE "…" and LUT_3D_SIZE n;
+  - no DOMAIN lines (the default [0,1]);
+  - 6 decimals, red fastest, values unclamped (finite).
+- Export source: the worker's last final float lattice, at the current lattice size. The file is downloaded as canopy-grade-<n>.cube.
+
+4. FILES AND CHANGES
+
+All paths are under viewer/src/threejs-test/ unless noted. Pure modules import nothing from three or the DOM, use .ts-extension imports and no constructor parameter properties, and may import './config.ts'.
+
+4.1 grade-model.ts (new, pure)
+- Types: Puck, Wheel, Pt, GradeState, LookRef, GradeTuning.
+- Values:
+  - NEUTRAL_GRADE (frozen);
+  - GRADE_RANGES, the single table of min, max, step and default that both the UI and parse read.
+- Functions:
+  - parseGradeState(unknown): { state, warnings }. It is tolerant: it fills defaults, clamps, sorts curve x, drops points closer than 0.01, pins the ends, caps at 12 points, snaps pucks, ignores unknown keys and never throws.
+  - isGradeIdentity(state, look)
+  - wheelDelta(u, v)
+  - snapPuck(u, v)
+  - whiteBalanceGains(temperature, tint, tuning)
+  - powC1(t, g)
+  - contrastCurve(x, c, p)
+  - srgbEotf, srgbOetf
+  - luma(r, g, b)
+
+4.2 grade-curves.ts (new, pure)
+- monotoneCurve(points): ((x) => number) | null
+- periodicCurve(points, neutral): Float32Array(361) | null
+- Editing ops for the widgets, so they are testable:
+  - insertPoint(points, x, y, max)
+  - movePoint(points, i, x, y): keeps the order, the 0.01 gap and the pinned ends
+  - removePoint(points, i): never removes an end
+  - nearestPoint(points, x, y, rx, ry)
+
+4.3 grade-bake.ts (new, pure)
+- compileGrade(state, tuning, look | null): CompiledGrade (stage flags, tables, closures; no allocation per voxel).
+- bakeLattice(compiled, n, stride, scratch: Float32Array): number. Returns the peak.
+- applyRollOff(scratch, n, stride, rollOff, peak, tuning)
+- fillLattice(scratch, n, stride)
+- packHalf(scratch, out: Uint16Array)
+- floatToHalfBits, halfBitsToFloat
+- identityTexels(n): cached; callers must copy, never transfer.
+- evaluateGrade(state, look, rgb, out): per-pixel reference, the test oracle.
+- latticeSizeFor(N | null, base, cap, unitDomain): { n, exact, warning? }
+- draftStride(n)
+- bakeGradeTexels(state, look, n, stride, out?): { texels, peak, ms } and bakeGradeFloat(...), used by the worker and by the sync fallback.
+- createBakeScheduler({ post, draftThresholdMs }): { request(job, { commit }), onResult(msg): Result | null, setLastFinalMs }
+  - one job in flight;
+  - the latest pending request wins;
+  - a commit turns a pending draft into a final;
+  - a duplicate final (equal JSON hash of state + look key + amount + n) is skipped;
+  - results with a stale seq are dropped.
+- createBufferPool(n): { take(): ArrayBuffer, give(buf) }
+  - drops buffers of another size;
+  - never contains the identity cache or the current texture array.
+
+4.4 cube-format.ts (new, pure): section 3.
+
+4.5 grade-state.ts (new, pure)
+- createHistory(limit = 100): push, undo, redo, canUndo, canRedo. A new push cuts the redo branch.
+- createSnapshots(): A/B slots holding { state, look }.
+- gradeSnippet(enabled, lutSize, look, state): the config-shaped `grade:` text.
+- parseGradePaste(text): { grade?: { enabled?, lutSize?, look?, state }, ignored: string[], warnings: string[] }
+  - It splits a Copy values dump on /^(\w+): /m and JSON.parses per block.
+  - It also accepts a bare `grade: {…}` block or bare JSON: either a state, or { enabled, lutSize, look, state }.
+  - Other blocks (design, pointLighting, atmosphere, toneMapping, eyeDomeLighting, depthOfField) are listed as "not applied: only grade is pasted in this version".
+
+4.6 grade-output.ts (new, runtime TSL): section 1.4.
+
+4.7 grade-bake.worker.ts (new)
+- Created as `new Worker(new URL('./grade-bake.worker.ts', import.meta.url), { type: 'module' })`, the same pattern as ortho-composite.ts:144.
+- Messages in:
+  - {kind:'parse', key, text} → {kind:'parsed', key, meta:{title, kind, size, domain, warnings}} | {kind:'error', key, message, line}. The worker keeps up to 4 parsed looks by key.
+  - {kind:'bake', seq, state, look:{key, amount}|null, n, stride, out: ArrayBuffer} (transferred) → {kind:'baked', seq, n, stride, ms, peak, out} (transferred back). The worker keeps the float lattice of the last final bake.
+  - {kind:'export', title} → {kind:'cube', text}.
+
+4.8 grade-widgets.ts (new, DOM): section 5.
+
+4.9 grade-editor.ts (new, DOM)
+- createGradeEditor({ root, output, setStage, captureCanvas, initial, enabled }) returns
+  { update(), state(), look(), snippet(), applyPaste(parsed), isCompiled(), stats(), dispose() }.
+- It owns the state, the history, the snapshots, the scheduler, the pool, the worker client (with a sync fallback when Worker is missing or errors), the compile policy, import/export, frame grab, the split overlay and the section's sliders.
+- Sliders use a local bindGradeSlider(input, readout, format, get, set): { sync() }. The UI renders from state. The existing binders stay untouched (judge 1, blocker 9).
+- update() runs each frame, before the render:
+  - output.update();
+  - if a pending result exists: upload it, size swap included, then give the replaced array to the pool;
+  - without a worker: at most one sync bake.
+  So there is at most one upload per frame.
+- Buffer rules (judge 2, blocker 1):
+  - the identity cache is only ever copied;
+  - the array currently in lut.image.data is never posted;
+  - a pending result superseded before it is applied goes back to the pool;
+  - a size change empties the pool.
+
+4.10 depth-of-field.ts (changed): section 1.3.
+
+4.11 main.ts (changed)
+- Imports: createGradeOutput, createGradeEditor, parseGradePaste.
+- After depthOfField (main.ts:559): `const gradeOutput = createGradeOutput(EXPERIENCE_CONFIG.grade.lutSize)`.
+- After the Tone & colour binders (around main.ts:3633):
+
+    const gradeEditor = createGradeEditor({ root, output, setStage, captureCanvas, initial, enabled })
+
+  - root: $('#gradeSection')
+  - output: gradeOutput
+  - setStage: (on) => depthOfField.setOutputStage(on ? gradeOutput.stage : null)
+  - captureCanvas: () => { depthOfField.render(); return renderer.domElement }. Outside the loop this re-composites only the final quad, because nodeFrame does not advance.
+  - initial: EXPERIENCE_CONFIG.grade
+  - enabled: bootSwitch('grade', EXPERIENCE_CONFIG.grade.enabled)
+- Loop: call `gradeEditor.update()` immediately before `depthOfField.render()` (main.ts:4861).
+- Copy values (main.ts:3983-4091):
+  - Append `\ngrade: ${gradeEditor.snippet()}` after the toneMapping block.
+  - The snippet is { enabled, lutSize, look: {file, amount} | null, state }, numbers only.
+  - An imported look that is not under public/grades/ is named, with the note "save it as public/grades/<name>.cube to keep it".
+  - Clipboard failure: show #designCopyBox, a readonly textarea, preselected, with user-select: text, as well as console.info.
+- New #designPaste button next to #designCopy:
+  - It opens #designPasteBox (a textarea with Apply and Cancel).
+  - Apply: parseGradePaste → gradeEditor.applyPaste (one undo step) → a status line listing the ignored blocks and the warnings.
+    Built (review fix): a paste whose look must be fetched sets the state, enabled and lutSize and records ONE
+    undo step once the look has landed (or failed: then without the look, reported in #designPasteStatus).
+    Every look fetch carries a ticket; one that lands after a newer look action is only held. Undo of a paste
+    also reverts enabled and lutSize.
+- Debug handle, for measurements: `__three.grade = { output: gradeOutput, editor: gradeEditor, setStage: (s) => depthOfField.setOutputStage(s === 'passthrough' ? (d) => d : s === 'grade' ? gradeOutput.stage : null) }`.
+
+4.12 threejs-test.html (changed)
+
+Placement:
+- After the Tone & colour section closes (line 1361): `<details class="design-section" id="gradeSection"><summary>Colour grade</summary>`, closed by default.
+- Section note: "Runs on the displayed frame, after Tone & colour. Exposure and vignette stay there."
+
+Header rows:
+- #gradeToggle "◐ Grade · On", #gradeCompare "◧ Compare · Off".
+- #gradeSnapA "A", #gradeSnapB "B", #gradeStore "Store", #gradeUndo "↶", #gradeRedo "↷", #gradeReset "⟲ Reset".
+- #gradeTabs, a .seg with data-tab buttons: Primary | Curves | Hue | Tones | Look.
+
+Groups (toggled with the hidden attribute):
+- #gradePrimary:
+  - four 44 px canvases .grade-mini (Lift, Gamma, Gain, Offset);
+  - canvas#gradeWheel;
+  - #gradeWheelMaster range and #gradeWheelReadout;
+  - range rows gradeTemperature, gradeTint, gradeContrast, gradePivot (with a .slider-ref tick at code 118), gradeSaturation, gradeVibrance.
+- #gradeCurves: .seg #gradeCurveChannel (RGB | R | G | B), canvas#gradeCurve, #gradeCurveReadout, #gradeCurvePointRemove, #gradeCurveReset.
+- #gradeHue: .seg #gradeHueMode (Hue vs sat | Hue vs luma), canvas#gradeHueCurve, #gradeHueReset.
+- #gradeTones: canvas#gradeShadowWheel and canvas#gradeHighlightWheel side by side with readouts; ranges gradeBalance, gradeBlending, gradeRollOff (note: "softens what the grade pushes past white").
+- #gradeLook:
+  - #gradeImport "⤒ Import .cube", with a hidden input#gradeFile type=file accept=".cube,.CUBE";
+  - #gradeLookStatus;
+  - gradeLookAmount range and #gradeLookRemove "✕ Remove";
+  - #gradeExport "⤓ Export .cube" and #gradeFrame "⤓ Frame for grading";
+  - round-trip notes: Resolve (DaVinci YRGB without colour management, 3D LUT interpolation Trilinear, Generate LUT → 33 Point Cube); Photoshop (sRGB document, adjustment layers, Export → Color Lookup Tables → CUBE); Lightroom (no .cube; HALD route later).
+- #gradeStatus: lattice size, last bake ms, compiled in/out.
+
+Footer: #designPaste "⇣ Paste values" beside #designCopy, plus #designPasteBox and #designCopyBox.
+
+Overlay, next to #foveationGuides (around line 705):
+
+    <div id="gradeSplit" hidden><i class="line"></i><span class="tag">Before</span><span class="tag">After</span><button id="gradeSplitHandle" type="button" aria-label="Before/after split"></button></div>
+
+CSS:
+- `@media (min-width: 701px) { body.grade-open #designPanel { width: 320px } }`. It must sit inside min-width, otherwise its specificity beats the phone sheet's width 100%.
+- `canvas.grade-widget { display:block; width:100%; touch-action:none; border:1px solid #2d333b; border-radius:8px; background:#0d1117 }`, with aspect-ratio 1 for the wheels and the curve and height 140px for the hue curve.
+- `.grade-wheels { display:grid; grid-template-columns:1fr 1fr; gap:8px }` and `.grade-minis { display:flex; gap:6px }`.
+- #gradeSplit: fixed, inset 0, z-index 18, pointer-events none. .line is 1px rgba(255,255,255,.7) with a dark shadow. The tags are 9px mono. The handle is 44×44 round with pointer-events auto and touch-action none, at top 30vh (18vh on phones).
+- The paste and copy textareas: user-select: text, 11px ui-monospace, min-height 120px.
+- Inside the existing max-width 700px block:
+  - `.grade-curve { width: min(100%, 40vh) }`;
+  - peek: `body.grade-dragging #designPanel { background: transparent; backdrop-filter: none; border-color: transparent }`;
+  - `body.grade-dragging` hides with visibility:hidden (so there is no layout jump) .design-title, the other sections, #gradeSection > summary, every row without .grade-active, and the footer buttons.
+- Panel palette only (#1f6feb accent, mono notes). No brand colours, as elsewhere in the panel.
+
+4.13 config.ts (changed): new top-level block after toneMapping (before eyeDomeLighting, line 1340), with house-style comments
+
+    grade: {
+      enabled: true,                 // master switch; neutral + section closed = compiled out (zero cost)
+      lutSize: 33,
+      maxLattice: 65,                // refined imports k(N−1)+1 up to this; 33 = always resample (warns "not 1:1")
+      draftWhenFinalOverMs: 8,
+      worker: true,
+      look: null as null | { file: string; amount: number },   // file under public/grades/, fetched at boot
+      compareSplit: 0.5,
+      state: { version: 1, temperature: 0, tint: 0,
+        lift: { y: 0, u: 0, v: 0 }, gamma: { y: 0, u: 0, v: 0 }, gain: { y: 1, u: 0, v: 0 }, offset: { y: 0, u: 0, v: 0 },
+        contrast: 1, pivot: 0.4614, saturation: 1, vibrance: 0,
+        curves: { master: [[0, 0], [1, 1]], red: [[0, 0], [1, 1]], green: [[0, 0], [1, 1]], blue: [[0, 0], [1, 1]] },
+        hueSat: [], hueLuma: [],
+        tones: { shadows: { u: 0, v: 0 }, highlights: { u: 0, v: 0 }, balance: 0, blending: 0.5 },
+        rollOff: 0 },
+      tuning: { tempStops: 0.5, tintStops: 0.4, liftChroma: 0.1, gammaChroma: 0.5, gainChroma: 0.25, offsetChroma: 0.1,
+        toneChroma: 0.1, hueChromaGate: 0.05, vibranceChroma: 0.3, gamutThreshold: 0.8, rollOffKnee: 0.3 },
+    },
+
+- The state is read through parseGradeState(EXPERIENCE_CONFIG.grade.state), so `as const` narrowing never leaks into the model.
+- With this neutral default, viewers get today's shader byte for byte.
+
+4.14 viewer/CLAUDE.md (changed)
+- Add `?grade=0|1` to the URL list.
+- Note that ?dof=0&edl=0 is the no-post baseline only while the grade is compiled out.
+- Add the grade modules to the architecture paragraph.
+
+5. EDITOR UI, WIDGETS AND RESPONSIVENESS
+
+5.1 Layout
+- Desktop: the section opens body.grade-open, which widens the panel to 320 px and gives about 270 px of content.
+- Phone: the 64vh bottom sheet gives about 325 px of content.
+- One tab is visible at a time, so the sheet scrolls little.
+
+5.2 Header
+- Grade toggle: compiles the tap out and disables Compare.
+- Compare: shows #gradeSplit and sets the split to config compareSplit; off sets it to 0 (no recompile).
+  Built (review fix): while the desktop panel overlaps the handle's row the split is kept left of the panel
+  (panel left − 30 px), re-clamped on resize; the phone sheet needs no clamp.
+- A/B snapshots:
+  - tapping an empty slot stores the current state and look;
+  - tapping a stored slot recalls it (undoable);
+  - Store overwrites the selected slot;
+  - a dot marks a stored slot.
+- Undo and redo: also Ctrl/Cmd+Z, Ctrl+Shift+Z and Ctrl+Y while focus is inside #gradeSection and not in a textarea. Nothing in the app binds KeyZ today.
+- Reset: sets the controls to NEUTRAL_GRADE (undoable). The look stays; ✕ Remove removes it.
+- No preset menu in v1. "Neutral" is Reset and never touches the film or tone curve.
+
+5.3 Wheels (createColourWheel, used in Primary and Tones)
+- One large canvas: min(content width, 220 px) in Primary; about 131 px each in Tones.
+- The disc is pre-rendered once per size into ImageData, coloured clamp(0.5 + 0.35·Δ̂(u,v)), so each direction shows the tint it adds. A crosshair marks neutral, a ring marks |puck| = 1, and the puck is drawn on top.
+- Relative drag like Resolve: the puck moves by drag/(2·radius), ×0.25 with Shift, clamped to the unit disc, with snapPuck applied.
+- Double-click or double-tap (300 ms, 12 px) resets.
+- Primary readout: "R +0.012 G −0.004 B −0.019" (the per-channel delta for the selected wheel).
+- Tones readout: "Hue 212° · 0.18".
+- The four 44 px minis in Primary show their pucks and select which wheel the large one edits. The master range under it edits that wheel's y.
+
+5.4 Curves (createCurveEditor)
+- A square canvas with a quarter grid, the identity diagonal, the inactive channels faint, and the active curve and its points (6 px dots).
+- Hit radius: 22 px for touch, 10 px for a mouse (pointerType).
+- Tap on empty space adds a point at the curve's y (max 12). Drag moves it, clamped by movePoint. Endpoints move in y only.
+- Double-tap, a drag more than 24 px outside the box, or Remove point deletes a point.
+- Readout: "Point 3 · in 128 → out 141".
+
+5.5 Hue curve (createHueCurveEditor)
+- Full width × 140 px, with a hue strip along the bottom and wrapped drawing at both edges.
+- y range: 0..2 with a centre line at 1 (sat), or −1..1 stops (luma).
+- A faint band marks the measured canopy hues (hexcone 90-108°).
+- A point within 0.01 of neutral snaps to it. Point operations are as for curves, with no pinned ends.
+
+5.6 Before/after split
+- The handle drag sets output.setSplit(clientX / innerWidth): a uniform, no rebuild.
+- ArrowLeft and ArrowRight move it by 2 % (10 % with Shift).
+- "Before" means the same pixel without the LUT. Exposure and the film vignette show on both sides.
+- Closing the section turns Compare off.
+
+5.7 Frame for grading
+- Steps: prev = split; setSplit(2); canvas = captureCanvas(); in the same task, draw it into an OffscreenCanvas; setSplit(prev); then await convertToBlob('image/png').
+- The PNG downloads via Blob + a[download] + revokeObjectURL as canopy-frame-<w>x<h>.png.
+- Because nodeFrame does not advance, every FRAME-updated pass (scene pass, EDL rtt, DoF) keeps the last loop frame's textures. Only the final quad re-runs, so the PNG is exactly that frame without the grade.
+- It works on WebGPU (current texture read in the same task) and on WebGL (the drawing buffer is still intact within the task).
+
+5.8 Touch and keyboard
+- Widget canvases: touch-action: none, setPointerCapture on pointerdown and stopPropagation. GlobeControls only take pointers that start on #view, so the camera never sees a widget drag.
+- On a curve or hue canvas, a pointerdown that misses every point and then moves mostly vertically by more than 8 px releases capture and scrolls .design-scroll by hand. Wheels always capture.
+- Peek: pointerdown on any grade control adds body.grade-dragging and .grade-active on its row until pointerup or cancel.
+- Canvases have tabindex=0, role="application" and an aria-label.
+- keydown calls stopPropagation for every key except Tab; keyup only for keys whose keydown was stopped there
+  (createKeyIsolation), because keyboard-navigation clears a held key only on its window keyup: a key pressed
+  on the map and released over a grade control must still reach it. Escape blurs. keyboard-navigation.ts listens on window and main.ts on document, both in the bubble phase (keyboard-navigation.ts:168; main.ts:880, 2101, 2998), so W, A, S, D, Space, C and Enter never reach the camera.
+- Keys on a focused widget:
+  - arrows nudge a point by 1/255 (10/255 with Shift), or a puck by 0.01 (0.1 with Shift);
+  - [ and ] select the previous and next point;
+  - Delete and Backspace remove a point;
+  - 0 resets a puck.
+- The split handle uses the same stopPropagation.
+- Native range inputs are already ignored by keyboard navigation, and the panel's wheel-forwarding handler (main.ts:2691-2700) covers them automatically.
+
+5.9 Responsiveness
+- 'input' and pointermove:
+  - patch the state (no history push);
+  - mark the widget dirty; redraws are coalesced to one per rAF, under 1 ms at dpr 3;
+  - call scheduler.request({ state, look, n, stride: draft ? draftStride(n) : 1 }), with draft = lastFinalMs > draftWhenFinalOverMs;
+  - post about 2 KB to the worker.
+  All of this is under 0.1 ms per event.
+- Worker results arrive asynchronously. update() applies the newest one before the next render.
+- Commits ('change', pointerup, the end of a 400 ms keyboard-nudge debounce, and every discrete click):
+  - push history (structuredClone of {state, look}, capped at 100);
+  - request a final bake;
+  - re-evaluate compile-in.
+- Look import: the file text is posted once ({kind:'parse'}). Parsing never runs on the main thread unless there is no Worker.
+- Boot look: config grade.look is fetched from `${import.meta.env.BASE_URL}grades/<file>`, then parsed and baked. The first frames show the grade without the look.
+
+6. NODE TESTS (npm run bench:verify; npx tsc --noEmit -p . clean; 74 pass today)
+
+6.1 grade-model.test.ts
+- NEUTRAL_GRADE is identity; parseGradeState({}) deep-equals it; parseGradeState(EXPERIENCE_CONFIG.grade.state) is identity.
+- Table-driven over GRADE_RANGES: each field moved one step off neutral (pucks, one added curve point, one hue point off neutral, each tones puck) is not identity.
+- rollOff alone is identity, and hue points sitting exactly at neutral are identity.
+- parseGradeState clamps, sorts, drops close points, pins ends, caps at 12, never throws on junk, returns warnings, and survives a JSON round trip deep-equal.
+- wheelDelta:
+  - luma 0 within 1e-12 at 3600 angles;
+  - max |component| on the circle ≤ 1+1e-12 and = 1 at (1,0);
+  - +v gives ΔR > 0 and +u gives ΔB > 0;
+  - hue angles 103/241/347 ±1°.
+- snapPuck(0.019, 0) → 0; (0.021, 0) is kept.
+- powC1:
+  - f(0) = 0 and f(1) = 1;
+  - bitwise identity at g = 1 over 10⁴ values in [−0.5, 1.5];
+  - monotone and C1 at E and 0 (one-sided slopes within 1e-4 relative) for g in {0.5, 0.71, 1.25, 2}.
+- contrastCurve: bitwise identity at c = 1; 0, p and 1 fixed for c in {1.25, 2}; slope c on both sides of p; c < 1 equals p + c(x−p).
+- whiteBalanceGains: luma(w) = 1 within 1e-12; (0,0) gives exactly [1,1,1]; temperature > 0 gives w_r > 1 > w_b; tint > 0 gives w_g < 1.
+- srgbEotf/Oetf round trip within 1e-12, odd extension.
+
+6.2 grade-curves.test.ts
+- The default curve returns null; the curve passes through every knot.
+- Monotone data gives monotone samples over 10⁴ points.
+- Step data [[0,0],[0.5,0],[0.51,1],[1,1]] stays inside [0,1].
+- C1 at the knots (finite difference within 1e-6); linear extension outside.
+- periodicCurve: empty → null; flat → exactly constant; one point → constant; t[0] === t[360]; value and slope continuous across 0/360.
+- insert/move/remove/nearest keep the order, gap, pinned ends and cap, and respect the hit radii.
+
+6.3 grade-bake.test.ts
+- identityTexels(17/33/65) decodes to exactly i/(n−1) with alpha 0x3c00, and the same cached object is returned.
+- A neutral bake is bitwise identityTexels. A "force every stage at neutral" debug option gives 0 differing nodes.
+- floatToHalfBits against Math.f16round: 2·10⁶ seeded float32 values plus edges (±0, subnormals, the 2^-24 tie, 2^-25, 65504, NaN → 0x7e00). The Float16Array path equals the u32 packer.
+- A red-only curve changes R along i only (R fastest).
+- The bake equals evaluateGrade at every node within 1e-6, for a per-channel-only grade and for a busy grade.
+- Looks:
+  - a synthetic 33 cube at amount 1 with neutral controls is reproduced exactly (float, before packing);
+  - a 17 cube on 33 and a 21 cube on 41 equal the cube's own trilinear at 10⁴ random points within 1e-6, also at amount 0.5 and with temperature +10 composited (checked against the CPU reference evaluateGrade(sample(cube)));
+  - amount 0 gives identity.
+- latticeSizeFor: 33→33, 17→33, 9→33, 2→33, 21→41, 16→46, 32→63, 64→64, 65→65; 129 → 65 with a warning; non-unit domain → 33 with a warning; maxLattice 33 with a 21 cube → 33 with a warning.
+- Draft: stride 2 plus fill equals the trilinear of a real 17 bake within 1e-6; even nodes equal the full bake; roll-off is applied before the fill.
+- Gamut compression:
+  - inactive when the grade adds no chroma (saturation 1, lift 0.01);
+  - never negative for in-gamut stage input away from the faces; at a face (a channel exactly 0) the
+    negative value is kept on purpose (see 2d) and a guard test holds canopy greens through the tap
+    within 0.5 LSB;
+  - lift ε moves sRGB (24,51,3) by at most ε·255·1.01 LSB.
+- Roll-off: identity when peak ≤ 1; with gain 2, every node max ≤ 1+1e-6; values below the knee are untouched.
+- Fuzz: 200 seeded random states within the ranges, each with and without a look, give only finite values within [−16, 16].
+- Error budget: a busy grade at 33, CPU trilinear with 8-bit weights emulated, against evaluateGrade on a dark-green ramp (sRGB 20-110) and a sky ramp. Assert max ≤ 2.5 LSB and share > 1 LSB ≤ 8 %; log the figures and tighten after the first run.
+- Bake time is logged; the test fails only above 50 ms at 33.
+- Scheduler with a fake post that simulates transfer with structuredClone(msg, { transfer: [msg.out] }):
+  - one job in flight;
+  - latest wins;
+  - a commit promotes the pending job to final;
+  - a duplicate final is skipped;
+  - a stale seq is dropped;
+  - draft only above the threshold;
+  - identityTexels(33).buffer.byteLength and the current array's buffer are never detached;
+  - the pool drops buffers of another size.
+
+6.4 cube-format.test.ts
+- Inline fixtures, all parsed:
+  - a Photoshop CS6-style header (CRLF, comments between keywords, 6 decimals);
+  - tabs and runs of spaces;
+  - trailing whitespace;
+  - blank lines after the data;
+  - a quoted TITLE containing '#', and an unquoted TITLE;
+  - DOMAIN_MIN −0.07306 and 1e-1;
+  - LUT_3D_INPUT_RANGE;
+  - lowercase keywords;
+  - an unknown keyword before the data (warning);
+  - 1D-only (kind '1d');
+  - 1D+3D (kind '1d+3d', 1D first).
+- Errors with line numbers: N³±1 rows; a keyword after data; 2 or 4 values in a row; size 1 or 300; 'abc', NaN and Infinity; no size keyword.
+- 1.127 and −0.01 are kept.
+- Serializer: LF only; header comments; no DOMAIN lines; 6 decimals; second data row = (1/(n−1), 0, 0); 1.25 kept.
+- parse(serialize(x)) within 5e-7. A 33 identity → serialize → parse → pack gives identityTexels bitwise.
+- sampleLattice equals an independent reference; isIdentityLattice is true for the identity and false at a 1e-4 perturbation.
+- Guarded scan: { skip: !existsSync('C:/Program Files/Adobe') }, every *.cube found recursively. 0 failures, 3D sizes within 2..256, counts by kind reported with t.diagnostic (the prototype found 265 files: 212×21, 15×16, 6×32, 2×17 3D; 30 1D).
+
+6.5 grade-state.test.ts
+- History: push, undo, redo, the limit and the branch cut. Snapshots: store and recall.
+- parseGradePaste:
+  - a full dump string built in main.ts's exact format extracts grade and lists the other blocks as ignored;
+  - a bare `grade:` block and bare JSON (state only, or the wrapper) both work;
+  - garbage returns warnings without throwing.
+- gradeSnippet → parseGradePaste round trip is deep-equal.
+
+6.6 grade-output.test.ts (imports three and three/tsl; verified importable under node)
+- makeLutTexture: HalfFloatType, RGBAFormat, Linear/Linear, ClampToEdge ×3, generateMipmaps false, NoColorSpace, Uint16Array of length 4n³.
+- The initial data equals identityTexels(33) but is not the same array.
+- Same-n upload keeps the texture object, bumps version and returns the previous array.
+- New-n upload swaps lutNode.value and sets scale (n−1)/n and offset 0.5/n; the old texture fires 'dispose' after exactly two update() calls.
+- stage(vec4(...)) builds a node without throwing; setSplit and split work.
+
+7. BROWSER MEASUREMENTS
+
+Setup
+- Dev server colour-dev (npm --prefix <worktree>/viewer run dev, port 5177, the uncommitted launch.json).
+- A background tab, ?bgclock, resize_window 1280×800, rain cycle off, a frozen bench pose.
+- Ask before any multi-minute run in the user's pane.
+- Pixel-exact captures go through plans/grade-editor/capture_server.py as PNG.
+- Results go into the Canopy Colour Matching artifact (https://claude.ai/artifact/JjMNnLFjremEdsYPSSKqUg): read it, then update it by url with a dated changelog entry on top. Never republish it.
+
+GPU method (from the tone-mapping work)
+1. Stop the animation loop (renderer.setAnimationLoop(null)).
+2. Pin the size by shadowing setSize and setPixelRatio.
+3. Before every manual render: r.info.reset(); nodeFrame.update(); r.info.frame = nodeFrame.frameId; then __three.depthOfField.render().
+4. Read that render's pass timestamps from the pool after its own resolve. Never group by rAF tick.
+5. Pair each state against two identical baselines.
+
+The final quad is its own render, so its timestamp isolates the tap.
+
+M1. Compile-out identity (blocks C3)
+- Grade off, and grade neutral with the section closed, against 81ccfab, using the old-vs-new A/B technique (two dev servers, shader hashes, build counters).
+- Expected: post-quad and output-quad shader source hashes equal, canvas PNG 0 differing pixels.
+- Matrix: WebGPU and ?webgl, path A and path B (?dof=0&edl=0).
+
+M2. GPU cost, via __three.grade.setStage
+- States:
+  - (a) off ×2;
+  - (b) 'passthrough' (routing only);
+  - (c) 'grade' with the identity LUT;
+  - (d) a busy grade at 33;
+  - (e) (d) plus split 0.5;
+  - (f) refined lattices 41 and 63, and 65.
+- Matrix: paths A and B, WebGPU and ?webgl.
+- Accept on desktop:
+  - tap (c−a on path A) ≤ 0.05 ms;
+  - path B routing (b−a) ≤ 0.02 ms, otherwise build the film-slot fallback (1.7);
+  - 41/63/65 against 33 ≤ 0.02 ms.
+- Then one phone over npm run dev:https (Android Chrome WebGPU, iOS Safari): total ≤ 0.3 ms, otherwise set maxLattice to 33.
+- Use fps A/B with ?grade=0|1 where timestamps are unavailable.
+
+M3. Recompile counter
+- 0 during 10 s drags of every slider and widget.
+- 1 'Render Pipeline' build on section open with the grade on; 1 on close at identity; 1 per toggle.
+  Count by name (wrap renderer.backend.createNodeBuilder): with DoF and EDL on each change is 9
+  builds in all, 7 with DoF alone, 1 on path B. Texture count must stay flat across repeated changes.
+- 0 on Compare toggle, split drag, same-size uploads and look amount drags.
+- A size swap should give 0; if it gives 1, note it (one hitch per import is acceptable).
+
+M4. Identity flip rate: compiled in at identity against compiled out. Percentage of pixels changed and max delta; expect ≤ 1 level and < 3 %. This replaces the 1-3 % estimate.
+
+M5. LUT correctness
+- With a busy grade, capture all-before (split 2) and all-after.
+- Apply the exported lattice (parseCube of Export .cube) on the CPU with trilinear to the before PNG and compare to after: mean ≤ 0.3 LSB, max ≤ 2 LSB.
+
+M6. .cube round trip
+1. In-app: set a grade, export, Reset, import, then diff against the pre-export capture. Expect max 1 level and < 1 % of pixels changed.
+2. Fuji F125 Kodak 2393 (21³ → 41):
+   - the after capture against the cube's own CPU trilinear on the before capture: ≤ 1 level;
+   - nudging temperature to +1 and back returns the same frame;
+   - with temperature +1, the max change against the look alone stays at the size of the control (no 15 LSB jump).
+3. Resolve (DaVinci YRGB without colour management, full data levels, 3D LUT interpolation Trilinear):
+   - grade the Frame-for-grading PNG, Generate a 33 Point Cube, import it, and compare against Resolve's still: mean ≤ 0.5 LSB, max ≤ 2-3 LSB;
+   - the reverse: apply our export in Resolve to the same PNG and compare to our after capture.
+   - Record Resolve's default interpolation and pivot, which are unverified so far.
+4. Photoshop: an sRGB PNG with Curves and Hue/Saturation layers, Export → Color Lookup Tables (CUBE), import, compare with the same thresholds.
+
+M7. Canvas clamp
+- A grade storing values > 1 and < 0 (gain 2, offset −0.1, no roll-off).
+- The display must equal clamp(CPU trilinear) on both backends, with no NaN or garbage.
+
+M8. Frame for grading
+- The PNG is non-blank and equals the before half of a live split capture of the same frame, on WebGPU and WebGL2.
+
+M9. Hitch
+- The frame time of the compile-in frame on section open, per backend and on the phone.
+- If it is over 100 ms on a phone, schedule the compileAsync pre-warm (later).
+
+MEASURED AFTER C2 (2026-10-05, desktop, hidden pane with ?bgclock, 1408×880 path A / 1280×800 path B,
+loop and three's animation stopped, one manual render per frame id, timestamps read per render
+context; Chrome quantises them to 0.066 ms, so means over 25 renders × 4–8 interleaved
+baseline/arm/baseline blocks)
+- M2, path A (DoF + EDL on), the final quad alone (base 0.032–0.040 ms):
+  identity grade +0.006, busy grade +0.005, busy + split 0.5 +0.004, 41³ vs 33³ +0.004,
+  65³ vs 33³ +0.007 ms. Noise floor: passthrough, whose shader equals no stage, reads −0.008
+  (−0.021…0). So the tap costs ≤ ~0.01 ms: target ≤ 0.05 met; lattice size is free.
+  Whole-frame deltas are buried in the scene pass's clock drift (±0.1–0.5 ms per block).
+- M2, path B (?dof=0&edl=0, base 1.36 ms): routing (passthrough vs renderer.render)
+  −0.016 ± 0.010 ms (8 reps), busy grade in all +0.007 ± 0.014 ms. Gate ≤ 0.02 met: the
+  film-slot fallback (1.7) is not built.
+- M3: path A, every stage change 9 builds ('Render Pipeline' 1, DoF CoC / CoC Blur / Gaussian /
+  Blur64 / Blur16 / Composite 1 each, 'RTT' 2), a change back too; 0 for the same stage, the
+  split (single or 10 drags), same-size bakes and size swaps 33↔41. Path B: 1 build to the grade,
+  0 back. Textures flat (125 with the LUT on path A after dozens of switches; 101 on path B).
+- M4: an identity LUT changes 9.5 % of pixels on WebGPU and 10.4 % on WebGL2, all by 1 level
+  (mean 0.03): the filter's fixed-point weights tip values that sit on an 8-bit rounding edge.
+  More than the 3 % estimated, invisible; it only runs while the section is open at identity.
+  Passthrough vs no stage: 0 pixels on both backends.
+- M7 and tap exactness (exact inputs: a test stage feeds a ramp from screenUV through the real
+  tap; the CPU trilinears the same half lattice): busy grade, clamp grade (gain 2, offset −0.1,
+  nodes up to 1.9) and identity all within 1 level, mean 0.02–0.03, 0 % over 1 level, on WebGPU
+  and WebGL2; the ramp written without the LUT has the same floor (max 1, mean 0.03). No NaN, no
+  garbage, the canvas clamps per pixel. (Comparing against an 8-bit capture of the frame instead
+  reads 2–4 levels: the tap sees the unrounded float frame, and steep grades amplify the capture's
+  ±0.5 level. M5 needs exact inputs for the same reason.)
+- M9, desktop CPU: the render after a stage change takes 12–16 ms, the next 5.6–6.7 ms (the second
+  RTT build), steady 2.1–2.4 ms. Phone unmeasured.
+
+M10. Responsiveness
+- __three.grade.editor.stats(): median and p95 for draft and final bake ms, upload ms, and input-to-frame latency.
+- PerformanceObserver('longtask') during drags: expect nothing attributable to the grade. Desktop and a phone.
+
+M11. Banding
+- A dark canopy view and a haze gradient under a strong shadow lift (lift +0.05, gamma +0.5): look for posterisation.
+- This decides the dither step.
+- MEASURED 2026-10-06 (WebGPU, 1600×1000 frame, horizon view from the landing: sky, haze, river, dark
+  canopy gaps; loop frozen, the same frame captured per grade). Per region: share of vertical
+  neighbour steps over 1 level, and empty levels inside the occupied range (combing).
+  - Sky (top 30 %): off 171–221, 0 % steps > 1, 0 empty; lift +0.05/gamma +0.5 and lift +0.1/gamma +1
+    the same (0 %, 0 empty); a master curve 2.9× steeper in the sky's tones stretches it to 127–251,
+    still 0 % steps > 1 and 0 empty levels.
+  - Dark canopy (bottom third, luma < 45): off 27–49, 0 empty; the lifts 67–91 and 113–134, 0 empty;
+    a curve 3.5× steeper in the darks 31–110, 0 empty (steps > 1 rise 30 → 45 %: the canopy texture
+    gains contrast, no combing).
+  - Why: the tap reads the unrounded half-float frame and the canvas rounds once, after the LUT, so a
+    stretch never spreads 8-bit steps apart. Decision: no dither (later step 4 dropped unless a real
+    device shows banding).
+
+M12. Phone usability (real device, dev:https and plain-HTTP WebGL2)
+- Widget, curve and handle drags neither scroll the sheet nor move the camera.
+- A vertical swipe that misses a point scrolls the sheet.
+- Peek clears the frame while dragging.
+- The handle is reachable above the sheet.
+- WebGL2 output equals WebGPU within 1 level.
+- The Copy fallback textarea works without a clipboard.
+
+8. FIRST VERSION: STAGED COMMITS (each with bench:verify and tsc clean)
+
+- C1 "Add the colour grade maths with node tests": grade-model.ts, grade-curves.ts, grade-bake.ts, cube-format.ts, grade-state.ts and their five test files. No runtime change.
+- C2 "Append an output stage after the tone curve":
+  - depth-of-field.ts (RenderPipeline, setOutputStage/hasOutputStage);
+  - grade-output.ts and its test;
+  - the __three.grade debug handle (setStage, plus a bake(state) helper).
+  - Then run M1-M4, M7 and M9. Gate: if M2 fails on path B, add the film-slot fallback here, as a separate commit "Grade the no-post path inside the film curve".
+- C3 "Add the colour grade section":
+  - config grade block;
+  - the markup with header, tabs, the Primary sliders, Tones sliders and the Look tab;
+  - the split overlay and CSS;
+  - grade-bake.worker.ts and grade-editor.ts (scheduler, pool, compile policy, import/export, Frame for grading, A/B, undo, Reset);
+  - main.ts wiring, Copy values, Paste values and ?grade.
+- C4 "Add the wheel, curve and hue widgets": grade-widgets.ts, the Primary wheels, Curves, Hue, the Tones wheels, peek and keyboard.
+- C5 "Document the colour grade": viewer/CLAUDE.md. Then run M5, M6, M8 and M10-M12 and update the artifact.
+
+v1 ships:
+- exposure-free primaries (white balance, LGG + offset wheels, contrast and pivot, saturation, vibrance);
+- curves (master and R, G, B);
+- hue vs sat and hue vs luma;
+- shadow/highlight tones and roll-off;
+- .cube import (3D, refined lattice) and export (unclamped);
+- Frame for grading, compare split, A/B, undo/redo, Reset;
+- Copy and Paste values;
+- worker bake with adaptive drafts;
+- phone peek;
+- compile-out at identity.
+
+9. LATER STEPS
+1. Presets select with Evergreen.
+   - Route: HALD. Offer a HALD-8 identity PNG; the preset is applied in Lightroom with Clarity, Texture, Dehaze, Highlights/Shadows, vignette and grain off; export 16-bit; import HALD to a lattice; store as public/grades/evergreen.cube.
+   - If WI only sends a before/after pair, a regularised fit.
+   - An .xmp parameter mapping is at best approximate.
+2. Compare against a reference: snapshot A or "film only" through a second tap, compiled in only in that mode.
+3. "Export look for photos": a 33³ .cube of EOTF → exposure → film (no vignette) → grade → OETF, with a JS film twin (filmOutput) as the test oracle. It carries the canopy look onto WI stills and footage.
+4. TPDF ±1 LSB dither in the same quad, compiled only with the tap and only when the grade is non-identity. Decided by M11.
+5. 1D and 1D+3D shaper .cube support (bake the shaper through the lattice with a "not 1:1 for steep shapers" warning, or a 1D texture stage).
+6. 65³ as the default lattice if M2 shows no cost. Tetrahedral is not planned (it needs 4 taps).
+7. Histogram, RGB parade and vectorscope via a small readback, shipped only if the stall measures under 1 ms.
+8. Convenience:
+   - localStorage "Restore last session" offer (try/catch);
+   - drag-and-drop import;
+   - .cube text in Paste values;
+   - more stills;
+   - ASC CDL export;
+   - Bradford white balance;
+   - a frame colour picker for the hue curves;
+   - a compileAsync pre-warm for the section-open hitch;
+   - Wide mode.
+9. A "Film" tab: Tone & colour folded into the editor, with presets that may touch the film. This needs the user's sign-off because it touches the approved Film Warm look.
+
+10. RISKS LEFT
+1. Phone 3D-tap throughput and the cost of 41-65³ refined lattices are unmeasured. Fallback: maxLattice 33, which resamples with a "not 1:1" warning.
+2. Path B routing cost is unmeasured. Fallback: the film-slot variant, which then only covers path B with Film picked and the stage on.
+3. While the section is open at identity, an identity LUT runs and may flip about 1-3 % of pixels by one level. That is invisible and limited to editing, but it still has to be measured (M4).
+4. Opening the section recompiles the post quad once. The hitch per backend is unmeasured.
+5. Display-referred limits:
+   - the LUT sees shouldered, clamped film output and cannot recover highlights;
+   - film saturation 1.17 already clips negative blue on saturated canopy;
+   - exposure stays scene-linear in Tone & colour.
+6. The canvas is 8-bit with no dither, so shadow-stretching grades can band in dark greens (M11, later step 4).
+7. Interpolation at 33³: a strong combined grade measured about 2.2 LSB max on dark greens, before the C1 fixes. 65³ halves it.
+8. Interop:
+   - wheel numbers never match Resolve or Lightroom; only .cube round-trips;
+   - Resolve must be set to trilinear;
+   - Lightroom has no .cube, and Evergreen's spatial tools can never be a LUT;
+   - 1D and shaper cubes are rejected in v1;
+   - non-unit-domain 3D cubes are resampled.
+9. A look configured in config.grade.look loads asynchronously, so the first frames show the grade without it.
+10. Copy values cannot carry a lattice. An imported look must be saved under public/grades/ to persist.
+11. The Design panel ships unguarded in production. It is collapsed and neutral by default, so the shader is identical.
+12. The loader eagle and the splat layer use their own renderers and get neither film nor grade.
+13. Hexcone hue has sextant kinks that the 0.05 chroma gate damps. Slight shimmer on low-chroma haze is possible and must be checked visually.
+14. Firefox WebGPU is untested. The tap is uniformity-safe by construction (textureSampleLevel plus a uniformFlow select).
+15. Older Safari lacks Float16Array; the bit-identical u32 packer covers it.

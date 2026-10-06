@@ -1,9 +1,18 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import net from 'node:net';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 // Shared with src/maptiler-key.ts on purpose — see maptilerOriginFor below.
 import { isDevHost } from './src/dev-hosts';
+
+// The /maptiler proxy opens a fresh TLS socket per tile (see the keep-alive note below), and
+// Node's happy-eyeballs dialler gives each address only 250 ms by default. Measured on
+// 2026-09-30, a plain connect to api.maptiler.com took 0.248 s: a burst of parallel tile
+// requests then failed with ETIMEDOUT in internalConnectMultiple, and a failed root tile
+// never expands its children, so the whole basemap stayed sky. A slow connect is not a dead
+// one; give it a few seconds.
+net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
 
 // HTTPS is opt-in (npm run dev:https): WebGPU needs a secure context, so testing
 // WebGPU on a phone over LAN requires https://<ip>:5177 (self-signed cert — accept

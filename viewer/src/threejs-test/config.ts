@@ -831,19 +831,21 @@ export const EXPERIENCE_CONFIG = {
     // Directional daylight cues for the (normal-less) point cloud. All three
     // cloud-shadow values are live in the design panel; strength goes through
     // the environment layer because it rides the daylight ramp there.
+    /** Canopy cloud shadows on at startup — part of the look dialled in on 2026-09-29.
+     * Off compiles them out of the point shader. The ground patch draws dark shapes
+     * too; its mask-debug toggle shows which is which. */
+    cloudShadowsEnabled: true,
     /** Base depth of the drifting canopy shadows, before the layer multiplies it
-     * by daylight and halves it when the visible clouds are off. */
-    /** Canopy cloud shadows on at startup. Off while the ground patch is being judged:
-     * both draw dark shapes on the ground and they are easy to mistake for each other. */
-    cloudShadowsEnabled: false,
+     * by daylight and halves it when the visible clouds are off. At 1 in full
+     * daylight a shadow's core takes the canopy all the way to black. */
     cloudShadowStrength: 1,
     /** Metres per period of the shadow noise — the grain size. Smaller means
      * finer, busier dappling; larger means broad continental shadows. */
-    cloudShadowScaleM: 1_700,
+    cloudShadowScaleM: 2_700,
     /** Tightens the noise-to-shadow ramp around its midpoint. 0 is the original
      * wide 0.32–0.62 window (soft, washed); 1 is a near-binary edge, which reads
      * as hard-edged cloud gaps. */
-    cloudShadowContrast: 0.63,
+    cloudShadowContrast: 0.76,
     cloudDeckHeightM: 3_600,
     goldenRimStrength: 0.5,
     warmRim: 0xffb268,
@@ -873,8 +875,10 @@ export const EXPERIENCE_CONFIG = {
     basemapGraceMs: 12_000,
   },
   atmosphere: {
-    /** Distance haze on at startup. Off while the level-of-detail work is being
-     * judged: the haze hides exactly the far-field density the sliders change. */
+    /** Distance fog (three's THREE.Fog) on at startup. Off while the level-of-detail
+     * work is being judged: fog hides exactly the far-field density the sliders change.
+     * The newer `haze` below ships on for the cinematic look; its 400 m clear zone keeps
+     * the judged near tiles clear, and its switch takes it out for LOD A/Bs. */
     distanceFogEnabled: false,
     // Bring humid tropical and boreal haze into the mid-distance.
     minimumFarM: 24_000,
@@ -895,6 +899,29 @@ export const EXPERIENCE_CONFIG = {
     // shortening the view instead: the far plane shrinks and the fog closes in,
     // which culls distant tiles and shrinks the drawn set.
     farScaleByPreset: { strong: 1, medium: 0.72, constrained: 0.5 },
+    /**
+     * Aerial perspective (atmosphere-haze.ts): distance haze plus a graded sky, the
+     * cinematic replacement for the flat sky band and the hard clipped horizon. While the
+     * haze is on it takes over from the distance fog above; with both switches off
+     * neither node exists and the frame is what it was before.
+     */
+    haze: {
+      enabled: true,
+      skyGradient: true,
+      /** Metres from the camera before any haze: the near canopy stays clear. */
+      startM: 400,
+      /** e-folding distance beyond the start: at this distance the haze is ~63 % of
+       *  `strength`. 9 km reads as humid rainforest air. */
+      distanceM: 9_000,
+      /** The most the haze covers before the far-plane wall takes over. */
+      strength: 0.85,
+      /** How far the horizon colour is pulled from the sky toward the sunlight: pale
+       *  at noon, warm at golden hour. */
+      horizonBlend: 0.55,
+      /** Elevation (sine of the angle above the horizon) at which the sky reaches its
+       *  zenith colour. 0.45 ≈ 27°. */
+      zenithElevation: 0.45,
+    },
   },
   // Look grading exposed live by the DESIGN section of the panel. These are the
   // shipped defaults; the sliders write the same uniforms, so anything dialled in
@@ -927,12 +954,14 @@ export const EXPERIENCE_CONFIG = {
       enabled: true,
       /** How much of the patch is applied at all. 1 = fully. */
       amount: 1,
-      /** 0 = the raw basemap at `brightness` below, 1 = the flat `color`. Anything
+      /** 0 = the basemap at `brightness` below, 1 = the flat `color`. Anything
        * between blends the two, so one control covers both requests: dim the map
        * only there, or replace it outright. */
       colorMix: 1,
-      /** Brightness of the raw imagery inside the patch, independent of the global
-       * basemap grading — the point being to see exactly this, not this plus fog. */
+      /** Brightness of the imagery inside the patch, relative to the map's own level: the
+       * raw tile while design.colourMatch is off, the matched map while it is on. Independent
+       * of mapBrightness/mapSaturation, fog and the vignette — the point being to see exactly
+       * this, not this plus fog. */
       brightness: 0.3,
       /** Flat colour for colorMix 1. Dark by default: the cloud reads against it. */
       color: 0x0a1410,
@@ -1038,13 +1067,129 @@ export const EXPERIENCE_CONFIG = {
        */
       maskUploadIntervalMs: 400,
     },
-    /** 1 = raw satellite colour, 0 = fully grey. */
+    /** 1 = raw satellite colour, 0 = fully grey. While design.colourMatch is on the map is
+     * matched at the field's basemapSaturation (0.6 for peru-b2-globe) across the whole globe,
+     * and this multiplies on top of it. */
     mapSaturation: 1,
     /** Multiplies the basemap only — the point cloud keeps its own grading.
      * Pushed above 1 so the map reads as daylight ground where it shows through: the
      * river and the survey gaps are the whole point of the ground patch, and at the
-     * old 0.1 they sat as near-black holes rather than as water and sand. */
+     * old 0.1 they sat as near-black holes rather than as water and sand.
+     * Rechecked under the `shoulder` tone curve: forest, river and sand render exactly
+     * as before. At the default white point 1 everything up to full white does; only
+     * sandbars and bright roofs (raw sRGB 220+ in full daylight) go past 1 and are scaled
+     * down with their hue kept rather than clipped per channel, so 1.4 stays. With a
+     * higher white point they roll off instead, from raw sRGB 199 up. The panel slider
+     * runs to 2 for that case.
+     *
+     * Those thresholds hold with design.colourMatch off. With it on, the map's gain is
+     * basemapGain × mapBrightness / colourMatch.referenceBrightness, per zoom: for
+     * peru-b2-globe at 1.4 that is 5.0 / 4.7 / 3.4 at z15 and about 6.2 / 5.5 / 3.9 at
+     * z16-19, so the knee is reached from about raw sRGB 110-125 in red. */
     mapBrightness: 1.4,
+    /**
+     * Point-cloud grade, applied to the decoded linear colour before daylight, shadow and
+     * fog, so the look holds at every time of day. Contrast is a power curve on luma
+     * around 0.18 linear (sRGB 118) with hue kept: most of the canopy sits below that
+     * pivot, so contrast above 1 mostly deepens it. 1 = the captured colour. The panel
+     * slider spans 0.5–1.5 and clamps a config value outside it at boot.
+     */
+    pointContrast: 1,
+    /** 1 = captured saturation, 0 = grey, above 1 = more vivid. Panel range 0–2. */
+    pointSaturation: 1,
+    /** Off compiles the point grade out of the tile shaders whatever the sliders say. */
+    pointGradeEnabled: true,
+    /**
+     * Colour match: the point cloud and the basemap share one colour at landscape scale.
+     *
+     * The survey was flown on several days under different skies, so its colour comes in
+     * blocks with straight edges, brighter, bluer or greener than their neighbours —
+     * 1.05 stops of drift measured over peru-b2-globe, with almost nothing in common with
+     * the landscape (r = -0.10 against the satellite). `pipeline/build_colour_field.py`
+     * turns that into a gain texture: the cloud-minus-satellite difference, smoothed with a
+     * masked median over a 120 m disc, so the correction follows the block borders instead of
+     * leaving a halo at them, and clearings the satellite shows as bare ground but the drone
+     * saw green are not copied onto the cloud. Each point keeps its own texture; the
+     * landscape-scale mismatch against the matched map falls from 0.21 to 0.04 stops (median)
+     * in the builder's own measure. The same run gives the basemap its lift to the cloud's
+     * level — per channel, per zoom (MapTiler's satellite changes colour between levels), and
+     * at 60 % saturation so that bare soil does not turn orange; mapBrightness trims around it.
+     *
+     * Costs one bilinear lookup per point fragment into an 802×533 RGBA8 texture (1.7 MB on the
+     * GPU, a 0.2 MB PNG download); its GPU time is measured in the Canopy Colour Matching
+     * artifact. Off compiles it out of the tile shaders and puts the basemap back on
+     * mapBrightness/mapSaturation alone. Cloud shadows and the golden-hour rim still act on the
+     * points only.
+     */
+    colourMatch: {
+      enabled: true,
+      /** 0 = captured colour and today's basemap level, 1 = the full match. Blended in log light. */
+      strength: 1,
+      /** The mapBrightness the match is measured against. The field's basemapGain already
+       * contains the map's level, so the map draws at basemapGain × mapBrightness / this:
+       * mapBrightness (the config value, the slider, a Copy-values paste) stays a trim
+       * around the match. Fixed, so that pasting a new mapBrightness cannot cancel it. */
+      referenceBrightness: 1.4,
+      /** Built per dataset into public/colour-field/; a dataset without one is left as captured. */
+      fieldDir: 'colour-field/',
+    },
+    /**
+     * The drone orthophoto (MapTiler custom tilesets from the wi-map prototype; secretForest
+     * is served down to z20, about 15 cm a pixel here), painted into the satellite's own
+     * tiles where it covers them — see ortho-composite.ts and ortho-upgrade.ts. Every tile
+     * loads as plain satellite, so the basemap gets sharp as fast as with the ortho off; a
+     * covered tile that has settled on screen is then upgraded in its own texture. It adds no
+     * mesh, texture, draw call or shader code; it costs downloads, worker time and one in-place
+     * upload per upgraded tile, which is what the zoom, density, link and settle gates below
+     * limit. The ortho
+     * tiles are lossless WebP of ~100-120 KB each, against 54 KB at z15 down to 14 KB at z19
+     * for a satellite tile, so a covered tile downloads about 2x (z15) to 8x (z19) the
+     * satellite's bytes at 'half' and about 9x to 30x at 'full'; over a landing view, mostly
+     * z18-19 tiles, that is 6-8x and 22-30x. Colour-matched offline into the raw satellite's colour
+     * (build_colour_field.py --ortho), so the colour match, fog and ground patch treat it as
+     * satellite. Inside the dome the ground patch covers it where the cloud is; it shows in
+     * the river and the gaps there, and everywhere beyond the dome, where the points have
+     * melted away. It sits within about 3 m of the point cloud (the satellite: about 6 m).
+     * The small plots (ireneJohn, danilo, cacao) are left out: their z21/22 detail cannot
+     * show below basemapMaxZoom 19, and their hard 1-bit edges inside secretForest would be
+     * seams.
+     */
+    droneOrtho: {
+      enabled: true,
+      /** Lowest satellite zoom the ortho goes into. z15 tiles are 1.2 km wide: far views
+       *  keep the satellite, which the ortho is matched to anyway. */
+      minZoom: 15,
+      /** Per bench preset: 'full' = the four ortho tiles one zoom down per satellite tile (its
+       *  full 512 px), 'half' = the one at the same zoom (256 px drawn up), 'off' = none.
+       *  Decided before the ortho starts, so 'off' never runs the worker. The link caps it
+       *  further where the browser reports one: Save-Data or 2g turns it off, 3g or a
+       *  downlink under fullMinDownlinkMbps keeps 'full' at 'half'. */
+      presets: { strong: 'full', medium: 'half', constrained: 'off' },
+      /** A density that overrides the preset and the link, so the ortho can be seen on any
+       *  device. null = follow them. The panel's Half and Full set it; ?ortho=half|full too. */
+      force: null as null | 'half' | 'full',
+      /** Chromium reports at most 10, so 10 means "the fastest it will say". */
+      fullMinDownlinkMbps: 10,
+      /** Per ortho request, from its turn, body included. A child that times out leaves its
+       *  quadrant to the satellite for as long as the tile stays loaded; at 8 s, 8 of ~180 did
+       *  through the dev proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
+      fetchTimeoutMs: 20000,
+      composeTimeoutMs: 5000,
+      /** Upgrades in flight at once. They start only while the basemap has nothing queued,
+       *  downloading or parsing; this bounds the worker's scratch (~6 MB each) and the finished
+       *  bitmaps waiting for their frame. */
+      maxConcurrentComposes: 2,
+      /** Ortho requests in flight at once, let out only while the basemap is idle. Keeps 4 of the
+       *  dev proxy's 6 HTTP/1.1 sockets for the satellite when a move starts mid-upgrade. */
+      maxOrthoRequests: 2,
+      /** How long a covered tile must be the view's own detail on screen, with the basemap idle
+       *  all the while, before its ortho is fetched: intermediate zooms of a descent never are.
+       *  A tile evicted and loaded again composes again, but its ortho tiles then come from the
+       *  browser's HTTP cache (measured: 51 of 52 repeats, no MapTiler request). */
+      settleMs: 1000,
+      /** 401/403 answers after which a source is switched off for the session. */
+      forbiddenLimit: 3,
+    },
     /**
      * Screen-space error budget for the basemap, in pixels: the renderer keeps
      * refining imagery until a tile's projected error drops below this. 1 is what
@@ -1136,33 +1281,36 @@ export const EXPERIENCE_CONFIG = {
     // Analytic exponential height fog: no raymarch, no extra pass, no texture —
     // a handful of ALU ops folded into the existing point and imagery colour
     // nodes. Nothing animates, so there is nothing to sample per frame.
-    // The dialled-in look is a warm haze band sitting in the canopy rather than
-    // the wide neutral slab this started as. Note how the values work together:
-    // a very short density distance (25 m) would normally fog the near field
-    // solid, but curve 4 pushes almost all of that density out into the distance,
-    // and the 170 m lower fade keeps the air under the band clear. Pinned to a
-    // warm cream instead of following the daylight ramp.
+    // The look dialled in on 2026-09-29 is a low warm mist rather than the wide
+    // neutral slab this started as: it peaks 15 m above the area floor, below most
+    // of the crowns, so it lies in the gaps and on low ground and leaves the crown
+    // tops nearly clear. Note how the values work together: a very short density
+    // distance (25 m) would normally fog the near field solid, but curve 4 pushes
+    // almost all of that density out into the distance, and the 45 m lower fade
+    // ends the band 30 m under the floor. Pinned to a warm cream instead of
+    // following the daylight ramp, so it stays cream at night too.
     groundFog: {
-      /** Ground haze on at startup. Off for the same reason as the distance fog:
-       * it sits over the canopy the density settings are being read from. */
-      enabled: false,
+      /** Ground mist on at startup. Off compiles it out of the point and imagery
+       * shaders; the panel switch takes it out for density A/Bs. */
+      enabled: true,
       /** Final multiplier, so 0 is reliably off regardless of the other values.
        * The panel allows up to 3; the resulting coverage is clamped to 1, so past
        * 100% the fog saturates earlier rather than overshooting its colour. */
-      strength: 0.75,
-      /** Fog floor relative to the survey's lowest point. Also the height the
+      strength: 1,
+      /** Fog floor relative to the default area's bbox floor (not the terrain: the
+       * river bend dips below it). Also the height the
        * band peaks at, since density decays upward from here and fadeBelowM
        * fades it out downward. */
-      baseOffsetM: 35,
+      baseOffsetM: 15,
       /** e-folding height of the slab: density falls to 1/e at this height. */
       heightM: 10,
       /** Metres below the base over which the fog fades out downward. 0 is the
        * original one-sided slab that extends to the ground at full density; any
-       * positive value turns it into a band — a layer hanging in the canopy with
-       * clear air underneath. Together with heightM this sets the band's total
-       * thickness: roughly fadeBelowM below the base, ~2x heightM above it, so
-       * this band is deliberately lopsided — a soft underside, a tight top. */
-      fadeBelowM: 170,
+       * positive value turns it into a band with clear air underneath. Together
+       * with heightM this sets the band's total thickness: roughly fadeBelowM below
+       * the base, ~2x heightM above it — about 65 m here, a softer underside than
+       * top. */
+      fadeBelowM: 45,
       /** e-folding distance for a ray travelling along the fog base — smaller
        * values thicken the fog. Not a cutoff: opacity approaches 1 asymptotically.
        * Only this low because curve below banks the density into the distance. */
@@ -1178,33 +1326,217 @@ export const EXPERIENCE_CONFIG = {
       tint: 1,
     },
   },
-  // The one effect that cannot live inside a colour node: a circle of confusion
-  // has to read neighbouring pixels, so DoF is a real post pass (see
-  // depth-of-field.ts). Costs a full-screen blur pyramid per frame — the panel
-  // toggle exists so it can be dropped on weak hardware.
+  // The output curve between the linear working colour and the sRGB canvas. It runs in
+  // the output pass r185 already does for the sRGB encode, so it adds no pass — and it
+  // sees the whole frame, sky and clouds included (see tone-mapping.ts).
+  toneMapping: {
+    /**
+     * Master switch for the whole stage. Off removes it as if it had never been added —
+     * no curve, no point grade, and the old pow(2.2) decode. With design.colourMatch off as
+     * well (`?tonemap=off&colourmatch=off`) the shader is the one sbb-main ran and an fps A/B
+     * against it is fair; the match corrects the capture and keeps its own switch.
+     * `?tonemap=off` boots with the stage off.
+     */
+    enabled: true,
+    /**
+     * `film` is the default since the brief became cinematic rather than documentary: the
+     * Film Warm grade picked on the Canopy Look Board, retuned by eye, see `film` below.
+     * `shoulder` is the faithful curve it grades into, kept for when captured colour must be
+     * exact — at exposure 1, see below.
+     *
+     * `shoulder` shares Khronos PBR Neutral's knee, hue-preserving peak scaling and pull
+     * toward white, but drops its 0.04 dark offset and uses its own power curve that
+     * reaches white exactly at `whitePoint`. It is the exact identity (at exposure 1)
+     * while the brightest channel stays at or under 0.8 linear (sRGB 231), so captured
+     * point RGB, satellite colour and picked panel colours render as authored. With
+     * `whitePoint` above 1, everything from the knee up is compressed so the white point,
+     * not 1, reaches white: in-range highlights too (at 1.5, sRGB 255 renders as 248 and
+     * the fog colour 0xfff2e0 as about (248, 235, 218)), while the overbright basemap, lit
+     * cloud tops and the donation parcel's additive overlays roll off instead of clipping.
+     * On a measured frame 0.04 % of pixels sat above the knee.
+     * Stock `neutral` darkens every unlit colour by that offset (all pixels, −16 levels
+     * on average) and crushes the darks; `none` is the hard clip; `agx` greys and `aces`
+     * yellows photo colour. Kept for comparison only. `?tonemap=` overrides this for an A/B.
+     */
+    mode: 'film' as 'none' | 'film' | 'shoulder' | 'neutral' | 'agx' | 'aces',
+    /** Linear multiplier applied before the curve. Ignored by `none`. Panel range
+     * 0.25–2; a config value outside it is clamped at boot. Shared by every curve, so
+     * at the film look's 0.94 a `shoulder` A/B renders 6 % darker than captured (sRGB 128
+     * as 124): set 1 for the exact reference. */
+    exposure: 0.94,
+    /** `shoulder` only: the linear peak that reaches full output (white for a grey).
+     * 1, the default, means no roll-off and fidelity first: everything up to 1 passes
+     * unchanged (to float precision above the knee), and brighter colours are scaled down
+     * until their brightest channel is 1, keeping their hue, instead of being clipped per
+     * channel. 1.5 keeps lit cloud tops and 1.4× sandbars graded instead, at the cost of
+     * up to 7 levels off in-range whites. Panel range 1–3 in steps of 0.05. */
+    whitePoint: 1,
+    /**
+     * `film` mode: Film Warm from the Look Board (contrast 1.25, saturation 0.9, split 1,
+     * lift 0.012 at exposure 1), retuned by eye on 2026-09-29: no S-curve, more colour and
+     * the split at full strength, so there is no neutral white — white renders as about
+     * (250, 236, 214) and the ground-fog cream as (251, 223, 185). The 3D marker and parcel
+     * colours are graded too and drift from the same hex in the DOM labels (lime #d9f99d
+     * renders as (218, 242, 121)). Contrast is a power on luma in log space
+     * around 18 % grey (1 = none); saturation mixes toward luma (1 = captured). The split
+     * tints shadows cool and highlights warm (`split` 0–2 scales them); `lift` raises black
+     * like a print stock; `vignette` darkens the corners by that fraction. `whitePoint` is
+     * its own shoulder's: 2, so sand and cloud tops roll off softly — this is a look, not
+     * a measurement. Each part (tone = contrast + saturation, split, lift, vignette) is a
+     * build-time switch: off, or at its neutral value, compiles it out of the output pass
+     * rather than running it at zero.
+     */
+    film: {
+      toneEnabled: true,
+      contrast: 1,
+      saturation: 1.17,
+      split: 2,
+      splitEnabled: true,
+      shadowTint: [0.93, 1, 1.08],
+      highlightTint: [1.07, 1, 0.9],
+      liftEnabled: true,
+      lift: 0.01,
+      vignette: 0.3,
+      vignetteEnabled: true,
+      whitePoint: 2,
+    },
+  },
+  // The colour grade (the Design panel's Colour grade section, grade-editor.ts): a 3D LUT on
+  // the frame as displayed — after the tone curve and the sRGB encode, in the final quad the
+  // frame already goes through (grade-output.ts), so it adds no pass. Exposure and the film
+  // vignette stay in toneMapping above. While the state is neutral, no look is set and the
+  // section is closed, the grade is compiled out: viewers get the shader and the frame they got
+  // before it existed. Measured with it on (2026-10-05, desktop): the tap ≤ 0.01 ms; switching
+  // it in or out rebuilds the post materials once, a 12–16 ms frame with DoF and EDL on.
+  grade: {
+    /** Master switch, the panel's Grade button. Off compiles the tap out whatever the state
+     *  says. `?grade=0|1` boots with it off or on. */
+    enabled: true,
+    /** The lattice the grade bakes without a look: 33³ nodes, the size Resolve and Photoshop
+     *  exchange. Between nodes the tap interpolates; a strong grade on dark greens reads about
+     *  2 levels off the exact maths at 33, half that at 65. The size costs nothing on the GPU
+     *  (65³ measured +0.007 ms against 33³); a bigger one only bakes slower. */
+    lutSize: 33,
+    /** An imported 3D look of size N is baked on a k(N − 1) + 1 lattice, the smallest at or
+     *  above lutSize, so trilinear reproduces the look's own trilinear exactly (21³ → 41³,
+     *  32³ → 63³). Looks that would need more are resampled onto this size, with a "not 1:1"
+     *  warning; 33 resamples every look that is not 9, 17 or 33. */
+    maxLattice: 65,
+    /** While a slider is dragged, bake every second node and fill the rest (a draft) only once
+     *  the last full bake took longer than this. A desktop bakes 33³ in 5–8 ms, so it never sees
+     *  a draft; a phone may. */
+    draftWhenFinalOverMs: 8,
+    /** Bake in a module worker (grade-bake.worker.ts). Off, or where workers fail, the bake runs
+     *  on the main thread before the frame, at most one per frame. */
+    worker: true,
+    /** A .cube look applied before the controls: a file under public/grades/, fetched at boot,
+     *  and its amount 0..1. The first frames show the grade without it. */
+    look: null as null | { file: string; amount: number },
+    /** Where the before/after split sits when Compare is switched on, as a share of the canvas
+     *  width from the left; left of it shows the frame without the grade. */
+    compareSplit: 0.5,
+    /** The grade itself, as the panel's Copy values writes it (grade-model.ts GradeState, read
+     *  through parseGradeState). These are the neutral values: every one changes nothing. */
+    state: {
+      version: 1,
+      temperature: 0,
+      tint: 0,
+      lift: { y: 0, u: 0, v: 0 },
+      gamma: { y: 0, u: 0, v: 0 },
+      gain: { y: 1, u: 0, v: 0 },
+      offset: { y: 0, u: 0, v: 0 },
+      contrast: 1,
+      pivot: 0.4614,
+      saturation: 1,
+      vibrance: 0,
+      curves: { master: [[0, 0], [1, 1]], red: [[0, 0], [1, 1]], green: [[0, 0], [1, 1]], blue: [[0, 0], [1, 1]] },
+      hueSat: [],
+      hueLuma: [],
+      tones: { shadows: { u: 0, v: 0 }, highlights: { u: 0, v: 0 }, balance: 0, blending: 0.5 },
+      rollOff: 0,
+    },
+    /** How strongly each control acts at its end stop (grade-model.ts GradeTuning). Temperature
+     *  +100 moves red up and blue down by tempStops stops; tint +100 moves green down by tintStops;
+     *  a wheel's puck on its rim moves a channel by its *Chroma; the hue curves fade out under
+     *  hueChromaGate chroma, so greys and haze never move; vibrance acts half at vibranceChroma;
+     *  the soft gamut compression starts gamutThreshold below the brightest channel; roll-off 1
+     *  drops the knee by rollOffKnee. Must equal DEFAULT_GRADE_TUNING (a test checks). */
+    tuning: {
+      tempStops: 0.5,
+      tintStops: 0.4,
+      liftChroma: 0.1,
+      gammaChroma: 0.5,
+      gainChroma: 0.25,
+      offsetChroma: 0.1,
+      toneChroma: 0.1,
+      hueChromaGate: 0.05,
+      vibranceChroma: 0.3,
+      gamutThreshold: 0.8,
+      rollOffKnee: 0.3,
+    },
+  },
+  // Eye-dome lighting (eye-dome-lighting.ts): depth-edge shading, the standard point-cloud
+  // aid for reading shape without normals. A screen pass like DoF and shares its pipeline;
+  // off drops it from that pipeline, and with DoF also off the frame is drawn straight to
+  // the canvas and no pass runs. Measured on: +0.2 ms at 1600×900.
+  eyeDomeLighting: {
+    /** On at startup, part of the look dialled in on 2026-09-29; `?edl=0` boots with it
+     *  off, `?edl=1` on. Not gated by tier: every device pays it, the loader benchmark too. */
+    enabled: true,
+    /** Potree's response scale, applied to linear colour, so it reads about half as strong
+     *  as the same Potree value. At 1 with the 0.8 floor almost every depth step reaches the
+     *  floor — a sub-metre step at 300 m does — so the floor sets the look: crown rims, gaps
+     *  and sprite edges inside a crown all get the same ×0.8, and strength only still grades
+     *  the smallest steps. 0.5 floors the same rims and gaps but keeps some of that grading. */
+    strength: 1,
+    /** Neighbour distance in whole backbuffer pixels (CSS px × render pixel ratio);
+     *  rounded, minimum 1. Larger = wider rims. */
+    radiusPx: 1,
+    /** Darkest shade EDL may apply, as a fraction of the original brightness: 0.8 linear is
+     *  about −9 % on screen. It stops the gaps between points going black (without a floor
+     *  6.5 % of a dense canopy frame went near-black at any strength); 0 is Potree's
+     *  unbounded behaviour. */
+    floor: 0.8,
+    /** EDL fades out between these view distances (metres). Beyond a few kilometres the
+     *  smooth ground's pixel-to-pixel depth steps read as edges and it would only darken
+     *  the distance haze. */
+    fadeStartM: 1_500,
+    fadeEndM: 5_000,
+  },
+  // One of the two effects that cannot live inside a colour node (with eye-dome
+  // lighting): a circle of confusion has to read neighbouring pixels, so DoF is a real post pass (see
+  // depth-of-field.ts). Costs nine full- and half-resolution draws per frame, not yet
+  // measured on this branch; nothing drops it on weak hardware automatically — the panel
+  // toggle and `?dof=0` do.
   depthOfField: {
-    /** Off at startup: the blur makes the peripheral point density impossible to
-     * judge, which is precisely what the foveation sliders are for. */
-    enabled: false,
+    /** On at startup, part of the look dialled in on 2026-09-29. With the values below it
+     * is a distance blur: the canopy within ~500 m stays sharp, so point density there can
+     * still be judged; switch it off to judge the far field. `?dof=0|1` overrides this. */
+    enabled: true,
     /** Pin the focal plane to whatever the screen centre is aimed at, so the
      * near canopy stays sharp while the background falls away. With this off,
      * focusDistanceM becomes an absolute distance from the camera. */
     autoFocus: true,
     /** With autoFocus on: metres added to the measured ground range — negative
      * pulls focus in front of the aimed point. Off: the absolute distance.
-     * Pulled 120 m forward so the near canopy, not the aimed ground point,
-     * carries the sharp plane. */
-    focusDistanceM: -120,
-    /** Metres past the focal plane at which content is fully out of focus.
-     * Small values give a shallow, cinematic band; large values keep almost
-     * everything sharp. */
-    focalLengthM: 1_075,
-    /** Unitless bokeh size. Drives how wide the blur kernel spreads, so it is
-     * also the main cost knob. */
-    bokehScale: 2.5,
-    /** Per-frame lerp factor for the auto-focus. Low values keep the focal
-     * plane from snapping while the camera moves. */
-    focusSmoothing: 0.08,
+     * The focus is clamped at 1 m, so −500 pins it there whenever the aimed point
+     * is under ~500 m away — every close-up — and the effect is a pure distance
+     * blur rather than a focal plane. Only wider views focus on the ground ahead. */
+    focusDistanceM: -500,
+    /** Metres either side of the focal plane at which content is fully out of
+     * focus; the blur's blend is already full at half of it. At 4 km and a 1 m
+     * focus: 0.3 px at 460 m, 1.25 px at 1 km, 4 px at 2 km, the full radius
+     * from 4 km — the basemap softens, the canopy does not. */
+    focalLengthM: 4_000,
+    /** Largest blur radius, roughly in backbuffer pixels. The tap count is fixed
+     * whatever the size, so it is not what the cost scales with; beyond ~8 the
+     * bokeh disc undersamples. */
+    bokehScale: 8,
+    /** Per-frame lerp factor for the auto-focus. 1 is no smoothing: the focal plane
+     * follows the aimed range every frame, which is stable over the canopy (the range
+     * comes from a flat plane, not the points) but jumps in low side views near the
+     * horizon, where the range changes by kilometres per degree. */
+    focusSmoothing: 1,
   },
   rain: {
     dryDurationMs: 10_000,

@@ -18,6 +18,10 @@ import { EXPERIENCE_CONFIG } from './config'
 import { onRebase } from './origin'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { releaseVertexArraysOnDispose } from './vertex-arrays'
+import { retryFailedTiles } from './tile-retry'
+import { createOrthoComposite, type OrthoComposite, type OrthoCompositeConfig, type OrthoStats } from './ortho-composite'
+import { parseSatelliteZxy, createPlanner, type OrthoDensity, type OrthoMeta } from './ortho-plan'
+import { keepSatelliteBytes } from './ortho-upgrade'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -77,6 +81,30 @@ export interface Globe {
    *  reported so the HUD can put the basemap's share of memory against the basemap's own
    *  ceiling rather than against the point cloud's. */
   stats(): { visible: number; cacheBytes: number; cacheBytesCeiling: number; reuploadsAfterClose: number }
+  /**
+   * Paint the drone orthos into the satellite tiles they cover (ortho-composite.ts): settled
+   * covered tiles are upgraded in their own texture, the ones already loaded included, so
+   * nothing is reloaded. Resolves false when the ortho cannot run here; the basemap then stays
+   * satellite only.
+   */
+  attachOrtho(ortho: {
+    meta: OrthoMeta; rootTransform: ArrayLike<number>; fieldBaseUrl: string
+    config: OrthoCompositeConfig; density: OrthoDensity | 'off'; thinUnderPatch: boolean; debugKinds: boolean
+    /** False until the Start click and while a camera flight runs. */
+    upgradesAllowed: () => boolean
+    /** Point tiles arrived so far: a swap waits out a frame that uploads an arriving point tile. */
+    pointArrivals: () => number
+    /** The point stream has tiles queued, downloading or parsing: ortho requests wait for it. */
+    pointsBusy: () => boolean
+  }): Promise<boolean>
+  /** Off puts the satellite back into upgraded tiles from their kept bytes; On upgrades again. */
+  setOrthoEnabled(on: boolean): void
+  /** Re-composes upgraded tiles in place at the new density ('off' reverts them). */
+  setOrthoDensity(density: OrthoDensity | 'off'): void
+  orthoStats(): OrthoStats | null
+  /** Stops keeping satellite bytes when the ortho will not run in this session. A no-op after
+   *  attachOrtho, whose reverts need them. */
+  releaseOrthoBytes(): void
   dispose(): void
 }
 
@@ -101,6 +129,15 @@ export interface Globe {
  */
 const imageryGraphCache = new Map<string, any>()
 
+/** In dev the vite proxy, which claims an origin the domain-restricted key accepts. */
+const MAPTILER_BASE = import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'
+
+/** z of an XYZ tile URL ending in /{z}/{x}/{y}.<ext>, or -1. */
+export function zoomOfTileUrl(url: string | undefined): number {
+  const m = /\/(\d+)\/\d+\/\d+\.[a-z]+(?:\?|$)/i.exec(url ?? '')
+  return m ? Number(m[1]) : -1
+}
+
 function imageryColorNode(uniforms: CloudUniforms): any {
   const key = imageryEffectsKey()
   const cached = imageryGraphCache.get(key)
@@ -120,12 +157,15 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   // cloud there is no map to give atmosphere to. Applying the patch after them is what
   // makes the chosen colour or brightness the thing you actually see — see applyGroundPatch.
   const node = applyGroundPatch(uniforms, atmospheric, raw)
+  // Versions only grow, so an older graph is never looked up again; dropping it lets go of
+  // the last material and texture its reference nodes still point at.
+  imageryGraphCache.clear()
   imageryGraphCache.set(key, node)
   return node
 }
 
 export function createGlobe(opts: {
-  renderer: { domElement: HTMLCanvasElement; getSize(v: THREE.Vector2): THREE.Vector2 }
+  renderer: { domElement: HTMLCanvasElement; getSize(v: THREE.Vector2): THREE.Vector2; initTexture?(texture: THREE.Texture): void }
   camera: THREE.PerspectiveCamera
   /** ECEF-anchored parent — the floating-origin root, not the raw scene. */
   scene: THREE.Object3D
@@ -141,6 +181,9 @@ export function createGlobe(opts: {
    * and pulling it removes any ordering contract between the two modules.
    */
   panBudgetM?: () => number
+  /** Keep each covered tile's satellite JPEG from the start, for the drone ortho's upgrades
+   *  and reverts. Off when the ortho cannot run in this session. */
+  keepSatelliteBytes?: boolean
 }): Globe {
   const { renderer, camera, scene, maptilerKey, cameraClearance, uniforms } = opts
 
@@ -148,6 +191,9 @@ export function createGlobe(opts: {
   let imageryEnabled = true
 
   const tiles = new TilesRenderer()
+  // A dropped imagery request would otherwise leave its whole subtree missing for the
+  // session: a square of sky through the ground. See tile-retry.ts.
+  const stopRetrying = retryFailedTiles(tiles as any, 'globe')
   // XYZ imagery otherwise inherits the library's ~300/400 MB CPU cache. That
   // cache exists in addition to point-cloud geometry and was the largest
   // unbounded allocation in the mobile path — hence a cap. But the cap has to
@@ -175,7 +221,7 @@ export function createGlobe(opts: {
   tiles.parseQueue.maxJobs = 4
   tiles.processNodeQueue.maxJobs = 4
   tiles.maxTilesProcessed = 80
-  tiles.registerPlugin(new XYZTilesPlugin({
+  const xyz = new XYZTilesPlugin({
     shape: 'ellipsoid',
     useRecommendedSettings: true,
     tileDimension: 512,
@@ -186,8 +232,16 @@ export function createGlobe(opts: {
     // Same imagery endpoint as the Cesium viewer (buildMapTilerBaseLayer). In dev
     // it goes through the vite proxy, which strips the Referer the domain-restricted
     // key rejects from localhost — see vite.config.ts.
-    url: `${import.meta.env.DEV ? '/maptiler' : 'https://api.maptiler.com'}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
-  }))
+    url: `${MAPTILER_BASE}/maps/satellite-v4/{z}/{x}/{y}.jpg?key=${encodeURIComponent(maptilerKey)}`,
+  })
+  tiles.registerPlugin(xyz)
+  // The satellite JPEG of every tile the ortho may upgrade, kept with its texture from the first
+  // tile on (the ortho attaches later, after the loader). About 28 KB a tile; dropped below the
+  // ortho's lowest zoom and, once its coverage is known, for tiles it does not cover.
+  const satellite = keepSatelliteBytes((xyz as any).imageSource, opts.keepSatelliteBytes === true)
+  const ORTHO_MIN_ZOOM = EXPERIENCE_CONFIG.design.droneOrtho.minZoom
+  let orthoCovers: ((tile: any) => boolean) | null = null
+  let ortho: OrthoComposite | null = null
   tiles.registerPlugin(new UpdateOnChangePlugin())
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
   // configured value has to land afterwards to win.
@@ -203,9 +257,10 @@ export function createGlobe(opts: {
 
   // The image plugin pre-flips tiles via createImageBitmap({imageOrientation:'flipY'})
   // because WebGL ignores Texture.flipY for ImageBitmaps. three's WebGPU backend,
-  // however, DOES honour flipY for ImageBitmaps (in-shader UV flip) → double flip →
-  // scrambled continents at low zoom. Clear the flag before first upload; harmless
-  // on WebGL where it is ignored anyway.
+  // however, DOES honour flipY for ImageBitmaps (copyExternalImageToTexture flips) → double
+  // flip → scrambled continents at low zoom. Clear the flag before first upload; harmless
+  // on WebGL where it is ignored anyway. The drone ortho's composites are pre-flipped the
+  // same way, so the flag stays right when one replaces the image.
   //
   // Each tile also gets a node material whose colour is multiplied by the shared
   // world-anchored vignette dim — in vignette mode the imagery fades to black around
@@ -237,15 +292,25 @@ export function createGlobe(opts: {
     queueMicrotask(() => image.close())
   }
   tiles.addEventListener('load-model', ({ scene: s, tile }: any) => {
+    // The XYZ zoom, for the per-zoom colour gain (gradeImageryNode). From the tile's own URL
+    // (…/{z}/{x}/{y}.jpg): the plugin keeps level/x/y under module-private Symbols.
+    const zoom = zoomOfTileUrl(tile?.content?.uri)
     s.traverse((o: any) => {
       if (o.geometry) releaseVertexArraysOnDispose(renderer, o.geometry)
       const map = o.material?.map
       if (!map) return
       map.flipY = false
+      // The image's size outlives the image: the ortho upgrade (ortho-upgrade.ts) checks a
+      // replacement bitmap against it once the image below has been closed.
+      if (map.image) map.userData.imageSize = { width: map.image.width, height: map.image.height }
       map.onUpdate = releaseImageAfterUpload
       map.addEventListener('dispose', () => { map.onUpdate = null })
+      // Tagged for the upload probe in arrival-cost.ts, which books imagery uploads apart.
+      map.userData.basemapImagery = true
+      if (zoom < ORTHO_MIN_ZOOM || (orthoCovers && !orthoCovers(tile))) satellite.drop(map)
       const mat = new MeshBasicNodeMaterial()
       mat.map = map // keep the texture discoverable for the tile disposal path
+      mat.userData.basemapZoom = zoom
       // Imagery hangs off the same ECEF transforms as the point tiles and jitters
       // with them, but never follows the point-cloud precision toggle — mediump
       // tears visible gaps between the map tiles. See applyHighPrecisionAlways.
@@ -623,7 +688,67 @@ export function createGlobe(opts: {
         reuploadsAfterClose,
       }
     },
+    async attachOrtho(options) {
+      if (ortho) return true
+      const hadBytes = satellite.capturing
+      satellite.setCapturing(true)
+      const covers = createPlanner(options.meta.sources, { minZoom: options.config.minZoom, density: 'half', disabled: new Set() })
+      orthoCovers = (tile) => {
+        const zxy = parseSatelliteZxy(tile?.content?.uri ?? '')
+        return !!zxy && covers(zxy.z, zxy.x, zxy.y) !== null
+      }
+      tiles.forEachLoadedModel((scene: any, tile: any) => {
+        const map = scene?.material?.map
+        if (map && !orthoCovers!(tile)) satellite.drop(map)
+      })
+      ortho = createOrthoComposite({
+        ...options,
+        tiles,
+        satellite,
+        // Only a texture three holds a GPU copy of: a freed one is rebuilt at its next draw
+        // anyway, from whatever image it has then.
+        upload: (texture) => {
+          if ((renderer as any)._textures?.has?.(texture) === false) return
+          renderer.initTexture?.(texture as THREE.Texture)
+        },
+        orthoTileUrl: (id, format, z, x, y) =>
+          `${MAPTILER_BASE}/tiles/${id}/${z}/${x}/${y}.${format}?key=${encodeURIComponent(maptilerKey)}`,
+      })
+      const ok = await ortho.ready
+      if (!ok) {
+        // Nothing was or will be composited.
+        satellite.setCapturing(false)
+        return ok
+      }
+      // Turned on after ?ortho=off or an 'off' at the start: the covered tiles already loaded
+      // kept no bytes, so they are loaded again (their parents keep the ground drawn meanwhile)
+      // and come back with them, to be upgraded like any other.
+      if (!hadBytes) {
+        const cache = (tiles as any).lruCache
+        for (const tile of Array.isArray(cache?.itemList) ? cache.itemList.slice() : []) {
+          const map = tile?.engineData?.scene?.material?.map
+          if (!map || satellite.get(map) || zoomOfTileUrl(tile?.content?.uri) < ORTHO_MIN_ZOOM || !orthoCovers(tile)) continue
+          cache.remove(tile)
+        }
+        tiles.dispatchEvent({ type: 'needs-update' })
+      }
+      return ok
+    },
+    setOrthoEnabled(on) {
+      ortho?.setEnabled(on)
+    },
+    setOrthoDensity(density) {
+      ortho?.setDensity(density)
+    },
+    orthoStats() {
+      return ortho?.stats() ?? null
+    },
+    releaseOrthoBytes() {
+      if (!ortho) satellite.setCapturing(false)
+    },
     dispose() {
+      stopRetrying()
+      ortho?.dispose()
       detachPanRebase()
       window.removeEventListener('pointerdown', trackPointerDown, true)
       window.removeEventListener('pointerup', trackPointerUp, true)

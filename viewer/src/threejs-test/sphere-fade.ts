@@ -209,7 +209,9 @@ export function createSphereFade(opts: {
     material.opacity = settings.debugOpacity
     material.depthWrite = false
     material.side = THREE.DoubleSide
-    material.toneMapped = false
+    // No toneMapped flag: r185 WebGPU tone-maps the finished frame, never one material.
+    // Debug geometry: the distance haze leaves it alone (atmosphere-haze.ts).
+    material.userData.noHaze = true
     const mesh = new THREE.Mesh(shellGeometry, material)
     mesh.frustumCulled = false
     mesh.renderOrder = renderOrder

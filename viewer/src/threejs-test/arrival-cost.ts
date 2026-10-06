@@ -39,6 +39,12 @@ let arrivalCount = 0
 let arrivalCursor = 0
 
 let lastFrameAt = 0
+/** Point tiles arrived since the page loaded, never reset by resetCost. */
+let arrivalsTotal = 0
+
+/** A cheap "has a point tile arrived since": the drone ortho holds its swaps in a frame that
+ *  uploads an arriving point tile. */
+export const arrivalsSoFar = (): number => arrivalsTotal
 
 /**
  * One rendered frame. Takes the rAF timestamp rather than measuring a span, so what is
@@ -46,6 +52,7 @@ let lastFrameAt = 0
  * vsync counts as late even if the JS inside it was quick.
  */
 export function recordFrame(now: number): void {
+  const finished = frameOrdinal
   frameOrdinal++
   if (lastFrameAt !== 0) {
     const dt = now - lastFrameAt
@@ -55,6 +62,7 @@ export function recordFrame(now: number): void {
       frameMs[frameCursor] = dt
       frameCursor = (frameCursor + 1) % FRAME_WINDOW
       frameCount++
+      if (finished === imagerySwapFrame && dt > worstSwapFrameMs) worstSwapFrameMs = dt
     }
   }
   lastFrameAt = now
@@ -62,6 +70,7 @@ export function recordFrame(now: number): void {
 
 /** One tile's synchronous arrival work, with the point count it carried. */
 export function recordArrival(ms: number, points: number): void {
+  arrivalsTotal++
   arrivalMs[arrivalCursor] = ms
   arrivalPoints[arrivalCursor] = points
   arrivalCursor = (arrivalCursor + 1) % ARRIVAL_WINDOW
@@ -106,6 +115,30 @@ let worstUploadFrameMs = 0
 let uploadFrameMs = 0
 let uploadFrameAt = -1
 let frameOrdinal = 0
+/** The frame of the last point-tile first upload, for the imagery collision count. */
+let pointFirstFrame = -1
+
+/**
+ * Basemap imagery uploads, booked apart from the point cloud's: a tile's first upload, a
+ * re-upload after UnloadTilesPlugin freed the GPU copy of a hidden tile, and a swap — the drone
+ * ortho replacing a loaded tile's image (ortho-upgrade.ts), which must stay as cheap as an
+ * arrival and never share a frame with one.
+ */
+const IMAGERY_SWAP_RING = 256
+const imagerySwapMs: number[] = []
+let imageryFirstCount = 0, imageryFirstMs = 0, imageryFirstMax = 0
+let imageryReCount = 0, imageryReMs = 0, imageryReMax = 0
+let imageryFirstFrame = -1
+let imagerySwapFrame = -1
+let worstSwapFrameMs = 0
+let swapCollisions = 0
+let collisionFrame = -1
+
+/** Book a point-tile first upload in this frame, and a collision if a swap already ran in it. */
+function markPointFirst(): void {
+  pointFirstFrame = frameOrdinal
+  if (imagerySwapFrame === frameOrdinal && collisionFrame !== frameOrdinal) { swapCollisions++; collisionFrame = frameOrdinal }
+}
 
 /**
  * Wrap the renderer's attribute upload. Safe to call more than once, and a no-op if the
@@ -140,6 +173,7 @@ export function installUploadProbe(renderer: any): boolean {
     } else {
       seen.add(attribute)
       firstMs += ms; firstBytes += bytes; firstCount++
+      markPointFirst()
     }
   }
   // The pulled dot feed uploads each tile as a texture rather than as attributes, so it
@@ -151,7 +185,37 @@ export function installUploadProbe(renderer: any): boolean {
   if (textures && typeof textures.updateTexture === 'function') {
     const originalTexture = textures.updateTexture.bind(textures)
     const seenTextures = new WeakSet<object>()
+    const seenImagery = new WeakSet<object>()
     textures.updateTexture = (texture: any, options: any) => {
+      if (texture?.userData?.basemapImagery) {
+        let initialized = false
+        let pending = true
+        try {
+          const data = textures.get(texture)
+          initialized = data?.initialized === true
+          pending = !(initialized && data?.version === texture.version)
+        } catch { pending = true }
+        if (!pending) return originalTexture(texture, options)
+        const kind = !seenImagery.has(texture) ? 'first' : initialized ? 'swap' : 'reupload'
+        seenImagery.add(texture)
+        const startedAt = performance.now()
+        const result = originalTexture(texture, options)
+        const ms = performance.now() - startedAt
+        if (kind === 'first') {
+          imageryFirstCount++; imageryFirstMs += ms; imageryFirstMax = Math.max(imageryFirstMax, ms)
+          imageryFirstFrame = frameOrdinal
+          if (imagerySwapFrame === frameOrdinal && collisionFrame !== frameOrdinal) { swapCollisions++; collisionFrame = frameOrdinal }
+        } else if (kind === 'swap') {
+          imagerySwapMs.push(ms)
+          if (imagerySwapMs.length > IMAGERY_SWAP_RING) imagerySwapMs.shift()
+          imagerySwapFrame = frameOrdinal
+          const shared = imageryFirstFrame === frameOrdinal || pointFirstFrame === frameOrdinal
+          if (shared && collisionFrame !== frameOrdinal) { swapCollisions++; collisionFrame = frameOrdinal }
+        } else {
+          imageryReCount++; imageryReMs += ms; imageryReMax = Math.max(imageryReMax, ms)
+        }
+        return result
+      }
       if (!texture?.userData?.cloudPointData || texture.userData.retired) return originalTexture(texture, options)
       let pending = true
       try {
@@ -171,6 +235,7 @@ export function installUploadProbe(renderer: any): boolean {
       } else {
         seenTextures.add(texture)
         firstMs += ms; firstBytes += bytes; firstCount++
+        markPointFirst()
       }
       return result
     }
@@ -261,6 +326,17 @@ export interface CostReport {
     sharedMB: number
   }
   shaders: ReturnType<typeof programCounts>
+  /** Basemap imagery uploads: first, swaps (the drone ortho) and re-uploads, kept apart. */
+  imagery: {
+    first: { n: number; totalMs: number; max: number }
+    swaps: { n: number; p50: number; max: number }
+    reuploads: { n: number; totalMs: number; max: number }
+    /** The longest frame that carried a swap. */
+    worstSwapFrameMs: number
+    /** Frames in which a swap shared the upload with an arriving imagery or point tile. Swaps wait
+     *  for arrivals, newly shown basemap tiles and a still view, so this stays at or near 0. */
+    swapCollisions: number
+  }
 }
 
 export function costReport(renderer?: any): CostReport {
@@ -318,6 +394,16 @@ export function costReport(renderer?: any): CostReport {
       sharedMB: round(sharedBytes / 1e6),
     },
     shaders: programCounts(renderer),
+    imagery: (() => {
+      const swaps = [...imagerySwapMs].sort((a, b) => a - b)
+      return {
+        first: { n: imageryFirstCount, totalMs: round(imageryFirstMs), max: round(imageryFirstMax) },
+        swaps: { n: swaps.length, p50: round(percentile(swaps, 0.5)), max: round(swaps.length ? swaps[swaps.length - 1] : 0) },
+        reuploads: { n: imageryReCount, totalMs: round(imageryReMs), max: round(imageryReMax) },
+        worstSwapFrameMs: round(worstSwapFrameMs),
+        swapCollisions,
+      }
+    })(),
   }
 }
 
@@ -335,4 +421,8 @@ export function resetCost(): void {
   reMs = 0; reBytes = 0; reCount = 0
   sharedMs = 0; sharedBytes = 0; sharedCount = 0
   worstUploadFrameMs = 0; uploadFrameMs = 0; uploadFrameAt = -1
+  imagerySwapMs.length = 0
+  imageryFirstCount = 0; imageryFirstMs = 0; imageryFirstMax = 0
+  imageryReCount = 0; imageryReMs = 0; imageryReMax = 0
+  worstSwapFrameMs = 0; swapCollisions = 0
 }

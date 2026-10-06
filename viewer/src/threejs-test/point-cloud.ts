@@ -10,9 +10,11 @@ import {
   cameraPosition, context, highpModelViewMatrix, screenCoordinate, sin, cos, renderGroup,
   pow, clamp, modelWorldMatrix, modelWorldMatrixInverse, transformDirection,
   vertexIndex, uint, ivec2, varying, nodeObject, materialPointSize, screenDPR, viewportSize,
+  sRGBTransferEOTF, exp2,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import { compiledTermsAtBoot } from './compiled-terms'
+import { ERROR_BAND_COLORS } from './density-band'
 import {
   dotCorners, POINT_DATA_WIDTH, POINT_DATA_WIDTH_BITS, type DotMode,
 } from './dot-geometry'
@@ -137,6 +139,25 @@ export interface CloudUniforms {
   /** Basemap-only grading (the point cloud has its own). */
   mapSaturation: any
   mapBrightness: any
+  /** Per-channel basemap gain from the colour field, relative to the fixed
+   *  design.colourMatch.referenceBrightness (so `mapBrightness` stays a trim around the
+   *  match) — (1,1,1) while the colour match is off. */
+  mapMatchGain: any
+  /** The saturation the basemap is matched at, multiplied into `mapSaturation` — 1 while
+   *  the colour match is off. */
+  mapMatchSaturation: any
+  /** The colour field's placement in the shader's ENU frame: lower-left corner, and one over
+   *  its size in metres. A texel decodes as `(code·255 − zero) / scale · stops` stops;
+   *  `colourFieldStrength` scales that (0 = captured colour). */
+  colourFieldOrigin: any
+  colourFieldInvSize: any
+  colourFieldStops: any
+  colourFieldZero: any
+  colourFieldScale: any
+  colourFieldStrength: any
+  /** Point-cloud grade on the decoded captured colour; see gradePointNode. */
+  pointContrast: any
+  pointSaturation: any
   /**
    * Flat ground patch that replaces the satellite imagery inside the survey
    * footprint, so the map is only visible where there is no point-cloud data.
@@ -152,10 +173,11 @@ export interface CloudUniforms {
   groundPatchCellSizeM: any
   /** Index map edge length in cells — the divisor for addressing it. */
   groundPatchIndexSize: any
-  /** 0 = the raw basemap at groundPatchBrightness, 1 = a flat colour. */
+  /** 0 = the basemap at groundPatchBrightness, 1 = a flat colour. */
   groundPatchColorMix: any
-  /** Brightness applied to the raw imagery inside the patch, independent of the
-   * global basemap grading. */
+  /** Brightness of the imagery inside the patch, relative to the map's own level: the raw
+   * tile while the colour match is off, the matched map while it is on. Independent of the
+   * Brightness/Saturation grade, fog and the vignette. */
   groundPatchBrightness: any
   /** Radius in metres the coverage is averaged over before thresholding. */
   groundPatchBlurM: any
@@ -239,6 +261,7 @@ export interface CloudUniforms {
 }
 
 let cloudShadowTextureNode: any = null
+let colourFieldNode: any = null
 let groundPatchMaskNode: any = null
 let groundPatchIndexNode: any = null
 
@@ -253,6 +276,14 @@ let groundPatchIndexNode: any = null
 export function setGroundPatchMask(cells: THREE.DataArrayTexture, indexMap: THREE.Texture): void {
   groundPatchMaskNode = texture(cells)
   groundPatchIndexNode = texture(indexMap)
+  // The imagery graph holds these nodes, so a later swap must not hit a cached graph.
+  imageryVersion++
+}
+
+/** Register the colour field. It arrives after the first tiles may have been built, so the
+ * caller switches the `colourField` effect on afterwards, which rebuilds them with it. */
+export function setColourField(field: THREE.Texture): void {
+  colourFieldNode = texture(field)
 }
 
 /** Register the shared cloud-density volume BEFORE the first tile material is
@@ -315,6 +346,16 @@ export function createUniforms(): CloudUniforms {
     groundPatchThreshold: uniform(EXPERIENCE_CONFIG.design.groundPatch.threshold),
     mapSaturation: uniform(EXPERIENCE_CONFIG.design.mapSaturation),
     mapBrightness: uniform(EXPERIENCE_CONFIG.design.mapBrightness),
+    mapMatchGain: uniform(new THREE.Vector3(1, 1, 1)),
+    mapMatchSaturation: uniform(1),
+    colourFieldOrigin: uniform(new THREE.Vector2(0, 0)),
+    colourFieldInvSize: uniform(new THREE.Vector2(1, 1)),
+    colourFieldStops: uniform(3),
+    colourFieldZero: uniform(127.5),
+    colourFieldScale: uniform(127.5),
+    colourFieldStrength: uniform(EXPERIENCE_CONFIG.design.colourMatch.strength),
+    pointContrast: uniform(EXPERIENCE_CONFIG.design.pointContrast),
+    pointSaturation: uniform(EXPERIENCE_CONFIG.design.pointSaturation),
     groundFogColor: uniform(new THREE.Color(EXPERIENCE_CONFIG.environment.dayFog)),
     groundFogStrength: uniform(EXPERIENCE_CONFIG.design.groundFog.strength),
     groundFogBaseZ: uniform(0),
@@ -581,24 +622,84 @@ export function applyGroundPatch(u: CloudUniforms, finished: any, rawImagery: an
   // and outer sphere — and everywhere the camera has been — with no points on it. The
   // imagery sits on the ground, so its 3D distance to the centre is the horizontal one.
   if (effects.sphereFade) coverage = coverage.mul(sphereFadeFactor(u, enu))
-  // From the raw texture, not the graded result, so neither the global basemap
-  // grading nor the daylight ramp leaks into the chosen appearance.
+  // From the raw texture, not the graded result, so neither the Brightness/Saturation
+  // grade nor the daylight ramp leaks into the chosen appearance. The colour match is the
+  // one exception (below): a patch showing the map shows the matched map.
   //
   // The ground fog and the vignette are excluded by running after them. Three's own
   // scene fog is not, because it is applied after the colour node — measured, a patch
   // picked as (0,255,136) renders as (42,251,149) at 1.8 km with distance fog on.
   // Left as is on purpose: that haze is aerial perspective, and exempting the ground
   // from it would make it float away from everything around it.
-  const ownBrightness: any = rawImagery.mul(u.groundPatchBrightness)
+  // mapMatchGain is relative to the fixed reference brightness, so the patch keeps its
+  // ratio to the map whether the match is on or off, and a pasted mapBrightness trim does
+  // not move it. Both terms are 1 while the match is off.
+  const rawLuma: any = rawImagery.r.mul(0.2126).add(rawImagery.g.mul(0.7152)).add(rawImagery.b.mul(0.0722))
+  const ownBrightness: any = mix(vec3(rawLuma), rawImagery, u.mapMatchSaturation)
+    .mul(u.groundPatchBrightness).mul(u.mapMatchGain).mul(imageryZoomGain)
   const target: any = mix(ownBrightness, vec3(u.groundPatchColor), u.groundPatchColorMix)
   return mix(finished, target, coverage)
+}
+
+/**
+ * MapTiler's satellite changes colour between zoom levels (measured over peru-b2-globe, z16-z19
+ * sit 0.25/0.2/0.15 stops RGB below z15), so a view that mixes levels shows the steps and one
+ * gain cannot match all of them to the cloud. The colour field carries a gain per zoom; each
+ * map tile's material records its zoom, and this one shared node reads that tile's entry — the
+ * onObjectUpdate pattern of the point tiles, so it costs one multiply and no graph fork.
+ * The table holds (1,1,1) everywhere while the colour match is off.
+ */
+const imageryZoomGains: THREE.Vector3[] = []
+const NO_ZOOM_GAIN = new THREE.Vector3(1, 1, 1)
+const imageryZoomGain: any = uniform(new THREE.Vector3(1, 1, 1)).onObjectUpdate(
+  ({ material }: any, self: any) => self.value.copy(imageryZoomGains[material?.userData?.basemapZoom] ?? NO_ZOOM_GAIN),
+)
+
+/** Per-zoom basemap gain on top of mapMatchGain, indexed by XYZ zoom; empty = none. */
+export function setImageryZoomGains(gains: ReadonlyArray<THREE.Vector3 | undefined>): void {
+  imageryZoomGains.length = 0
+  gains.forEach((gain, zoom) => { if (gain) imageryZoomGains[zoom] = gain.clone() })
 }
 
 /** Desaturate + darken the basemap only, so the imagery can sit back without
  * dulling the point cloud that reads on top of it. */
 export function gradeImageryNode(u: CloudUniforms, rgb: any): any {
   const luma = rgb.r.mul(0.2126).add(rgb.g.mul(0.7152)).add(rgb.b.mul(0.0722))
-  return mix(vec3(luma), rgb, u.mapSaturation).mul(u.mapBrightness)
+  return mix(vec3(luma), rgb, u.mapSaturation.mul(u.mapMatchSaturation))
+    .mul(u.mapBrightness).mul(u.mapMatchGain).mul(imageryZoomGain)
+}
+
+/**
+ * The colour field's gain at this ENU position: 2^((code·255 − zero) / scale · stops ·
+ * strength) per channel, with zero and scale read from the field's JSON. The field fades to
+ * no change where the cloud thins out inside its box; where the survey runs dense up to the
+ * box edge it keeps its gain there, and ClampToEdge (colour-field.ts) carries that on past
+ * the box. Texture row 0 is north, hence the flipped v.
+ */
+function colourFieldGain(u: CloudUniforms, enuXY: any): any {
+  const st = enuXY.sub(u.colourFieldOrigin).mul(u.colourFieldInvSize)
+  const code = colourFieldNode.sample(vec2(st.x, float(1).sub(st.y))).rgb
+  const stops = code.mul(255).sub(u.colourFieldZero).div(u.colourFieldScale)
+  return exp2(stops.mul(u.colourFieldStops.mul(u.colourFieldStrength)))
+}
+
+/** Luma pivot for the point contrast: 18 % grey, the photographic mid-tone. */
+const POINT_CONTRAST_PIVOT = 0.18
+
+/**
+ * Contrast and saturation for the captured point colour, in linear light. Contrast is a
+ * power curve on luma around the pivot with the colour rescaled to the new luma, so black
+ * stays black, hue is kept and nothing goes negative; saturation then mixes against that
+ * luma like the basemap's. At 1 / 1 it returns the input colour.
+ */
+export function gradePointNode(u: CloudUniforms, rgb: any): any {
+  const luma = rgb.r.mul(0.2126).add(rgb.g.mul(0.7152)).add(rgb.b.mul(0.0722))
+  // The floor only guards the division; the grey side is built from the real luma, so a
+  // black point stays exactly black at any contrast and saturation.
+  const safeLuma = max(luma, 1e-5)
+  const pivot = float(POINT_CONTRAST_PIVOT)
+  const gain = pivot.mul(pow(safeLuma.div(pivot), u.pointContrast)).div(safeLuma)
+  return max(mix(vec3(luma.mul(gain)), rgb.mul(gain), u.pointSaturation), vec3(0))
 }
 
 /** Names of the per-instance attributes each tile geometry must carry. Kept out
@@ -689,6 +790,15 @@ const effects = {
   vignette: bootTerms.vignette,
   foveaBend: bootTerms.foveaBend,
   debugPalette: bootTerms.debugPalette,
+  /** Exact sRGB decode of the point colour; off is the old pow(2.2). Driven by the tone
+   *  stage's master switch together with the curve, so off is the pre-tone-mapping shader. */
+  exactDecode: EXPERIENCE_CONFIG.toneMapping.enabled as boolean,
+  /** gradePointNode. Compiled in only while contrast or saturation is off 1 — at 1 / 1 the
+   *  uniforms would still pay a pow and two divisions per fragment to change nothing. */
+  pointGrade: false,
+  /** The colour match's per-point gain — see design.colourMatch. Off until the field has
+   *  loaded, and off whenever the config or the panel switch says so. */
+  colourField: false,
 }
 export type CloudEffect = keyof typeof effects
 
@@ -816,12 +926,27 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
  * hit the cache.
  */
 let effectsVersion = 0
+/** Bumped only by the effects the basemap's imagery graph reads, so a point-only switch
+ *  (colourField, pointGrade, exactDecode, …) does not make the next map tile build a fresh,
+ *  identical graph inside the render pass. */
+const IMAGERY_EFFECTS: ReadonlySet<string> = new Set(['groundFog', 'groundPatch', 'sphereFade'])
+let imageryVersion = 0
 const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any; cornerNode: any }>()
 
-/** The basemap builds its own graph from the same effect flags and needs the same cache
- *  invalidation — see globe.ts. */
+/** Every effect flip, for the shader-terms readout in main.ts (`__wild.shaderTerms.state`). */
 export function cloudEffectsVersion(): number {
   return effectsVersion
+}
+
+/** The basemap builds its own graph from some of the same effect flags and needs their
+ *  cache invalidation — see globe.ts, which keys on imageryEffectsKey below. Only those flags
+ *  move this number. */
+export function imageryEffectsVersion(): number {
+  return imageryVersion
+}
+
+export function isCloudEffectEnabled(effect: CloudEffect): boolean {
+  return effects[effect]
 }
 
 /** The effect flags the basemap's colour graph reads — groundFogNode, applyMaskSurround and
@@ -835,6 +960,7 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
   effectsVersion++
+  if (IMAGERY_EFFECTS.has(effect)) imageryVersion++
   // Every cached graph carries the old version in its key and can never be looked up
   // again. Dropping them lets them go once no material still uses them — which matters
   // for the pulled graphs, whose texel reference otherwise keeps the last tile it drew
@@ -1187,9 +1313,16 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
     const height01 = smoothstep(u.canopyBaseZ, u.canopyTopZ, enu.z)
     const rim = mix(vec3(1), vec3(u.warmRimColor), height01.mul(u.goldenFactor) as any)
 
-    // PNTS RGB is sRGB encoded. TSL expects a linear working colour.
-    const graded = pointColor
-      .pow(2.2)
+    // PNTS RGB is sRGB encoded. Decoded with the exact curve the sampler applies to the
+    // basemap, so cloud and map match in the darks; with the tone stage switched off it is
+    // the old pow(2.2) (the sbb-main shader once the colour match is off too). Per fragment, the
+    // stage the old decode used — a per-vertex decode measured no different in a GPU-time A/B.
+    const captured = effects.exactDecode ? sRGBTransferEOTF(pointColor) : pointColor.pow(2.2)
+    // The colour match comes first: it corrects the capture, so the grade and everything
+    // after it see one even survey.
+    const decoded = effects.colourField && colourFieldNode ? captured.mul(colourFieldGain(u, enu.xy)) : captured
+    const linear = effects.pointGrade ? gradePointNode(u, decoded) : decoded
+    const graded = linear
       .mul(u.daylightColor)
       .mul(u.daylightIntensity)
       .mul(cloudShadow)
@@ -1221,14 +1354,22 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
      * A leaf is called out in white instead. It carries `geometricError: 0` and so
      * reports error 0, which on any ramp would read as "far finer than needed" when
      * what it means is "nothing left to give" — a step the target can never move.
+     *
+     * The colours are the panel key's sRGB hexes decoded to linear by THREE.Color. They
+     * used to be those bytes over 255 typed in as linear, which drew every band far
+     * lighter than the swatch explaining it.
      */
     const ratio = debugTile.z
+    const [finer, inHand, onTarget, asking, behind] = ERROR_BAND_COLORS.map((hex) => {
+      const linear = new THREE.Color(hex)
+      return vec3(linear.r, linear.g, linear.b)
+    })
     const band = mix(mix(mix(mix(
-      vec3(0.118, 0.227, 0.541),                       // < 0.4  far finer than asked
-      vec3(0.231, 0.510, 0.965), step(0.4, ratio)),    // 0.4–0.7  a level in hand
-      vec3(0.133, 0.773, 0.369), step(0.7, ratio)),    // 0.7–1    sitting on the target
-      vec3(0.961, 0.620, 0.043), step(1.0, ratio)),    // 1–2      over it, still asking
-      vec3(0.863, 0.149, 0.149), step(2.0, ratio))     // >= 2     two levels behind
+      finer,                        // < 0.4  far finer than asked
+      inHand, step(0.4, ratio)),    // 0.4–0.7  a level in hand
+      onTarget, step(0.7, ratio)),  // 0.7–1    sitting on the target
+      asking, step(1.0, ratio)),    // 1–2      over it, still asking
+      behind, step(2.0, ratio))     // >= 2     two levels behind
 
     // A leaf is white here; the level view keeps its own palette.
     const errorColor = mix(band, vec3(1), debugTile.y)

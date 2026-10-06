@@ -1,16 +1,20 @@
 // Three.js globe + point cloud with one adaptive streaming path on every device.
 // The One LOD Tree moves from Overview p02 to Explore p10 and Detail p100 while
 // one renderer owns traversal, downloads, CPU cache and GPU residency.
+// First, before anything schedules a frame: the `?bgclock` test hook (hidden-pane-clock.ts).
+import './hidden-pane-clock'
 import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
-  cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask,
-  setCloudEffectEnabled, POINT_DATA_PROPERTY, type CloudEffect,
+  cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask, setColourField,
+  setImageryZoomGains, isCloudEffectEnabled, setCloudEffectEnabled, POINT_DATA_PROPERTY, type CloudEffect,
 } from './point-cloud'
 import { pointMemoryReport } from './point-memory'
 import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
 import { domeFadeAt, pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
 import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
+import { loadColourField, colourFieldMatchesFrame, type ColourField } from './colour-field'
+import type { OrthoDensity } from './ortho-plan'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -27,16 +31,22 @@ import {
 } from './origin'
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
-import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
+import { densityBandForUri, densityLevelColor, ERROR_BAND_COLORS, shortBandLabel } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createBigTreesLayer, parseBigTrees, type BigTreesLayer } from './big-trees-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
+import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
 import { Fps } from './stats'
-import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
+import { recordFrame, costReport, resetCost, installUploadProbe, arrivalsSoFar } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
 import { installPntsParseInPlace, pntsParseCounts } from './pnts-parse'
 import { EXPERIENCE_CONFIG } from './config'
+import {
+  installToneMapping, parseToneMappingMode, toneMappingModeOf, toneWhitePoint, TONE_MAPPINGS,
+  resolveToneMapping, setFilmPart, isFilmPart, filmContrast, filmSaturation, filmSplit, filmLift,
+  filmVignette,
+} from './tone-mapping'
 import {
   assetUrl as shapeAssetUrl, fetchDonationShape,
   type DonationShapeForm, type DonationShapeSource, type DonationShapeStyle,
@@ -58,7 +68,12 @@ import { EAGLE_MIN_ASSEMBLY_SECONDS } from './eagle-bench-motion'
 import { createModelTransformEditor, type ModelTransformEditor } from './model-transform-editor'
 import { createCameraFlight, type EnuOffset } from './camera-flight'
 import { flightSseFloor, matrixPrecisionWanted } from './flight-quality'
-import { createDepthOfFieldLayer, type DepthOfFieldLayer } from './depth-of-field'
+import { createDepthOfFieldLayer, type DepthOfFieldLayer, type OutputStage } from './depth-of-field'
+import { createGradeOutput, type GradeOutput } from './grade-output'
+import { bakeGradeTexels } from './grade-bake'
+import { isGradeIdentity, parseGradeState } from './grade-model'
+import { createGradeEditor, type GradeEditor } from './grade-editor'
+import { parseGradePaste, pasteSummary } from './grade-state'
 import { createGroundPatchMask } from './ground-patch-mask'
 import { createRenderBench } from './render-bench'
 import { createGaussianSplatLayer, type GaussianSplatLayer } from './gaussian-splat-layer'
@@ -154,6 +169,10 @@ const bootMark = (name: string): void => { performance.mark(`boot:${name}`) }
 bootMark('manifest-start')
 const manifestRequest: ReturnType<typeof fetchGlobeManifest> | null = baseUrl ? fetchGlobeManifest(baseUrl, dataset) : null
 manifestRequest?.catch(() => {})
+// The colour field needs only the dataset name, so it downloads while the renderer starts;
+// main() waits briefly for it before the first tiles exist, so they compile once.
+const colourFieldPromise: Promise<ColourField | null> = loadColourField(dataset, EXPERIENCE_CONFIG.design.colourMatch.fieldDir)
+  .catch((error) => { console.warn('[colour match] colour field failed to load:', error); return null })
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -426,6 +445,13 @@ function applyBenchPreset(): void {
     ?? (heuristicTier === 'strong' ? 'strong' : heuristicTier === 'constrained' ? 'constrained' : 'medium')
   // Also decides how late the point cloud joins the entrance flight.
   benchPreset = preset
+  // The ortho waits for this: a guessed density would start the worker and fetch the field PNGs
+  // on a constrained device that should never run it. Attaching reloads nothing: the tiles the
+  // loader brought in are upgraded in place once the view settles after the entrance flight.
+  orthoPresetDensity = DRONE_ORTHO.presets[preset] as OrthoDensity | 'off'
+  orthoDensityKnown = true
+  globe?.setOrthoDensity(orthoDensity())
+  attachDroneOrtho()
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
@@ -577,6 +603,9 @@ const renderer = new WebGPURenderer({
 // preserving supersampling on ordinary displays. It is never resized per frame.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25))
 renderer.setSize(window.innerWidth, window.innerHeight)
+// Before the first frame, so the output pass is built with the registered curve. The DoF
+// pipeline renders its scene pass untone-mapped and applies the same curve once at the end.
+installToneMapping(renderer, parseToneMappingMode(params.get('tonemap')) ?? EXPERIENCE_CONFIG.toneMapping.mode)
 // Daylight sky above the globe horizon. The matching distance fog hides the
 // finite map edge without another mesh, texture sample or post-process pass.
 const DAYLIGHT_SKY = 0x8bc9ec
@@ -638,6 +667,59 @@ const fps = new Fps()
 // Owns the frame's draw call: it either routes the scene through the DoF pass or
 // falls back to renderer.render, so there is one render path either way.
 const depthOfField: DepthOfFieldLayer = createDepthOfFieldLayer({ renderer, scene, camera })
+// The colour grade's LUT tap (grade-output.ts), on an identity lattice. The Colour grade
+// section (grade-editor.ts, created with the panel below) decides when it is compiled in: never
+// at boot while config grade is neutral, so the final quad and the no-post path are what they
+// were before it existed, and its texture reaches the GPU only once a quad that reads it is
+// drawn. __three.grade below can still set a stage by hand for measurements.
+const gradeOutput: GradeOutput = createGradeOutput(EXPERIENCE_CONFIG.grade.lutSize)
+/** Routing only: the output transform done in the graph and nothing after it. Compiles to the
+ * same shader as no stage (grade-output.test.ts), so on the no-post path it isolates what going
+ * through the pipeline costs. One function, so setting it again recompiles nothing. */
+const passthroughStage: OutputStage = (display) => display
+type GradeStageName = 'grade' | 'passthrough'
+let gradeStageName: GradeStageName | null = null
+const gradeStats = () => ({
+  size: gradeOutput.size,
+  stage: gradeStageName,
+  stageSet: depthOfField.hasOutputStage(),
+  split: gradeOutput.split(),
+})
+/**
+ * __three.grade, the console handle for the grade's browser measurements (plan 7):
+ * - setStage('grade' | 'passthrough' | null): what runs after the output transform in the
+ *   final quad; null is the graph without a stage. Each change rebuilds that quad on the next
+ *   render, a change back to an earlier stage too; with DoF on, DoF's passes, its CoC blur and
+ *   the EDL quad are rebuilt with it (depth-of-field.ts applyOutput).
+ * - bake(state?, n?): parseGradeState and bakeGradeTexels on the main thread, then uploaded;
+ *   the frame shows it while the 'grade' stage is set. n defaults to the current lattice size;
+ *   another n swaps the texture.
+ * - setSplit(x): canvas x in [0, 1] left of which the frame shows without the grade.
+ * - stats(): the lattice size, the stage, whether one is set, the split.
+ * - editor: the Colour grade section (grade-editor.ts); editor.stats() has its bake, upload and
+ *   edit-to-frame times. setStage and bake above go past it: the editor does not see them, sets
+ *   the stage again only when its own decision changes, and its next bake replaces a hand-made one.
+ */
+const gradeDebug = {
+  output: gradeOutput,
+  editor: null as GradeEditor | null,
+  setStage(name: GradeStageName | null) {
+    if (name !== null && name !== 'grade' && name !== 'passthrough') {
+      throw new Error(`__three.grade.setStage takes 'grade', 'passthrough' or null, not ${JSON.stringify(name)}`)
+    }
+    gradeStageName = name
+    depthOfField.setOutputStage(name === 'grade' ? gradeOutput.stage : name === 'passthrough' ? passthroughStage : null)
+    return gradeStats()
+  },
+  bake(stateLike?: unknown, n: number = gradeOutput.size) {
+    const { state, warnings } = parseGradeState(stateLike ?? {})
+    const { texels, peak, ms } = bakeGradeTexels(state, null, n)
+    gradeOutput.upload(texels, n)
+    return { n, ms, peak, identity: isGradeIdentity(state, null), warnings }
+  },
+  setSplit(x: number) { gradeOutput.setSplit(x) },
+  stats: gradeStats,
+}
 
 /** Live multiplier on the drawn point size, on top of whichever mode is active. */
 let pointSizeScale = 1
@@ -1079,6 +1161,7 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         break
       case 'daylightGrading':
         environmentLayer?.setGradingEnabled(effective.daylightGrading)
+        hazeLayer.setNeutral(!effective.daylightGrading)
         break
       case 'fieldModels':
         fieldModelLayer?.setVisible(effective.fieldModels)
@@ -1289,6 +1372,8 @@ onRebase((delta) => {
 const cloudCenterEnu = new THREE.Vector3()
 const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
+/** Distance haze and the graded sky; reads enuUp live, so it can exist before the frame does. */
+const hazeLayer: HazeLayer = createHazeLayer({ scene, up: enuUp })
 let zOffset = 0
 
 /** Lift the streamed cloud off the draped imagery. Diagnostic only when off:
@@ -1620,7 +1705,9 @@ function buildPivotMarker(): THREE.Group {
   material.depthTest = false
   material.depthWrite = false
   material.transparent = true
-  material.toneMapped = false
+  // No toneMapped flag: r185 WebGPU tone-maps the finished frame, never one material.
+  // A navigation aid keeps its signal colour at any distance; see atmosphere-haze.ts.
+  material.userData.noHaze = true
   pivotMarkerMaterial = material
 
   const group = new THREE.Group()
@@ -3560,6 +3647,11 @@ const debugViewRowsEl = $<HTMLDivElement>('#debugViewRows')
 const debugLevelRowEl = $<HTMLDivElement>('#debugLevelRow')
 const debugErrorKeyRowEl = $<HTMLDivElement>('#debugErrorKeyRow')
 const debugLegendEl = $<HTMLDivElement>('#debugLegend')
+// The band key's swatches come from the palette the material decodes, not from hexes
+// typed into the markup a second time.
+for (const swatch of document.querySelectorAll<HTMLElement>('#debugErrorKey [data-error-band]')) {
+  swatch.style.background = `#${ERROR_BAND_COLORS[Number(swatch.dataset.errorBand)].toString(16).padStart(6, '0')}`
+}
 /**
  * Emit exactly the optional shader terms the current settings use — see compiled-terms.ts.
  *
@@ -3591,7 +3683,7 @@ function syncCompiledShaderTerms(): void {
 bindSeg('debugModeSeg', 'debugMode', (mode) => {
   uniforms.debugMode.value = mode
   debugViewRowsEl.hidden = mode === 0
-  // The band key is static markup, so it only has to be revealed for the mode it
+  // The band key never changes, so it only has to be revealed for the mode it
   // describes — the level view has its own live legend below.
   debugErrorKeyRowEl.hidden = mode !== 2
   syncCompiledShaderTerms()
@@ -3657,6 +3749,274 @@ function bindDesignColor(id: string, initial: number, apply: (hex: string) => vo
 const DESIGN = EXPERIENCE_CONFIG.design
 bindDesignSlider('mapSaturation', DESIGN.mapSaturation, asPercent, (v) => { uniforms.mapSaturation.value = v })
 bindDesignSlider('mapBrightness', DESIGN.mapBrightness, asPercent, (v) => { uniforms.mapBrightness.value = v })
+// Tone & colour. The master switch takes the whole stage out — curve, point grade and the
+// exact decode. With the colour match off as well (?tonemap=off&colourmatch=off) that is
+// the shader sbb-main ran, and an fps A/B against it is fair; the match is a correction of
+// the capture, not part of the look, so it keeps its own switch. The curve buttons keep
+// their pick while the stage is off. The grade is compiled in only
+// while it would change something, so sliders at 1× / 100 % cost nothing either.
+let toneStageOn: boolean = EXPERIENCE_CONFIG.toneMapping.enabled && params.get('tonemap') !== 'off'
+let pointGradeOn: boolean = EXPERIENCE_CONFIG.design.pointGradeEnabled
+// The curve as picked (film is its base slot); the renderer carries the resolved variant.
+let pickedToneMapping: THREE.ToneMapping = TONE_MAPPINGS[toneMappingModeOf(renderer.toneMapping)]
+function syncToneStage(): void {
+  renderer.toneMapping = toneStageOn ? resolveToneMapping(pickedToneMapping) : THREE.NoToneMapping
+  const grading = toneStageOn && pointGradeOn
+    && (uniforms.pointContrast.value !== 1 || uniforms.pointSaturation.value !== 1)
+  const decodeChanged = setCloudEffectEnabled('exactDecode', toneStageOn)
+  const gradeChanged = setCloudEffectEnabled('pointGrade', grading)
+  // Point tiles only: neither flag reaches the basemap's graph, so rebuilding every
+  // imagery material here would be a hitch for an identical shader.
+  if (decodeChanged || gradeChanged) stream?.refreshEffects()
+}
+bindEffectToggle('toneStageToggle', '◐ Tone & colour', toneStageOn, (on) => { toneStageOn = on; syncToneStage() })
+bindEffectToggle('pointGradeToggle', '◇ Point grade', pointGradeOn, (on) => { pointGradeOn = on; syncToneStage() })
+bindDesignSlider('pointContrast', DESIGN.pointContrast, asFactor, (v) => {
+  uniforms.pointContrast.value = v
+  syncToneStage()
+})
+bindDesignSlider('pointSaturation', DESIGN.pointSaturation, asPercent, (v) => {
+  uniforms.pointSaturation.value = v
+  syncToneStage()
+})
+// Colour match — see design.colourMatch. The per-point gain is a tile-shader effect that
+// only exists once the field has loaded, and only the switch compiles it in or out: the
+// strength is a uniform (strength 0 is exact, 2^0 = 1), so dragging the slider to its end
+// never rebuilds a tile. The basemap half is uniforms, so it costs nothing either way.
+const COLOUR_MATCH = DESIGN.colourMatch
+let colourMatchOn: boolean = COLOUR_MATCH.enabled && params.get('colourmatch') !== 'off'
+/** The field's basemap gain, or null until a field for this dataset has loaded. */
+let colourFieldBasemapGain: readonly [number, number, number] | null = null
+let colourFieldBasemapSaturation = 1
+/** basemapGainByZoom relative to basemapGain, per XYZ zoom: what the per-zoom node applies. */
+let colourFieldZoomRatios: Array<THREE.Vector3 | undefined> = []
+/** Set once the load has settled without a usable field, so the switch can say so. */
+let colourFieldMissing = false
+/** The field in use, kept for the drone ortho, which is attached once the globe exists. */
+let colourFieldInUse: { field: ColourField; rootTransform: ArrayLike<number> } | null = null
+
+// Drone ortho — see design.droneOrtho. ?ortho=off boots without it (no worker, no request);
+// ?ortho=half|full forces a density whatever the bench preset and the link, as the panel's
+// Half and Full do; ?orthokinds tints the composited tiles (red where the satellite was blended
+// in, blue where the ortho covers all).
+const DRONE_ORTHO = DESIGN.droneOrtho
+const orthoParam = params.get('ortho')
+let droneOrthoOn: boolean = DRONE_ORTHO.enabled && orthoParam !== 'off'
+let orthoForcedDensity: OrthoDensity | null = orthoParam === 'half' || orthoParam === 'full' ? orthoParam
+  : DRONE_ORTHO.force
+let orthoPresetDensity: OrthoDensity | 'off' = DRONE_ORTHO.presets[presetOverride ?? 'medium'] as OrthoDensity | 'off'
+/** Known at boot when forced by ?ortho= or ?preset=, otherwise once the loader benchmark ran. */
+let orthoDensityKnown = orthoForcedDensity !== null || presetOverride !== null
+/** null while the worker starts, then whether it came up. */
+let orthoAttachResult: boolean | null = null
+/** The density the last attach attempt decided on. A later change of link does not start the
+ *  ortho by itself (only the panel's toggle asks again), so the status line reports this, not a
+ *  fresh reading. */
+let orthoDecidedDensity: OrthoDensity | 'off' | null = null
+/** Set when the colour field loaded but was built for another survey frame. */
+let colourFieldWrongFrame = false
+let orthoAttached = false
+/** The link's say in the density, where the browser tells (Network Information API, Chromium
+ *  only; elsewhere the preset alone decides). At z18-19, where most of a view's tiles are, a
+ *  covered tile costs 6-8x a satellite tile's bytes at 'half' and 22-30x at 'full', on the
+ *  same link the point tiles arrive over. */
+function networkCappedDensity(density: OrthoDensity | 'off'): OrthoDensity | 'off' {
+  const connection = (navigator as any).connection
+  if (!connection || density === 'off') return density
+  const type = String(connection.effectiveType ?? '')
+  if (connection.saveData || type.endsWith('2g')) return 'off'
+  // Mbit/s, which Chromium rounds and caps at 10.
+  const downlink = Number(connection.downlink)
+  const slow = type === '3g' || (downlink > 0 && downlink < DRONE_ORTHO.fullMinDownlinkMbps)
+  return density === 'full' && slow ? 'half' : density
+}
+const orthoDensity = (): OrthoDensity | 'off' => orthoForcedDensity ?? networkCappedDensity(orthoPresetDensity)
+function attachDroneOrtho(): void {
+  const meta = colourFieldInUse?.field.meta.ortho
+  if (orthoAttached || !globe || !droneOrthoOn || !meta || !colourFieldInUse) return
+  // A forced density needs no benchmark.
+  if (!orthoDensityKnown && orthoForcedDensity === null) return
+  // 'off' never starts the worker or fetches the field PNGs.
+  const density = orthoDensity()
+  orthoDecidedDensity = density
+  if (density === 'off') { globe.releaseOrthoBytes(); return }
+  orthoAttached = true
+  const fieldBaseUrl = new URL(
+    `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}${COLOUR_MATCH.fieldDir.replace(/\/?$/, '/')}`, location.href).href
+  // With the dome on, the ground patch covers the view centre only, and a cached tile is
+  // seen from everywhere; only an opaque patch over the whole survey hides the ortho under it.
+  // Decided once at attach from the config; the panel's dome and patch controls do not re-plan
+  // tiles already composited.
+  const patch = DESIGN.groundPatch
+  const thinUnderPatch = patch.enabled && patch.amount >= 1 && patch.colorMix >= 1
+    && !EXPERIENCE_CONFIG.lod.sphereFade.enabled
+  void globe.attachOrtho({
+    meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
+    config: DRONE_ORTHO, density, thinUnderPatch, debugKinds: params.has('orthokinds'),
+    // Upgrades start after the Start click and never during a flight: they wait for the view.
+    upgradesAllowed: () => loaderFlightStarted && !cameraFlight.active,
+    pointArrivals: arrivalsSoFar,
+    pointsBusy: () => {
+      // The library's own counters (TilesRendererBase.stats), which its types leave out.
+      const s = (stream?.tiles as any)?.stats
+      return !!s && s.queued + s.downloading + s.parsing > 0
+    },
+  }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
+}
+function syncColourMatch(): void {
+  const on = colourMatchOn && colourFieldBasemapGain !== null
+  const strength = uniforms.colourFieldStrength.value
+  // Relative to a fixed reference, not to the config's mapBrightness: the Brightness slider
+  // (and a Copy-values paste of it) stays a trim around the match, and off or strength 0 is
+  // exactly today's map.
+  const reference = COLOUR_MATCH.referenceBrightness
+  const [r, g, b] = on ? colourFieldBasemapGain!.map((gain) => (gain / reference) ** strength) : [1, 1, 1]
+  uniforms.mapMatchGain.value.set(r, g, b)
+  uniforms.mapMatchSaturation.value = on ? 1 + (colourFieldBasemapSaturation - 1) * strength : 1
+  setImageryZoomGains(on ? colourFieldZoomRatios.map((ratio) => ratio && new THREE.Vector3(
+    ratio.x ** strength, ratio.y ** strength, ratio.z ** strength)) : [])
+  // Point tiles only: the basemap reads uniforms, not a flag.
+  if (setCloudEffectEnabled('colourField', on)) stream?.refreshEffects()
+  if (colourFieldMissing) {
+    const button = $<HTMLButtonElement>('#colourMatchToggle')
+    button.textContent = colourFieldWrongFrame
+      ? '◈ Colour match · field is for another survey frame' : '◈ Colour match · no field for this dataset'
+    button.disabled = true
+    $<HTMLInputElement>('#colourMatchStrength').disabled = true
+  }
+}
+/** Take a loaded field into use, unless it is missing or was built for another survey frame. */
+function applyColourField(field: ColourField | null, rootTransform: ArrayLike<number>): void {
+  if (!field || !colourFieldMatchesFrame(field.meta, rootTransform)) {
+    if (field) console.warn('[colour match] the colour field was built for another ENU frame; the cloud stays as captured.')
+    else console.info(`[colour match] no colour field for ${dataset}; the cloud stays as captured.`)
+    colourFieldMissing = true
+    colourFieldWrongFrame = field !== null
+    globe?.releaseOrthoBytes()
+    syncColourMatch()
+    return
+  }
+  const { origin, size, encoding, basemapGain, basemapSaturation } = field.meta
+  setColourField(field.texture)
+  uniforms.colourFieldOrigin.value.set(origin[0], origin[1])
+  uniforms.colourFieldInvSize.value.set(1 / size[0], 1 / size[1])
+  uniforms.colourFieldStops.value = encoding.stops
+  uniforms.colourFieldZero.value = encoding.zero
+  uniforms.colourFieldScale.value = encoding.scale ?? 127.5
+  colourFieldBasemapGain = basemapGain
+  colourFieldBasemapSaturation = basemapSaturation ?? 1
+  colourFieldInUse = { field, rootTransform }
+  if (!field.meta.ortho) globe?.releaseOrthoBytes()
+  attachDroneOrtho()
+  colourFieldZoomRatios = []
+  for (const [zoom, gain] of Object.entries(field.meta.basemapGainByZoom ?? {})) {
+    colourFieldZoomRatios[Number(zoom)] = new THREE.Vector3(
+      gain[0] / basemapGain[0], gain[1] / basemapGain[1], gain[2] / basemapGain[2])
+  }
+  syncColourMatch()
+}
+bindEffectToggle('colourMatchToggle', '◈ Colour match', colourMatchOn, (on) => { colourMatchOn = on; syncColourMatch() })
+const droneOrthoStatsEl = $<HTMLSpanElement>('#droneOrthoStats')
+function droneOrthoStatus(): string {
+  const s = globe?.orthoStats()
+  if (!s) {
+    if (!droneOrthoOn) return orthoParam === 'off' ? 'Off (?ortho=off)' : 'Off'
+    if (colourFieldMissing) {
+      return colourFieldWrongFrame ? 'The colour field is for another survey frame' : 'No colour field for this dataset'
+    }
+    if (colourFieldInUse && !colourFieldInUse.field.meta.ortho) return 'No drone ortho for this dataset'
+    if (!colourFieldInUse) return 'Waiting for the colour field'
+    if (!orthoDensityKnown && orthoForcedDensity === null) return 'Waiting for the loader benchmark'
+    if ((orthoDecidedDensity ?? orthoDensity()) === 'off') {
+      return orthoPresetDensity === 'off'
+        ? `Off on this device (${presetOverride ?? benchPreset} preset) — Half or Full shows it anyway`
+        : 'Off: Save-Data or a slow link at the start — Half or Full shows it anyway'
+    }
+    return 'Starting'
+  }
+  if (!s.ready) {
+    if (s.workerFailed) return 'Worker stopped — new tiles stay satellite'
+    return orthoAttachResult === false ? 'Not available here — see the console' : 'Starting the worker'
+  }
+  if (!s.enabled) return 'Off — covered tiles show the satellite'
+  if (s.refused) return 'Off: the ortho tiles were refused (key not allowed?)'
+  if (s.density === 'off') {
+    return orthoPresetDensity === 'off'
+      ? `Off on this device (${presetOverride ?? benchPreset} preset) — Half or Full shows it anyway`
+      : 'Off: Save-Data or a slow link — Half or Full shows it anyway'
+  }
+  return `${s.density}${orthoForcedDensity ? ' (forced)' : ''} · ${s.upgraded} tiles upgraded (${s.fullTiles} full, ${s.edgeTiles} edge so far) · `
+    + `${(s.orthoBytes / 1048576).toFixed(1)} MB · worker ${s.workerMsP50}/${s.workerMsP95} ms p50/p95`
+    + `${s.pending ? ` · ${s.pending} to go` : ''}`
+    + `${s.inFlight || s.waiting ? ` · ${s.inFlight} composing, ${s.waiting} waiting` : ''}`
+    + `${s.requestsWaiting ? ` · ${s.requestsWaiting} ortho requests queued` : ''}`
+    + `${s.fallbacks ? ` · ${s.fallbacks} fell back to satellite` : ''}`
+    + `${s.childFailures ? ` · ${s.childFailures} ortho requests failed` : ''}${s.forbidden ? ` · ${s.forbidden} refused` : ''}`
+}
+function syncDroneOrthoPanel(): void {
+  // The span is aria-live: write only on a change, or it is re-announced every second.
+  const text = droneOrthoStatus()
+  if (droneOrthoStatsEl.textContent !== text) droneOrthoStatsEl.textContent = text
+}
+// Auto follows the preset and the link; Half and Full force a density on any device. A worker
+// that never started (an 'off' at the start) starts on the first forced pick.
+const ORTHO_MODES = ['auto', 'off', 'half', 'full'] as const
+const droneOrthoModeSeg = $<HTMLDivElement>('#droneOrthoModeSeg')
+const bootOrthoMode = !droneOrthoOn ? 'off' : orthoForcedDensity ?? 'auto'
+for (const button of droneOrthoModeSeg.querySelectorAll<HTMLButtonElement>('button')) {
+  button.classList.toggle('on', ORTHO_MODES[Number(button.dataset.orthoMode)] === bootOrthoMode)
+}
+bindSeg('droneOrthoModeSeg', 'orthoMode', (value) => {
+  const mode = ORTHO_MODES[value] ?? 'auto'
+  for (const button of droneOrthoModeSeg.querySelectorAll<HTMLButtonElement>('button')) {
+    button.setAttribute('aria-pressed', String(button.classList.contains('on')))
+  }
+  droneOrthoOn = mode !== 'off'
+  if (droneOrthoOn) {
+    orthoForcedDensity = mode === 'half' || mode === 'full' ? mode : null
+    if (orthoAttached) {
+      orthoDecidedDensity = orthoDensity()
+      globe?.setOrthoDensity(orthoDecidedDensity)
+    } else {
+      attachDroneOrtho()
+    }
+  }
+  globe?.setOrthoEnabled(droneOrthoOn)
+  syncDroneOrthoPanel()
+})
+setInterval(syncDroneOrthoPanel, 1000)
+bindDesignSlider('colourMatchStrength', COLOUR_MATCH.strength, asPercent, (v) => {
+  uniforms.colourFieldStrength.value = v
+  syncColourMatch()
+})
+// The curve lives on the renderer, so switching it rebuilds only the output pass, never a
+// tile material. The markup's `on` is overwritten first so a ?tonemap= override shows.
+for (const button of $<HTMLDivElement>('#toneMappingSeg').querySelectorAll<HTMLButtonElement>('button')) {
+  button.classList.toggle('on', Number(button.dataset.toneMapping) === pickedToneMapping)
+}
+bindSeg('toneMappingSeg', 'toneMapping', (v) => {
+  pickedToneMapping = v as THREE.ToneMapping
+  syncToneStage()
+})
+bindDesignSlider('toneExposure', EXPERIENCE_CONFIG.toneMapping.exposure, asFactor, (v) => {
+  renderer.toneMappingExposure = v
+})
+bindDesignSlider('toneWhitePoint', EXPERIENCE_CONFIG.toneMapping.whitePoint, asFactor, (v) => {
+  toneWhitePoint.value = v
+})
+// Film grade. Its sliders are uniforms; the two switches compile a part in or out, which
+// moves the renderer to another film variant and rebuilds only the output pass.
+const FILM = EXPERIENCE_CONFIG.toneMapping.film
+// Every slider re-resolves too: a part at its neutral value is compiled out as well.
+bindEffectToggle('filmToneToggle', '◐ Film tone', FILM.toneEnabled, (on) => { setFilmPart('tone', on); syncToneStage() })
+bindDesignSlider('filmContrast', FILM.contrast, asFactor, (v) => { filmContrast.value = v; syncToneStage() })
+bindDesignSlider('filmSaturation', FILM.saturation, asPercent, (v) => { filmSaturation.value = v; syncToneStage() })
+bindEffectToggle('filmLiftToggle', '▁ Black lift', FILM.liftEnabled, (on) => { setFilmPart('lift', on); syncToneStage() })
+bindDesignSlider('filmLift', FILM.lift, (v) => `${(v * 100).toFixed(1)}%`, (v) => { filmLift.value = v; syncToneStage() })
+bindEffectToggle('filmSplitToggle', '◑ Warm/cool split', FILM.splitEnabled, (on) => { setFilmPart('split', on); syncToneStage() })
+bindDesignSlider('filmSplit', FILM.split, asFactor, (v) => { filmSplit.value = v; syncToneStage() })
+bindEffectToggle('filmVignetteToggle', '◎ Vignette', FILM.vignetteEnabled, (on) => { setFilmPart('vignette', on); syncToneStage() })
+bindDesignSlider('filmVignette', FILM.vignette, asPercent, (v) => { filmVignette.value = v; syncToneStage() })
 // Goes through the globe because changing it has to force a re-traversal; see
 // Globe.setErrorTarget. Higher = fewer tiles per view = softer imagery.
 bindDesignSlider('basemapErrorTarget', DESIGN.basemapErrorTarget, asPixels, (v) => {
@@ -3736,6 +4096,19 @@ bindEffectToggle('distanceFogToggle', '≋ Distance fog', EXPERIENCE_CONFIG.atmo
   scene.fog = enabled && distanceFogAllowedByTier ? distanceFog : null
   refreshEffectShaders()
 })
+// Distance haze and sky gradient (atmosphere-haze.ts). While the haze is on its fog node
+// takes precedence over the distance fog above; off takes the node off the scene.
+const HAZE = EXPERIENCE_CONFIG.atmosphere.haze
+bindEffectToggle('hazeToggle', '≈ Distance haze', HAZE.enabled, (enabled) => {
+  if (hazeLayer.setHaze(enabled)) refreshEffectShaders()
+  // The ray-marched clouds haze themselves while it is on; see environment-layer.ts.
+  environmentLayer?.setCloudHaze(enabled ? hazeLayer.cloudHaze : null)
+})
+bindEffectToggle('skyGradientToggle', '◠ Sky gradient', HAZE.skyGradient, (enabled) => hazeLayer.setSky(enabled))
+bindDesignSlider('hazeStart', HAZE.startM, asMetres, (v) => hazeLayer.setStartM(v))
+bindDesignSlider('hazeDistance', HAZE.distanceM, (v) => `${(v / 1000).toFixed(1)} km`, (v) => hazeLayer.setDistanceM(v))
+bindDesignSlider('hazeStrength', HAZE.strength, asPercent, (v) => hazeLayer.setStrength(v))
+bindDesignSlider('hazeHorizonBlend', HAZE.horizonBlend, asPercent, (v) => hazeLayer.setHorizonBlend(v))
 
 // Pointer smoothing. Covers panning as well as rotation: EnvironmentControls derives
 // both from the same pointerTracker (_updatePosition and _updateRotation, :959 and
@@ -3924,6 +4297,13 @@ const syncDofToggles = () => {
   // "absolute distance" with it off. Relabel rather than offer two sliders.
   dofFocusRowEl.dataset.mode = auto ? 'offset' : 'absolute'
 }
+// `?dof=0|1` and `?edl=0|1` boot with that pass off or on whatever the config says: both
+// ship on, and the no-pass frame is the baseline an fps A/B needs.
+const bootSwitch = (name: string, fallback: boolean): boolean => {
+  const value = params.get(name)
+  return value === '0' ? false : value === '1' ? true : fallback
+}
+depthOfField.setEnabled(bootSwitch('dof', DOF.enabled))
 const onDofToggle = () => { depthOfField.setEnabled(!depthOfField.isEnabled()); syncDofToggles() }
 const onDofAutoFocus = () => { depthOfField.setAutoFocus(!depthOfField.isAutoFocus()); syncDofToggles() }
 dofToggleEl.addEventListener('click', onDofToggle)
@@ -3933,6 +4313,39 @@ bindDesignSlider('dofFocusDistance', DOF.focusDistanceM, asMetres, (v) => depthO
 bindDesignSlider('dofFocalLength', DOF.focalLengthM, asMetres, (v) => depthOfField.setFocalLength(v))
 bindDesignSlider('dofBokehScale', DOF.bokehScale, asFactor, (v) => depthOfField.setBokehScale(v))
 bindDesignSlider('dofFocusSmoothing', DOF.focusSmoothing, asPercent, (v) => depthOfField.setFocusSmoothing(v))
+
+// Eye-dome lighting shares the DoF pipeline; with both off the frame skips it entirely.
+const EDL = EXPERIENCE_CONFIG.eyeDomeLighting
+bindEffectToggle('eyeDomeToggle', '◒ Eye-dome lighting', bootSwitch('edl', EDL.enabled), (on) => {
+  depthOfField.setEyeDome(on)
+})
+bindDesignSlider('eyeDomeStrength', EDL.strength, asFactor, (v) => depthOfField.setEyeDomeStrength(v))
+bindDesignSlider('eyeDomeRadius', EDL.radiusPx, asPixels, (v) => depthOfField.setEyeDomeRadius(v))
+bindDesignSlider('eyeDomeFloor', EDL.floor, asPercent, (v) => depthOfField.setEyeDomeFloor(v))
+
+// Colour grade: the section after Tone & colour. It runs on the frame those produce, in the
+// final quad (grade-output.ts), and keeps its own state, undo and bake (grade-editor.ts); its
+// controls do not use the binders above. Here, after the DoF and EDL switches, because the stage
+// it sets goes into their pipeline and `?grade=` shares bootSwitch with them.
+const gradeEditor: GradeEditor = createGradeEditor({
+  root: $<HTMLDetailsElement>('#gradeSection'),
+  output: gradeOutput,
+  setStage: (on) => {
+    // Kept in step with __three.grade, so its stats() report what the editor set.
+    gradeStageName = on ? 'grade' : null
+    depthOfField.setOutputStage(on ? gradeOutput.stage : null)
+  },
+  // Outside the loop nodeFrame does not advance, so this re-runs only the final quad: the PNG
+  // is the last loop frame, which is what Frame for grading wants.
+  captureCanvas: () => {
+    depthOfField.render()
+    return renderer.domElement
+  },
+  initial: EXPERIENCE_CONFIG.grade,
+  enabled: bootSwitch('grade', EXPERIENCE_CONFIG.grade.enabled),
+  baseUrl: import.meta.env.BASE_URL,
+})
+gradeDebug.editor = gradeEditor
 
 // Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
 // through the environment layer, which rewrites that uniform from the daylight
@@ -3982,6 +4395,14 @@ designCopyEl.addEventListener('click', async () => {
     maskMode: uniforms.maskMode.value,
     mapSaturation: uniforms.mapSaturation.value,
     mapBrightness: uniforms.mapBrightness.value,
+    pointContrast: uniforms.pointContrast.value,
+    pointSaturation: uniforms.pointSaturation.value,
+    pointGradeEnabled: pointGradeOn,
+    colourMatch: {
+      enabled: colourMatchOn, strength: uniforms.colourFieldStrength.value,
+      referenceBrightness: COLOUR_MATCH.referenceBrightness, fieldDir: COLOUR_MATCH.fieldDir,
+    },
+    droneOrtho: { ...DRONE_ORTHO, enabled: droneOrthoOn, force: orthoForcedDensity },
     basemapErrorTarget: Number($<HTMLInputElement>('#basemapErrorTarget').value),
     groundPatch: {
       enabled: groundPatchEnabled,
@@ -4005,6 +4426,7 @@ designCopyEl.addEventListener('click', async () => {
       sideMaxVignetteStrength: vignetteSideMaxStrength,
     },
     groundFog: {
+      enabled: isCloudEffectEnabled('groundFog'),
       strength: uniforms.groundFogStrength.value,
       baseOffsetM: groundFogBaseOffset,
       heightM: uniforms.groundFogHeight.value,
@@ -4016,13 +4438,51 @@ designCopyEl.addEventListener('click', async () => {
     },
   }, null, 2)}
 pointLighting: ${JSON.stringify({
+    cloudShadowsEnabled: isCloudEffectEnabled('cloudShadows'),
     cloudShadowStrength: Number($<HTMLInputElement>('#cloudShadowStrength').value),
     cloudShadowScaleM: Number($<HTMLInputElement>('#cloudShadowScale').value),
     cloudShadowContrast: uniforms.cloudShadowContrast.value,
   }, null, 2)}
 atmosphere: ${JSON.stringify({
+    distanceFogEnabled,
     fogNearFactor: distanceFogNearFactor,
     fogFarFactor: distanceFogFarFactor,
+    haze: {
+      enabled: hazeLayer.isHaze(),
+      skyGradient: hazeLayer.isSky(),
+      startM: Number($<HTMLInputElement>('#hazeStart').value),
+      distanceM: Number($<HTMLInputElement>('#hazeDistance').value),
+      strength: Number($<HTMLInputElement>('#hazeStrength').value),
+      horizonBlend: Number($<HTMLInputElement>('#hazeHorizonBlend').value),
+      zenithElevation: HAZE.zenithElevation,
+    },
+  }, null, 2)}
+toneMapping: ${JSON.stringify({
+    enabled: toneStageOn,
+    mode: toneMappingModeOf(pickedToneMapping),
+    exposure: renderer.toneMappingExposure,
+    whitePoint: toneWhitePoint.value,
+    film: {
+      toneEnabled: isFilmPart('tone'),
+      contrast: filmContrast.value,
+      saturation: filmSaturation.value,
+      split: filmSplit.value,
+      splitEnabled: isFilmPart('split'),
+      shadowTint: [...FILM.shadowTint],
+      highlightTint: [...FILM.highlightTint],
+      liftEnabled: isFilmPart('lift'),
+      lift: filmLift.value,
+      vignette: filmVignette.value,
+      vignetteEnabled: isFilmPart('vignette'),
+      whitePoint: FILM.whitePoint,
+    },
+  }, null, 2)}
+grade: ${gradeEditor.snippet()}
+eyeDomeLighting: ${JSON.stringify({
+    enabled: depthOfField.isEyeDome(),
+    strength: Number($<HTMLInputElement>('#eyeDomeStrength').value),
+    radiusPx: Number($<HTMLInputElement>('#eyeDomeRadius').value),
+    floor: Number($<HTMLInputElement>('#eyeDomeFloor').value),
   }, null, 2)}
 depthOfField: ${JSON.stringify({
     enabled: depthOfField.isEnabled(),
@@ -4035,11 +4495,47 @@ depthOfField: ${JSON.stringify({
   try {
     await navigator.clipboard.writeText(snippet)
     designCopyEl.textContent = '✓ Copied'
+    designCopyBoxEl.hidden = true
   } catch {
+    // No clipboard (plain HTTP on a phone, a denied permission): the text goes into a
+    // selectable box above the buttons, preselected, and to the console as before.
     console.info(`[design]\n${snippet}`)
-    designCopyEl.textContent = '⧉ To console'
+    designCopyTextEl.value = snippet
+    designCopyBoxEl.hidden = false
+    designCopyTextEl.focus()
+    designCopyTextEl.select()
+    designCopyEl.textContent = '⧉ Copy by hand'
   }
   setTimeout(() => { designCopyEl.textContent = '⧉ Copy values' }, 1600)
+})
+const designCopyBoxEl = $<HTMLDivElement>('#designCopyBox')
+const designCopyTextEl = $<HTMLTextAreaElement>('#designCopyText')
+$('#designCopyClose').addEventListener('click', () => { designCopyBoxEl.hidden = true })
+// Paste values: a Copy values text (or its grade: block, or grade JSON) back into the panel.
+// Only the grade is applied in this version (grade-state.ts parseGradePaste), as one undo step
+// in the Colour grade section; the other blocks are listed as not applied.
+const designPasteEl = $<HTMLButtonElement>('#designPaste')
+const designPasteBoxEl = $<HTMLDivElement>('#designPasteBox')
+const designPasteTextEl = $<HTMLTextAreaElement>('#designPasteText')
+const designPasteStatusEl = $('#designPasteStatus')
+const setPasteBoxOpen = (open: boolean) => {
+  designPasteBoxEl.hidden = !open
+  designPasteEl.setAttribute('aria-expanded', String(open))
+  designPasteEl.classList.toggle('on', open)
+  if (open) {
+    designPasteStatusEl.textContent = ''
+    designPasteTextEl.focus()
+  }
+}
+designPasteEl.addEventListener('click', () => setPasteBoxOpen(designPasteBoxEl.hidden))
+$('#designPasteCancel').addEventListener('click', () => setPasteBoxOpen(false))
+$('#designPasteApply').addEventListener('click', () => {
+  const paste = parseGradePaste(designPasteTextEl.value)
+  const summary = pasteSummary(paste)
+  // A paste whose look is fetched reports again when the fetch has ended.
+  const show = (notes: string[]) => { designPasteStatusEl.textContent = [summary, ...notes].join(' ') }
+  show(gradeEditor.applyPaste(paste, show))
+  if (paste.grade) designPasteTextEl.value = ''
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(
   reducedMotion
@@ -4805,6 +5301,7 @@ function loop(now: number): void {
   updateDomePin()
   sphereFade?.update()
   updateAtmosphere(now)
+  hazeLayer.update(camera, environmentLayer?.getDaylightState() ?? null, rangeDebug?.altitude ?? 300)
   const stats = updateStreaming(now)
   const daylightState = environmentLayer?.update(
     now,
@@ -4863,6 +5360,9 @@ function loop(now: number): void {
   groundPatchMask.update()
   depthOfField.update(cameraGroundRange)
   if (drawThisFrame(now)) {
+    // Disposes replaced LUT textures, runs at most one main-thread bake and uploads the newest
+    // bake result: at most one upload a frame, right before the frame that shows it.
+    gradeEditor.update()
     depthOfField.render()
     // Taken here, after the draw, and shown on the next frame. The animation loop resets
     // renderer.info immediately before calling this function, so anything read further up
@@ -4929,6 +5429,16 @@ async function main(): Promise<void> {
   enuFrame.fromArray(manifest.rootTransform)
   enuInverse.copy(enuFrame).invert()
   refreshOriginDerived()
+  // The field (a 0.13 MB download started at module load) is normally back by now. Waiting a
+  // moment for it means the globe and the first point tiles compile with it in place; if the
+  // origin is slow it is applied when it lands, and the tiles built meanwhile are rebuilt.
+  const rootTransform = manifest.rootTransform
+  const fieldInTime = await Promise.race([
+    colourFieldPromise.then((field) => ({ field })),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+  ])
+  if (fieldInTime) applyColourField(fieldInTime.field, rootTransform)
+  else void colourFieldPromise.then((field) => applyColourField(field, rootTransform))
   // A direction, so the origin's translation cannot touch it.
   enuUp.setFromMatrixColumn(enuFrame, 2).normalize()
 
@@ -4984,7 +5494,11 @@ async function main(): Promise<void> {
     cameraClearance: freeOrbit ? 1 : navigationClearance,
     uniforms,
     panBudgetM: panDragBudget,
+    // Kept from the first tile on, for the drone ortho's upgrades and reverts.
+    keepSatelliteBytes: droneOrthoOn,
   })
+  if (colourFieldMissing || (colourFieldInUse && !colourFieldInUse.field.meta.ortho)) globe.releaseOrthoBytes()
+  attachDroneOrtho()
   if (freeOrbit) {
     globe.controls.maxAltitude = THREE.MathUtils.degToRad(89.9)
     globe.controls.minDistance = 1
@@ -5304,6 +5818,7 @@ async function main(): Promise<void> {
     reducedMotion,
     onCloudStateChange: updateCloudControls,
   })
+  environmentLayer.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
   // Hand over anything dialled in while the layer did not exist yet — both of
@@ -5480,7 +5995,7 @@ async function main(): Promise<void> {
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-    groundPatchMask,
+    groundPatchMask, depthOfField, grade: gradeDebug,
   }
   /**
    * Where the drawn point size comes from, per band: the spacing read off the tiles, the
@@ -5647,6 +6162,9 @@ function dispose(): void {
   stream?.dispose()
   globe?.dispose()
   depthOfField.dispose()
+  gradeEditor.dispose()
+  gradeOutput.dispose()
+  hazeLayer.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()
