@@ -14,10 +14,12 @@
 //     point is projected through last frame's camera to find where it was a frame ago. Last
 //     frame's camera follows the floating origin's rebases, so a rebase costs nothing;
 //   · depth-aware fetch: last frame's fog depth is kept, and the history is read from the
-//     four texels around where the fog was, but only from those whose surface a frame ago was
-//     this ray's (`occlusion`). A plain bilinear fetch mixes a crown's history with the gap's
-//     beside it and smears the fog's outlines while the camera moves; where none match (a
-//     gap just opened), the history is dropped;
+//     four texels around where the fog was, but only from those whose surface a frame ago lay
+//     within `occlusion` × this ray's surface depth of it; where none do, the history is
+//     dropped. Small values keep a crown's history from mixing into the gap's beside it, so
+//     the fog's outlines stay sharp in motion. The default, 1, accepts anything from the
+//     camera to twice the surface depth: beside a crown the test all but never fires, the
+//     steadier, smearier trade chosen on 2026-09-30 (config.ts has the numbers);
 //   · variance clipping: what is left of the history is clamped to the current 3×3
 //     neighbourhood's mean ± `clip` standard deviations (Salvi 2016);
 //   · blend: `blend` of the current frame, the rest from the clipped history. The default,
@@ -218,11 +220,13 @@ export class FogTemporalNode extends TempNode {
       const fog = project(fogWorld)
       const surface: any = project(surfaceWorld)
       // The history is fetched from the four texels around where the fog was, bilinearly — but
-      // only from those whose surface a frame ago was this ray's surface (sky against sky
-      // always is). At a crown's silhouette a plain bilinear fetch mixes the crown's history
-      // with the gap's beside it, and the neighbourhood clamp cannot tell them apart either,
-      // since its 3×3 box straddles the same edge: the fog's outlines smear while the camera
-      // moves. Where none of the four match, the spot was hidden a frame ago: no history.
+      // only from those whose surface a frame ago lay within `occlusion` × this ray's surface
+      // depth (sky against sky always matches). At a crown's silhouette a plain bilinear fetch
+      // mixes the crown's history with the gap's beside it, and the neighbourhood clamp cannot
+      // tell them apart either, since its 3×3 box straddles the same edge: the outlines smear
+      // while the camera moves. A small `occlusion` keeps them apart; the default 1 accepts any
+      // surface from the camera to twice this one's depth, so there the test rarely rejects.
+      // Where none of the four match, the spot was hidden a frame ago: no history.
       const sky = stored.greaterThanEqual(skyDepth * 0.99)
       const position = fog.screen.mul(lowSize).sub(0.5)
       const base = floor(position)
