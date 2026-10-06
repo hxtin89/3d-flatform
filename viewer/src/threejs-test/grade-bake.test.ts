@@ -606,9 +606,16 @@ test('draftStride: 17³ nodes for 33, and only the look\'s own nodes on a refine
     assert.equal((n - 1) / draftStride(n, refinement) + 1, side, `${size}³ look`)
   }
   assert.equal(draftStride(34, 11), 1, 'a 4³ look on 34³: no stride both fits and lands on its nodes')
+  // A look on its own lattice (refinement 1) has a node at every lattice node: no draft can skip
+  // one. Without a refinement (no look, a resampled one) the lattice alone decides.
+  for (const n of [33, 64, 65]) {
+    assert.equal(draftStride(n, 1), 1, `an exact ${n}³ look on ${n}³`)
+    assert.ok(draftStride(n) > 1, `${n}³ without a look drafts`)
+  }
 
-  // So a draft of an exact look at amount 1 shows the look as the final bake does.
-  for (const size of [13, 15, 17]) {
+  // So a draft of an exact look at amount 1 shows the look as the final bake does — on a refined
+  // lattice and on the look's own.
+  for (const size of [13, 15, 17, 33, 65]) {
     const { n, refinement } = latticeSizeFor(size, 33, 65)
     const look: GradeLook = { cube: syntheticCube(size, 60 + size), amount: 1 }
     const final = bakeGradeFloat(NEUTRAL_GRADE, look, n).lattice
@@ -632,6 +639,9 @@ test('the scheduler drafts a refined look on its own nodes, and not at all where
   scheduler.reset()
   assert.equal(scheduler.request(job(34, 11)), 'posted')
   assert.equal(posted[2].stride, 1, 'a 4³ look on 34³ bakes finals only')
+  scheduler.reset()
+  assert.equal(scheduler.request(job(33, 1)), 'posted')
+  assert.equal(posted[3].stride, 1, 'a 33³ look on 33³ bakes finals only')
 })
 
 test('a draft (stride 2 and fill) is the trilinear of a real 17³ bake; roll-off comes before the fill', () => {

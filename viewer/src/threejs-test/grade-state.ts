@@ -19,7 +19,7 @@ export interface GradeSnapshot {
 
 /** Deep equality for structured-clone data: same prototype, same own keys, equal leaves (0 and
  *  −0 equal, NaN equal to NaN). Enough to tell whether a commit changed anything. */
-function sameData(a: unknown, b: unknown): boolean {
+export function sameData(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (typeof a === 'number' && typeof b === 'number') return Number.isNaN(a) && Number.isNaN(b)
   if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false

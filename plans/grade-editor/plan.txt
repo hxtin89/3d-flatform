@@ -597,6 +597,10 @@ All paths are under viewer/src/threejs-test/ unless noted. Pure modules import n
 - New #designPaste button next to #designCopy:
   - It opens #designPasteBox (a textarea with Apply and Cancel).
   - Apply: parseGradePaste → gradeEditor.applyPaste (one undo step) → a status line listing the ignored blocks and the warnings.
+    Built (review fix): a paste whose look must be fetched sets the state, enabled and lutSize and records ONE
+    undo step once the look has landed (or failed: then without the look, reported in #designPasteStatus).
+    Every look fetch carries a ticket; one that lands after a newer look action is only held. Undo of a paste
+    also reverts enabled and lutSize.
 - Debug handle, for measurements: `__three.grade = { output: gradeOutput, editor: gradeEditor, setStage: (s) => depthOfField.setOutputStage(s === 'passthrough' ? (d) => d : s === 'grade' ? gradeOutput.stage : null) }`.
 
 4.12 threejs-test.html (changed)
@@ -684,6 +688,8 @@ CSS:
 5.2 Header
 - Grade toggle: compiles the tap out and disables Compare.
 - Compare: shows #gradeSplit and sets the split to config compareSplit; off sets it to 0 (no recompile).
+  Built (review fix): while the desktop panel overlaps the handle's row the split is kept left of the panel
+  (panel left − 30 px), re-clamped on resize; the phone sheet needs no clamp.
 - A/B snapshots:
   - tapping an empty slot stores the current state and look;
   - tapping a stored slot recalls it (undoable);
@@ -732,7 +738,9 @@ CSS:
 - On a curve or hue canvas, a pointerdown that misses every point and then moves mostly vertically by more than 8 px releases capture and scrolls .design-scroll by hand. Wheels always capture.
 - Peek: pointerdown on any grade control adds body.grade-dragging and .grade-active on its row until pointerup or cancel.
 - Canvases have tabindex=0, role="application" and an aria-label.
-- keydown and keyup call stopPropagation for every key except Tab. Escape blurs. keyboard-navigation.ts listens on window and main.ts on document, both in the bubble phase (keyboard-navigation.ts:168; main.ts:880, 2101, 2998), so W, A, S, D, Space, C and Enter never reach the camera.
+- keydown calls stopPropagation for every key except Tab; keyup only for keys whose keydown was stopped there
+  (createKeyIsolation), because keyboard-navigation clears a held key only on its window keyup: a key pressed
+  on the map and released over a grade control must still reach it. Escape blurs. keyboard-navigation.ts listens on window and main.ts on document, both in the bubble phase (keyboard-navigation.ts:168; main.ts:880, 2101, 2998), so W, A, S, D, Space, C and Enter never reach the camera.
 - Keys on a focused widget:
   - arrows nudge a point by 1/255 (10/255 with Shift), or a puck by 0.01 (0.1 with Shift);
   - [ and ] select the previous and next point;

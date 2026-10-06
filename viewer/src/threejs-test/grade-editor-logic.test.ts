@@ -8,8 +8,9 @@ import { latticeSizeFor } from './grade-bake.ts'
 import {
   createCompilePolicy, createLookStore, curveLabel, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS,
   GRADE_TABS, gradeBoot, gradeStatusText, hueCurveLabel, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER,
-  lookStatusText, lookUrl, nudgeSplit, planPaste, pushSample, readPath, shouldCompileIn, signed, sliderRange,
-  splitFromPointer, summarize, toggleText, toneWheelLabel, undoKeyAction, WHEEL_MASTER_SLIDERS, wheelLabel, writePath,
+  lookStatusText, lookUrl, nudgeSplit, pasteLoadingNote, pasteLookNote, planPaste, pushSample, readPath,
+  shouldCompileIn, signed, sliderRange, SPLIT_PANEL_GAP_PX, splitFromPointer, splitLimit, splitValueText, summarize,
+  toggleText, toneWheelLabel, undoKeyAction, WHEEL_MASTER_SLIDERS, wheelLabel, writePath,
   type CompileInputs, type GradeConfig, type GradeStatus,
 } from './grade-editor-logic.ts'
 import {
@@ -161,6 +162,11 @@ test('planPaste: state, enabled, lutSize capped, and the look kept, cleared, mat
   const fetch = planPaste({ look: { file: 'other/new.cube', amount: 1 }, state: warm }, HELD, 65)
   assert.deepEqual(fetch.look, { action: 'fetch', file: 'other/new.cube', amount: 1 })
   assert.match(fetch.notes.join(), /grades\/other\/new\.cube/)
+  // The editor swaps the loading note for the fetch's outcome once it ends.
+  assert.deepEqual(fetch.notes, [pasteLoadingNote('other/new.cube')])
+  assert.equal(pasteLookNote('a.cube', 'loaded'), 'Loaded the look grades/a.cube.')
+  assert.match(pasteLookNote('a.cube', 'failed', '404 Not Found'), /^The look grades\/a\.cube was not loaded \(404 Not Found\); the rest was applied/)
+  assert.match(pasteLookNote('a.cube', 'superseded'), /^The look grades\/a\.cube was not applied: the grade changed before it loaded/)
 })
 
 test('Copy values → Paste values: the editor\'s snippet comes back as the same grade and look', () => {
@@ -241,6 +247,23 @@ test('the split: pointer to a share of the width; arrows 2 %, Shift 10 %, clampe
   let x = 0.5
   for (let i = 0; i < 5; i++) x = nudgeSplit(x, 'ArrowRight', false)!
   assert.equal(x, 0.6, 'repeated nudges do not drift')
+})
+
+test('the split stays left of the open Design panel where the panel reaches into the handle\'s row', () => {
+  // Desktop, 1000 × 800, the section open: the panel at right 260 px, 320 px wide, below the
+  // header; the handle at 30vh, 44 px tall.
+  const panel = { left: 420, right: 740, top: 52, bottom: 780 }
+  const handle = { top: 218, bottom: 262 }
+  assert.equal(splitLimit(panel, handle, 1000), (420 - SPLIT_PANEL_GAP_PX) / 1000)
+  assert.ok(0.5 * 1000 + 22 > panel.left, 'config compareSplit 0.5 would put the handle under the panel')
+  assert.ok(splitLimit(panel, handle, 1000) * 1000 + 22 < panel.left, 'the limit keeps all of it clear')
+  // The phone sheet (64vh, from the bottom) lies below a handle at 18vh: no limit.
+  assert.equal(splitLimit({ left: 0, right: 390, top: 288, bottom: 800 }, { top: 122, bottom: 166 }, 390), 1)
+  assert.equal(splitLimit(null, handle, 1000), 1, 'no panel')
+  assert.equal(splitLimit({ left: 0, right: 0, top: 0, bottom: 0 }, handle, 1000), 1, 'a panel not laid out')
+  assert.equal(splitLimit({ ...panel, left: 10 }, handle, 1000), 0, 'never below 0')
+  assert.equal(splitValueText(0.4), '40% without the grade, on the left')
+  assert.equal(attr(tagOf(GRADE_ELEMENT_IDS.splitHandle)!, 'aria-valuetext'), splitValueText(0.5), 'the markup starts at 0.5')
 })
 
 test('undo keys: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y, not in a textarea; every key but Tab stays in the section', () => {

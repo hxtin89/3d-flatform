@@ -4231,8 +4231,10 @@ designPasteEl.addEventListener('click', () => setPasteBoxOpen(designPasteBoxEl.h
 $('#designPasteCancel').addEventListener('click', () => setPasteBoxOpen(false))
 $('#designPasteApply').addEventListener('click', () => {
   const paste = parseGradePaste(designPasteTextEl.value)
-  const notes = gradeEditor.applyPaste(paste)
-  designPasteStatusEl.textContent = [pasteSummary(paste), ...notes].join(' ')
+  const summary = pasteSummary(paste)
+  // A paste whose look is fetched reports again when the fetch has ended.
+  const show = (notes: string[]) => { designPasteStatusEl.textContent = [summary, ...notes].join(' ') }
+  show(gradeEditor.applyPaste(paste, show))
   if (paste.grade) designPasteTextEl.value = ''
 })
 $('#flyTo').addEventListener('click', () => flyToCloud(

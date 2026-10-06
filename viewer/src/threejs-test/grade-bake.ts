@@ -971,8 +971,8 @@ export interface LatticeSize {
   /** The lattice reproduces the look's own trilinear exactly (or there is no look). */
   exact: boolean
   /** Lattice cells per cube cell: n − 1 = refinement·(N − 1) for an exact look of size N, whose
-   *  nodes are then every refinement-th lattice node. 1 without a look and for a resampled one.
-   *  draftStride takes it, and so does a BakeJob. */
+   *  nodes are then every refinement-th lattice node. 1 without a look and for a resampled one,
+   *  where it means nothing: only an exact look's goes to draftStride and into a BakeJob. */
   refinement: number
   /** Why it is not 1:1, for the Look status line. */
   warning?: string
@@ -1022,16 +1022,17 @@ export function isUnitDomain(cube: Pick<CubeLattice, 'domainMin' | 'domainMax'>)
 
 /**
  * The draft's stride for an n³ lattice: the smallest s ≥ 2 that divides n − 1 and still leaves
- * (n − 1)/s + 1 ≥ 9 nodes a side, else 1 (no draft). 33 → 2 (17³ nodes). On a refined lattice
- * (`refinement` from latticeSizeFor, above 1) s must divide the refinement too, so every node of
- * the look is a draft node and the draft shows the look exactly: 41 for a 21³ look → 2 (21 a
- * side), 46 for 16³ → 3 (16), 37 for 13³ → 3 (13, where 2 would miss the look's nodes); 34 for a
- * 4³ look (refinement 11) has no such s, so it is never drafted.
+ * (n − 1)/s + 1 ≥ 9 nodes a side, else 1 (no draft). 33 → 2 (17³ nodes). For an exact look
+ * (`refinement` from latticeSizeFor) s must divide the refinement too, so every node of the look
+ * is a draft node and the draft shows the look exactly: 41 for a 21³ look → 2 (21 a side), 46 for
+ * 16³ → 3 (16), 37 for 13³ → 3 (13, where 2 would miss the look's nodes); 34 for a 4³ look
+ * (refinement 11) has no such s, and neither has a look on its own lattice (refinement 1: 33³ on
+ * 33, 65³ on 65), so those are never drafted. Without a refinement (no look, or a resampled one)
+ * the lattice alone decides.
  */
-export function draftStride(n: number, refinement = 1): number {
-  const refined = Number.isInteger(refinement) && refinement > 1
+export function draftStride(n: number, refinement?: number): number {
   for (let s = 2; (n - 1) / s + 1 >= 9; s++) {
-    if ((n - 1) % s === 0 && (!refined || refinement % s === 0)) return s
+    if ((n - 1) % s === 0 && (refinement === undefined || refinement % s === 0)) return s
   }
   return 1
 }
@@ -1108,8 +1109,8 @@ export interface BakeJob {
   state: GradeState
   look: BakeLookKey | null
   n: number
-  /** latticeSizeFor's refinement for the look on n, so a draft lands on the look's nodes
-   *  (draftStride). Default 1: no look, or a resampled one. */
+  /** latticeSizeFor's refinement for an exact look on n, so a draft lands on the look's nodes
+   *  (draftStride; 1 means no draft). Absent without a look and for a resampled one. */
   refinement?: number
 }
 
@@ -1188,7 +1189,7 @@ export function createBakeScheduler(options: BakeSchedulerOptions): BakeSchedule
   let newest: { hash: string; final: boolean } | null = null
   let lastFinalMs = 0
 
-  const strideOf = (job: BakeJob) => draftStride(job.n, job.refinement ?? 1)
+  const strideOf = (job: BakeJob) => draftStride(job.n, job.refinement)
   const isFinal = (job: BakeJob, commit: boolean) => commit || !(lastFinalMs > options.draftThresholdMs) || strideOf(job) === 1
   const covered = (hash: string, final: boolean) => newest !== null && newest.hash === hash && (newest.final || !final)
 

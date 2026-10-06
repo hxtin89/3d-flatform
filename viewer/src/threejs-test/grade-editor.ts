@@ -27,16 +27,19 @@ import {
 import {
   createCompilePolicy, createLookStore, curveLabel, fileLookKey, GRADE_ELEMENT_IDS, GRADE_SLIDERS, GRADE_TAB_GROUPS,
   GRADE_TABS, gradeBoot, gradeStatusText, hueCurveLabel, importLookKey, isEditing, isolatesKey, LOOK_AMOUNT_SLIDER,
-  lookStatusText, lookUrl, nudgeSplit, planPaste, pushSample, readPath, sliderRange, splitFromPointer, summarize,
-  toggleText, toneWheelLabel, undoKeyAction, WHEEL_MASTER_SLIDERS, wheelLabel, writePath, type GradeConfig, type GradeTab,
+  lookStatusText, lookUrl, nudgeSplit, pasteLoadingNote, pasteLookNote, planPaste, pushSample, readPath, sliderRange,
+  splitFromPointer, splitLimit, splitValueText, summarize, toggleText, toneWheelLabel, undoKeyAction,
+  WHEEL_MASTER_SLIDERS, wheelLabel, writePath, type GradeConfig, type GradeTab, type PasteLookOutcome,
 } from './grade-editor-logic.ts'
 import {
   CURVE_CHANNELS, GRADE_RANGES, isGradeIdentity, parseGradeState, WHEEL_NAMES,
   type CurveChannel, type GradeState, type LookRef, type WheelName,
 } from './grade-model.ts'
 import type { GradeOutput } from './grade-output.ts'
-import { createHistory, createSnapshots, gradeSnippet, type GradePaste, type GradeSnapshot, type SnapshotSlot } from './grade-state.ts'
-import { HUE_MODES, puckReadout, wheelReadout, type HueMode } from './grade-widget-logic.ts'
+import {
+  createHistory, createSnapshots, gradeSnippet, sameData, type GradePaste, type GradeSnapshot, type SnapshotSlot,
+} from './grade-state.ts'
+import { createKeyIsolation, HUE_MODES, puckReadout, wheelReadout, type HueMode } from './grade-widget-logic.ts'
 import { createColourWheel, createCurveEditor, createHueCurveEditor, type GradeWidget } from './grade-widgets.ts'
 
 export interface GradeEditorOptions {
@@ -93,9 +96,11 @@ export interface GradeEditor {
   isCompiled(): boolean
   /** The `grade:` block for Copy values (grade-state.ts gradeSnippet). */
   snippet(): string
-  /** Applies a parsed Paste values text as one undo step. Returns notes for the status line
-   *  beside pasteSummary's (a capped lattice size, a look being fetched). */
-  applyPaste(paste: GradePaste): string[]
+  /** Applies a parsed Paste values text as one undo step — the state, the switch, the lattice
+   *  size and the look. Returns notes for the status line beside pasteSummary's (a capped lattice
+   *  size, a look being fetched). A paste whose look has to be fetched is recorded when the fetch
+   *  ends; `onLook` then gets the notes again, the fetch's outcome in place of its loading note. */
+  applyPaste(paste: GradePaste, onLook?: (notes: string[]) => void): string[]
   stats(): GradeEditorStats
   dispose(): void
 }
@@ -109,11 +114,27 @@ interface HeldLook {
   file: string | null
 }
 
+/** A grade's switch before and after a paste that changed it. */
+interface Switch {
+  from: boolean
+  to: boolean
+}
+
+/** An undo step or a snapshot: the state and the look, and the lattice size (only a paste
+ *  changes it). The undo step of a paste that switched the grade on or off holds the switch too:
+ *  the Grade button is no undo step, so only the undo and redo of such a paste set it. */
+interface GradeEntry extends GradeSnapshot {
+  lutSize: number
+  enabled?: Switch
+}
+
 const FLASH_MS = 1600
 const NOTE_MS = 8000
 /** A 65³ bake with a look takes 36–56 ms on a desktop, so a phone's stays far below this; a
  *  large .cube parsed ahead of it in the worker's queue too. */
 const WORKER_SILENCE_MS = 6000
+
+const lookLoadingNote = (file: string) => `Loading grades/${file} …`
 
 export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   const { root, output, initial } = options
@@ -181,16 +202,24 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   let look: LookRef | null = null
   let enabled = options.enabled
   let compareOn = false
-  let compareAt = Math.min(Math.max(Number.isFinite(initial.compareSplit) ? initial.compareSplit : 0.5, 0), 1)
+  /** Where Compare starts (plan 5.2: config compareSplit). */
+  const compareStart = Math.min(Math.max(Number.isFinite(initial.compareSplit) ? initial.compareSplit : 0.5, 0), 1)
+  let compareAt = compareStart
   /** A loading or error line for the Look tab, over the look's own status. */
   let lookNote: string | undefined
   let bakeError: string | null = null
   let disposed = false
 
   const looks = createLookStore<HeldLook>()
-  let history = createHistory<GradeSnapshot>(100)
-  const snapshots = createSnapshots<GradeSnapshot>()
-  const current = (): GradeSnapshot => ({ state, look })
+  let history = createHistory<GradeEntry>(100)
+  const snapshots = createSnapshots<GradeEntry>()
+  const current = (): GradeEntry => ({ state, look, lutSize })
+  /** Every action that sets the look — a paste, an import, Remove, undo, redo, a snapshot recall,
+   *  the boot look — takes the next number. A look file that lands after a newer one was taken
+   *  is only held (an undo or redo may name it later); it is neither made current nor recorded. */
+  let lookTicket = 0
+  /** A paste's switch of the grade, for the undo step that records the paste. */
+  let switched: Switch | null = null
 
   const metaOf = (ref: LookRef | null): LookMeta | null => (ref ? looks.peek(ref.key)?.meta ?? null : null)
   const latticeOf = (ref: LookRef | null): LatticeSize => {
@@ -217,8 +246,10 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   let host: GradeBakeHost | null = null
   /** Main-thread mode: the bake job waiting for update(). */
   let syncJob: BakeMessage | null = null
-  const parsing = new Map<string, { text: string; settle: ((reply: ParsedMessage | ParseErrorMessage) => void)[] }>()
-  const exporting = new Map<number, { resolve: (reply: CubeMessage) => void; reject: (error: Error) => void }>()
+  /** Parses and exports waiting for their reply, with when they were sent (the watchdog in
+   *  update()). */
+  const parsing = new Map<string, { text: string; sentAt: number; settle: ((reply: ParsedMessage | ParseErrorMessage) => void)[] }>()
+  const exporting = new Map<number, { sentAt: number; resolve: (reply: CubeMessage) => void; reject: (error: Error) => void }>()
   let exportId = 0
 
   const useHost = () => {
@@ -306,9 +337,18 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   /** When the edit behind the next posted bake happened, for edit-to-frame latency. */
   let editAt: number | null = null
   const editAtBySeq = new Map<number, number>()
-  /** When the bake in flight was posted: a worker that has not answered after WORKER_SILENCE_MS
-   *  (a module it could not load, a browser that never runs it) is given up on. */
+  /** When the bake in flight was posted (the watchdog in update()). */
   let postedAt = 0
+
+  /** When the oldest request still waiting for the worker's answer was sent — a bake, a parse or
+   *  an export — or null. A worker that leaves one unanswered for WORKER_SILENCE_MS (a module it
+   *  could not load, a browser that never runs it) is given up on. */
+  function oldestRequest(): number | null {
+    let oldest = scheduler.busy ? postedAt : Infinity
+    for (const entry of parsing.values()) oldest = Math.min(oldest, entry.sentAt)
+    for (const entry of exporting.values()) oldest = Math.min(oldest, entry.sentAt)
+    return Number.isFinite(oldest) ? oldest : null
+  }
   const scheduler = createBakeScheduler({
     post(message) {
       postedAt = performance.now()
@@ -338,7 +378,9 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
       state: structuredClone(state),
       look: held ? { key: look!.key, amount: look!.amount } : null,
       n: lattice.n,
-      refinement: lattice.refinement,
+      // Only an exact look has nodes a draft must land on (1: its own lattice, no draft);
+      // without one the lattice alone decides (draftStride).
+      refinement: held && lattice.exact ? lattice.refinement : undefined,
     }
   }
 
@@ -408,7 +450,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
       let entry = parsing.get(key)
       const first = !entry
       if (!entry) {
-        entry = { text, settle: [] }
+        entry = { text, sentAt: performance.now(), settle: [] }
         parsing.set(key, entry)
       }
       entry.settle.push((reply) => {
@@ -430,19 +472,29 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
 
   async function importFile(file: File): Promise<void> {
+    flushWidgets()
+    settlePaste()
+    const ticket = ++lookTicket
     const key = importLookKey(file.name, file.size, file.lastModified)
-    lookNote = `Reading ${file.name} …`
+    const reading = `Reading ${file.name} …`
+    lookNote = reading
     renderLook()
     try {
       const meta = looks.has(key) ? looks.get(key)!.meta : await holdLook(key, await file.text(), file.name, null)
       if (disposed) return
-      lookNote = undefined
+      if (lookNote === reading) lookNote = undefined
+      if (ticket !== lookTicket) {
+        renderLook()
+        return
+      }
       flushWidgets()
       look = { key, name: file.name, file: null, size: meta.size, amount: GRADE_RANGES.look.amount.default }
       commit()
       syncControls()
     } catch (error) {
-      lookNote = `${file.name} was not loaded: ${String((error as Error)?.message ?? error)}`
+      if (disposed) return
+      if (ticket === lookTicket) lookNote = `${file.name} was not loaded: ${String((error as Error)?.message ?? error)}`
+      else if (lookNote === reading) lookNote = undefined
       renderLook()
     }
   }
@@ -451,12 +503,15 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
    * A look under public/grades/: at boot (config grade.look), from a paste, or again after the
    * store let it go. Fetching it again gives the same key, so a history entry that names it finds
    * it. 'reload' bakes and changes nothing else; 'boot' becomes the history's starting point
-   * while nothing has been edited yet; 'paste' is its own undo step.
+   * while nothing has been edited yet; 'paste' records the paste waiting for it (pendingPaste).
+   * `ticket` is the lookTicket of the action that asked: when a newer one was taken before the
+   * file lands, the look is only held.
    */
-  async function loadLookFile(file: string, amount: number, mode: 'boot' | 'paste' | 'reload'): Promise<void> {
+  async function loadLookFile(file: string, amount: number, mode: 'boot' | 'paste' | 'reload', ticket: number): Promise<void> {
     const key = fileLookKey(file)
     const name = file.split('/').pop() || file
-    lookNote = `Loading grades/${file} …`
+    const loading = lookLoadingNote(file)
+    lookNote = loading
     renderLook()
     try {
       let meta = looks.peek(key)?.meta
@@ -466,25 +521,71 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
         meta = await holdLook(key, await response.text(), name, file)
       }
       if (disposed) return
-      lookNote = undefined
+      if (lookNote === loading) lookNote = undefined
       if (mode === 'reload') {
         requestBake(true)
         evaluate()
         renderAll()
         return
       }
+      if (ticket !== lookTicket) {
+        renderLook()
+        return
+      }
       look = { key, name, file, size: meta.size, amount }
       if (mode === 'boot' && !history.canUndo() && !history.canRedo()) {
-        history = createHistory<GradeSnapshot>(100)
+        history = createHistory<GradeEntry>(100)
         history.push(current())
         requestBake(true)
         evaluate()
-      } else commit()
+      } else {
+        // A paste waiting for this look is recorded now, as one undo step with it.
+        if (mode === 'paste') endPaste(ticket, 'loaded')
+        commit()
+      }
       syncControls()
     } catch (error) {
-      lookNote = `grades/${file} was not loaded: ${String((error as Error)?.message ?? error)}`
-      renderLook()
+      if (disposed) return
+      const message = String((error as Error)?.message ?? error)
+      if (mode !== 'reload') console.warn(`[grade] the ${mode} look grades/${file} was not loaded:`, message)
+      if (mode === 'reload' || ticket === lookTicket) lookNote = `grades/${file} was not loaded: ${message}`
+      else if (lookNote === loading) lookNote = undefined
+      if (mode === 'paste' && ticket === lookTicket && endPaste(ticket, 'failed', message)) {
+        // The paste without its look.
+        commit()
+        syncControls()
+      } else renderLook()
     }
+  }
+
+  /**
+   * A paste whose look is being fetched (plan 4.11): its state, switch and lattice size are set
+   * and shown, while the frame keeps the grade before it; it is recorded once the fetch ends, as
+   * one undo step with its look — or without it when the fetch fails, or when an undo, a redo, a
+   * recall, an import, a removal or another paste comes first (settlePaste). An edit meanwhile is
+   * recorded with the look there was, and the pasted look still lands after it.
+   */
+  let pendingPaste: { ticket: number; file: string; report: (outcome: PasteLookOutcome, message?: string) => void } | null = null
+
+  /** Ends the pending paste of `ticket`, reporting how its fetch ended; false when there is none
+   *  (it was settled already). The caller records it. */
+  function endPaste(ticket: number, outcome: PasteLookOutcome, message?: string): boolean {
+    const paste = pendingPaste
+    if (!paste || paste.ticket !== ticket) return false
+    pendingPaste = null
+    paste.report(outcome, message)
+    return true
+  }
+
+  /** A look-setting action comes before the pending paste's look has landed: the paste is
+   *  recorded now, without it, and the look is only held when it lands. */
+  function settlePaste(): void {
+    const paste = pendingPaste
+    if (!paste) return
+    lookTicket++
+    if (lookNote === lookLoadingNote(paste.file)) lookNote = undefined
+    endPaste(paste.ticket, 'superseded')
+    commit()
   }
 
   // ---- compile in or out (plan 1.6)
@@ -499,11 +600,36 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
 
   // ---- commits, undo, snapshots
+  /** Records the present as an undo step, with a paste's switch of the grade when one waits. One
+   *  that equals the step before, that step's switch aside, is not recorded. */
+  function record(): void {
+    const entry = current()
+    if (switched) {
+      entry.enabled = switched
+      switched = null
+      history.push(entry)
+      return
+    }
+    const present = history.current()
+    if (present?.enabled) {
+      delete present.enabled
+      if (sameData(present, entry)) return
+    }
+    history.push(entry)
+  }
+
   function commit(): void {
-    history.push(current())
+    record()
     requestBake(true)
     evaluate()
     renderAll()
+  }
+
+  /** The Grade switch, from a paste or its undo or redo. */
+  function setEnabled(on: boolean): void {
+    if (on === enabled) return
+    enabled = on
+    if (!enabled) setCompare(false)
   }
 
   /** The wheels and curve editors (made with the controls below). */
@@ -514,11 +640,16 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     for (const widget of widgets) widget.flush()
   }
 
-  /** Makes a history entry or a snapshot the present; the caller records it (or not). */
-  function restore(entry: GradeSnapshot): void {
+  /** Makes a history entry or a snapshot the present, with the switch `on` when given (the undo
+   *  or redo of a paste that switched the grade); the caller records it (or not). A look-setting
+   *  action: it takes a lookTicket. */
+  function restore(entry: GradeEntry, on?: boolean): void {
+    const ticket = ++lookTicket
     state = entry.state
     look = entry.look
-    if (look && !looks.has(look.key) && look.file) void loadLookFile(look.file, look.amount, 'reload')
+    lutSize = entry.lutSize
+    if (on !== undefined) setEnabled(on)
+    if (look && !looks.has(look.key) && look.file) void loadLookFile(look.file, look.amount, 'reload', ticket)
     requestBake(true)
     evaluate()
     syncControls()
@@ -526,21 +657,25 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
 
   const undo = () => {
     flushWidgets()
+    settlePaste()
+    const leaving = history.current()
     const entry = history.undo()
-    if (entry) restore(entry)
+    if (entry) restore(entry, leaving?.enabled?.from)
   }
   const redo = () => {
     flushWidgets()
+    settlePaste()
     const entry = history.redo()
-    if (entry) restore(entry)
+    if (entry) restore(entry, entry.enabled?.to)
   }
 
   function tapSnapshot(slot: SnapshotSlot): void {
     flushWidgets()
+    if (snapshots.has(slot)) settlePaste()
     const held = snapshots.tap(slot, current())
     if (held) {
       restore(held)
-      history.push(current())
+      record()
     }
     renderAll()
   }
@@ -549,11 +684,22 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   function placeSplit(): void {
     el.split.style.setProperty('--split', `${(compareAt * 100).toFixed(3)}%`)
     el.splitHandle.setAttribute('aria-valuenow', String(Math.round(compareAt * 100)))
+    el.splitHandle.setAttribute('aria-valuetext', splitValueText(compareAt))
+  }
+
+  /** #gradeSplit sits under the panels, so the handle stays left of the open Design panel where
+   *  the panel reaches into its row (the desktop layout; the phone sheet is below the handle). */
+  const designPanel = root.closest<HTMLElement>('#designPanel')
+  function splitMax(): number {
+    if (!designPanel || el.split.hidden || !panelOpen()) return 1
+    return splitLimit(designPanel.getBoundingClientRect(), el.splitHandle.getBoundingClientRect(), window.innerWidth)
   }
 
   function setCompare(on: boolean): void {
     compareOn = on && enabled
     el.split.hidden = !compareOn
+    // Compare starts from config compareSplit (plan 5.2), clear of the panel.
+    if (compareOn) compareAt = Math.min(compareStart, splitMax())
     // A uniform: no recompile either way.
     output.setSplit(compareOn ? compareAt : 0)
     placeSplit()
@@ -561,9 +707,20 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
 
   function moveSplit(x: number): void {
-    compareAt = x
-    if (compareOn) output.setSplit(x)
+    compareAt = Math.min(Math.max(x, 0), splitMax())
+    if (compareOn) output.setSplit(compareAt)
     placeSplit()
+  }
+
+  // A narrower window or a wider panel moves the panel over the handle.
+  const keepSplitClear = () => {
+    if (compareOn) moveSplit(compareAt)
+  }
+  listen(window, 'resize', keepSplitClear)
+  if (designPanel && typeof ResizeObserver !== 'undefined') {
+    const panelSize = new ResizeObserver(keepSplitClear)
+    panelSize.observe(designPanel)
+    cleanups.push(() => panelSize.disconnect())
   }
 
   listen(el.splitHandle, 'pointerdown', (event: PointerEvent) => {
@@ -582,18 +739,22 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
   listen(el.splitHandle, 'pointerup', releaseHandle)
   listen(el.splitHandle, 'pointercancel', releaseHandle)
+  const handleKeys = createKeyIsolation()
   const onHandleKey = (event: KeyboardEvent) => {
-    if (event.type === 'keydown') {
-      const next = nudgeSplit(compareAt, event.key, event.shiftKey)
-      if (next !== null) {
-        event.preventDefault()
-        moveSplit(next)
-      } else if (event.key === 'Escape') el.splitHandle.blur()
+    if (event.type !== 'keydown') {
+      if (handleKeys.up(event)) event.stopPropagation()
+      return
     }
-    if (isolatesKey(event.key)) event.stopPropagation()
+    if (handleKeys.down(event, isolatesKey(event.key))) event.stopPropagation()
+    const next = nudgeSplit(compareAt, event.key, event.shiftKey)
+    if (next !== null) {
+      event.preventDefault()
+      moveSplit(next)
+    } else if (event.key === 'Escape') el.splitHandle.blur()
   }
   listen(el.splitHandle, 'keydown', onHandleKey)
   listen(el.splitHandle, 'keyup', onHandleKey)
+  listen(el.splitHandle, 'blur', () => handleKeys.clear())
 
   // ---- Frame for grading (plan 5.7) and Export .cube
   function download(blob: Blob, name: string): void {
@@ -659,7 +820,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     const { state: jobState, look: jobLook, n } = job()
     const id = ++exportId
     const reply = await new Promise<CubeMessage>((resolve, reject) => {
-      exporting.set(id, { resolve, reject })
+      exporting.set(id, { sentAt: performance.now(), resolve, reject })
       send({ kind: 'export', id, title: GRADE_CUBE_TITLE, job: { state: jobState, look: jobLook, n } })
     })
     download(new Blob([reply.text], { type: 'text/plain' }), gradeCubeFileName(reply.n))
@@ -696,27 +857,31 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
 
   // ---- peek (plan 4.12, 5.8): on a phone the sheet clears while a grade control is held — a
   // range, or a widget once its drag starts (a swipe that scrolls never) — leaving its row, until
-  // the pointer lifts; the CSS only acts under 700 px.
+  // the pointer that holds it lifts; the CSS only acts under 700 px.
   let endPeek: (() => void) | null = null
-  function startPeek(row: Element | null): void {
+  function startPeek(row: Element | null, pointerId: number): void {
     endPeek?.()
     row?.classList.add('grade-active')
     body.classList.add('grade-dragging')
     const end = () => {
       row?.classList.remove('grade-active')
       body.classList.remove('grade-dragging')
-      window.removeEventListener('pointerup', end, true)
-      window.removeEventListener('pointercancel', end, true)
+      window.removeEventListener('pointerup', lift, true)
+      window.removeEventListener('pointercancel', lift, true)
       if (endPeek === end) endPeek = null
     }
-    window.addEventListener('pointerup', end, true)
-    window.addEventListener('pointercancel', end, true)
+    // Another finger lifting is no end.
+    const lift = (event: PointerEvent) => {
+      if (event.pointerId === pointerId) end()
+    }
+    window.addEventListener('pointerup', lift, true)
+    window.addEventListener('pointercancel', lift, true)
     endPeek = end
   }
   listen(root, 'pointerdown', (event: PointerEvent) => {
     // Widgets stop their pointerdown and call startPeek themselves (grabbing below).
     const target = event.target
-    if (target instanceof HTMLInputElement && target.type === 'range') startPeek(target.closest('.row'))
+    if (target instanceof HTMLInputElement && target.type === 'range') startPeek(target.closest('.row'), event.pointerId)
   })
 
   // ---- the wheels and curve editors (plan 5.3–5.5). They read and write the state through
@@ -726,7 +891,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     editAt ??= performance.now()
     requestBake(false)
   }
-  const grabbing = (canvas: HTMLElement) => () => startPeek(canvas.closest('.row'))
+  const grabbing = (canvas: HTMLElement) => (pointerId: number) => startPeek(canvas.closest('.row'), pointerId)
 
   // Primary: four minis pick the wheel the large one edits; that wheel's master range shows under it.
   let wheelName: WheelName = 'lift'
@@ -950,6 +1115,7 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     requestBake(true)
     evaluate()
     renderAll()
+    if (enabled) loadBootLook()
   })
   listen(el.compare, 'click', () => setCompare(!compareOn))
   listen(el.snapA, 'click', () => tapSnapshot('A'))
@@ -989,6 +1155,8 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   })
   listen(el.lookRemove, 'click', () => {
     flushWidgets()
+    settlePaste()
+    lookTicket++
     look = null
     lookNote = undefined
     commit()
@@ -1022,21 +1190,28 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   })
 
   // ---- keys (plan 5.2, 5.8): undo and redo inside the section; no key but Tab leaves it, so the
-  // camera's keys stay with the camera only while no grade control has focus. Escape lets go.
+  // camera's keys stay with the camera only while no grade control has focus. A keyup leaves it
+  // unless its keydown did not: keyboard navigation lets go of a key on its keyup, wherever it
+  // was pressed. Escape lets go of the focus.
+  const sectionKeys = createKeyIsolation()
   const onSectionKey = (event: KeyboardEvent) => {
-    const target = event.target as HTMLElement | null
-    if (event.type === 'keydown') {
-      const action = undoKeyAction(event, target instanceof HTMLTextAreaElement)
-      if (action) {
-        event.preventDefault()
-        if (action === 'undo') undo()
-        else redo()
-      } else if (event.key === 'Escape' && target && target !== body) target.blur()
+    if (event.type !== 'keydown') {
+      if (sectionKeys.up(event)) event.stopPropagation()
+      return
     }
-    if (isolatesKey(event.key)) event.stopPropagation()
+    if (sectionKeys.down(event, isolatesKey(event.key))) event.stopPropagation()
+    const target = event.target as HTMLElement | null
+    const action = undoKeyAction(event, target instanceof HTMLTextAreaElement)
+    if (action) {
+      event.preventDefault()
+      if (action === 'undo') undo()
+      else redo()
+    } else if (event.key === 'Escape' && target && target !== body) target.blur()
   }
   listen(root, 'keydown', onSectionKey)
   listen(root, 'keyup', onSectionKey)
+  // The keys held as the focus moves have their keyups elsewhere.
+  listen(root, 'focusout', () => sectionKeys.clear())
 
   // ---- the section and the panel
   listen(root, 'toggle', () => {
@@ -1068,12 +1243,23 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
   }
   evaluate()
   syncControls()
-  if (boot.look) void loadLookFile(boot.look.file, boot.look.amount, 'boot')
+  // The configured look, fetched once the grade is on: with `?grade=0` nothing loads, no worker
+  // starts and nothing bakes until the Grade button. A look set before then wins over it.
+  let bootLook = boot.look
+  const bootTicket = bootLook ? ++lookTicket : 0
+  function loadBootLook(): void {
+    if (!bootLook) return
+    const { file, amount } = bootLook
+    bootLook = null
+    if (bootTicket === lookTicket) void loadLookFile(file, amount, 'boot', bootTicket)
+  }
+  if (enabled) loadBootLook()
 
   return {
     update() {
       output.update()
-      if (worker && scheduler.busy && performance.now() - postedAt > WORKER_SILENCE_MS) {
+      const oldest = worker ? oldestRequest() : null
+      if (oldest !== null && performance.now() - oldest > WORKER_SILENCE_MS) {
         fallBack(`the bake worker did not answer in ${WORKER_SILENCE_MS / 1000} s`)
       }
       if (syncJob && host) {
@@ -1100,28 +1286,42 @@ export function createGradeEditor(options: GradeEditorOptions): GradeEditor {
     isEnabled: () => enabled,
     isCompiled: () => policy.compiled,
     snippet: () => gradeSnippet(enabled, lutSize, look ? { name: look.name, file: look.file, amount: look.amount } : null, state),
-    applyPaste(paste) {
+    applyPaste(paste, onLook) {
       if (!paste.grade) return []
       flushWidgets()
+      settlePaste()
+      const ticket = ++lookTicket
       const held = looks.keys().map((key) => {
         const entry = looks.peek(key)!
         return { key, name: entry.name, file: entry.file }
       })
       const plan = planPaste(paste.grade, held, maxLattice)
+      const was = enabled
       state = plan.state
-      if (plan.enabled !== undefined && plan.enabled !== enabled) {
-        enabled = plan.enabled
-        if (!enabled) setCompare(false)
-      }
+      if (plan.enabled !== undefined) setEnabled(plan.enabled)
+      // The undo step of the paste switches the grade back (record()).
+      switched = enabled !== was ? { from: was, to: enabled } : null
       if (plan.lutSize !== undefined) lutSize = plan.lutSize
       if (plan.look.action === 'clear') look = null
       else if (plan.look.action === 'use') {
         const entry = looks.peek(plan.look.key)!
         look = { key: plan.look.key, name: entry.name, file: entry.file, size: entry.meta.size, amount: plan.look.amount }
       }
-      commit()
+      if (plan.look.action !== 'fetch') {
+        commit()
+        syncControls()
+        return plan.notes
+      }
+      // The look comes first: no commit, bake or stage change until it has landed (pendingPaste).
+      const { file, amount } = plan.look
+      const notes = plan.notes.filter((note) => note !== pasteLoadingNote(file))
+      pendingPaste = {
+        ticket,
+        file,
+        report: (outcome, message) => onLook?.([...notes, pasteLookNote(file, outcome, message)]),
+      }
       syncControls()
-      if (plan.look.action === 'fetch') void loadLookFile(plan.look.file, plan.look.amount, 'paste')
+      void loadLookFile(file, amount, 'paste', ticket)
       return plan.notes
     },
     stats() {

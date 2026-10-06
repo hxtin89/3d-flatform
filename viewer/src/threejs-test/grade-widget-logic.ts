@@ -414,6 +414,76 @@ export function stepSelection(index: number, count: number, step: 1 | -1): numbe
  */
 export const widgetIsolatesKey = (key: string, ctrlOrMeta: boolean) => key !== 'Tab' && !ctrlOrMeta
 
+/** What the key handlers read of a keyboard event. */
+export interface WidgetKeyEvent {
+  key: string
+  code?: string
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+  altKey: boolean
+}
+
+const isSelectKey = (key: string) => key === '[' || key === ']'
+
+/**
+ * A Ctrl/Cmd shortcut, which a focused widget lets through to the section (Ctrl+Z undoes there),
+ * rather than a character typed with AltGr. Browsers report AltGr as the AltGraph modifier
+ * (`altGraph`), and on Windows as Ctrl+Alt too, so Ctrl+Alt with [ or ] — AltGr+8 and AltGr+9 on
+ * a German layout — counts as typing them.
+ */
+export function isShortcut(event: WidgetKeyEvent, altGraph: boolean): boolean {
+  if (altGraph) return false
+  if (event.ctrlKey && event.altKey && isSelectKey(event.key)) return false
+  return event.ctrlKey || event.metaKey
+}
+
+/**
+ * What a keydown does on a focused curve: pointKey's action; none for a shortcut (it goes on to
+ * the section) or with Alt or AltGr held — except [ and ], read by the character whatever typed
+ * it: AltGr+8 and 9 on a German layout, Option+5 and 6 on a Mac.
+ */
+export function curveKeyAction(event: WidgetKeyEvent, altGraph: boolean, d: CurveDomain): PointKey {
+  if (isShortcut(event, altGraph)) return null
+  if ((event.altKey || altGraph) && !isSelectKey(event.key)) return null
+  return pointKey(event.key, event.shiftKey, d)
+}
+
+const MODIFIER_KEYS: ReadonlySet<string> = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph', 'CapsLock'])
+
+/** A key that only modifies others. Pressed on its own (Shift, to go on in coarse steps) it does
+ *  not end an arrow-key run, which commits only after its pause. */
+export const isModifierKey = (key: string) => MODIFIER_KEYS.has(key)
+
+/**
+ * Which keys one handler keeps from the app. Keyboard navigation (on window) holds a key from its
+ * keydown to its keyup, so a keyup is kept back only when this handler kept back its keydown: a
+ * key pressed elsewhere and let go over a grade control still reaches the window, and the camera
+ * stops. Keys go by event.code (by event.key when there is none). clear() when the control loses
+ * the focus: the keyups of the keys held then go elsewhere.
+ */
+export interface KeyIsolation {
+  /** A keydown, kept from the app when `isolate`: true to stop it. */
+  down(event: Pick<WidgetKeyEvent, 'key' | 'code'>, isolate: boolean): boolean
+  /** A keyup: true to stop it, when its keydown was stopped here. */
+  up(event: Pick<WidgetKeyEvent, 'key' | 'code'>): boolean
+  clear(): void
+}
+
+export function createKeyIsolation(): KeyIsolation {
+  const held = new Set<string>()
+  const id = (event: Pick<WidgetKeyEvent, 'key' | 'code'>) => event.code || event.key
+  return {
+    down(event, isolate) {
+      if (isolate) held.add(id(event))
+      else held.delete(id(event))
+      return isolate
+    },
+    up: (event) => held.delete(id(event)),
+    clear() { held.clear() },
+  }
+}
+
 // ---- readouts -------------------------------------------------------------------------------
 
 const code = (value: number) => Math.round(value * 255)

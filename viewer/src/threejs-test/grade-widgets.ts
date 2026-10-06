@@ -9,20 +9,22 @@
 // Canvas 2D at the device pixel ratio: one ResizeObserver per canvas (the device-pixel box where
 // the browser reports it), drawn at most once per animation frame and not at all while hidden.
 // Pointers: touch-action none, pointer capture and stopPropagation on pointerdown, so neither the
-// panel nor the camera sees a widget drag. On the curves a finger that misses every point and
-// swipes mostly vertically lets go and scrolls the panel by hand; wheels always hold on. A focused
-// widget keeps every key from the app but Tab and Ctrl/Cmd shortcuts (the section undoes on
-// Ctrl+Z). The geometry, gestures and keys are pure, in grade-widget-logic.ts.
+// panel nor the camera sees a widget drag. A press changes nothing until the pointer has moved
+// past the slop. On the curves a finger that misses every point and swipes mostly vertically lets
+// go and scrolls the panel by hand; wheels always hold on. A focused widget keeps every key from
+// the app but Tab and Ctrl/Cmd shortcuts (the section undoes on Ctrl+Z), and a keyup only when it
+// kept the keydown. The geometry, gestures and keys are pure, in grade-widget-logic.ts.
 import {
   insertPoint, isDefaultToneCurve, movePoint, removePoint, snapNeutral, TONE_CURVE, type CurveDomain, type Pt,
 } from './grade-curves.ts'
 import { CURVE_CHANNELS, type CurveChannel, type GradeCurves, type Puck } from './grade-model.ts'
 import {
-  bufferSize, CANOPY_HUES, continuePuck, curvePlot, curveReadout, discColour, dragPuck, dragSlopPx, fromCanvas,
-  hitPoint, hueCurveAt, hueCurveSamples, hueDomain, huePlot, hueReadout, hueStrip, isDoubleTap, localPoint,
-  MINI_WHEEL_PAD_PX, missIntent, NUDGE_COMMIT_MS, nudgePuck, outsideBy, pointKey, puckToCanvas, REMOVE_OUTSIDE_PX,
-  renderDisc, samePuck, stepSelection, storedPuck, toCanvas, toneCurveAt, toneCurveSamples, WHEEL_PAD_PX,
-  wheelGeometry, wheelKey, widgetIsolatesKey, wrappedXs, type HueMode, type PlotBox, type Tap,
+  bufferSize, CANOPY_HUES, continuePuck, createKeyIsolation, curveKeyAction, curvePlot, curveReadout, discColour,
+  dragPuck, dragSlopPx, fromCanvas, hitPoint, hueCurveAt, hueCurveSamples, hueDomain, huePlot, hueReadout, hueStrip,
+  isDoubleTap, isModifierKey, isShortcut, localPoint, MINI_WHEEL_PAD_PX, missIntent, NUDGE_COMMIT_MS, nudgePuck,
+  outsideBy, puckToCanvas, REMOVE_OUTSIDE_PX, renderDisc, samePuck, stepSelection, storedPuck, toCanvas, toneCurveAt,
+  toneCurveSamples, WHEEL_PAD_PX, wheelGeometry, wheelKey, widgetIsolatesKey, wrappedXs, type HueMode, type PlotBox,
+  type Tap,
 } from './grade-widget-logic.ts'
 
 /** How a widget tells the editor about an edit. */
@@ -31,8 +33,9 @@ export interface WidgetHooks {
   onInput(): void
   /** An edit has ended: an undo step, the final bake, compile-in. */
   onCommit(): void
-  /** A pointer has taken hold to edit (not to scroll): the editor's peek, until pointerup. */
-  onGrab?(): void
+  /** A pointer has taken hold to edit (not to scroll): the editor's peek, until that pointer
+   *  lifts. */
+  onGrab?(pointerId: number): void
 }
 
 /** What every widget offers the editor. */
@@ -171,6 +174,9 @@ function release(canvas: HTMLCanvasElement, pointerId: number): void {
   if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
 }
 
+/** AltGr held, where the browser reports it (getModifierState is absent on a synthetic event). */
+const altGraphOf = (event: KeyboardEvent) => event.getModifierState?.('AltGraph') === true
+
 /** An arrow-key burst's commit, NUDGE_COMMIT_MS after the last key; flush() commits it now. */
 function createNudgeCommit(commit: () => void) {
   let timer = 0
@@ -220,8 +226,9 @@ export type ColourWheel = GradeWidget
  * A colour wheel: the disc coloured with the tint each direction adds (rendered once per size), a
  * crosshair at neutral, the rim at |puck| = 1, and the puck. Dragging moves the puck relative to
  * where it was, like Resolve: drag / (2 · radius), a quarter with Shift, kept in the disc and
- * snapped (snapPuck). A double click or double tap (300 ms, 12 px) resets it; so does 0. Arrows
- * nudge it by 0.01 (Shift 0.1).
+ * snapped (snapPuck) — once the pointer has moved past the slop (dragSlopPx), then the whole way
+ * from the press, so a tap that jitters moves nothing. A double click or double tap (300 ms,
+ * 12 px) resets it; so does 0. Arrows nudge it by 0.01 (Shift 0.1).
  */
 export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWheelOptions): ColourWheel {
   const mini = options.mini === true || !options.set
@@ -316,8 +323,15 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
   /** The unsnapped puck drags and nudges carry along (continuePuck). */
   let raw: Puck | null = null
   let lastDown: Tap | null = null
-  let gesture: { id: number; x: number; y: number; changed: boolean; inert: boolean } | null = null
+  /** A press: where it went down (x0, y0) and where the pointer was last (x, y); `armed` once it
+   *  has moved past the slop; `inert` for the second press of a double tap, which only waits to
+   *  lift. */
+  let gesture: {
+    id: number; pointerType: string; x0: number; y0: number; x: number; y: number
+    armed: boolean; changed: boolean; inert: boolean
+  } | null = null
   const nudge = createNudgeCommit(onCommit)
+  const keys = createKeyIsolation()
 
   /** Writes the puck when it differs; true when it did. */
   const write = (puck: Puck) => {
@@ -335,10 +349,14 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
     capture(canvas, event.pointerId)
     canvas.focus({ preventScroll: true })
     const tap: Tap = { time: event.timeStamp, x: event.clientX, y: event.clientY }
+    const press = {
+      id: event.pointerId, pointerType: event.pointerType, x0: event.clientX, y0: event.clientY,
+      x: event.clientX, y: event.clientY, armed: false, changed: false,
+    }
     if (isDoubleTap(lastDown, tap)) {
       lastDown = null
       raw = null
-      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, changed: false, inert: true }
+      gesture = { ...press, inert: true }
       if (write({ u: 0, v: 0 })) {
         onInput()
         onCommit()
@@ -347,12 +365,20 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
     }
     lastDown = tap
     raw = continuePuck(raw, options.get())
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, changed: false, inert: false }
-    hooks.onGrab?.()
+    gesture = { ...press, inert: false }
   }
 
   const onPointerMove = (event: PointerEvent) => {
     if (!gesture || event.pointerId !== gesture.id || gesture.inert) return
+    if (!gesture.armed) {
+      // Nothing moves until the pointer is past the slop, as on the curves; then the drag counts
+      // from the press, since gesture.x and y are still there.
+      if (Math.hypot(event.clientX - gesture.x0, event.clientY - gesture.y0) <= dragSlopPx(gesture.pointerType)) return
+      gesture.armed = true
+      // A press that drags is no first tap of a double tap.
+      lastDown = null
+      hooks.onGrab?.(gesture.id)
+    }
     const dx = event.clientX - gesture.x
     const dy = event.clientY - gesture.y
     gesture.x = event.clientX
@@ -361,8 +387,6 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
     raw = dragPuck(raw ?? options.get(), dx, dy, geometry().radius, event.shiftKey)
     if (write(storedPuck(raw))) {
       gesture.changed = true
-      // A press that moved the puck is no first tap of a double tap.
-      lastDown = null
       onInput()
     }
   }
@@ -376,29 +400,32 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
   }
 
   const onKey = (event: KeyboardEvent) => {
-    const shortcut = event.ctrlKey || event.metaKey
-    if (event.type === 'keydown') {
-      const action = shortcut || event.altKey ? null : wheelKey(event.key, event.shiftKey)
-      if (action?.action === 'nudge') {
-        event.preventDefault()
-        raw = nudgePuck(continuePuck(raw, options.get()), action.du, action.dv)
-        if (write(storedPuck(raw))) {
-          onInput()
-          nudge.schedule()
-        }
-      } else {
-        nudge.flush()
-        if (action?.action === 'reset') {
-          event.preventDefault()
-          raw = null
-          if (write({ u: 0, v: 0 })) {
-            onInput()
-            onCommit()
-          }
-        } else if (action?.action === 'blur') canvas.blur()
-      }
+    if (event.type !== 'keydown') {
+      if (keys.up(event)) event.stopPropagation()
+      return
     }
-    if (widgetIsolatesKey(event.key, shortcut)) event.stopPropagation()
+    const shortcut = isShortcut(event, altGraphOf(event))
+    if (keys.down(event, widgetIsolatesKey(event.key, shortcut))) event.stopPropagation()
+    const action = shortcut || event.altKey ? null : wheelKey(event.key, event.shiftKey)
+    if (action?.action === 'nudge') {
+      event.preventDefault()
+      raw = nudgePuck(continuePuck(raw, options.get()), action.du, action.dv)
+      if (write(storedPuck(raw))) {
+        onInput()
+        nudge.schedule()
+      }
+      return
+    }
+    // Any other key ends an arrow-key run as its own undo step; a modifier alone does not.
+    if (!isModifierKey(event.key)) nudge.flush()
+    if (action?.action === 'reset') {
+      event.preventDefault()
+      raw = null
+      if (write({ u: 0, v: 0 })) {
+        onInput()
+        onCommit()
+      }
+    } else if (action?.action === 'blur') canvas.blur()
   }
 
   const unlisten = listenAll([
@@ -409,12 +436,20 @@ export function createColourWheel(canvas: HTMLCanvasElement, options: ColourWhee
     [canvas, 'lostpointercapture', onPointerEnd],
     [canvas, 'keydown', onKey],
     [canvas, 'keyup', onKey],
-    [canvas, 'blur', () => nudge.flush()],
+    [canvas, 'blur', () => {
+      nudge.flush()
+      keys.clear()
+    }],
     [canvas, 'contextmenu', (event: Event) => event.preventDefault()],
   ])
 
   return {
-    redraw: surface.schedule,
+    redraw() {
+      // The state may have been replaced, or the wheel now edits another puck (the Primary
+      // minis): an unsnapped puck left from before would carry over. A drag keeps its own.
+      if (!gesture) raw = null
+      surface.schedule()
+    },
     flush: nudge.flush,
     setLabel(label) { canvas.setAttribute('aria-label', label) },
     dispose() {
@@ -481,6 +516,7 @@ function createPointEditor(canvas: HTMLCanvasElement, spec: PointEditorSpec): Po
   let lastTap: (Tap & { index: number }) | null = null
   let gesture: PointGesture | null = null
   const nudge = createNudgeCommit(() => hooks.onCommit())
+  const keys = createKeyIsolation()
 
   const surface = createSurface(canvas, draw)
   const box = () => spec.plot(surface.width, surface.height)
@@ -641,20 +677,22 @@ function createPointEditor(canvas: HTMLCanvasElement, spec: PointEditorSpec): Po
         kind: 'point', id: miss.id, pointerType: miss.pointerType, x0: miss.x0, y0: miss.y0,
         tap: { time: event.timeStamp, x: event.clientX, y: event.clientY }, index, offsetX: 0, offsetY: 0, armed: true, changed: true,
       }
-      hooks.onGrab?.()
+      hooks.onGrab?.(miss.id)
     }
     const drag = gesture
     if (!drag.armed) {
       if (Math.hypot(x - drag.x0, y - drag.y0) <= dragSlopPx(drag.pointerType)) return
       drag.armed = true
       lastTap = null
-      hooks.onGrab?.()
+      hooks.onGrab?.(drag.id)
     }
     const d = spec.domain()
     const points = spec.points()
     const plot = box()
     const end = !d.periodic && (drag.index === 0 || drag.index === points.length - 1)
-    if (!end && outsideBy(x, y, plot, d.periodic) > REMOVE_OUTSIDE_PX) {
+    // Where the point would go, not the pointer: it follows the pointer at the offset it was
+    // taken at.
+    if (!end && outsideBy(x + drag.offsetX, y + drag.offsetY, plot, d.periodic) > REMOVE_OUTSIDE_PX) {
       // Dragged off the plot: gone.
       const removed = removePoint(points, drag.index, d)
       if (removed) {
@@ -693,44 +731,47 @@ function createPointEditor(canvas: HTMLCanvasElement, spec: PointEditorSpec): Po
   }
 
   const onKey = (event: KeyboardEvent) => {
-    const shortcut = event.ctrlKey || event.metaKey
-    if (event.type === 'keydown') {
-      const d = spec.domain()
-      const action = shortcut || event.altKey ? null : pointKey(event.key, event.shiftKey, d)
-      if (action?.action !== 'nudge') nudge.flush()
-      const points = spec.points()
-      switch (action?.action) {
-        case 'nudge': {
-          event.preventDefault()
-          if (selected < 0 || selected >= points.length) {
-            // The first arrow picks a point; the next ones move it.
-            selected = stepSelection(-1, points.length, 1)
-            surface.schedule()
-            break
-          }
-          const [px, py] = points[selected]
-          const moved = movePoint(points, selected, px + action.dx, py + action.dy, d)
-          if (moved && !samePoints(moved.points, points)) {
-            write(moved.points, moved.index)
-            nudge.schedule()
-          }
-          break
-        }
-        case 'select':
-          event.preventDefault()
-          selected = stepSelection(selected, points.length, action.step)
+    if (event.type !== 'keydown') {
+      if (keys.up(event)) event.stopPropagation()
+      return
+    }
+    const altGraph = altGraphOf(event)
+    if (keys.down(event, widgetIsolatesKey(event.key, isShortcut(event, altGraph)))) event.stopPropagation()
+    const d = spec.domain()
+    const action = curveKeyAction(event, altGraph, d)
+    // Any other key ends an arrow-key run as its own undo step; a modifier alone does not.
+    if (action?.action !== 'nudge' && !isModifierKey(event.key)) nudge.flush()
+    const points = spec.points()
+    switch (action?.action) {
+      case 'nudge': {
+        event.preventDefault()
+        if (selected < 0 || selected >= points.length) {
+          // The first arrow picks a point; the next ones move it.
+          selected = stepSelection(-1, points.length, 1)
           surface.schedule()
           break
-        case 'remove':
-          event.preventDefault()
-          removeSelected()
-          break
-        case 'blur':
-          canvas.blur()
-          break
+        }
+        const [px, py] = points[selected]
+        const moved = movePoint(points, selected, px + action.dx, py + action.dy, d)
+        if (moved && !samePoints(moved.points, points)) {
+          write(moved.points, moved.index)
+          nudge.schedule()
+        }
+        break
       }
+      case 'select':
+        event.preventDefault()
+        selected = stepSelection(selected, points.length, action.step)
+        surface.schedule()
+        break
+      case 'remove':
+        event.preventDefault()
+        removeSelected()
+        break
+      case 'blur':
+        canvas.blur()
+        break
     }
-    if (widgetIsolatesKey(event.key, shortcut)) event.stopPropagation()
   }
 
   const onRemoveClick = () => {
@@ -745,7 +786,10 @@ function createPointEditor(canvas: HTMLCanvasElement, spec: PointEditorSpec): Po
     [canvas, 'lostpointercapture', onPointerEnd],
     [canvas, 'keydown', onKey],
     [canvas, 'keyup', onKey],
-    [canvas, 'blur', () => nudge.flush()],
+    [canvas, 'blur', () => {
+      nudge.flush()
+      keys.clear()
+    }],
     [canvas, 'contextmenu', (event: Event) => event.preventDefault()],
   ]
   if (spec.removeButton) listeners.push([spec.removeButton, 'click', onRemoveClick])

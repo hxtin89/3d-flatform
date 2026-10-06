@@ -4,12 +4,13 @@ import assert from 'node:assert/strict'
 import { HUE_LUMA_CURVE, HUE_SAT_CURVE, insertPoint, movePoint, TONE_CURVE, type Pt } from './grade-curves.ts'
 import { luma, snapPuck, wheelChannels, type Puck } from './grade-model.ts'
 import {
-  bufferSize, canvasToPuck, clampToDisc, continuePuck, curvePlot, curveReadout, discColour, DOUBLE_TAP_MS,
-  DOUBLE_TAP_PX, dragPuck, dragSlopPx, fromCanvas, HIT_RADIUS_MOUSE_PX, HIT_RADIUS_TOUCH_PX, hitPoint, hitRadii,
-  hitRadiusPx, hueCurveAt, hueCurveSamples, hueDomain, huePlot, hueReadout, hueStrip, isDoubleTap, localPoint,
-  missIntent, nudgePuck, nudgeSteps, outsideBy, pointKey, PUCK_STEP, PUCK_STEP_SHIFT, puckAngle, puckReadout,
-  puckToCanvas, REMOVE_OUTSIDE_PX, renderDisc, stepSelection, storedPuck, toCanvas, toneCurveAt, toneCurveSamples,
-  wheelGeometry, wheelKey, wheelReadout, widgetIsolatesKey, wrappedXs, type PlotBox,
+  bufferSize, canvasToPuck, clampToDisc, continuePuck, createKeyIsolation, curveKeyAction, curvePlot, curveReadout,
+  discColour, DOUBLE_TAP_MS, DOUBLE_TAP_PX, dragPuck, dragSlopPx, fromCanvas, HIT_RADIUS_MOUSE_PX, HIT_RADIUS_TOUCH_PX,
+  hitPoint, hitRadii, hitRadiusPx, hueCurveAt, hueCurveSamples, hueDomain, huePlot, hueReadout, hueStrip, isDoubleTap,
+  isModifierKey, isShortcut, localPoint, missIntent, nudgePuck, nudgeSteps, outsideBy, pointKey, PUCK_STEP,
+  PUCK_STEP_SHIFT, puckAngle, puckReadout, puckToCanvas, REMOVE_OUTSIDE_PX, renderDisc, stepSelection, storedPuck,
+  toCanvas, toneCurveAt, toneCurveSamples, wheelGeometry, wheelKey, wheelReadout, widgetIsolatesKey, wrappedXs,
+  type PlotBox, type WidgetKeyEvent,
 } from './grade-widget-logic.ts'
 
 const close = (a: number, b: number, eps = 1e-12) => Math.abs(a - b) <= eps
@@ -315,6 +316,62 @@ test('a focused widget keeps every key from the app but Tab and Ctrl/Cmd shortcu
   }
   assert.equal(widgetIsolatesKey('Tab', false), false)
   assert.equal(widgetIsolatesKey('z', true), false, 'Ctrl+Z goes on to the section, which undoes')
+})
+
+test('a keyup is kept from the app only when its keydown was, so a key pressed elsewhere is let go', () => {
+  const keys = createKeyIsolation()
+  const shift = { key: 'Shift', code: 'ShiftLeft' }
+  // Shift went down over the map (keyboard navigation holds it) and comes up over a widget.
+  assert.equal(keys.up(shift), false, 'its keyup reaches the window')
+  assert.equal(keys.down(shift, true), true)
+  assert.equal(keys.up(shift), true, 'pressed and let go here: kept')
+  assert.equal(keys.up(shift), false, 'once')
+  // Space activates a focused button on its keyup; keyboard navigation would cancel that.
+  keys.down({ key: ' ', code: 'Space' }, true)
+  assert.equal(keys.up({ key: ' ', code: 'Space' }), true)
+  // A keydown let through (Tab, a shortcut) lets its keyup through too, even after an earlier one.
+  keys.down({ key: 'z', code: 'KeyZ' }, true)
+  assert.equal(keys.down({ key: 'z', code: 'KeyZ' }, false), false)
+  assert.equal(keys.up({ key: 'z', code: 'KeyZ' }), false)
+  // Keys go by code: the key's character can change between down and up (Shift let go first).
+  keys.down({ key: '{', code: 'BracketLeft' }, true)
+  assert.equal(keys.up({ key: '[', code: 'BracketLeft' }), true)
+  // Without a code, by key.
+  keys.down({ key: 'w' }, true)
+  assert.equal(keys.up({ key: 'w', code: '' }), true)
+  // The focus going elsewhere sends the keyups elsewhere.
+  keys.down({ key: 'a', code: 'KeyA' }, true)
+  keys.clear()
+  assert.equal(keys.up({ key: 'a', code: 'KeyA' }), false)
+})
+
+test('[ and ] select on any layout: AltGr and Option are typing, Ctrl/Cmd shortcuts go on to the section', () => {
+  const key = (k: string, mods: Partial<WidgetKeyEvent> = {}): WidgetKeyEvent =>
+    ({ key: k, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods })
+  const next = { action: 'select', step: 1 }
+  // German Windows AltGr+9: ctrl and alt set, AltGraph where the browser reports it.
+  assert.deepEqual(curveKeyAction(key(']', { ctrlKey: true, altKey: true }), true, TONE_CURVE), next)
+  assert.deepEqual(curveKeyAction(key(']', { ctrlKey: true, altKey: true }), false, TONE_CURVE), next)
+  assert.equal(isShortcut(key(']', { ctrlKey: true, altKey: true }), false), false, 'so the widget keeps it')
+  // macOS Option+5.
+  assert.deepEqual(curveKeyAction(key('[', { altKey: true }), false, TONE_CURVE), { action: 'select', step: -1 })
+  // Ctrl/Cmd+Z is a shortcut: no action here, and it goes on to the section's undo.
+  for (const mods of [{ ctrlKey: true }, { metaKey: true }]) {
+    assert.equal(isShortcut(key('z', mods), false), true)
+    assert.equal(curveKeyAction(key('z', mods), false, TONE_CURVE), null)
+    assert.equal(widgetIsolatesKey('z', isShortcut(key('z', mods), false)), false)
+  }
+  assert.equal(isShortcut(key('z', { ctrlKey: true }), true), false, 'AltGr+Z types')
+  // Alt with anything else does nothing (Alt+arrows are the browser's).
+  assert.equal(curveKeyAction(key('ArrowLeft', { altKey: true }), false, TONE_CURVE), null)
+  assert.equal(curveKeyAction(key('ArrowLeft', { ctrlKey: true, altKey: true }), false, TONE_CURVE), null)
+  assert.equal(curveKeyAction(key('ArrowLeft'), true, TONE_CURVE), null, 'nor with AltGr')
+  assert.deepEqual(curveKeyAction(key('Delete'), false, TONE_CURVE), { action: 'remove' })
+})
+
+test('a modifier alone is no key that ends an arrow-key run', () => {
+  for (const key of ['Shift', 'Control', 'Alt', 'Meta', 'AltGraph', 'CapsLock']) assert.equal(isModifierKey(key), true, key)
+  for (const key of ['ArrowUp', 'Escape', '0', 'z', ' ', 'Tab']) assert.equal(isModifierKey(key), false, key)
 })
 
 test('curve readouts: point number, in and out as sRGB codes; hue and its value; a hint without a selection', () => {

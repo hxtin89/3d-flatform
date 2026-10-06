@@ -221,10 +221,26 @@ export function planPaste(grade: PastedGrade, held: readonly HeldLook[], maxLatt
     if (match) plan.look = { action: 'use', key: match.key, amount }
     else {
       plan.look = { action: 'fetch', file, amount }
-      notes.push(`Loading the look grades/${file}.`)
+      notes.push(pasteLoadingNote(file))
     }
   }
   return plan
+}
+
+/** planPaste's note for a look it has to fetch. */
+export const pasteLoadingNote = (file: string) => `Loading the look grades/${file}.`
+
+/** How the fetch of a pasted look ended. */
+export type PasteLookOutcome = 'loaded' | 'failed' | 'superseded'
+
+/** The paste status's note once a pasted look's fetch has ended, in place of pasteLoadingNote's.
+ *  Without its look the paste keeps the look there was. */
+export function pasteLookNote(file: string, outcome: PasteLookOutcome, message?: string): string {
+  if (outcome === 'loaded') return `Loaded the look grades/${file}.`
+  if (outcome === 'failed') {
+    return `The look grades/${file} was not loaded${message ? ` (${message})` : ''}; the rest was applied, the look left as it was.`
+  }
+  return `The look grades/${file} was not applied: the grade changed before it loaded.`
 }
 
 // ---- status lines ---------------------------------------------------------------------------
@@ -318,6 +334,33 @@ export function nudgeSplit(x: number, key: string, shift: boolean): number | nul
   return next === null ? null : Math.min(Math.max(Math.round(next * 1e6) / 1e6, 0), 1)
 }
 
+/** Room the split keeps between the line and the Design panel: half the 44 px handle and 8 px. */
+export const SPLIT_PANEL_GAP_PX = 30
+
+/** A client rect, as getBoundingClientRect gives it. */
+export interface ClientBox {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+/**
+ * The largest split that keeps the handle clear of the open Design panel (#gradeSplit sits under
+ * the panels, so a handle under one cannot be grabbed): the panel's left edge less `gap`, as a
+ * share of the window's width, when the panel reaches into the handle's row — the desktop layout.
+ * 1 when it does not (the phone sheet, below the handle) or there is no panel to keep clear of.
+ */
+export function splitLimit(panel: ClientBox | null, handle: Pick<ClientBox, 'top' | 'bottom'>, width: number,
+  gap = SPLIT_PANEL_GAP_PX): number {
+  if (!panel || !(width > 0) || panel.right <= panel.left) return 1
+  if (panel.bottom <= handle.top || panel.top >= handle.bottom) return 1
+  return Math.min(Math.max((panel.left - gap) / width, 0), 1)
+}
+
+/** The handle's aria-valuetext: how much of the frame shows without the grade, and where. */
+export const splitValueText = (x: number) => `${Math.round(x * 100)}% without the grade, on the left`
+
 // ---- keys (plan 5.2, 5.8) -------------------------------------------------------------------
 
 export interface KeyLike {
@@ -340,7 +383,8 @@ export function undoKeyAction(event: KeyLike, inTextArea: boolean): 'undo' | 're
 
 /** Keys the section keeps from the app's own handlers (keyboard navigation on window, main.ts on
  *  document, both bubbling): all but Tab, so W, A, S, D, Space, C and Enter never move the camera
- *  while a grade control has focus. */
+ *  while a grade control has focus. A keyup only when its keydown was kept (createKeyIsolation,
+ *  grade-widget-logic.ts). */
 export const isolatesKey = (key: string) => key !== 'Tab'
 
 // ---- controls -------------------------------------------------------------------------------
