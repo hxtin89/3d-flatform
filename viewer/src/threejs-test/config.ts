@@ -1547,6 +1547,10 @@ export const EXPERIENCE_CONFIG = {
      *  with the screen. 1.5 leaves today's look up to 1.5× that buffer's pixels (2560 × 1440
      *  marches at 0.48 of it, 4K at 0.32, both ½ asked for); 0 = no cap. */
     marchBudget: 1.5,
+    /** Hold the fog off, without a rebuild, while the camera is farther from the band's box
+     *  than `maxDistanceM` (no ray could reach it; the entrance flight's first seconds).
+     *  false = always march, for an A/B. */
+    visibilityGate: true as boolean,
     /** Samples per ray through the band. The main cost knob together with the resolution,
      *  about linear: +0.85 / +1.4 / +2.4 / +3.6 ms for 16 / 24 / 40 / 64 at half resolution
      *  (same measurement, same look; on it 24 looked all but the same as 40 and 16 showed

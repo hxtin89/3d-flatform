@@ -128,6 +128,10 @@ export interface GroundFogLayer {
   /** Per frame, before the render: camera, sun and sky, wind. */
   update(camera: THREE.PerspectiveCamera, daylight: DaylightState | null, deltaS: number): void
   isEnabled(): boolean
+  /** Hold the fog off without a rebuild (the gate below), or let it go again. */
+  setHeld(held: boolean): void
+  /** False while the gate holds the fog off: held, or the camera beyond any ray's reach. */
+  isActive(): boolean
   /** Returns true when the switch changed, so the pipeline rebuilds. */
   setEnabled(enabled: boolean): boolean
   getBuildOptions(): GroundFogBuildOptions
@@ -907,9 +911,13 @@ export function createGroundFogLayer(opts: {
       })
     }
     const march = temporalNode ? temporalNode.getTextureNode() : marchTexture
+    applyGate()
     return Fn(() => {
       const st = uv()
-      const scene = color
+      const scene = vec4(color).toVar()
+      // Closed gate (see `applyGate`): the scene as it is, without the upsample's taps.
+      const out = vec4(scene).toVar()
+      If(fogActive.greaterThan(0.5), () => {
       let fog: any
       // Not skipped at full resolution: the scale is a runtime setting, and there the taps'
       // weights collapse onto the pixel's own texel anyway.
@@ -940,10 +948,42 @@ export function createGroundFogLayer(opts: {
         }
         fog = sum.div(max(weight, 1e-6))
       }
-      if (options.debugView === 'light') return vec4(fog.rgb, 1)
-      if (options.debugView === 'transmittance') return vec4(vec3(fog.a), 1)
-      return vec4(scene.rgb.mul(fog.a).add(fog.rgb), scene.a)
+      if (options.debugView === 'light') out.assign(vec4(fog.rgb, 1))
+      else if (options.debugView === 'transmittance') out.assign(vec4(vec3(fog.a), 1))
+      else out.assign(vec4(scene.rgb.mul(fog.a).add(fog.rgb), scene.a))
+      })
+      return out
     })()
+  }
+
+  // ---------------------------------------------------------------- the gate
+  // Off without a rebuild: the march and the fog depth stop updating, the temporal filter
+  // pauses (and starts over on re-entry), the composite passes the scene through. Closed while
+  // held from outside (main.ts holds it behind the loader) and while the camera is farther
+  // from the band's box than any ray marches — the entrance flight's first seconds.
+  const fogActive = uniform(1)
+  let held = false
+  let gateOpen = true
+  const applyGate = () => {
+    fogActive.value = gateOpen ? 1 : 0
+    if (marchTexture) marchTexture.autoUpdate = gateOpen
+    if (fogDepthTexture) fogDepthTexture.autoUpdate = gateOpen
+    if (temporalNode) temporalNode.paused = !gateOpen
+  }
+  const setGate = (open: boolean) => {
+    if (open === gateOpen) return
+    gateOpen = open
+    if (open) temporalNode?.reset()
+    applyGate()
+  }
+  /** The camera's distance to the march's box (the shader's raw ENU frame, metres). */
+  const distanceToBand = (p: THREE.Vector3) => {
+    const margin = params.marginM
+    const top = Math.max(params.topM, params.puffCentreM + params.plumeHeightM, params.virtualCanopyM + params.veilHeightM)
+    const dx = Math.max(boundsMin.value.x - margin - p.x, 0, p.x - (boundsMax.value.x + margin))
+    const dy = Math.max(boundsMin.value.y - margin - p.y, 0, p.y - (boundsMax.value.y + margin))
+    const dz = Math.max(floorZ.value + params.bottomM - p.z, 0, p.z - (floorZ.value + top))
+    return Math.hypot(dx, dy, dz)
   }
 
   // ---------------------------------------------------------------- density preview
@@ -1135,7 +1175,18 @@ export function createGroundFogLayer(opts: {
         u.ambientNeutral.value.copy(daylight.daylightColor).multiplyScalar(intensity).multiply(params.tint)
       }
       syncUniforms()
+      // Rays stop at `maxDistanceM`: from farther than that from the band's box, none can
+      // reach any fog. Closes 2 % past it, opens again inside it.
+      const reach = params.maxDistanceM
+      const distance = distanceToBand(cameraEnu)
+      const inReach = CONFIG.visibilityGate === false || distance < (gateOpen ? reach * 1.02 : reach)
+      setGate(!held && inReach)
     },
+    setHeld(next) {
+      held = next
+      setGate(!held && gateOpen)
+    },
+    isActive: () => gateOpen,
     isEnabled: () => enabled,
     setEnabled(next) {
       if (next === enabled) return false

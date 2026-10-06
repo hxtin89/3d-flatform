@@ -115,7 +115,11 @@ export class FogTemporalNode extends TempNode {
     this.hasHistory = false
   }
 
+  /** Set while the fog is gated off (ground-fog.ts): no resolve, no copies. */
+  paused = false
+
   updateBefore(frame: any): boolean | undefined {
+    if (this.paused) return undefined
     const { renderer } = frame
     const size = renderer.getDrawingBufferSize(drawingBufferSize)
     const scale = this.options.resolutionScale()
