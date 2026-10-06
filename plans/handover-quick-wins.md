@@ -7,12 +7,11 @@ Covers the work of 2026-09-24 to 2026-10-05 on the ranked optimisation list (the
 
 ## 0. Start here (2026-10-06)
 
-**State (2026-10-06, evening):** `origin/sbb-main` = `de49bd1` (`9fa87e2` plus the real tower position
-and the Big trees layer, merged by another session). On top of it, **merged locally and not pushed**:
-`b7a2a09`, the point-memory readout (`35da422`, branch `sbb/point-memory-readout`; tree passed tsc, 88
-tests and the build). `sbb/quick-wins` = `c5b5abc` = `b7a2a09` plus the handover commits. Nothing is
-half-built and nothing is uncommitted. **To push, with the user's go-ahead:** from this worktree
-`git push origin b7a2a09:sbb-main`, then `git push origin sbb/point-memory-readout sbb/quick-wins`.
+**State (2026-10-06, evening):** everything in this file is merged and pushed. `sbb-main` =
+`origin/sbb-main` = `b7a2a09`: `de49bd1` (`9fa87e2` plus the real tower position and the Big trees
+layer, merged by another session) plus the point-memory readout (`35da422`, branch
+`sbb/point-memory-readout`; tree passed tsc, 88 tests and the build). `sbb/quick-wins` = `b7a2a09` plus
+the handover commits, pushed. Nothing is half-built and nothing is uncommitted.
 
 **The memory readout is built:** `__wild.dots.memory` in the console (point-memory.ts, section 9 step 1).
 First reading, hidden pane, constrained tier, landing view: 40 resident / 26 selected / 26 drawn tiles,
@@ -75,9 +74,9 @@ other item from the old list, re-check it against the current code first (it wor
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | `de49bd1` pushed; `b7a2a09` local | Pushed 2026-10-05/06. Holds rounds 1-4 below, `e996937` (panels start minimized), `e1eb4a1` (measured model heights) and `de49bd1` (real tower position, Big trees). `b7a2a09` adds the point-memory readout and waits for the push. `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
-| `sbb/point-memory-readout` | `b7a2a09` | The readout (`35da422`) off `de49bd1`, fast-forwarded to the merge; local. |
-| `sbb/quick-wins` | `c5b5abc` | `b7a2a09` plus the handover commits (local). |
+| `sbb-main` | `b7a2a09` | Pushed 2026-10-06. Holds rounds 1-4 below, `e996937` (panels start minimized), `e1eb4a1` (measured model heights), `de49bd1` (real tower position, Big trees) and the point-memory readout. `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
+| `sbb/point-memory-readout` | `b7a2a09` | The readout (`35da422`) off `de49bd1`, fast-forwarded to the merge; pushed. |
+| `sbb/quick-wins` | `b7a2a09` + handover | The handover commits on top of sbb-main; pushed. |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
   on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
