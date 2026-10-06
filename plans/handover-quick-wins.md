@@ -7,10 +7,19 @@ Covers the work of 2026-09-24 to 2026-10-05 on the ranked optimisation list (the
 
 ## 0. Start here (2026-10-06)
 
-**State:** everything in this file is merged and pushed. `sbb-main` = `origin/sbb-main` = `de49bd1`
-(`9fa87e2` plus the real tower position and the Big trees layer, merged by another session), and
-`sbb/quick-wins` is `9fa87e2` plus the handover commits. Nothing is half-built and nothing is
-uncommitted.
+**State (2026-10-06, evening):** `origin/sbb-main` = `de49bd1` (`9fa87e2` plus the real tower position
+and the Big trees layer, merged by another session). On top of it, **merged locally and not pushed**:
+`b7a2a09`, the point-memory readout (`35da422`, branch `sbb/point-memory-readout`; tree passed tsc, 88
+tests and the build). `sbb/quick-wins` = `c5b5abc` = `b7a2a09` plus the handover commits. Nothing is
+half-built and nothing is uncommitted. **To push, with the user's go-ahead:** from this worktree
+`git push origin b7a2a09:sbb-main`, then `git push origin sbb/point-memory-readout sbb/quick-wins`.
+
+**The memory readout is built:** `__wild.dots.memory` in the console (point-memory.ts, section 9 step 1).
+First reading, hidden pane, constrained tier, landing view: 40 resident / 26 selected / 26 drawn tiles,
+d = 0.65 by tiles and 0.67 by points; 34 point textures on the GPU, 35.5 MiB (26 drawn 28.2 MiB, 8
+hidden 7.3 MiB, 0 orphans) against the unload plugin's 33 MiB estimate; CPU point data 42.5 MiB
+(16.1 B/pt); JS heap 150 MiB. The cache floor is 900 tiles, so d falls as a session roams; read it
+after a minute of roaming too.
 
 **2026-10-06, late:** the user stopped the one-mesh-per-parrot work mid-build: "leave the parrots as
 they are. I want to get rid of them at all." The parrot flock is to be removed from the app, not
@@ -54,10 +63,7 @@ measure first.
    calibration (2.4), the phone memory reading that gates 2.3, and the phone-only 3.x items.
 
 **Next for a session, in the recommended order:**
-1. **Memory readout for the device session** (step 1 of section 9): the drawn share of resident point
-   tiles, uploaded point-texture bytes from three's `Info.memoryMap`, next to `__wild.dots.state`.
-   About half a day; it lets the device session also decide 2.3.
-2. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
+1. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
    arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation press
    (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
 
@@ -69,8 +75,9 @@ other item from the old list, re-check it against the current code first (it wor
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | `9fa87e2` | Pushed 2026-10-05. Holds rounds 1-4 below, `e996937` (panels start minimized) and `e1eb4a1` (measured model heights). `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
-| `sbb/quick-wins` | `9fa87e2` + this handover | Equal to `sbb-main` apart from the handover commit on top (local). |
+| `sbb-main` | `de49bd1` pushed; `b7a2a09` local | Pushed 2026-10-05/06. Holds rounds 1-4 below, `e996937` (panels start minimized), `e1eb4a1` (measured model heights) and `de49bd1` (real tower position, Big trees). `b7a2a09` adds the point-memory readout and waits for the push. `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
+| `sbb/point-memory-readout` | `b7a2a09` | The readout (`35da422`) off `de49bd1`, fast-forwarded to the merge; local. |
+| `sbb/quick-wins` | `c5b5abc` | `b7a2a09` plus the handover commits (local). |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
   on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
@@ -165,7 +172,7 @@ measured on a phone or in a visible window yet.
 | First pivot press (~100 ms in the pane) | Confirms or refutes a first-press hitch | Visible Chrome window: rotate, read `__wild.pivotDebug.pickMs` |
 | Phone and visible-window runs of all of the above | Real numbers instead of pane ratios | A device; the pane cannot run the entrance flight (loader stays in "finishing") |
 | Main folder fast-forward + `sbb-prod` rebuild | Ships rounds 3 and 4 | The user |
-| Memory readout for the device session | Lets the device session decide 2.3 | Section 9, step 1; about half a day |
+| Memory readout for the device session | Built 2026-10-06 (`35da422`): `__wild.dots.memory`, see section 9 step 1 | Read it on each device in the calibration run, at the landing view and after a minute of roaming |
 | Map ceiling, medium and constrained | Same sharpening on those tiers | Not measured. The user chose strong only (2026-10-05): 256 → 352 MiB at the landing view gave 251 → 337 map tiles and 68 → 136 drawn, +88 MiB GPU; only the band beyond the dome changed (3 % of the frame, the horizon rows most). `setMemoryBudget` now also asks for a traversal (`c74862f`), so a raised ceiling loads under a still camera |
 | 2.3 One copy of each point tile | Parked: no evidence that memory is short | Rechecked 2026-10-05, see section 9. Do not build the spec. First: a small memory instrument, read during the pending phone calibration |
 | 3.2 Tile preparation in a worker | −0.6 to −2.5 ms main thread per arriving tile | Measure first in a visible window (`__cost.report()` over a pan): do arrival frames now lead p95/p99 on the pulled default? Mainly for phones |
@@ -305,11 +312,22 @@ And it is not needed now:
   iOS kills by the WebContent heap alone.
 
 Order if memory ever becomes the question:
-1. **Instrument (S).** Next to `__wild.dots.state` (CPU bytes per point already exist there): d,
-   uploaded point-texture bytes counted from three's `Info.memoryMap` for `cloudPointData` textures
-   (not the plugin's `estimatedGpuBytes`, which undercounts), and the tab footprint. Read it in the
-   pending phone calibration session. Safari's Memory timeline probably omits GPU-process (WebGPU)
-   memory, so the footprint needs a GPU-inclusive reading.
+1. **Instrument (S) — built 2026-10-06 (`35da422`, `point-memory.ts`, 3 tests).** `__wild.dots.memory`
+   next to `__wild.dots.state`: `tiles` and `points` as resident (every tile with a loaded model) /
+   selected (this frame's traversal) / drawn (selected and the dot mesh visible: not gated, not waiting
+   for its reveal); `drawnShare` = d by tiles and by points; `feeds` per feed; `gpu.pointTextures`
+   counted from three's `Info.memoryMap` for `cloudPointData` textures and split into drawn / hidden
+   (the GPU-resident duplicate the unload plugin frees above its target) / orphan (owned by no loaded
+   dot mesh: retired stand-ins, shader-held textures); `gpu.pointAttributes` (the instanced feed's
+   data, the pulled feed's corners and shared index); `cpu.pointMiB` (every distinct buffer of the
+   loaded dot meshes, once); `heap` from Chrome's `performance.memory` or null. Not the plugin's
+   `estimatedGpuBytes`, which is the library's per-tile estimate taken once on arrival.
+   First reading (pane, constrained, landing view): d 0.65 / 0.67, 35.5 MiB of point textures (26
+   drawn, 8 hidden, 0 orphan) against the plugin's 33 MiB, 42.5 MiB CPU, heap 150 MiB.
+   **What no page can read:** GPU memory and the tab's real footprint. The dev page is not
+   cross-origin isolated, so `measureUserAgentSpecificMemory` is unavailable; Safari has no
+   `performance.memory`, and its Memory timeline probably omits GPU-process (WebGPU) memory. Read the
+   footprint from the OS: Safari's or Chrome's task manager on the phone, during the calibration run.
 2. **Gate.** Proposed (not agreed): a reload or crash in a 5-minute roam, or an iPhone footprint of
    1.0 GB or more (two thirds of WebKit's ~1.5 GB WebContent soft limit, bug 277848), with point data
    at least 30 % of it.
