@@ -30,8 +30,9 @@
 // hidden by the opacity before the haze, recovered by dividing the haze back out.
 //
 // Shadows. A second, small bake: for every point of the cloud base the optical depth up to the
-// sun through the layer, mipmapped. A receiver — a point, the basemap, a fog sample —
-// projects itself along the sun onto the base and reads it: one fetch, no march.
+// sun through the layer, mipmapped, in as many steps as that slant needs. A receiver — a point,
+// the basemap, a fog sample — projects itself along the sun onto the base and reads it: one
+// fetch, no march (two while a new bake fades in: the shadows cross-fade with the clouds).
 import * as THREE from 'three'
 import { NodeMaterial, QuadMesh, RenderTarget } from 'three/webgpu'
 import * as TSL from 'three/tsl'
@@ -149,7 +150,8 @@ function standIn(mips: boolean, repeat: boolean): THREE.DataTexture {
 }
 const placeholder = standIn(true, false)
 const group = (node: any) => node.setGroup(renderGroup)
-export const cloudShadow = {
+/** One shadow map and the projection it was baked with. */
+const shadowMapNodes = () => ({
   map: texture(placeholder),
   /** The map's centre and half extent on the cloud base, ENU metres. */
   centre: group(uniform(new THREE.Vector2())),
@@ -157,6 +159,16 @@ export const cloudShadow = {
   /** Altitude of the cloud base in the shader's ENU frame (metres), and the sun there. */
   baseZ: group(uniform(1000)),
   sun: group(uniform(new THREE.Vector3(0, 0, 1))),
+})
+const currentShadow = shadowMapNodes()
+/** The map of the panorama being faded out, read until the cross-fade is over: the shadows
+ *  ease into a new bake with the clouds instead of switching in one frame. */
+const previousShadow = shadowMapNodes()
+export const cloudShadow = {
+  ...currentShadow,
+  previous: previousShadow,
+  /** 0 → 1 over the panoramas' cross-fade: the share of the new map. */
+  blend: group(uniform(1)),
   strength: group(uniform(1)),
   lodBias: group(uniform(1)),
   /** 0 while there are no clouds (or the map is not ready): fully lit. */
@@ -165,18 +177,30 @@ export const cloudShadow = {
   mean: group(uniform(1)),
 }
 
-/** Transmittance of the direct sun through the sky's clouds to an ENU position (metres, the
- *  shader's raw frame). `extraLod` softens further (the fog reads blurrier levels). */
-export function cloudTransmittance(enu: any, extraLod: any = null): any {
-  const s = cloudShadow.sun
-  const sz = max(s.z, 0.05)
-  const q = enu.xy.add(s.xy.div(sz).mul(cloudShadow.baseZ.sub(enu.z)))
-  const st = q.sub(cloudShadow.centre).div(cloudShadow.half.mul(2)).add(0.5)
-  const level = extraLod === null ? cloudShadow.lodBias : cloudShadow.lodBias.add(extraLod)
-  const tau = cloudShadow.map.sample(vec2(st.x, st.y.oneMinus())).level(level).r
+/** The sun's transmittance from one map, its mean beyond the map's edge. */
+const shadowLookup = (m: ReturnType<typeof shadowMapNodes>, enu: any, level: any) => {
+  const sz = max(m.sun.z, 0.05)
+  const q = enu.xy.add(m.sun.xy.div(sz).mul(m.baseZ.sub(enu.z)))
+  const st = q.sub(m.centre).div(m.half.mul(2)).add(0.5)
+  const tau = m.map.sample(vec2(st.x, st.y.oneMinus())).level(level).r
   const inside = float(1).sub(smoothstep(0.45, 0.5, max(abs(st.x.sub(0.5)), abs(st.y.sub(0.5)))))
-  const local = exp(tau.mul(cloudShadow.strength).negate())
-  return mix(float(1), mix(cloudShadow.mean, local, inside), cloudShadow.fade)
+  return mix(cloudShadow.mean, exp(tau.mul(cloudShadow.strength).negate()), inside)
+}
+
+/** Transmittance of the direct sun through the sky's clouds to an ENU position (metres, the
+ *  shader's raw frame). `extraLod` softens further (the fog reads blurrier levels). During a
+ *  cross-fade the old map is read too (a uniform branch: no second read the rest of the time);
+ *  a variable assigned by statements, as WebGL's builder needs (sky-atmosphere.ts capture). */
+export function cloudTransmittance(enu: any, extraLod: any = null): any {
+  return Fn(() => {
+    const level = extraLod === null ? cloudShadow.lodBias : cloudShadow.lodBias.add(extraLod)
+    const shadow = shadowLookup(currentShadow, enu, level).toVar()
+    If(cloudShadow.blend.lessThan(0.999), () => {
+      shadow.assign(mix(shadowLookup(previousShadow, enu, level), shadow, cloudShadow.blend))
+    })
+    const result = mix(float(1), shadow, cloudShadow.fade).toVar()
+    return result
+  })()
 }
 
 /** The presets from the config, as mutable looks. */
@@ -489,6 +513,10 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   const shadowSize = CONFIG.shadowSize
   const shadowCentre = uniform(new THREE.Vector2())
   const shadowHalf = uniform(16_000)
+  /** Steps along the slant through the layer: one per `shadowStepKm`, within the bounds. A
+   *  fixed 24 spaced them 500 m apart at a 10° sun (12 km of layer), and the shadows came out
+   *  as rows of dots, one per step. */
+  const shadowSteps = uniform(24, 'int')
   const shadowNode = Fn(() => {
     const st = uv()
     const q = shadowCentre.add(vec2(st.x.sub(0.5), st.y.oneMinus().sub(0.5)).mul(shadowHalf.mul(2)))
@@ -496,11 +524,13 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     const start = vec3(q.sub(u.eyeXY.mul(1000)).div(1000), air.bottom.add(u.base))
     const sz = max(u.sun.z, 0.05)
     const span = min(u.thickness.div(sz), CONFIG.maxSlabKm)
-    const steps = 24
-    const dt = span.div(steps)
+    const dt = span.div(float(shadowSteps))
+    // A fixed per-texel offset: what pattern the steps leave becomes grain, which the map's
+    // blur (its mips, read at a bias) averages out.
+    const jitter = TSL.fract(sin(dot(TSL.screenCoordinate.xy, vec2(12.9898, 78.233))).mul(43758.5453))
     const tau = float(0).toVar()
-    Loop(steps, ({ i }: { i: any }) => {
-      const p = start.add(u.sun.mul(float(i).add(0.5).mul(dt)))
+    Loop({ start: int(0), end: shadowSteps, type: 'int', condition: '<' }, ({ i }: { i: any }) => {
+      const p = start.add(u.sun.mul(float(i).add(jitter).mul(dt)))
       tau.addAssign(densityAt(p, false).sigma.mul(dt))
     })
     return vec4(tau.add(highDepthToSun(start)), 0, 0, 1)
@@ -541,7 +571,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       const clearAlpha = renderer.getClearAlpha()
       renderer.setClearColor(0x000000, 0)
       // The shadow map too: first drawn at the bake's end, sampled (faded out) before.
-      for (const target of [...panoramas, shadowTarget]) { renderer.setRenderTarget(target); renderer.clear() }
+      for (const target of [...panoramas, shadowTarget, previousShadowTarget]) { renderer.setRenderTarget(target); renderer.clear() }
       renderer.setRenderTarget(previous)
       renderer.setClearColor(clearColour, clearAlpha)
       panoramasCleared = true
@@ -555,12 +585,23 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       dirty = true
     }
   }
-  const shadowTarget = new RenderTarget(shadowSize, shadowSize, { type: THREE.HalfFloatType, depthBuffer: false })
-  shadowTarget.texture.name = 'sky-cloud-shadow'
-  shadowTarget.texture.minFilter = THREE.LinearMipmapLinearFilter
-  shadowTarget.texture.magFilter = THREE.LinearFilter
-  shadowTarget.texture.generateMipmaps = true
-  shadowTarget.texture.wrapS = shadowTarget.texture.wrapT = THREE.ClampToEdgeWrapping
+  const makeShadowTarget = (name: string) => {
+    const target = new RenderTarget(shadowSize, shadowSize, { type: THREE.HalfFloatType, depthBuffer: false })
+    target.texture.name = name
+    target.texture.minFilter = THREE.LinearMipmapLinearFilter
+    target.texture.magFilter = THREE.LinearFilter
+    target.texture.generateMipmaps = true
+    target.texture.wrapS = target.texture.wrapT = THREE.ClampToEdgeWrapping
+    return target
+  }
+  // Fixed roles, as the panoramas: the new map is drawn into `shadowTarget` after the old one
+  // is copied into `previousShadowTarget` — by a pass, so its mips are made too.
+  const shadowTarget = makeShadowTarget('sky-cloud-shadow')
+  const previousShadowTarget = makeShadowTarget('sky-cloud-shadow-previous')
+  const shadowCopyMaterial = new NodeMaterial()
+  shadowCopyMaterial.fragmentNode = texture(shadowTarget.texture).sample(uv()).level(0)
+  shadowCopyMaterial.name = 'sky-clouds-shadow-copy'
+  const shadowCopyQuad = new QuadMesh(shadowCopyMaterial)
 
   // The tent over the finished bake: wraps in azimuth (the texture repeats), clamps at the
   // horizon and zenith rows.
@@ -719,8 +760,15 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     const previous = renderer.getRenderTarget()
     renderer.setRenderTarget(currentTarget)
     denoiseQuad.render(renderer)
-    // The shadows and the display's lookup switch together with the clouds they belong to:
-    // the bake's uniforms are still the ones this panorama was made with.
+    // The shadows and the display's lookup move on together with the clouds they belong to,
+    // and fade over with them: the old map and its projection become the previous ones, the
+    // new map is drawn with the bake's uniforms, still the ones this panorama was made with.
+    renderer.setRenderTarget(previousShadowTarget)
+    shadowCopyQuad.render(renderer)
+    previousShadow.centre.value.copy(currentShadow.centre.value)
+    previousShadow.half.value = currentShadow.half.value
+    previousShadow.baseZ.value = currentShadow.baseZ.value
+    previousShadow.sun.value.copy(currentShadow.sun.value)
     renderer.setRenderTarget(shadowTarget)
     shadowQuad.render(renderer)
     renderer.setRenderTarget(previous)
@@ -735,6 +783,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     finished++
     blendValue = 0
     blend.value = 0
+    cloudShadow.blend.value = 0
     visible.value = 1
   }
   const scratchColor = new THREE.Color()
@@ -781,6 +830,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
       // the next bake makes them again, as a resize does.
       for (const target of panoramas) target.dispose()
       shadowTarget.dispose()
+      previousShadowTarget.dispose()
       panoramasCleared = false
       bakeActive = false
       bakeRow = 0
@@ -834,6 +884,8 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         const baseM = look.baseKm * 1000
         shadowCentre.value.set(sun.x / sz * baseM, sun.y / sz * baseM)
         shadowHalf.value = CONFIG.shadowHalfExtentM
+        const slantKm = Math.min(look.thicknessKm / sz, CONFIG.maxSlabKm)
+        shadowSteps.value = THREE.MathUtils.clamp(Math.ceil(slantKm / CONFIG.shadowStepKm), 24, CONFIG.shadowMaxSteps)
         pendingShadow.baseZ = baseM + cloudBaseOffsetZ
         // Haze in front of the sun's clouds, for recovering their opacity in the display.
         const meanKm = (look.baseKm + look.thicknessKm * 0.5) / Math.max(sun.z, 0.05)
@@ -877,21 +929,26 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
         // The very first bake fades in from nothing rather than from an empty panorama.
         blend.value = finished <= 1 ? 1 : blendValue
         visible.value = finished <= 1 ? blendValue : 1
+        cloudShadow.blend.value = blend.value
       }
     },
     dispose() {
       for (const target of panoramas) target.dispose()
       shadowTarget.dispose()
+      previousShadowTarget.dispose()
       bakeMaterial.dispose()
       denoiseMaterial.dispose()
       shadowMaterial.dispose()
+      shadowCopyMaterial.dispose()
       baker?.dispose()
       for (const t of new Set<THREE.Texture>([weatherNode.value, shapeNode.value, weatherTexture, shapeTexture])) t.dispose()
       cloudShadow.map.value = placeholder
+      previousShadow.map.value = placeholder
       cloudShadow.fade.value = 0
     },
   }
   cloudShadow.map.value = shadowTarget.texture
+  previousShadow.map.value = previousShadowTarget.texture
   // Debugging: the schedule's state and the current panorama's texels.
   ;(layer as any).debug = () => ({ finished, pending: dirty || bakeActive, blend: blend.value, visible: visible.value, altitudeFade: altitudeFade.value,
     bakeActive, bakeRow, shadowFade: cloudShadow.fade.value })

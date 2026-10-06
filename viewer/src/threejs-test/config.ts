@@ -1028,6 +1028,11 @@ export const EXPERIENCE_CONFIG = {
     rainDensityPerKm: 1.2,
     shadowSize: 512,
     shadowHalfExtentM: 16_000,
+    /** The cloud-shadow map's march toward the sun: one step per this many km of the slant
+     *  through the layer, at least 24, at most `shadowMaxSteps` (a 10° sun crosses 12 km of a
+     *  2 km layer). Drawn once per bake. */
+    shadowStepKm: 0.1,
+    shadowMaxSteps: 96,
     /** Weather situations. Each carries its own haze (aerosol optical depth). */
     presets: {
       clear: {
