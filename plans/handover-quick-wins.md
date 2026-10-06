@@ -1,41 +1,96 @@
 # Handover: quick wins, loader benchmark, second optimisation round
 
-Covers the work of 2026-09-24 to 2026-09-30 on the ranked optimisation list (the appendix of
+Covers the work of 2026-09-24 to 2026-10-05 on the ranked optimisation list (the appendix of
 `plans/handover-dot-geometry-ab.md`). The living write-up with every figure is the artifact
 **Canopy Quick Wins**: https://claude.ai/artifact/95759FcUacJzgYpYUjM48z — update it via its url
 (read first, then republish), changelog entry on top; never publish a second page.
+
+## 0. Start here (2026-10-06)
+
+**State:** everything in this file is merged and pushed. `sbb-main` = `origin/sbb-main` = `9fa87e2`,
+and `sbb/quick-wins` is the same plus this handover commit. Nothing is half-built and nothing is
+uncommitted.
+
+**Talk to the user in plain names, not item numbers.** The numbers are the IDs of the ranked list in
+the appendix of `plans/handover-dot-geometry-ab.md`: 1.x quick wins, 2.x bigger projects, 3.x
+measure first.
+
+| ID | Plain name | State |
+|---|---|---|
+| — | Pulled triangles (points drawn from a per-tile texture, one triangle each) | Built, the default |
+| — | Exact rotation pivot | Built |
+| — | Loader benchmark freeze on the Start screen | Built; device calibration open |
+| 1.1 | Tile bounds worked out on arrival | Built |
+| 1.2 | Effects compiled out while switched off | Built |
+| 1.3 | Faster ground probe | Built |
+| 1.4 | No point-cloud shader builds after Start | Built |
+| 1.5 | One shared near-cloud shader | Built |
+| 1.6 | Lighter parrot animation | Built |
+| 1.6b | One mesh per parrot | Open, small |
+| 1.8 | Basemap images freed after upload | Built |
+| 1.9 | Faster cloud-noise bake at boot | Built |
+| 1.10 | Smaller ground-patch mask | Built |
+| 1.11 | Closed HUD and panel cost nothing per frame | Built |
+| 2.1 | Point tiles parsed without a copy | Built |
+| 2.2 | Still frames skip the point-cloud tile update | Built |
+| 2.3 | One copy of each point tile in memory | Parked (section 9) |
+| 2.4 | Loader benchmark recalibrated for triangles | Open, needs devices |
+| 3.1–3.8 | Culling inside tiles, tile prep in a worker, edge softening, output pass, colour in vertex stage, smaller point data, fewer map tiles under the patch, Android labels | Open, each needs a measurement or a phone first |
+| — | Strong-tier map ceiling (whole map at the landing view) | Built 2026-10-05 |
+| B8 | Evicted point texture leak | Fixed 2026-10-05 |
+
+**Waiting on the user:**
+1. In the main folder: `git merge --ff-only origin/sbb-main` (its local `sbb-main` was still at
+   `ec64335` on 2026-10-06).
+2. Rebuild `sbb-prod`; the live page has none of rounds 3 and 4 yet.
+3. A device session with Jan (desktop, weak laptop, Android, iPhone). It covers the benchmark
+   calibration (2.4), the phone memory reading that gates 2.3, and the phone-only 3.x items.
+
+**Next for a session, in the recommended order; ask the user which:**
+1. **1.6b One mesh per parrot.** Draws 36 → 12, about 0.5 ms of render CPU in the pane. A shader
+   change: the texture is chosen per vertex. Small. Branch off `sbb-main`.
+2. **Memory readout for the device session** (step 1 of section 9): the drawn share of resident point
+   tiles, uploaded point-texture bytes from three's `Info.memoryMap`, next to `__wild.dots.state`.
+   About half a day; it lets the device session also decide 2.3.
+3. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
+   arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation press
+   (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
+
+**Do not:** build the 2.3 spec (section 9); raise the medium or constrained map ceilings before phone
+memory is known; propose merging into `main` (the user keeps `sbb-main` apart). Before building any
+other item from the old list, re-check it against the current code first (it worked for 2.3).
 
 ## 1. Where things stand
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | `ec64335` | Pushed 2026-10-05. Holds rounds 1-3 below, `e996937` (panels start minimized) and `e1eb4a1` (measured model heights). `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may still be at `e1eb4a1`: `git merge --ff-only origin/sbb-main` there. |
-| `sbb/quick-wins` | `09052c3` + docs | Local, not merged or pushed: `c74862f` raises the strong map ceiling (section 3), `c884f06` records the 2.3 recheck (section 9), `09052c3` fixes the evicted point texture leak (section 9). Pushed up to `ec64335`. |
+| `sbb-main` | `9fa87e2` | Pushed 2026-10-05. Holds rounds 1-4 below, `e996937` (panels start minimized) and `e1eb4a1` (measured model heights). `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
+| `sbb/quick-wins` | `9fa87e2` + this handover | Equal to `sbb-main` apart from the handover commit on top (local). |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
   on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
   back on `claude/point-reorder-thinning-flicker-f48d6c` (`30ed49e`, old main code): run
   `git checkout sbb/quick-wins` first. `sbb-main` cannot be checked out here (the main folder holds
   it); start new branches from it instead.
-- Dev server: `preview_start viewer-dev` (`.claude/launch.json`, port 5177). Check it serves this
-  worktree: `/src/threejs-test/still-frame.ts` must answer 200. Other ports get no basemap (the
-  local MapTiler key only answers listed ports).
+- Dev server: `preview_start viewer-dev` (`.claude/launch.json`, port 5177). `preview_start` reads
+  `launch.json` from the folder the session was launched in, so if the session started elsewhere,
+  run `BROWSER=none npx vite --port 5177 --strictPort` in `viewer/` in the background and
+  `preview_start {url}`. Check it serves this worktree: `/src/threejs-test/still-frame.ts` must answer
+  200. Other ports get no basemap (the local MapTiler key only answers listed ports).
 - The main folder `C:\projects\WIDE_3d-flatform` has `sbb-main` checked out and is shared with other
   sessions: check `git status` there before any merge, and never switch its branch.
-- Checks: `npx tsc --noEmit` and `npm run bench:verify` (84 tests) pass on `bdc8c68`;
-  `npm run build` succeeds.
-- Round 3 was merged on 2026-10-05 as `ec64335` (the user's call), built on a detached HEAD in this
-  worktree and pushed with `git push origin HEAD:sbb-main`: a worktree-isolated session may not run
-  git in the main folder. `sbb-prod` needs a rebuild.
-- Merge procedure used for rounds 1 and 2 (ask before pushing):
-  1. `sbb-main` = `origin/sbb-main`, and `git status` in the main folder is clean.
-  2. Temp worktree: `git worktree add --detach <tmp> sbb-main`.
-  3. There: `git merge --no-ff sbb/quick-wins` (message without trailer).
-  4. Junction `viewer/node_modules` to this worktree's, run `npx tsc --noEmit` and
-     `npm run bench:verify`; remove the junction before `git worktree remove`.
-  5. In the main folder: `git merge --ff-only <merge sha>`, then push after asking.
-  6. `git merge --ff-only sbb-main` on `sbb/quick-wins`.
-  7. The user rebuilds `sbb-prod` (`/srv/projekte/wide/wi-dev`) herself.
+- Checks: `npx tsc --noEmit`, `npm run bench:verify` (85 tests) and `npm run build` pass on `9fa87e2`.
+- Merge procedure used for rounds 3 and 4 (ask before pushing). A worktree-isolated session may not
+  run git in the main folder, so:
+  1. `git fetch`; `sbb-main` = `origin/sbb-main`.
+  2. Dry run: `git merge-tree --write-tree --name-only sbb-main <branch>` (a bare tree hash = no
+     conflicts). If `sbb-main` moved, test that tree: `git archive` it into the scratchpad (from
+     `viewer/`; `tar --force-local`), junction `node_modules`, run tsc, tests and the build.
+  3. Here: `git checkout --detach sbb-main`, `git merge --no-ff <branch>` (message without trailer),
+     check `HEAD^{tree}` equals the tested tree.
+  4. `git push origin HEAD:sbb-main`, then `git checkout <branch>`, `git merge --ff-only <merge>`,
+     push the branch.
+  5. The user fast-forwards the main folder and rebuilds `sbb-prod` (`/srv/projekte/wide/wi-dev`).
 - Peer sessions (Living dashboard analysis, Tone mapping, Tone-mapping review) share the main folder
   and the browser pane: ask before borrowing the pane. `sbb/tone-mapping` and
   `sbb/volumetric-ground-fog` fork at `5b3080d`, before all of this, and will conflict on merge.
@@ -67,7 +122,7 @@ measured on a phone or in a visible window yet.
 | 1.5 One near-cloud material with per-object opacity; cloud sets kept alive across mode switches | `53680ca` | Cloud shader builds 6 → 2 (63.8 → 15.5 ms); a quality-guard or cloud-button round trip 7 builds (about 50 ms) → 0; shaders byte-identical | None (with Grading off, re-shown clouds keep their lit colours) |
 | 1.6 Parrots: one skeleton a bird, 108/141 held tracks baked into the bones, flock parked while unseen | `c8f00ed` | Mixers 0.118 → 0.040 ms a bird (about 1.4 → 0.47 ms a frame at 12 birds); skeleton updates 36 → 12 a frame; nothing while off screen | None (poses within 3e-5 model units) |
 
-### Round 3 — on `sbb/quick-wins`, not merged
+### Round 3 — merged in `ec64335`
 
 | Change | Commit | Gain | Visible change |
 |---|---|---|---|
@@ -76,6 +131,14 @@ measured on a phone or in a visible window yet.
 | 1.8 Basemap ImageBitmaps closed after upload; globe UnloadTilesPlugin removed; swapped material handed to the library | `e09540b` (+ `bdc8c68`) | 117-164 MiB of decoded images freed at the landing view; evicted materials disposed 519/519 (old: 297/528) | None. On constrained, hidden map ancestors may stay on the GPU (≤ ~30 MiB) |
 | 1.10 Ground-patch mask 64 → 32 cells, one-layer first upload, warning when cells run out | `8d10c11` | −8 MiB GPU; first upload 0.4 ms instead of the whole array | None |
 | 2.1 PNTS tiles parsed in place instead of copied (`pnts-parse.ts`, probes the library at install) | `bdcdb67` | 1-4 MiB less garbage per arriving tile (~100 MB per 90-tile drag); time neutral | None (packed point data identical) |
+
+### Round 4 — merged in `9fa87e2` (2026-10-05)
+
+| Change | Commit | Gain | Visible change |
+|---|---|---|---|
+| Strong-tier map ceiling 256 → 352 MiB; `setMemoryBudget` / `setMemoryBudgetExact` ask the globe for a traversal | `c74862f` | Landing view 251 → 337 map tiles, 68 → 136 drawn, +88 MiB GPU; a raised ceiling now loads under a still camera (223 → 337 tiles in 1 s; before: nothing in 11 s) | Finer map between the dome edge and the horizon (3 % of the frame). The user chose it after a before/after |
+| B8: an evicted tile's point texture shrunk to 1×1 before disposal (`retirePointDataTexture`) | `09052c3` | −1.2 MB GPU and CPU per shared pulled shader once its first tile is evicted | None (cloud and feed switch checked) |
+| 2.3 rechecked and parked; old spec marked superseded | `c884f06` | — | — |
 
 ### Measured and deliberately left out
 
@@ -96,7 +159,8 @@ measured on a phone or in a visible window yet.
 | Freeze power check | Confirms the Start-screen saving | A normal Chrome window, GPU column in Windows Task Manager after ~15 s on the Start screen vs a quick Start |
 | First pivot press (~100 ms in the pane) | Confirms or refutes a first-press hitch | Visible Chrome window: rotate, read `__wild.pivotDebug.pickMs` |
 | Phone and visible-window runs of all of the above | Real numbers instead of pane ratios | A device; the pane cannot run the entrance flight (loader stays in "finishing") |
-| Merge `c74862f`..`09052c3` + push | Ships the strong map ceiling and the texture leak fix | Ask first; then `sbb-prod` rebuild |
+| Main folder fast-forward + `sbb-prod` rebuild | Ships rounds 3 and 4 | The user |
+| Memory readout for the device session | Lets the device session decide 2.3 | Section 9, step 1; about half a day |
 | Map ceiling, medium and constrained | Same sharpening on those tiers | Not measured. The user chose strong only (2026-10-05): 256 → 352 MiB at the landing view gave 251 → 337 map tiles and 68 → 136 drawn, +88 MiB GPU; only the band beyond the dome changed (3 % of the frame, the horizon rows most). `setMemoryBudget` now also asks for a traversal (`c74862f`), so a raised ceiling loads under a still camera |
 | 2.3 One copy of each point tile | Parked: no evidence that memory is short | Rechecked 2026-10-05, see section 9. Do not build the spec. First: a small memory instrument, read during the pending phone calibration |
 | 3.2 Tile preparation in a worker | −0.6 to −2.5 ms main thread per arriving tile | Measure first in a visible window (`__cost.report()` over a pan): do arrival frames now lead p95/p99 on the pulled default? Mainly for phones |
@@ -108,7 +172,7 @@ measured on a phone or in a visible window yet.
 | 3.7 Fewer basemap tiles under the ground patch | 10-20 MB, fewer MapTiler requests | Count requests per landing first |
 | 3.8 Android label layout thrash | unknown | A phone trace |
 | 1.6b One mesh per parrot | 36 → 12 draws; the flock costs ~0.5 ms render CPU in the pane | A shader change (texture chosen per vertex); small |
-| Tile Leak Register entries | Records B7 (the 1.8 material finding) and B8 (the evicted point texture) | Added 2026-10-05 to https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ |
+| Report B8 to three.js? | Upstream fix, then drop `retirePointDataTexture` | Check three's tracker first; listed on the Tile Leak Register (https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ, B1–B8) |
 
 Watch: 1.10's 32 cells cover one site. When several sites load at once, look for the
 `[ground-patch] all N cells are in use` warning and raise `maskMaxCells` in `config.ts` if it shows.
@@ -121,7 +185,8 @@ temporary (separate issue).
   330-338 tiles there; 251 fit under the 256 MiB ceiling, and 79-87 fall back to coarser parents, so
   parts of the map stay blurrier than intended. `loadSiblings`/`loadAncestors = false` empties the map
   (the optimized traversal loads siblings whenever either is true, and `loadAncestors` defaults to
-  true). Only the ceiling can fix it. Found while testing 1.8, not caused by it.
+  true). Only the ceiling can fix it. Found while testing 1.8, not caused by it. Strong raised to
+  352 MiB in `c74862f`; medium and constrained unchanged.
 - **A closed HUD cost 2.5-3 ms a frame** in the pane: the old code wrote ~30 hidden elements, then
   read `canvas.clientWidth`, forcing a style recalculation every frame. Node had predicted tens of µs.
 - **Parrots:** 36 of the scene's 80 draws, about 0.5 ms of render CPU in the pane, no measurable GPU.
