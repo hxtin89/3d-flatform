@@ -5,8 +5,9 @@ import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
   cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask,
-  setCloudEffectEnabled, type CloudEffect,
+  setCloudEffectEnabled, POINT_DATA_PROPERTY, type CloudEffect,
 } from './point-cloud'
+import { pointMemoryReport } from './point-memory'
 import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
 import { domeFadeAt, pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
 import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
@@ -5231,6 +5232,24 @@ async function main(): Promise<void> {
           loadedDotMeshes: tiles,
           cpuBytesPerPoint,
         }
+      },
+      /**
+       * What the point cloud holds, for the device session (handover-quick-wins.md,
+       * section 9): the drawn share of the resident tiles, point bytes on the GPU counted
+       * from three's memory map rather than the unload plugin's estimate, the CPU bytes
+       * the loaded tiles keep, and the tab's heap where the browser gives it. Read it at
+       * the landing view and after a minute of roaming; `cpuBytesPerPoint` above has the
+       * per-point figures.
+       */
+      get memory() {
+        if (!stream) return null
+        return pointMemoryReport({
+          tiles: stream.tiles,
+          info: renderer.info as any,
+          pointDataProperty: POINT_DATA_PROPERTY,
+          heap: (performance as any).memory ?? null,
+          crossOriginIsolated: (globalThis as any).crossOriginIsolated === true,
+        })
       },
     },
     /** 0 while the cinematic flight runs, 1 once it has settled. */
