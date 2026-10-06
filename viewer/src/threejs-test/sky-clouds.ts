@@ -593,6 +593,9 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   const blend = group(uniform(1))
   const cameraKm = group(uniform(new THREE.Vector3(0, 0, 0.3)))
   const midRadius = group(uniform(6361.5))
+  /** The mid shell of the panorama being faded out: a new weather's base or thickness must
+   *  not move the old clouds through its cross-fade. */
+  const previousMidRadius = group(uniform(6361.5))
   /** What the bake under way will switch to at rotate(): the display's mid shell, the shadow
    *  map's base height and the haze in front of the sun's clouds. */
   let pendingMidRadius = 6361.5
@@ -607,12 +610,12 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
   /** Bakes finished since the panoramas were made: 0 shows nothing, 1 fades the first in. */
   let finished = 0
 
-  /** The panorama's (u, v) for a view ray from the camera, through the mid-height shell. */
-  const lookupUv = (dirEnu: any) => {
+  /** The panorama's (u, v) for a view ray from the camera, through its mid-height shell. */
+  const lookupUv = (dirEnu: any, radius: any) => {
     // Planet-centred camera, in the frame whose z axis runs through the bake's eye.
     const camera = vec3(cameraKm.xy.sub(eyeXYShared), air.bottom.add(cameraKm.z))
     const b = dot(camera, dirEnu)
-    const c = dot(camera, camera).sub(midRadius.mul(midRadius))
+    const c = dot(camera, camera).sub(radius.mul(radius))
     const disc = b.mul(b).sub(c)
     const t = b.negate().add(sqrt(max(disc, 0)))
     const hit = disc.greaterThan(0).and(t.greaterThan(0)).and(c.lessThan(0))
@@ -658,9 +661,10 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     return { radiance: c.xyz.mul(fade), skyOcclusion: c.w.mul(fade), sunOcclusion: clamp(c.w.div(sunOcclusionHaze), 0, 1).mul(fade) }
   }
   const sample = (dirEnu: any) => {
-    const { st, below } = lookupUv(dirEnu)
+    // Each panorama through the shell it was baked for.
+    const { st, below } = lookupUv(dirEnu, midRadius)
     const now = bicubic(currentNode, st)
-    const before = bicubic(previousNode, st)
+    const before = bicubic(previousNode, lookupUv(dirEnu, previousMidRadius).st)
     const c = mix(before, now, blend)
     const fade = altitudeFade.mul(visible).mul(smoothstep(-0.03, 0.0, below))
     // The opacity behind the haze in front of the clouds, for the sun: the stored opacity is
@@ -726,6 +730,7 @@ export function createSkyClouds(opts: { renderer: any; sky: SkyAtmosphere }): Sk
     cloudShadow.sun.value.copy(u.sun.value)
     cloudShadow.fade.value = 1
     sunOcclusionHaze.value = pendingShadow.sunOcclusionHaze
+    previousMidRadius.value = midRadius.value
     midRadius.value = pendingMidRadius
     finished++
     blendValue = 0
