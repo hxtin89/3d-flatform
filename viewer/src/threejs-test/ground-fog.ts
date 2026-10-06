@@ -869,13 +869,17 @@ export function createGroundFogLayer(opts: {
         // energy-conserving step: it scatters 1 − e^(−σR·dt) of the light per channel and dims
         // what lies behind by its mean over the channels (the transmittance is one number, so
         // the air's blue-heavy extinction is carried as grey — at sea-level density that is
-        // under 1 % across the band and about 7 % on a kilometres-long grazing ray).
-        const airStep = exp(vec3(u.rayleigh).mul(dt).negate())
-        const airMean = airStep.x.add(airStep.y).add(airStep.z).div(3)
-        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(shaded).add(ambient)
-          .mul(airStep.oneMinus()).mul(transmittance))
-        weightedDistance.addAssign(transmittance.mul(airMean.oneMinus()).mul(t))
-        transmittance.mulAssign(airMean)
+        // under 1 % across the band and about 7 % on a kilometres-long grazing ray). Under the
+        // physical sky the aerial perspective carries the air (its density is 0 there, see
+        // syncUniforms), so the term is not compiled at all.
+        if (!hazeParts?.aerial) {
+          const airStep = exp(vec3(u.rayleigh).mul(dt).negate())
+          const airMean = airStep.x.add(airStep.y).add(airStep.z).div(3)
+          scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(shaded).add(ambient)
+            .mul(airStep.oneMinus()).mul(transmittance))
+          weightedDistance.addAssign(transmittance.mul(airMean.oneMinus()).mul(t))
+          transmittance.mulAssign(airMean)
+        }
         If(transmittance.lessThan(0.01), () => { Break() })
       })
     })
