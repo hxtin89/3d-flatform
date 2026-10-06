@@ -1650,9 +1650,17 @@ export const EXPERIENCE_CONFIG = {
     puffHeightM: 1,
     puffCut: 0.38,
     puffAmount: 2.49,
-    /** How much the sky's colour tints the skylight on the mist (0 = the daylight's own
-     *  colour, 1 = the zenith blue). Humid forest air is pale. */
+    /** How much of the sky's colour the skylight on the mist keeps, at the back of the view
+     *  (0 = white of the same brightness — with the daylight ramp, the daylight's own colour —
+     *  1 = the sky's colour as it is). Humid forest air is pale. */
     skyTint: 0.56,
+    /** The tint from front to back, so mist near the camera reads as white water vapour and
+     *  the far field takes the colour of the haze and sky: the share of `skyTint` right at the
+     *  camera (0 = white), the distance where all of it is reached, and the fade's curve
+     *  between (1 even, above 1 white farther out, below 1 tinted sooner). */
+    skyTintFront: 0.3,
+    skyTintFadeM: 1500,
+    skyTintCurve: 1,
     // ---- shape
     /** Visibility in the body of the mist (Koschmieder: extinction = 3.912 / visibility). The
      *  height detail carves it unevenly, and puffs and plume cores stack on top, so parts of

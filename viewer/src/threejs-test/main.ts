@@ -3915,7 +3915,10 @@ const FOG_SLIDERS: { heading: string; rows: FogSlider[] }[] = [
     { key: 'sunStrength', label: 'Sunlight', min: 0, max: 4, step: 0.05, format: asFactor },
     { key: 'ambientStrength', label: 'Skylight', min: 0, max: 4, step: 0.05, format: asFactor },
     { key: 'canopyOcclusion', label: 'Canopy occlusion', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How much sky and sun the crowns hide from mist low in the band' },
-    { key: 'skyTint', label: 'Sky tint', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How blue the skylight on the mist is; humid forest air is pale' },
+    { key: 'skyTint', label: 'Sky tint', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How much of the sky’s blue the skylight on the mist keeps, at the back; 0 = white. Humid forest air is pale' },
+    { key: 'skyTintFront', label: 'Tint in front', min: 0, max: 1, step: 0.01, format: asPercent, note: 'Share of that tint right at the camera: 0 = white vapour, 100 % = as at the back' },
+    { key: 'skyTintFadeM', label: 'Tint fade distance', min: 50, max: 6000, step: 50, format: asMetres, note: 'Where the back’s tint is reached' },
+    { key: 'skyTintCurve', label: 'Tint fade curve', min: 0.2, max: 4, step: 0.05, format: (v) => v.toFixed(2), note: 'Above 1 the mist stays white farther out; below 1 the tint comes in sooner' },
     { key: 'rayleighScale', label: 'Rayleigh (air)', min: 0, max: 200, step: 1, format: asFactor, note: '1× = sea-level air; the haze carries aerial perspective beyond the band' },
   ] },
 ]

@@ -44,7 +44,9 @@
 //     rather than grey;
 //   · sun transmittance through the band analytically (optical depth to the local top along
 //     the sun direction) instead of a second march;
-//   · sky light, dimmed low in the band where the crowns hide the sky;
+//   · sky light, dimmed low in the band where the crowns hide the sky, and paler toward the
+//     camera: a share of the sky's colour that rises with distance (`skyTint` and its fade),
+//     so near mist reads as white water vapour and the far field takes the haze's colour;
 //   · Rayleigh scattering by the air in the band (small and bluish over these distances);
 //   · Frostbite's energy-conserving step integration (Hillaire 2015).
 // The sun is the scene's own (the Peru clock), so the time dock moves it for the fog too.
@@ -181,6 +183,11 @@ export interface GroundFogParams {
   puffCut: number
   puffAmount: number
   skyTint: number
+  /** The skylight's tint from front to back: the share of `skyTint` right at the camera, the
+   *  distance where all of it is reached, and the curve between (above 1 white farther out). */
+  skyTintFront: number
+  skyTintFadeM: number
+  skyTintCurve: number
   visibilityM: number
   coverage: number
   coverageSoftness: number
@@ -265,6 +272,9 @@ export function createGroundFogLayer(opts: {
     puffCut: CONFIG.puffCut,
     puffAmount: CONFIG.puffAmount,
     skyTint: CONFIG.skyTint,
+    skyTintFront: CONFIG.skyTintFront,
+    skyTintFadeM: CONFIG.skyTintFadeM,
+    skyTintCurve: CONFIG.skyTintCurve,
     visibilityM: CONFIG.visibilityM,
     coverage: CONFIG.coverage,
     coverageSoftness: CONFIG.coverageSoftness,
@@ -340,7 +350,12 @@ export function createGroundFogLayer(opts: {
     gHG: uniform(0.98), gD: uniform(0.5), alpha: uniform(20), wD: uniform(0.48),
     albedo: uniform(params.albedo),
     sunRadiance: uniform(new THREE.Color(1, 1, 1)),
+    /** The skylight in the sky's colour, and untinted (white of the same luminance; with the
+     *  daylight ramp, the daylight's colour): each step mixes the two by its distance. */
     ambientRadiance: uniform(new THREE.Color(0.6, 0.65, 0.7)),
+    ambientNeutral: uniform(new THREE.Color(0.65, 0.65, 0.65)),
+    skyTint: uniform(params.skyTint), skyTintFront: uniform(params.skyTintFront),
+    skyTintFadeInv: uniform(1 / params.skyTintFadeM), skyTintCurve: uniform(params.skyTintCurve),
     canopyOcclusion: uniform(params.canopyOcclusion),
     rayleigh: uniform(new THREE.Vector3(...RAYLEIGH_SEA_LEVEL_PER_M)),
     pixelAngle: uniform(0.001),
@@ -741,6 +756,12 @@ export function createGroundFogLayer(opts: {
         // The veil takes over where the mist leaves off, and stays light (a third) over the
         // drawn points, where the mist itself is there to be seen.
         const sigma = sample.mist.mul(nearPoints).add(sample.veil.mul(nearPoints.mul(-0.65).add(1))).toVar()
+        // The skylight's colour by distance: `skyTint` of the sky's own at the back, a share
+        // of that (`skyTintFront`) at the camera, eased between over `skyTintFadeM`. Near mist
+        // reads as white water vapour, the far field takes the colour of the haze and sky.
+        const tintFade = pow(clamp(t.mul(u.skyTintFadeInv), 1e-4, 1), u.skyTintCurve)
+        const tintShare = u.skyTint.mul(u.skyTintFront.add(u.skyTintFront.oneMinus().mul(tintFade)))
+        const ambient = mix(vec3(u.ambientNeutral), vec3(u.ambientRadiance), tintShare).toVar()
         // The sun through the canopy at this sample, from a mip as wide as the sample's own
         // footprint (and a level or two more: blurrier shafts are steadier ones).
         const canopy = options.canopyShadows
@@ -748,6 +769,9 @@ export function createGroundFogLayer(opts: {
             max(log2(max(t.mul(u.pixelAngle).div(max(canopyShadow.texel1, 0.01)), 1)).add(u.canopyShadowLodBias), 0),
             canopyShadow.strength.mul(u.canopyShadowStrength)).toVar()
           : float(1)
+        // The clouds' shadow, read at every step: 0.055 ms of the march's 1.1 ms (measured
+        // 2026-10-06 at a 150 m oblique view), and reading it only where there is mist saved
+        // nothing — the veil leaves next to no step empty.
         const clouds = options.cloudShadows ? cloudTransmittance(p, float(1)).toVar() : float(1)
         const shaded = canopy.mul(clouds).toVar()
         const localTop = sample.localTop.toVar()
@@ -766,7 +790,7 @@ export function createGroundFogLayer(opts: {
             sunLight = sunLight.add(exp(tauSun.mul(-octave.extinction)).mul(phases[index]).mul(octave.scattering))
           })
           const inScatter = vec3(u.sunRadiance).mul(sunLight.mul(occlusion).mul(shaded).mul(daylight))
-            .add(vec3(u.ambientRadiance).mul(occlusion).mul(exp(tauUp.negate()).mul(0.35).add(0.65)))
+            .add(ambient.mul(occlusion).mul(exp(tauUp.negate()).mul(0.35).add(0.65)))
             .mul(u.albedo)
           const stepTransmittance = exp(sigma.mul(dt).negate())
           // Frostbite's energy-conserving step: ∫ T σs L over the step, not σs L dt.
@@ -781,7 +805,7 @@ export function createGroundFogLayer(opts: {
         // under 1 % across the band and about 7 % on a kilometres-long grazing ray).
         const airStep = exp(vec3(u.rayleigh).mul(dt).negate())
         const airMean = airStep.x.add(airStep.y).add(airStep.z).div(3)
-        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(shaded).add(u.ambientRadiance)
+        scattered.addAssign(vec3(u.sunRadiance).mul(rayleighPhase).mul(daylight).mul(shaded).add(ambient)
           .mul(airStep.oneMinus()).mul(transmittance))
         weightedDistance.addAssign(transmittance.mul(airMean.oneMinus()).mul(t))
         transmittance.mulAssign(airMean)
@@ -1002,6 +1026,10 @@ export function createGroundFogLayer(opts: {
     u.billowAmount.value = params.billowAmount; u.erosionAmount.value = Math.min(params.erosionAmount, 0.95)
     u.wispAmount.value = params.wispAmount; u.plumeAmount.value = params.plumeAmount
     u.albedo.value = params.albedo
+    u.skyTint.value = THREE.MathUtils.clamp(params.skyTint, 0, 1)
+    u.skyTintFront.value = THREE.MathUtils.clamp(params.skyTintFront, 0, 1)
+    u.skyTintFadeInv.value = 1 / Math.max(params.skyTintFadeM, 1)
+    u.skyTintCurve.value = Math.max(params.skyTintCurve, 0.05)
     u.canopyOcclusion.value = params.canopyOcclusion
     // Under the physical sky the aerial perspective already hazes this very path (the fog's
     // light and the scene behind it), so the band's own air would count it twice.
@@ -1040,15 +1068,20 @@ export function createGroundFogLayer(opts: {
         sun.copy(skyLight.sun).multiplyScalar(0.25 * (build.cloudShadows ? 1 : skyLight.sunThroughClouds) * params.skySunScale * params.sunStrength)
         sky.copy(skyLight.skyMean).multiplyScalar(params.skyAmbientScale * params.ambientStrength)
         u.sunRadiance.value.copy(sun).multiply(params.tint)
+        // The skylight in the sky's colour and as white of the same luminance; the march mixes
+        // the two by `skyTint` and the distance.
         u.ambientRadiance.value.copy(sky).multiply(params.tint)
+        const luminance = 0.2126 * sky.r + 0.7152 * sky.g + 0.0722 * sky.b
+        u.ambientNeutral.value.setRGB(luminance, luminance, luminance).multiply(params.tint)
       } else if (daylight) {
         sun.copy(daylight.lightColor).multiplyScalar(daylight.intensity * params.sunStrength)
-        // Skylight: the daylight tinted by the sky colour by `skyTint` — the humid air over a
-        // forest scatters the sky into a paler, whiter light than the zenith's blue.
-        sky.copy(daylight.daylightColor).lerp(daylight.skyColor, params.skyTint)
-          .multiplyScalar(Math.max(daylight.ambientIntensity, 0.02) * params.ambientStrength)
+        // Skylight: between the daylight's own colour and the sky's, by `skyTint` and the
+        // distance (the march mixes the two) — the humid air over a forest scatters the sky
+        // into a paler, whiter light than the zenith's blue.
+        const intensity = Math.max(daylight.ambientIntensity, 0.02) * params.ambientStrength
         u.sunRadiance.value.copy(sun).multiply(params.tint)
-        u.ambientRadiance.value.copy(sky).multiply(params.tint)
+        u.ambientRadiance.value.copy(daylight.skyColor).multiplyScalar(intensity).multiply(params.tint)
+        u.ambientNeutral.value.copy(daylight.daylightColor).multiplyScalar(intensity).multiply(params.tint)
       }
       syncUniforms()
     },
