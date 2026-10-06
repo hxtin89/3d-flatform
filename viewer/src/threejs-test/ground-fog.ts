@@ -908,7 +908,8 @@ export function createGroundFogLayer(opts: {
   const buildComposite = (color: any, depth: any) => {
     release()
     const options = { ...build }
-    fogDepthTexture = rtt(fogDepthNode(depth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+    // One channel: every reader takes the stored depth alone (`.x`), a quarter of the bytes.
+    fogDepthTexture = rtt(fogDepthNode(depth, options), null, null, { type: THREE.HalfFloatType, format: THREE.RedFormat, depthBuffer: false })
     fogDepthTexture.setResolutionScale(effectiveScale)
     fogDepthTexture.updateBeforeType = 'frame'
     const fogDepth = fogDepthTexture

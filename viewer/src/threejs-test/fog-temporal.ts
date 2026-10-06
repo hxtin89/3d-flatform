@@ -27,8 +27,8 @@
 //     screen or hidden a frame ago, the first frame, or after a resize, the current frame alone.
 // The pass runs at the march's resolution, before the depth-aware upsample: 18 texture reads a
 // march texel (nine for the neighbourhood, the fog depth, four of last frame's depth and four
-// of the history) and two copies a frame. History, output and the kept fog depth are HalfFloat
-// RGBA at that size.
+// of the history) and two copies a frame. History and output are HalfFloat RGBA at that size,
+// the kept fog depth one HalfFloat channel, as the fog depth pass is.
 //
 // Measured 2026-09-30 (sideways move and yaw, pose B, 96 steps): fillCanopyHoles takes the
 // fog's own frame-to-frame change down by about a fifth and does most of the work at high
@@ -76,7 +76,9 @@ export class FogTemporalNode extends TempNode {
   private readonly options: FogTemporalOptions
   private readonly historyTarget = new RenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType })
   private readonly resolveTarget = new RenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType })
-  private readonly previousDepthTarget = new RenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType })
+  // One channel, as the fog depth it is copied from (ground-fog.ts): the copy needs the formats
+  // to match.
+  private readonly previousDepthTarget = new RenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType, format: THREE.RedFormat })
   private readonly historyNode = texture(this.historyTarget.texture)
   private readonly previousDepthNode = texture(this.previousDepthTarget.texture)
   private readonly material = new NodeMaterial()
