@@ -1343,12 +1343,12 @@ const casterGraphCache = new Map<string, { vertexNode: any; fragmentNode: any; k
 
 /**
  * The canopy shadow pass's graph for one dot mode (sun-shadows.ts). The same point the colour
- * graph draws — the pulled texel or the instanced attribute, where the data put it: no dome
- * melt, so the shadows do not follow the view — projected along the sun onto the floor plane
- * in clip space directly, as a splat of world size from the tile's own spacing, weighed so the
- * tile's points add up to one fully covered layer of the configured optical depth along the
- * slanted ray. Nothing here depends on the camera: not the thinning, not the eased stack
- * spacing, not the share the main pass draws. The fragment writes the weight times a smooth
+ * graph draws — the pulled texel or the instanced attribute, where the data put it, unmelted —
+ * projected along the sun onto the floor plane in clip space directly, as a splat of world size
+ * from the tile's own spacing, weighed so the tile's points add up to one fully covered layer
+ * of the configured optical depth along the slanted ray, times the dome's falloff. Nothing else
+ * here depends on the camera: not the thinning, not the eased stack spacing, not the share the
+ * main pass draws. The fragment writes the weight times a smooth
  * radial profile, the profile-weighted height and height², and the plain coverage, added up by
  * the blend; the receivers divide by the coverage's layer count, so the levels of the
  * hierarchy that overlap at a spot (ADD refinement) count once.
@@ -1381,6 +1381,12 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
   }
   const world: any = modelWorldMatrix.mul(vec4(pointLocal, 1)).xyz
   const enu: any = u.enuInverse.mul(vec4(world, 1)).xyz
+  // The dome: a point the main pass shrinks away toward the rim casts that much less, and
+  // outside it nothing — its splat collapses, so it costs no fragments. Without this the loaded
+  // points the dome hides (the coarse levels span the whole survey) darkened the map around it
+  // as far as the map reached. The dome follows the view, but the map is redrawn as it moves
+  // anyway (sun-shadows.ts), and only the rim changes.
+  const domeFade: any = effects.sphereFade ? sphereFadeFactor(u, enu) : float(1)
   const sz: any = max(c.sun.z, float(0.08))
   const height: any = enu.z.sub(c.floorZ)
   const q: any = enu.xy.sub(c.sun.xy.div(sz).mul(height))
@@ -1393,8 +1399,10 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
   // κ s² / (π r² sin e): a full layer at spacing s adds κ / sin e along the slanted ray.
   const weight: any = c.density.mul(energy)
     .div(c.splatScale.mul(c.splatScale).mul(Math.PI).mul(sz))
-  const ndc: any = q.sub(c.centre).add(corner.mul(drawnRadius.mul(2))).div(c.halfExtent)
+  const splatSize: any = drawnRadius.mul(2).mul(step(1e-4, domeFade))
+  const ndc: any = q.sub(c.centre).add(corner.mul(splatSize)).div(c.halfExtent)
   const weightV: any = varying(weight, 'v_casterWeight')
+  const fadeV: any = varying(domeFade, 'v_casterFade')
   const heightV: any = varying(height.mul(c.bandHeightInv), 'v_casterHeight')
   const uvV: any = varying(corner.mul(2), 'v_casterUv')
   const vertexNode = vec4(ndc, 0.5, 1)
@@ -1403,7 +1411,10 @@ export function cloudCasterGraphFor(u: CloudUniforms, colorItemSize: number, mod
     // (1 − ρ²)², three times its mean over the disc so the splat integrates to its weight.
     const profile: any = max(float(1).sub(rho2), float(0)).pow(2).mul(3)
     const w: any = weightV.mul(profile)
-    return vec4(w, w.mul(heightV), w.mul(heightV).mul(heightV), w.mul(c.unitScale))
+    // The dome's falloff on the optical depth only: the layer count stays whole, so a fading
+    // point's shadow fades instead of being divided back up.
+    const lit: any = w.mul(fadeV)
+    return vec4(lit, lit.mul(heightV), lit.mul(heightV).mul(heightV), w.mul(c.unitScale))
   })()
   const graph = { vertexNode, fragmentNode, key }
   casterGraphCache.set(key, graph)

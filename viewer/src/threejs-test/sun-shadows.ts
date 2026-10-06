@@ -45,7 +45,10 @@
 // dissolve's drifting counts redrew the map with a different sample every other frame (the
 // shimmer that looked like loading). The levels of the hierarchy overlap where a tile is
 // refined (ADD); a fourth channel counts them and the receivers divide by it, so refinement
-// changes the shadows' detail, never their depth. No dome melt in the shadow pass either.
+// changes the shadows' detail, never their depth. The one thing that does follow the view is
+// the dome: a point casts as much as the dome lets the main pass draw it, so the loaded points
+// it hides (the coarse levels span the survey) do not darken the map around it. That changes
+// only the rim, and only when the map is redrawn for the dome anyway.
 import * as THREE from 'three'
 import { NodeMaterial, QuadMesh, RenderTarget } from 'three/webgpu'
 import * as TSL from 'three/tsl'
@@ -574,7 +577,11 @@ export function createSunShadowLayer(opts: { renderer: any; uniforms: CloudUnifo
 
       const sunMoved = lastSun.angleTo(sun) > 0.0009
       const moved = !lastCentre.equals(fitCentre)
-      const signatureText = `${signature}|${casters}|${quantisedHalf}|${resolution}|${input.floorZ.toFixed(2)}|${bandH.toFixed(1)}`
+      // The casters fade with the dome (point-cloud.ts): its centre moves the map (above), and
+      // a change of its radius by a texel redraws it too, so the shadows' rim keeps up with
+      // the points' melt during a zoom.
+      const domeTexels = Math.round(radius / texelM)
+      const signatureText = `${signature}|${casters}|${quantisedHalf}|${resolution}|${input.floorZ.toFixed(2)}|${bandH.toFixed(1)}|${domeTexels}`
       const changed = forceUpdate || sunMoved || moved || signatureText !== lastSignature
       const due = frame - lastUpdateFrame >= Math.max(1, Math.round(params.updateEvery))
       if (!changed || !due) return
