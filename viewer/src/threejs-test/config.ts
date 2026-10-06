@@ -737,26 +737,33 @@ export const EXPERIENCE_CONFIG = {
   tower: {
     // Field asset offsets: x/y relative to the shifted hotspot centre, z relative to
     // groundZM below.
-    positionM: [291.878, -1_988.147, -0.2],
+    //
+    // Where the real canopy tower stands, from SBB's PortalCam scan of it
+    // (260420_Peru_Tambopata_CanopyTower_…164137, gnss.csv): 3,175 fixes with hdop
+    // under 5 cluster within ±4 m around lat −12.873473, lon −69.496417, i.e. raw ENU
+    // (1197.7, −2410.2). The scanner was on the platform, so that point is the platform
+    // centre; less the platform offset below (19.10, 2.16 m at this yaw and scale) the
+    // model's origin lands at (1178.60, −2412.36). Until 2026-10-05 the model stood
+    // where it had been placed by hand on 16 Jul, on the river bank 936 m WNW of here.
+    positionM: [1_100.961, -2_458.812, -0.2],
     rotationRad: [Math.PI / 2, 0, -1.039],
     scale: 24,
     sensorHeightM: 112.138,
     // Where the platform centre sits in the tower's own horizontal plane, in model
     // units: the GLTF's x and −z, i.e. after the model's quarter turn and before yaw and
     // scale. The model's origin is a corner of its footprint, so without this the
-    // RIVER 05 sensor hung over that corner, 19 m off the tower's axis. Read from
+    // TOWER 05 sensor hung over that corner, 19 m off the tower's axis. Read from
     // tower.gltf: the top section spans x 0.007..0.645 and z −1.655..0.192, and the
     // straight lattice puts the base centre in the same place.
     sensorOffsetUnits: [0.3262, 0.7315],
-    // The floor the tower stands on, raw ENU metres (before the lift). Until
-    // 2026-09-29 the height was areaMinZ + 4, the floor of area-001's box 6.6 km away,
-    // which left the legs 10–16 m up in the canopy. Measured from the full-depth APH
-    // tiles under the four legs: 167.8, 164.3 and 161.3 m on the bank, while the east
-    // leg stands over the river channel, whose edge there is at 159.9 m. 160 puts that
-    // leg on the water line and sinks the other three into the bank rather than lift
-    // any of them into the air. positionM z −0.2 lands the mesh's lowest vertex
-    // (0.18 m above its origin) on this floor.
-    groundZM: 160.0,
+    // The floor the tower stands on, raw ENU metres (before the lift), measured from
+    // the full-depth APH tiles under the four legs at the scan position. The forest
+    // floor there returns few points through the canopy: the lowest steady returns
+    // are 182.6 m under the west leg and 184.9 m under the east one, while the other
+    // two only reach the undergrowth (192–195 m). 182.5 keeps every leg on or in the
+    // ground rather than lifting any into the air. positionM z −0.2 lands the mesh's
+    // lowest vertex (0.18 m above its origin) on this floor.
+    groundZM: 182.5,
   },
   boat: {
     // z is relative to groundZM below.

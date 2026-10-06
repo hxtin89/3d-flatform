@@ -1,0 +1,264 @@
+{
+  "dataset": "peru-b2-globe",
+  "generated": "2026-10-05",
+  "note": "Raw ENU metres in the survey frame, before the viewer lift. Written by scripts/find-big-trees.mjs.",
+  "centreEnu": [
+    1197.7,
+    -2410.2
+  ],
+  "radiusM": 600,
+  "depth": 8,
+  "thresholds": {
+    "minHeightM": 40,
+    "minProminenceM": 8,
+    "minTopAreaM2": 20
+  },
+  "canopyHeightM": {
+    "p50": 20.4,
+    "p95": 33.3
+  },
+  "trees": [
+    {
+      "id": "tree-01",
+      "x": 706.7,
+      "y": -2549.2,
+      "groundZ": 172,
+      "topZ": 220.4,
+      "heightM": 48.3,
+      "prominenceM": 27.6,
+      "crownRadiusM": 9,
+      "distanceToTowerM": 510
+    },
+    {
+      "id": "tree-02",
+      "x": 986.7,
+      "y": -2539.2,
+      "groundZ": 180.2,
+      "topZ": 226.4,
+      "heightM": 46.1,
+      "prominenceM": 21.5,
+      "crownRadiusM": 15,
+      "distanceToTowerM": 247
+    },
+    {
+      "id": "tree-03",
+      "x": 1558.7,
+      "y": -2837.2,
+      "groundZ": 181.7,
+      "topZ": 227.8,
+      "heightM": 46,
+      "prominenceM": 25.5,
+      "crownRadiusM": 9,
+      "distanceToTowerM": 559
+    },
+    {
+      "id": "tree-04",
+      "x": 1002.7,
+      "y": -2419.2,
+      "groundZ": 174.5,
+      "topZ": 220.2,
+      "heightM": 45.7,
+      "prominenceM": 24.6,
+      "crownRadiusM": 7,
+      "distanceToTowerM": 195
+    },
+    {
+      "id": "tree-05",
+      "x": 1344.7,
+      "y": -1875.2,
+      "groundZ": 154.7,
+      "topZ": 200.1,
+      "heightM": 45.4,
+      "prominenceM": 17.9,
+      "crownRadiusM": 18,
+      "distanceToTowerM": 555
+    },
+    {
+      "id": "tree-06",
+      "x": 1396.7,
+      "y": -2161.2,
+      "groundZ": 171.4,
+      "topZ": 216.7,
+      "heightM": 45.3,
+      "prominenceM": 18.1,
+      "crownRadiusM": 9,
+      "distanceToTowerM": 319
+    },
+    {
+      "id": "tree-07",
+      "x": 1364.7,
+      "y": -2301.2,
+      "groundZ": 175.9,
+      "topZ": 220.5,
+      "heightM": 44.7,
+      "prominenceM": 26.1,
+      "crownRadiusM": 12,
+      "distanceToTowerM": 199
+    },
+    {
+      "id": "tree-08",
+      "x": 1266.7,
+      "y": -2419.2,
+      "groundZ": 185.3,
+      "topZ": 229.3,
+      "heightM": 44,
+      "prominenceM": 18.5,
+      "crownRadiusM": 14,
+      "distanceToTowerM": 70
+    },
+    {
+      "id": "tree-09",
+      "x": 822.7,
+      "y": -2767.2,
+      "groundZ": 193.5,
+      "topZ": 237,
+      "heightM": 43.5,
+      "prominenceM": 19.1,
+      "crownRadiusM": 17,
+      "distanceToTowerM": 518
+    },
+    {
+      "id": "tree-10",
+      "x": 1412.7,
+      "y": -2145.2,
+      "groundZ": 173.6,
+      "topZ": 216.9,
+      "heightM": 43.4,
+      "prominenceM": 20,
+      "crownRadiusM": 11,
+      "distanceToTowerM": 341
+    },
+    {
+      "id": "tree-11",
+      "x": 882.7,
+      "y": -2499.2,
+      "groundZ": 189.8,
+      "topZ": 233,
+      "heightM": 43.3,
+      "prominenceM": 26.5,
+      "crownRadiusM": 13,
+      "distanceToTowerM": 327
+    },
+    {
+      "id": "tree-12",
+      "x": 942.7,
+      "y": -2483.2,
+      "groundZ": 176.6,
+      "topZ": 219.7,
+      "heightM": 43.1,
+      "prominenceM": 22.3,
+      "crownRadiusM": 5,
+      "distanceToTowerM": 265
+    },
+    {
+      "id": "tree-13",
+      "x": 1462.7,
+      "y": -2367.2,
+      "groundZ": 177.9,
+      "topZ": 220.4,
+      "heightM": 42.5,
+      "prominenceM": 19.9,
+      "crownRadiusM": 13,
+      "distanceToTowerM": 268
+    },
+    {
+      "id": "tree-14",
+      "x": 1500.7,
+      "y": -2137.2,
+      "groundZ": 174.4,
+      "topZ": 216.5,
+      "heightM": 42.1,
+      "prominenceM": 17.9,
+      "crownRadiusM": 9,
+      "distanceToTowerM": 408
+    },
+    {
+      "id": "tree-15",
+      "x": 666.7,
+      "y": -2649.2,
+      "groundZ": 193.4,
+      "topZ": 235,
+      "heightM": 41.6,
+      "prominenceM": 14.4,
+      "crownRadiusM": 18,
+      "distanceToTowerM": 582
+    },
+    {
+      "id": "tree-16",
+      "x": 1182.7,
+      "y": -2011.2,
+      "groundZ": 164.1,
+      "topZ": 205.6,
+      "heightM": 41.5,
+      "prominenceM": 18.7,
+      "crownRadiusM": 7,
+      "distanceToTowerM": 399
+    },
+    {
+      "id": "tree-17",
+      "x": 1160.7,
+      "y": -2015.2,
+      "groundZ": 160,
+      "topZ": 201.4,
+      "heightM": 41.4,
+      "prominenceM": 18.5,
+      "crownRadiusM": 8,
+      "distanceToTowerM": 397
+    },
+    {
+      "id": "tree-18",
+      "x": 1042.7,
+      "y": -2467.2,
+      "groundZ": 177.9,
+      "topZ": 218.8,
+      "heightM": 40.9,
+      "prominenceM": 15.4,
+      "crownRadiusM": 18,
+      "distanceToTowerM": 165
+    },
+    {
+      "id": "tree-19",
+      "x": 1202.7,
+      "y": -2365.2,
+      "groundZ": 175,
+      "topZ": 215.8,
+      "heightM": 40.8,
+      "prominenceM": 17.9,
+      "crownRadiusM": 11,
+      "distanceToTowerM": 45
+    },
+    {
+      "id": "tree-20",
+      "x": 1174.7,
+      "y": -2641.2,
+      "groundZ": 183.1,
+      "topZ": 223.8,
+      "heightM": 40.7,
+      "prominenceM": 20,
+      "crownRadiusM": 14,
+      "distanceToTowerM": 232
+    },
+    {
+      "id": "tree-21",
+      "x": 1296.7,
+      "y": -2965.2,
+      "groundZ": 193.3,
+      "topZ": 233.9,
+      "heightM": 40.6,
+      "prominenceM": 20.4,
+      "crownRadiusM": 9,
+      "distanceToTowerM": 564
+    },
+    {
+      "id": "tree-22",
+      "x": 748.7,
+      "y": -2645.2,
+      "groundZ": 192.7,
+      "topZ": 232.9,
+      "heightM": 40.3,
+      "prominenceM": 13.3,
+      "crownRadiusM": 18,
+      "distanceToTowerM": 507
+    }
+  ]
+}
