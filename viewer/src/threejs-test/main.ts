@@ -428,6 +428,9 @@ function applyBenchPreset(): void {
 const onLoaderStart = () => {
   if (!loaderReadyShown || loaderFinishAt > 0 || loaderFlightStarted) return
   applyBenchPreset()
+  // Held off behind the loader (end of the frame): the flight shows it.
+  fogLoaderHoldDone = true
+  groundFog.setHeld(false)
   eagleBench?.dispose()
   eagleBench = null
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
@@ -4961,6 +4964,8 @@ function recoverCameraPose(): void {
 }
 
 let lastGroundFogFrameMs = 0
+/** Set once the fog has been held behind the loader (see the end of the frame). */
+let fogLoaderHoldDone = false
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
@@ -5062,6 +5067,13 @@ function loop(now: number): void {
   lastGroundFogFrameMs = now
   depthOfField.update(cameraGroundRange)
   depthOfField.render()
+  // Behind the loader the fog is unseen, and the eagle bench times frames on the same GPU:
+  // one frame with it, so its pipelines compile, then it is held off (its gate, no rebuild)
+  // until the flight starts.
+  if (!fogLoaderHoldDone && !loaderFlightStarted && groundFog.isEnabled()) {
+    groundFog.setHeld(true)
+    fogLoaderHoldDone = true
+  }
   // Taken here, after the draw, and shown on the next frame. The animation loop resets
   // renderer.info immediately before calling this function, so anything read further up
   // — updateHud included — sees a counter that has just been zeroed.
