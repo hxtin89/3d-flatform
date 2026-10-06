@@ -7,9 +7,16 @@ Covers the work of 2026-09-24 to 2026-10-05 on the ranked optimisation list (the
 
 ## 0. Start here (2026-10-06)
 
-**State:** everything in this file is merged and pushed. `sbb-main` = `origin/sbb-main` = `9fa87e2`,
-and `sbb/quick-wins` is the same plus this handover commit. Nothing is half-built and nothing is
+**State:** everything in this file is merged and pushed. `sbb-main` = `origin/sbb-main` = `de49bd1`
+(`9fa87e2` plus the real tower position and the Big trees layer, merged by another session), and
+`sbb/quick-wins` is `9fa87e2` plus the handover commits. Nothing is half-built and nothing is
 uncommitted.
+
+**2026-10-06, late:** the user stopped the one-mesh-per-parrot work mid-build: "leave the parrots as
+they are. I want to get rid of them at all." The parrot flock is to be removed from the app, not
+optimised. The merge (one skinned mesh a bird, the map picked per vertex, one draw a bird, verified
+in the pane) was discarded unmerged; nothing of it is in any branch. Do not touch the flock until the
+user asks for its removal.
 
 **Talk to the user in plain names, not item numbers.** The numbers are the IDs of the ranked list in
 the appendix of `plans/handover-dot-geometry-ab.md`: 1.x quick wins, 2.x bigger projects, 3.x
@@ -26,7 +33,7 @@ measure first.
 | 1.4 | No point-cloud shader builds after Start | Built |
 | 1.5 | One shared near-cloud shader | Built |
 | 1.6 | Lighter parrot animation | Built |
-| 1.6b | One mesh per parrot | Open, small |
+| 1.6b | One mesh per parrot | Dropped 2026-10-06: the parrots are to be removed |
 | 1.8 | Basemap images freed after upload | Built |
 | 1.9 | Faster cloud-noise bake at boot | Built |
 | 1.10 | Smaller ground-patch mask | Built |
@@ -46,18 +53,16 @@ measure first.
 3. A device session with Jan (desktop, weak laptop, Android, iPhone). It covers the benchmark
    calibration (2.4), the phone memory reading that gates 2.3, and the phone-only 3.x items.
 
-**Next for a session, in the recommended order; ask the user which:**
-1. **1.6b One mesh per parrot.** Draws 36 → 12, about 0.5 ms of render CPU in the pane. A shader
-   change: the texture is chosen per vertex. Small. Branch off `sbb-main`.
-2. **Memory readout for the device session** (step 1 of section 9): the drawn share of resident point
+**Next for a session, in the recommended order:**
+1. **Memory readout for the device session** (step 1 of section 9): the drawn share of resident point
    tiles, uploaded point-texture bytes from three's `Info.memoryMap`, next to `__wild.dots.state`.
    About half a day; it lets the device session also decide 2.3.
-3. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
+2. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
    arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation press
    (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
 
-**Do not:** build the 2.3 spec (section 9); raise the medium or constrained map ceilings before phone
-memory is known; propose merging into `main` (the user keeps `sbb-main` apart). Before building any
+**Do not:** touch the parrot flock (it goes away; see above); build the 2.3 spec (section 9); raise
+the medium or constrained map ceilings before phone memory is known; propose merging into `main` (the user keeps `sbb-main` apart). Before building any
 other item from the old list, re-check it against the current code first (it worked for 2.3).
 
 ## 1. Where things stand
@@ -171,7 +176,7 @@ measured on a phone or in a visible window yet.
 | 3.6 Quantised point layout | VRAM only | Only if phones still need VRAM after 2.3 |
 | 3.7 Fewer basemap tiles under the ground patch | 10-20 MB, fewer MapTiler requests | Count requests per landing first |
 | 3.8 Android label layout thrash | unknown | A phone trace |
-| 1.6b One mesh per parrot | 36 → 12 draws; the flock costs ~0.5 ms render CPU in the pane | A shader change (texture chosen per vertex); small |
+| 1.6b One mesh per parrot | Dropped 2026-10-06. Built and verified (one draw a bird), then discarded: the user wants the parrots removed from the app altogether | Nothing; wait for the removal request |
 | Report B8 to three.js? | Upstream fix, then drop `retirePointDataTexture` | Check three's tracker first; listed on the Tile Leak Register (https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ, B1–B8) |
 
 Watch: 1.10's 32 cells cover one site. When several sites load at once, look for the
