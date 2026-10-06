@@ -26,9 +26,32 @@ globe.ts records). Checks on the merged tree: tsc clean, 302 tests, build, brows
 WebGL2 (volume clouds with haze on, ortho swaps 9 / mismatches 0 / re-uploads 0, grade LUT stage
 compiled and baked, `__wild.dots.memory`). Nine `500` resource errors appear mid-flight on the dev
 server on both backends; a fresh boot's first 6 s are all 200, so they are the dev proxy's MapTiler
-resets (known, see tile-retry.ts), not the merge; the production build has no proxy. **To ship:**
-`git push origin sbb/merge-grade-editor:sbb-main sbb/merge-grade-editor` with the user's go-ahead,
-then fast-forward `sbb/quick-wins` and the main folder, then rebuild `sbb-prod`.
+resets (known, see tile-retry.ts), not the merge; the production build has no proxy. **Pushed
+2026-10-07:** `sbb-main` = `sbb/quick-wins` = `2bb7c57`; the temporary merge branch is deleted.
+The main folder and `sbb-prod` still need their fast-forward and rebuild.
+
+**No quick win was given up in the merge**, but each side had to bend, and the figures in this
+file were measured before the merge. Re-measure these when there is time (not urgent):
+- **1.8, basemap images closed after upload — kept.** The ortho upgrade swaps a tile's image in
+  place and used to require the old image to be open; it now checks the new bitmap against the
+  size `globe.ts` records (`map.userData.imageSize`). The composite bitmap is closed after its
+  upload like any other, and a revert decodes the kept JPEG bytes again. Cost that stays: the
+  ortho keeps the JPEG bytes (~50 KB a tile) of covered tiles only. Check once on a phone that
+  upgraded tiles still show after a long roam (no re-upload from a closed image: `reuploadsAfterClose`
+  must stay 0, `orthoStats().sizeMismatch` 0).
+- **1.5, one shared near-cloud shader — kept.** Each volume material now has two graph variants,
+  plain and hazed; the haze switch rebuilds the two cloud materials once. Builds after Start (1.4)
+  are therefore 0 only while nobody flips the haze or the grade; both are user actions.
+- **1.2 / map graph cache:** the globe keys on `imageryEffectsKey` (ours, includes the vignette);
+  the other line's `imageryEffectsVersion` still exists and bumps on the same three flags. Harmless
+  duplicate; remove one when touching point-cloud.ts next.
+- **Frame cost of the new stages** (not quick wins, but they move the baseline every figure above
+  was taken against): tone curve + haze + sky, eye-dome lighting (+0.18 ms measured on its branch),
+  the colour match (+0.04 ms), the grade LUT tap (~0.01 ms), and the ortho's in-place uploads
+  (0.4 ms each, never in an arrival frame). The HUD-closed frame of 4.1–5.9 ms and the cloud GPU
+  2.6 ms should be re-read on the merged tree before any new optimisation is judged against them.
+- **Eagle bench:** the stress primitive is ours (pulled or instanced by config); the other line only
+  changed a comment there. The calibration (2.4) is unchanged and still open.
 
 **The memory readout is built:** `__wild.dots.memory` in the console (point-memory.ts, section 9 step 1).
 First reading, hidden pane, constrained tier, landing view: 40 resident / 26 selected / 26 drawn tiles,

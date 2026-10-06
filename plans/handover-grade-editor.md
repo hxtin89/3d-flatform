@@ -19,7 +19,10 @@ history at 81ccfab.
   against the image size `globe.ts` records (`map.userData.imageSize`), because `sbb-main` closes
   every basemap image after upload (1.8). Checked: type check, 302 tests, build, and in the
   browser on WebGPU and WebGL2 (volume clouds with haze, 9 ortho swaps with 0 size mismatches,
-  grade LUT stage compiled and baked, memory readout). Pushed only when the user says so.
+  grade LUT stage compiled and baked, memory readout). Pushed 2026-10-07: `origin/sbb-main` =
+  `2bb7c57`, which contains this whole stack; `sbb/grade-editor` and the branches under it are
+  now history, not work lines. What the merge bent on each side, and what to re-measure, is in
+  `plans/handover-quick-wins.md` section 0.
 - **Spec:** `plans/grade-editor/plan.txt`. It is corrected in place wherever the build differs.
   Section 7 holds every measurement, section 8 the commit plan, section 9 the later steps.
 - **Living write-up:** https://claude.ai/artifact/JjMNnLFjremEdsYPSSKqUg ("DEV | Canopy Colour
