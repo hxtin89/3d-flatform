@@ -1541,6 +1541,12 @@ export const EXPERIENCE_CONFIG = {
      *  2000×1125 buffer, 40 steps, '2d' noise, 9 km rays), +0.5 ms at 0.25, +2.4 ms at 0.5,
      *  +10 ms at 1. */
     resolutionScale: 0.5,
+    /** A cap on the march's texels, as a share of what the scale gives on the 2000 × 1125
+     *  buffer the presets were measured on: on a larger screen the march runs at
+     *  min(scale, √(this × 2000 × 1125 × scale² / buffer pixels)), so its cost stops growing
+     *  with the screen. 1.5 leaves today's look up to 1.5× that buffer's pixels (2560 × 1440
+     *  marches at 0.48 of it, 4K at 0.32, both ½ asked for); 0 = no cap. */
+    marchBudget: 1.5,
     /** Samples per ray through the band. The main cost knob together with the resolution,
      *  about linear: +0.85 / +1.4 / +2.4 / +3.6 ms for 16 / 24 / 40 / 64 at half resolution
      *  (same measurement, same look; on it 24 looked all but the same as 40 and 16 showed

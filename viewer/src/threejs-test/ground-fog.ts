@@ -52,7 +52,8 @@
 // The sun is the scene's own (the Peru clock), so the time dock moves it for the fog too.
 //
 // Resolution. The march renders into a HalfFloat target at `resolutionScale` of the
-// drawing buffer (RTTNode's own resolution scale). The composite brings it back with a
+// drawing buffer (RTTNode's own resolution scale), lowered on large screens so it never
+// takes more than `marchBudget` × the texels the presets were measured with. The composite brings it back with a
 // joint bilateral upsample: each full-resolution pixel weighs the four nearest march texels
 // by how close their depth is to its own, so mist does not bleed over crown silhouettes.
 // The result is premultiplied — colour × transmittance + in-scattered light — and the
@@ -96,6 +97,8 @@ const SKY_DEPTH = 65_000
  *  sheared finer octave (10, −8 tiles) and the 3D texture's z reads (4 and 9 tiles). The
  *  'procedural' comparison path is not periodic and jumps on a wrap. */
 const RISE_PERIOD = 16
+/** The drawing buffer the presets' cost was measured on (2000 × 1125, 2026-09-30). */
+const MARCH_REFERENCE_PIXELS = 2000 * 1125
 type Preset = keyof typeof CONFIG.qualityByPreset
 
 /** Build-time options: changing one rebuilds the shaders. Everything else is a uniform. */
@@ -131,6 +134,8 @@ export interface GroundFogLayer {
   /** Returns true when a build option changed, so the pipeline rebuilds. */
   setBuildOption<K extends keyof GroundFogBuildOptions>(key: K, value: GroundFogBuildOptions[K]): boolean
   setResolutionScale(scale: number): void
+  /** The scale the march runs at: the requested one, capped by the texel budget. */
+  getEffectiveResolutionScale(): number
   getResolutionScale(): number
   /** The loader benchmark's preset: resolution and step count together. */
   applyPreset(preset: Preset): void
@@ -243,7 +248,29 @@ export function createGroundFogLayer(opts: {
     canopyShadows: false,
     cloudShadows: false,
   }
+  /** The scale asked for (preset or panel), and the one the march runs at: capped so the
+   *  march never takes more than `marchBudget` × the reference buffer's texels at that scale
+   *  (see `effectiveScaleFor`). Both render targets, the march size, the pixel angle and the
+   *  temporal filter follow the effective one. */
   let resolutionScale: number = CONFIG.resolutionScale
+  let effectiveScale: number = resolutionScale
+  let bufferPixels = 0
+  /** min(requested, √(budget / buffer pixels)), budget = marchBudget × 2000 × 1125 ×
+   *  requested²: on the 2000 × 1125 buffer the presets were measured on (and up to
+   *  `marchBudget` times its pixels) nothing changes; beyond, the march stops growing with the
+   *  screen. Measured 2026-09-30: the cost follows the marched texels. */
+  const effectiveScaleFor = (requested: number, pixels: number) => {
+    const budget = CONFIG.marchBudget
+    if (!(budget > 0) || pixels <= 0) return requested
+    return THREE.MathUtils.clamp(requested * Math.min(1, Math.sqrt(budget * MARCH_REFERENCE_PIXELS / pixels)), 0.125, requested)
+  }
+  const applyEffectiveScale = () => {
+    const next = effectiveScaleFor(resolutionScale, bufferPixels)
+    if (next === effectiveScale) return
+    effectiveScale = next
+    marchTexture?.setResolutionScale(effectiveScale)
+    fogDepthTexture?.setResolutionScale(effectiveScale)
+  }
 
   const params: GroundFogParams = {
     steps: CONFIG.steps,
@@ -635,8 +662,14 @@ export function createGroundFogLayer(opts: {
       const centre: any = floor(uv().mul(fullSize))
       return vec4(toStored(depth.load(ivec2(centre)).x), 0, 0, 1)
     }
-    const first: any = floor(texel.mul(fullSize).div(u.marchSize))
-    const last: any = min(max(floor(texel.add(1).mul(fullSize).div(u.marchSize)).sub(1), first), fullSize.sub(1))
+    const footprintFirst: any = floor(texel.mul(fullSize).div(u.marchSize))
+    const footprintLast: any = min(max(floor(texel.add(1).mul(fullSize).div(u.marchSize)).sub(1), footprintFirst), fullSize.sub(1))
+    // At most 2 × 2 pixels, around the texel's middle, whatever the scale: below half
+    // resolution (the texel budget lowers it on large screens) a wider footprint is the 4 × 4
+    // blocky regime rejected on 2026-09-30.
+    const middle: any = floor(footprintFirst.add(footprintLast).add(1).mul(0.5))
+    const first: any = max(footprintFirst, middle.sub(1))
+    const last: any = min(footprintLast, middle)
     const nearest = float(SKY_DEPTH).toVar()
     Loop(
       { start: int(first.y), end: int(last.y), type: 'int', condition: '<=' },
@@ -858,18 +891,18 @@ export function createGroundFogLayer(opts: {
     release()
     const options = { ...build }
     fogDepthTexture = rtt(fogDepthNode(depth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
-    fogDepthTexture.setResolutionScale(resolutionScale)
+    fogDepthTexture.setResolutionScale(effectiveScale)
     fogDepthTexture.updateBeforeType = 'frame'
     const fogDepth = fogDepthTexture
     marchTexture = rtt(marchNode(depth, fogDepth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
-    marchTexture.setResolutionScale(resolutionScale)
+    marchTexture.setResolutionScale(effectiveScale)
     marchTexture.updateBeforeType = 'frame'
     // The composite reads the filtered fog when the temporal filter is on: the same texels,
     // at the march's resolution, so the depth-aware upsample below is unchanged.
     if (options.temporal) {
       temporalNode = new FogTemporalNode({
         march: marchTexture, fogDepth, depthUnitM: DEPTH_UNIT_M, skyDepth: SKY_DEPTH, distanceOf: fogDistanceOf,
-        camera, resolutionScale: () => resolutionScale,
+        camera, resolutionScale: () => effectiveScale,
         blend: u.temporalBlend, clip: u.temporalClip, occlusion: u.temporalOcclusion,
       })
     }
@@ -1060,13 +1093,15 @@ export function createGroundFogLayer(opts: {
     update(cam, daylight, deltaS) {
       near.value = cam.near
       far.value = cam.far
-      // The angle one drawing-buffer pixel spans, for the noise mip level.
+      // The angle one march texel spans, for the noise mip level, at the effective scale.
       const size = renderer.getDrawingBufferSize(new THREE.Vector2())
-      u.pixelAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / Math.max(size.y * resolutionScale, 1)
+      bufferPixels = size.x * size.y
+      applyEffectiveScale()
+      u.pixelAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / Math.max(size.y * effectiveScale, 1)
       matrix.copy(shared.enuInverse.value)
       cameraEnu.setFromMatrixPosition(cam.matrixWorld).applyMatrix4(matrix)
       lastCameraEnu.set(cameraEnu.x, cameraEnu.y)
-      u.marchSize.value.set(Math.max(1, Math.floor(size.x * resolutionScale)), Math.max(1, Math.floor(size.y * resolutionScale)))
+      u.marchSize.value.set(Math.max(1, Math.floor(size.x * effectiveScale)), Math.max(1, Math.floor(size.y * effectiveScale)))
       const dt = Math.min(Math.max(deltaS, 0), 0.25)
       advance(u.offCoverage.value, u.coverageScaleInv.value, dt)
       advance(u.offBillow.value, u.billowScaleInv.value, dt)
@@ -1117,10 +1152,13 @@ export function createGroundFogLayer(opts: {
     },
     setResolutionScale(scale) {
       resolutionScale = THREE.MathUtils.clamp(scale, 0.125, 1)
-      marchTexture?.setResolutionScale(resolutionScale)
-      fogDepthTexture?.setResolutionScale(resolutionScale)
+      // Forced: the targets take the effective scale even when it did not change.
+      effectiveScale = effectiveScaleFor(resolutionScale, bufferPixels)
+      marchTexture?.setResolutionScale(effectiveScale)
+      fogDepthTexture?.setResolutionScale(effectiveScale)
     },
     getResolutionScale: () => resolutionScale,
+    getEffectiveResolutionScale: () => effectiveScale,
     applyPreset(preset) {
       const quality = CONFIG.qualityByPreset[preset]
       params.steps = quality.steps
