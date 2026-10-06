@@ -965,6 +965,18 @@ M10. Responsiveness
 M11. Banding
 - A dark canopy view and a haze gradient under a strong shadow lift (lift +0.05, gamma +0.5): look for posterisation.
 - This decides the dither step.
+- MEASURED 2026-10-06 (WebGPU, 1600×1000 frame, horizon view from the landing: sky, haze, river, dark
+  canopy gaps; loop frozen, the same frame captured per grade). Per region: share of vertical
+  neighbour steps over 1 level, and empty levels inside the occupied range (combing).
+  - Sky (top 30 %): off 171–221, 0 % steps > 1, 0 empty; lift +0.05/gamma +0.5 and lift +0.1/gamma +1
+    the same (0 %, 0 empty); a master curve 2.9× steeper in the sky's tones stretches it to 127–251,
+    still 0 % steps > 1 and 0 empty levels.
+  - Dark canopy (bottom third, luma < 45): off 27–49, 0 empty; the lifts 67–91 and 113–134, 0 empty;
+    a curve 3.5× steeper in the darks 31–110, 0 empty (steps > 1 rise 30 → 45 %: the canopy texture
+    gains contrast, no combing).
+  - Why: the tap reads the unrounded half-float frame and the canvas rounds once, after the LUT, so a
+    stretch never spreads 8-bit steps apart. Decision: no dither (later step 4 dropped unless a real
+    device shows banding).
 
 M12. Phone usability (real device, dev:https and plain-HTTP WebGL2)
 - Widget, curve and handle drags neither scroll the sheet nor move the camera.
