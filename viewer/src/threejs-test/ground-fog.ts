@@ -403,20 +403,30 @@ export function createGroundFogLayer(opts: {
     }
   }
   // Every request takes a number; a bake that lands after a newer request was made is dropped,
-  // including when the newer one was answered from the cache without a bake of its own.
+  // including when the newer one was answered from the cache without a bake of its own. A
+  // request for the settings already being baked, with nothing newer asked for since, shares
+  // that bake: at boot the layer and the panel both ask, and the panel's request used to drop
+  // the first bake and queue a second behind the 3D one.
   let noiseRequest = 0
-  const setNoise = async (settings: FogNoiseSettings) => {
-    const request = ++noiseRequest
+  let noiseInFlight: { key: string; request: number; promise: Promise<Uint8Array | null> } | null = null
+  const setNoise = (settings: FogNoiseSettings): Promise<Uint8Array | null> => {
     const key = JSON.stringify(settings)
-    if (lastBaked?.key === key) return lastBaked.data
+    if (noiseInFlight && noiseInFlight.key === key && noiseInFlight.request === noiseRequest) return noiseInFlight.promise
+    const request = ++noiseRequest
+    if (lastBaked?.key === key) return Promise.resolve(lastBaked.data)
     // Baked and uploaded from this snapshot: the editor goes on changing its own object.
     const snapshot = JSON.parse(key) as FogNoiseSettings
-    const data = await baker.bake2d(snapshot)
-    if (!data || request !== noiseRequest) return null
-    upload(snapshot, data)
-    Object.assign(noiseSettings, snapshot)
-    lastBaked = { key, data }
-    return data
+    const promise = (async () => {
+      const data = await baker.bake2d(snapshot)
+      if (noiseInFlight?.request === request) noiseInFlight = null
+      if (!data || request !== noiseRequest) return null
+      upload(snapshot, data)
+      Object.assign(noiseSettings, snapshot)
+      lastBaked = { key, data }
+      return data
+    })()
+    noiseInFlight = { key, request, promise }
+    return promise
   }
   void setNoise(noiseSettings)
 
