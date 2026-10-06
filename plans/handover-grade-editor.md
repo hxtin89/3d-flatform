@@ -10,8 +10,16 @@ history at 81ccfab.
 - **Worktree:** `C:/projects/WIDE_3d-flatform/.claude/worktrees/sbb-colour-matching`. Enter it with
   `EnterWorktree {path}`; nothing needs checking out.
 - **Branch:** `sbb/grade-editor`, on top of `sbb/ortho-upgrade` → `sbb/colour-matching` →
-  `sbb/tone-mapping`. The whole stack is **local and unpushed**. The user keeps it apart from
-  `main` and `sbb-main`: do not merge or push without asking.
+  `sbb/tone-mapping`. **Merged into `sbb-main` on 2026-10-06** at the user's request, as
+  `435b7c9` on `sbb/merge-grade-editor` (worktree `point-reorder-thinning-flicker-f48d6c`),
+  on top of `sbb-main` `3e7d284` (quick wins, point-memory readout, real tower position). Seven
+  files conflicted with the quick-wins work; how each was resolved is in that commit's message,
+  the two that mattered: the cloud volumes keep the quick wins' shared far/near materials and
+  get the haze variant through a per-material handle, and the ortho upgrade now checks a swap
+  against the image size `globe.ts` records (`map.userData.imageSize`), because `sbb-main` closes
+  every basemap image after upload (1.8). Checked: type check, 302 tests, build, and in the
+  browser on WebGPU and WebGL2 (volume clouds with haze, 9 ortho swaps with 0 size mismatches,
+  grade LUT stage compiled and baked, memory readout). Pushed only when the user says so.
 - **Spec:** `plans/grade-editor/plan.txt`. It is corrected in place wherever the build differs.
   Section 7 holds every measurement, section 8 the commit plan, section 9 the later steps.
 - **Living write-up:** https://claude.ai/artifact/JjMNnLFjremEdsYPSSKqUg ("DEV | Canopy Colour

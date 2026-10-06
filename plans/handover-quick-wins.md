@@ -14,6 +14,22 @@ merged as `b7a2a09`; tree passed tsc, 88 tests and the build) and the handover c
 for the branches to be merged together, so `sbb/point-memory-readout` is deleted and `sbb/quick-wins`
 only mirrors `sbb-main` as this worktree's checkout. Nothing is half-built and nothing is uncommitted.
 
+**2026-10-06, night — the grade editor stack merged, not pushed:** on the user's "I first want to
+merge the grade editor into it", `sbb/grade-editor` (41 commits: tone mapping, colour match, drone
+ortho upgrade, grade editor; fork `5b3080d`, before every quick win) was merged into `sbb-main` as
+`435b7c9` on the branch `sbb/merge-grade-editor` in this worktree. Seven files conflicted (20
+hunks); the resolutions are in the merge commit's message and in `plans/handover-grade-editor.md`.
+Two real clashes: the cloud volumes (1.5's shared far/near materials vs the haze variant: kept 1.5,
+haze through a per-material handle) and the ortho upgrade, which required an open tile image where
+1.8 closes every basemap image after upload (it now checks against `map.userData.imageSize`, which
+globe.ts records). Checks on the merged tree: tsc clean, 302 tests, build, browser on WebGPU and
+WebGL2 (volume clouds with haze on, ortho swaps 9 / mismatches 0 / re-uploads 0, grade LUT stage
+compiled and baked, `__wild.dots.memory`). Nine `500` resource errors appear mid-flight on the dev
+server on both backends; a fresh boot's first 6 s are all 200, so they are the dev proxy's MapTiler
+resets (known, see tile-retry.ts), not the merge; the production build has no proxy. **To ship:**
+`git push origin sbb/merge-grade-editor:sbb-main sbb/merge-grade-editor` with the user's go-ahead,
+then fast-forward `sbb/quick-wins` and the main folder, then rebuild `sbb-prod`.
+
 **The memory readout is built:** `__wild.dots.memory` in the console (point-memory.ts, section 9 step 1).
 First reading, hidden pane, constrained tier, landing view: 40 resident / 26 selected / 26 drawn tiles,
 d = 0.65 by tiles and 0.67 by points; 34 point textures on the GPU, 35.5 MiB (26 drawn 28.2 MiB, 8
