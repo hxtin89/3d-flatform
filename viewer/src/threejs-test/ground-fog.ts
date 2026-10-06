@@ -425,8 +425,14 @@ export function createGroundFogLayer(opts: {
   let noise3dTexture: THREE.Data3DTexture | null = null
   // A real, uploaded 1³ volume until the bake lands. Left un-uploaded, WebGPU binds its
   // default texture, which is 2D, to the 3D slot, and the march's pass fails validation.
+  // With the bake's sampler state: WGSL picks the read from the texture bound when the shader
+  // is built, and three's default Nearest counts as unfilterable — a march built before the
+  // bake landed would load one clamped texel (flat height detail) until the next rebuild.
   const placeholder3d = new THREE.Data3DTexture(new Uint8Array([128]), 1, 1, 1)
   placeholder3d.format = THREE.RedFormat
+  placeholder3d.minFilter = THREE.LinearFilter
+  placeholder3d.magFilter = THREE.LinearFilter
+  placeholder3d.wrapS = placeholder3d.wrapT = placeholder3d.wrapR = THREE.RepeatWrapping
   placeholder3d.unpackAlignment = 1
   placeholder3d.needsUpdate = true
   const noise3dNode = texture3D(placeholder3d, vec3(0), 0)
