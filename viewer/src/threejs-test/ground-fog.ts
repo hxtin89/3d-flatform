@@ -501,9 +501,9 @@ export function createGroundFogLayer(opts: {
    * there (metres), for the mip level. Returns the density and the band's local top, which
    * the lighting needs for the optical depth toward the sun.
    */
-  const density = (p: any, footprint: any, options: GroundFogBuildOptions) => {
-    const hRel = p.z.sub(floorZ)
-    const xy = p.xy
+  const density = (p: any, footprint: any, options: GroundFogBuildOptions, mistGate: any = null) => {
+    const hRel = p.z.sub(floorZ).toVar()
+    const xy = p.xy.toVar()
     const lod = (scaleInv: any) => log2(max(footprint.mul(scaleInv).mul(noiseSize), 1))
     const read = (scaleInv: any, offset: any) => noiseNode.sample(xy.mul(scaleInv).add(offset)).level(lod(scaleInv))
     let coverageRaw: any
@@ -514,100 +514,118 @@ export function createGroundFogLayer(opts: {
       billow = mx_noise_float(vec3(xy.mul(u.billowScaleInv).add(u.offBillow).mul(6), 1.5)).mul(0.5).add(0.5)
       erosion = mx_noise_float(vec3(xy.mul(u.erosionScaleInv).add(u.offErosion).mul(12), 2.5)).mul(0.5).add(0.5)
     } else {
-      coverageRaw = read(u.coverageScaleInv, u.offCoverage).r
-      billow = read(u.billowScaleInv, u.offBillow).g
+      coverageRaw = read(u.coverageScaleInv, u.offCoverage).r.toVar()
+      billow = read(u.billowScaleInv, u.offBillow).g.toVar()
       erosion = read(u.erosionScaleInv, u.offErosion).a
     }
-    // Where the mist pools, and how high each clump stands.
-    const coverage = smoothstep(u.coverage.oneMinus().sub(u.coverageSoftness), u.coverage.oneMinus().add(u.coverageSoftness), coverageRaw)
-    const clump = clamp(billow.sub(erosion.mul(u.erosionAmount)).div(u.erosionAmount.mul(-0.5).add(1)), 0, 1)
+    // Where the mist pools, and how high each clump stands. Frozen in variables: the mist
+    // below may be built inside an If (`mistGate`), and an If body is its own cache — a value
+    // first used in there would be built in there, or twice.
+    const coverage = smoothstep(u.coverage.oneMinus().sub(u.coverageSoftness), u.coverage.oneMinus().add(u.coverageSoftness), coverageRaw).toVar()
+    const clump = clamp(billow.sub(erosion.mul(u.erosionAmount)).div(u.erosionAmount.mul(-0.5).add(1)), 0, 1).toVar()
     const lift = coverage.mul(mix(float(1), clump, u.billowAmount))
-    const localTop = u.bottom.add(u.top.sub(u.bottom).mul(lift.mul(0.75).add(0.25)))
-    const body = smoothstep(u.bottom, u.bottom.add(u.bottomSoft), hRel)
-      .mul(float(1).sub(smoothstep(localTop.sub(u.topSoft), localTop, hRel)))
-    let shaped: any = body.mul(mix(float(1), clump, u.billowAmount.mul(0.6)))
-    let plumes: any = float(0)
+    const localTop = u.bottom.add(u.top.sub(u.bottom).mul(lift.mul(0.75).add(0.25))).toVar()
     // Puffs: the rounded clumps that sit on the canopy itself, where the understory mist
     // above only shows through the gaps. Each stands on a strong clump of the billow layer,
     // centred near crown height and taller the stronger its clump, with a flatter underside
-    // than top — mist lying on leaves.
-    const puffMask = smoothstep(u.puffCut, u.puffCut.add(0.25), clump)
-    const puffCentre = u.puffCentre.add(clump.sub(u.puffCut).mul(u.puffHeight).mul(0.6))
-    const puffHalf = u.puffHeight.mul(puffMask.mul(0.65).add(0.35))
-    const dz = hRel.sub(puffCentre).div(max(puffHalf, 0.5))
-    const puff = puffMask.mul(exp(dz.mul(dz).mul(dz.greaterThan(0).select(2.2, 0.9)).negate()))
-    shaped = shaped.add(puff.mul(u.puffAmount))
+    // than top — mist lying on leaves. Their top lights the veil too, so it stays outside.
+    const puffMask = smoothstep(u.puffCut, u.puffCut.add(0.25), clump).toVar()
+    const puffCentre = u.puffCentre.add(clump.sub(u.puffCut).mul(u.puffHeight).mul(0.6)).toVar()
+    const puffHalf = u.puffHeight.mul(puffMask.mul(0.65).add(0.35)).toVar()
     const puffTop = puffCentre.add(puffHalf).mul(puffMask.greaterThan(0.05).select(1, 0))
-    const lightTop = max(localTop, puffTop)
-    if (options.wisps) {
-      // Detail with height, from 2D reads: value noise along z built from 2D slices. Every
-      // whole step of `vz` reads the wisp layer through its own random offset, and a height
-      // between two steps blends the two, so features are `wispScaleM`-wide and about
-      // `wispHeightM` tall wherever they are — 3D noise at two reads. The finer octave is one
-      // sheared read. (Tried and dropped: reading vertical x–z and y–z planes extrudes each
-      // plane's pattern into sheets along the missing axis, a grid of curtains; rotating the
-      // slices with height turns about the ENU origin, kilometres away, and smears the
-      // pattern into speckle that averages out along the ray — the extruded 2D layers then
-      // show as streaks.) Scrolled upward with the rising air.
-      const vz = hRel.mul(u.wispHeightInv).sub(u.rise)
-      const k = floor(vz)
-      const f = vz.sub(k)
-      const blend = f.mul(f).mul(f.mul(-2).add(3))
-      // The slice hash repeats every RISE_PERIOD slices (a floored modulo, so it holds below
-      // zero too), which is what lets the rise wrap without the pattern jumping.
-      const sliceOffset = (n: any) => {
-        const m = n.sub(floor(n.div(RISE_PERIOD)).mul(RISE_PERIOD))
-        return vec2(fract(m.mul(0.7548777)), fract(m.mul(0.5698403))).mul(9.7)
+    const lightTop = max(localTop, puffTop).toVar()
+    // Fade toward the box's side walls instead of ending in a cliff.
+    const outside = length(max(max(boundsMin.sub(xy), xy.sub(boundsMax)), vec2(0)))
+    const edge = float(1).sub(smoothstep(0, max(u.margin, 1), outside)).toVar()
+    // The mist proper — body, puffs, height detail, plumes: everything the march multiplies by
+    // its `nearPoints` fade, so with a gate it is skipped where that is 0.
+    const mistOf = () => {
+      const body = smoothstep(u.bottom, u.bottom.add(u.bottomSoft), hRel)
+        .mul(float(1).sub(smoothstep(localTop.sub(u.topSoft), localTop, hRel)))
+      let shaped: any = body.mul(mix(float(1), clump, u.billowAmount.mul(0.6)))
+      let plumes: any = float(0)
+      const dz = hRel.sub(puffCentre).div(max(puffHalf, 0.5))
+      const puff = puffMask.mul(exp(dz.mul(dz).mul(dz.greaterThan(0).select(2.2, 0.9)).negate()))
+      shaped = shaped.add(puff.mul(u.puffAmount))
+      if (options.wisps) {
+        // Detail with height, from 2D reads: value noise along z built from 2D slices. Every
+        // whole step of `vz` reads the wisp layer through its own random offset, and a height
+        // between two steps blends the two, so features are `wispScaleM`-wide and about
+        // `wispHeightM` tall wherever they are — 3D noise at two reads. The finer octave is one
+        // sheared read. (Tried and dropped: reading vertical x–z and y–z planes extrudes each
+        // plane's pattern into sheets along the missing axis, a grid of curtains; rotating the
+        // slices with height turns about the ENU origin, kilometres away, and smears the
+        // pattern into speckle that averages out along the ray — the extruded 2D layers then
+        // show as streaks.) Scrolled upward with the rising air.
+        const vz = hRel.mul(u.wispHeightInv).sub(u.rise)
+        const k = floor(vz)
+        const f = vz.sub(k)
+        const blend = f.mul(f).mul(f.mul(-2).add(3))
+        // The slice hash repeats every RISE_PERIOD slices (a floored modulo, so it holds below
+        // zero too), which is what lets the rise wrap without the pattern jumping.
+        const sliceOffset = (n: any) => {
+          const m = n.sub(floor(n.div(RISE_PERIOD)).mul(RISE_PERIOD))
+          return vec2(fract(m.mul(0.7548777)), fract(m.mul(0.5698403))).mul(9.7)
+        }
+        const q = xy.mul(u.wispScaleInv).add(u.offWisp)
+        let wispA: any
+        let wispB: any
+        if (options.noiseSource === 'procedural') {
+          wispA = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(8), vz.mul(8))).mul(0.5).add(0.5)
+          wispB = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(19), vz.mul(19).add(3.1))).mul(0.5).add(0.5)
+        } else if (options.noiseSource === '3d') {
+          // The default path: the same two octaves from a tileable 3D texture, one trilinear
+          // read each (no mips — and level 0 explicitly, as they may run in non-uniform control
+          // flow), where the 2D path spends three filtered reads.
+          wispA = noise3dNode.sample(vec3(q, vz.mul(0.25))).level(float(0)).r
+          wispB = noise3dNode.sample(vec3(q.mul(2.3), vz.mul(0.5625).add(0.37))).level(float(0)).r
+        } else {
+          const wispLod = lod(u.wispScaleInv)
+          const lower = noiseNode.sample(q.add(sliceOffset(k))).level(wispLod).b
+          const upper = noiseNode.sample(q.add(sliceOffset(k.add(1)))).level(wispLod).b
+          wispA = mix(lower, upper, blend)
+          wispB = noiseNode.sample(q.mul(2.3).add(vec2(vz.mul(0.625), vz.mul(-0.5)))).level(wispLod.add(1.2)).b
+        }
+        // The 2D layers only say where and how high mist can stand; left at that, every clump
+        // is a prism extruded through the band's height, and seen obliquely the prisms read as
+        // vertical streaks. So the envelope carves the 3D detail instead, the way cloud
+        // renderers erode a noise volume with coverage: where the envelope is weak only the
+        // noise's peaks survive, as small rounded puffs; where it is strong the mist fills in.
+        const detail = wispA.mul(0.62).add(wispB.mul(0.38))
+        const envelope = min(shaped, 1)
+        const carved = clamp(detail.sub(envelope.oneMinus()).div(max(envelope, 0.05)), 0, 1)
+          .mul(max(shaped, 1)).mul(1.5)
+        shaped = mix(shaped, carved, u.wispAmount)
+        // Plumes: warm, moist air rising out of the canopy in thin columns, narrow at the foot
+        // and flaring as they rise, frayed by the height detail and fading out toward the top.
+        // They rise from the puff layer's height, not from the local mist top, which dips and
+        // swells with the coverage and would swallow a column's foot.
+        const above = max(hRel.sub(u.puffCentre), 0)
+        const rise01 = clamp(above.div(max(u.plumeHeight, 1)), 0, 1)
+        // One candidate column per grid cell of `plumeSpacingM`, at a hashed spot in the cell's
+        // inner part and present by `plumeChance`: a clean round column, which a threshold on a
+        // noise layer never is (it cuts combs of slivers). Leans downwind as it rises.
+        const cellCoord: any = floor(xy.div(u.plumeSpacing))
+        const hashOf = (salt: number) => fract(sin(dot(cellCoord.add(salt), vec2(127.1, 311.7))).mul(43758.5453))
+        const spot = cellCoord.add(vec2(hashOf(0), hashOf(17)).mul(0.6).add(0.2)).mul(u.plumeSpacing)
+          .add(u.plumeLean.mul(above))
+        const present = step(hashOf(41), u.plumeChance)
+        const radius = u.plumeRadius.mul(rise01.mul(1.2).add(1))
+        // Written as 1 − smoothstep with rising edges: WGSL leaves smoothstep undefined when
+        // its low edge is above its high one, which a falloff written the other way round is.
+        const column = present.mul(float(1).sub(smoothstep(radius.mul(0.3), radius, length(xy.sub(spot)))))
+        const plume = column.mul(rise01.oneMinus().pow(1.5)).mul(smoothstep(0, 0.12, rise01))
+          .mul(mix(float(1), detail.mul(1.6), 0.5))
+        plumes = plume.mul(u.plumeAmount).mul(coverage.mul(0.6).add(0.4))
       }
-      const q = xy.mul(u.wispScaleInv).add(u.offWisp)
-      let wispA: any
-      let wispB: any
-      if (options.noiseSource === 'procedural') {
-        wispA = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(8), vz.mul(8))).mul(0.5).add(0.5)
-        wispB = mx_noise_float(vec3(xy.mul(u.wispScaleInv).mul(19), vz.mul(19).add(3.1))).mul(0.5).add(0.5)
-      } else if (options.noiseSource === '3d') {
-        // The default path: the same two octaves from a tileable 3D texture, one trilinear
-        // read each (no mips), where the 2D path spends three filtered reads.
-        wispA = noise3dNode.sample(vec3(q, vz.mul(0.25))).r
-        wispB = noise3dNode.sample(vec3(q.mul(2.3), vz.mul(0.5625).add(0.37))).r
-      } else {
-        const wispLod = lod(u.wispScaleInv)
-        const lower = noiseNode.sample(q.add(sliceOffset(k))).level(wispLod).b
-        const upper = noiseNode.sample(q.add(sliceOffset(k.add(1)))).level(wispLod).b
-        wispA = mix(lower, upper, blend)
-        wispB = noiseNode.sample(q.mul(2.3).add(vec2(vz.mul(0.625), vz.mul(-0.5)))).level(wispLod.add(1.2)).b
-      }
-      // The 2D layers only say where and how high mist can stand; left at that, every clump
-      // is a prism extruded through the band's height, and seen obliquely the prisms read as
-      // vertical streaks. So the envelope carves the 3D detail instead, the way cloud
-      // renderers erode a noise volume with coverage: where the envelope is weak only the
-      // noise's peaks survive, as small rounded puffs; where it is strong the mist fills in.
-      const detail = wispA.mul(0.62).add(wispB.mul(0.38))
-      const envelope = min(shaped, 1)
-      const carved = clamp(detail.sub(envelope.oneMinus()).div(max(envelope, 0.05)), 0, 1)
-        .mul(max(shaped, 1)).mul(1.5)
-      shaped = mix(shaped, carved, u.wispAmount)
-      // Plumes: warm, moist air rising out of the canopy in thin columns, narrow at the foot
-      // and flaring as they rise, frayed by the height detail and fading out toward the top.
-      // They rise from the puff layer's height, not from the local mist top, which dips and
-      // swells with the coverage and would swallow a column's foot.
-      const above = max(hRel.sub(u.puffCentre), 0)
-      const rise01 = clamp(above.div(max(u.plumeHeight, 1)), 0, 1)
-      // One candidate column per grid cell of `plumeSpacingM`, at a hashed spot in the cell's
-      // inner part and present by `plumeChance`: a clean round column, which a threshold on a
-      // noise layer never is (it cuts combs of slivers). Leans downwind as it rises.
-      const cellCoord: any = floor(xy.div(u.plumeSpacing))
-      const hashOf = (salt: number) => fract(sin(dot(cellCoord.add(salt), vec2(127.1, 311.7))).mul(43758.5453))
-      const spot = cellCoord.add(vec2(hashOf(0), hashOf(17)).mul(0.6).add(0.2)).mul(u.plumeSpacing)
-        .add(u.plumeLean.mul(above))
-      const present = step(hashOf(41), u.plumeChance)
-      const radius = u.plumeRadius.mul(rise01.mul(1.2).add(1))
-      // Written as 1 − smoothstep with rising edges: WGSL leaves smoothstep undefined when
-      // its low edge is above its high one, which a falloff written the other way round is.
-      const column = present.mul(float(1).sub(smoothstep(radius.mul(0.3), radius, length(xy.sub(spot)))))
-      const plume = column.mul(rise01.oneMinus().pow(1.5)).mul(smoothstep(0, 0.12, rise01))
-        .mul(mix(float(1), detail.mul(1.6), 0.5))
-      plumes = plume.mul(u.plumeAmount).mul(coverage.mul(0.6).add(0.4))
+      return u.sigmaMax.mul(coverage.mul(shaped).add(plumes)).mul(edge)
+    }
+    let mist: any
+    if (mistGate) {
+      mist = float(0).toVar()
+      If(mistGate, () => { mist.assign(mistOf()) })
+    } else {
+      mist = mistOf()
     }
     // The veil: a sheet lying on the virtual canopy, what distant mist reads as — banks a
     // few hundred metres across (coverage and billows together) over a faint floor.
@@ -615,12 +633,8 @@ export function createGroundFogLayer(opts: {
     const veil = smoothstep(u.virtualCanopy.sub(6), u.virtualCanopy, hRel)
       .mul(float(1).sub(smoothstep(u.virtualCanopy.add(u.veilHeight.mul(0.4)), u.virtualCanopy.add(u.veilHeight), hRel)))
       .mul(mix(float(0.2), float(1), banks)).mul(u.veilSigma)
-    // Fade toward the box's side walls instead of ending in a cliff.
-    const outside = length(max(max(boundsMin.sub(xy), xy.sub(boundsMax)), vec2(0)))
-    const edge = float(1).sub(smoothstep(0, max(u.margin, 1), outside))
     // Returned in parts: the march fades the mist and plumes out beyond the points' reach,
     // where they would stand over the bare map, and keeps the veil.
-    const mist = u.sigmaMax.mul(coverage.mul(shaped).add(plumes)).mul(edge)
     return { mist, veil: veil.mul(edge), sigma: mist.add(veil.mul(edge)), localTop: lightTop, hRel }
   }
 
@@ -798,14 +812,14 @@ export function createGroundFogLayer(opts: {
         const t = segmentStart.add(segmentLength.mul(pow(j.add(jitter).div(count), k))).toVar()
         const dt = next.sub(previous).toVar()
         previous.assign(next)
-        const p = o.add(d.mul(t))
-        const sample = density(p, t.mul(u.pixelAngle), options)
+        const p = o.add(d.mul(t)).toVar()
         // Mist, puffs and plumes only where points are drawn: within their reach and inside
         // the sphere-fade dome, melting out over the dome's own ramp. Over the bare map
         // beyond, they would lie on a flat photo like cotton balls on a carpet; the veil
-        // carries the far field there.
+        // carries the far field there. Where this is 0 the density skips the mist's work.
         const sampleDome = domeFade(length(p.sub(shared.sphereFadeCentre)))
-        const nearPoints = float(1).sub(smoothstep(u.pointsReach.mul(0.7), u.pointsReach, t)).mul(sampleDome)
+        const nearPoints = float(1).sub(smoothstep(u.pointsReach.mul(0.7), u.pointsReach, t)).mul(sampleDome).toVar()
+        const sample = density(p, t.mul(u.pixelAngle), options, nearPoints.greaterThan(0))
         // The veil takes over where the mist leaves off, and stays light (a third) over the
         // drawn points, where the mist itself is there to be seen.
         const sigma = sample.mist.mul(nearPoints).add(sample.veil.mul(nearPoints.mul(-0.65).add(1))).toVar()
