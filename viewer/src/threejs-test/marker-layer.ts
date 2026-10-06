@@ -48,7 +48,7 @@ interface MarkerRecord {
   labelWidth: number
   labelHeight: number
   opacity: number
-  /** Set from outside, multiplied into the mask opacity: RIVER 05 leaves with its tower. */
+  /** Set from outside, multiplied into the mask opacity: TOWER 05 leaves with its tower. */
   fade: number
   opacityMaterials: Array<{ material: MeshBasicNodeMaterial; baseOpacity: number }>
 }
@@ -308,9 +308,9 @@ export function createMarkerLayer(options: MarkerLayerOptions): MarkerLayer {
   towerAnchor.position.z = 12
   towerSensorGroup.add(towerRing, towerAnchor)
   root.add(towerSensorGroup)
-  const towerTemperature = createTemperatureLabel(4, 'RIVER 05')
+  const towerTemperature = createTemperatureLabel(4, 'TOWER 05')
   overlay.append(towerTemperature.label)
-  wireFlyTo(towerTemperature.label, towerSensorGroup, 'RIVER 05')
+  wireFlyTo(towerTemperature.label, towerSensorGroup, 'TOWER 05')
   const towerSensorIndex = markers.length
   markers.push({
     group: towerSensorGroup,

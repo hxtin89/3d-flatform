@@ -29,6 +29,7 @@ import { densityCeilingForRange } from './viewer-request-volume'
 import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
+import { createBigTreesLayer, parseBigTrees, type BigTreesLayer } from './big-trees-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe } from './arrival-cost'
@@ -742,6 +743,7 @@ let sphereFade: SphereFade | null = null
 let viewAngle: ViewAngleCorrection | null = null
 let viewDepth: ViewDepthCorrection | null = null
 let markerLayer: MarkerLayer | null = null
+let bigTreesLayer: BigTreesLayer | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
@@ -1078,6 +1080,9 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         markerLayer?.setVisible(effective.markers)
         if (!effective.markers) setAimMode(false, false)
         break
+      case 'bigTrees':
+        bigTreesLayer?.setVisible(effective.bigTrees)
+        break
       case 'donationShape':
         donationShapeLayer?.setVisible(effective.donationShape)
         break
@@ -1304,6 +1309,7 @@ function applyPointCloudLift(): void {
   // markers, the parcel and the cloud decks at the old lift.
   fieldModelLayer?.setZOffset(zOffset)
   markerLayer?.setZOffset(zOffset)
+  bigTreesLayer?.setZOffset(zOffset)
   donationShapeLayer?.setZOffset(zOffset)
   environmentLayer?.setZOffset(zOffset)
 }
@@ -1319,7 +1325,7 @@ const FIELD_MODEL_KEYS = ['tower', 'boat'] as const
  * The tower and the boat fade with the dome the way the points under them fade: the
  * shader's own falloff, read from the uniforms it was handed this frame, at the model's
  * foot. Outside the dome the cloud around them is not drawn, and they would stand on
- * the flat map in the air. RIVER 05 leaves with its tower.
+ * the flat map in the air. TOWER 05 leaves with its tower.
  *
  * Copies this frame's dome into `modelDome`; false while it is off or parked.
  */
@@ -4817,6 +4823,7 @@ function loop(now: number): void {
     fieldModelLayer?.update(now)
   }
   if (options.donationShape) donationShapeLayer?.update(now, camera)
+  if (options.bigTrees) bigTreesLayer?.update(camera, cameraGroundRange, modelDomeLive ? modelDome : null, zOffset)
   if (options.markers) {
     updateTowerSensorFade(modelDomeLive)
     markerLayer?.update(
@@ -5303,6 +5310,18 @@ async function main(): Promise<void> {
       ),
     })
   }
+  // The big trees are a small curated JSON next to the app, one per dataset: candidates
+  // from scripts/find-big-trees.mjs, checked by hand. A dataset without one has no marks.
+  void fetch(`${import.meta.env.BASE_URL}big-trees/${dataset}.json`)
+    .then((response) => (response.ok ? response.json() : null))
+    .then((raw) => {
+      const trees = raw ? parseBigTrees(raw) : []
+      if (disposed || !trees.length) return
+      bigTreesLayer = createBigTreesLayer({ scene: ecefRoot, overlay: $('#bigTreeOverlay'), enuFrame, zOffset, trees })
+      bigTreesLayer.setVisible(renderOptions.effective().bigTrees)
+      console.info(`[big-trees] ${trees.length} trees`)
+    })
+    .catch((error) => console.warn('[big-trees] optional layer failed', error))
   const donationSource = await donationShapePromise
   if (donationSource && globe) {
     const ellipsoid = (globe as any).ellipsoid
@@ -5595,6 +5614,7 @@ function dispose(): void {
   audioLayer?.dispose()
   keyboardNavigation?.dispose()
   markerLayer?.dispose()
+  bigTreesLayer?.dispose()
   donationShapeLayer?.dispose()
   modelTransformEditor?.dispose()
   fieldModelLayer?.dispose()

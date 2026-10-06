@@ -24,6 +24,8 @@ export interface RenderOptions {
   fieldModels: boolean
   /** Interactive hotspot markers (DOM chips + 3D geometry). */
   markers: boolean
+  /** Rings and height chips on the big trees around the tower (public/big-trees). */
+  bigTrees: boolean
   /** Donation shape: protected-parcel outline, 1 m² grid and area chip. */
   donationShape: boolean
   /** Per-tile point size from that tile's spacing; off = fixed base size × slider. */
@@ -51,6 +53,8 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   daylightGrading: true,
   fieldModels: true,
   markers: true,
+  // Off: an annotation layer to switch on from the panel, not part of the default look.
+  bigTrees: false,
   donationShape: true,
   // Off: the per-tile derivation has never had a fair test — until the errorScale fix it
   // was fed a spacing twice the real one, and the Largest dot ceiling then cut off the
@@ -132,6 +136,13 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '📍 Markers · On',
     offText: '📍 Markers · Off',
     note: 'Interactive hotspots (chips + 3D pins)',
+  },
+  {
+    key: 'bigTrees',
+    label: 'Big trees',
+    onText: '🌳 Big trees · On',
+    offText: '🌳 Big trees · Off',
+    note: 'Rings and height chips on the tallest crowns around the canopy tower, found in the point cloud by scripts/find-big-trees.mjs',
   },
   {
     key: 'donationShape',

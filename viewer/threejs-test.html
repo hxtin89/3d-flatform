@@ -148,6 +148,16 @@
       .map-marker-label { position: absolute; top: 0; left: 0; transform: translate3d(-9999px,-9999px,0);
                           will-change: transform, opacity; transition: opacity .18s ease; }
       .map-marker-label[hidden] { display: none; }
+      /* Big trees get their own overlay, so the Markers switch does not take them along. */
+      #bigTreeOverlay { position: fixed; inset: 0; z-index: 11; overflow: hidden; pointer-events: none; }
+      #bigTreeOverlay[hidden] { display: none; }
+      .big-tree-label { display: grid; justify-items: center; gap: 2px; padding: 4px 7px 5px; margin-top: -6px;
+                        color: #f5f2e8; background: rgba(42,30,8,.72); border: 1px solid rgba(242,212,138,.55);
+                        border-radius: 8px; box-shadow: 0 6px 20px rgba(15,10,0,.28);
+                        backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); pointer-events: none; }
+      .big-tree-label b { font: 600 14px/1 "Iowan Old Style", Baskerville, serif; }
+      .big-tree-label small { opacity: .62; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .1em;
+                              text-transform: uppercase; }
       .donation-shape-label { display: grid; gap: 3px; min-width: 92px; padding: 6px 9px 7px; margin-top: -10px;
                               color: #f5f2e8; background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
                               border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
@@ -393,6 +403,7 @@
          ganz weg, damit die 3DGS-Ansicht für sich steht. Panel + Settings-Chip
          bleiben, damit man wieder herausschalten kann. */
       body.splat-solo #markerOverlay,
+      body.splat-solo #bigTreeOverlay,
       body.splat-solo #hud,
       body.splat-solo #hudChip,
       body.splat-solo #keyboardGuide,
@@ -680,6 +691,7 @@
     <canvas id="view"></canvas>
     <div id="vignette"></div>
     <div id="markerOverlay"></div>
+    <div id="bigTreeOverlay" hidden></div>
     <div id="splatHint" aria-hidden="true">
       <div class="splat-caps">
         <span class="keycap" data-key="KeyW">W</span>
