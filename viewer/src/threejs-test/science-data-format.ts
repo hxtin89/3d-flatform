@@ -16,7 +16,9 @@
 
 export const SCIENCE_FORMAT = 1
 
-export const DATASET_IDS = ['protected-areas', 'trails'] as const
+export const DATASET_IDS = [
+  'protected-areas', 'trails', 'big-trees', 'tree-plots', 'herps', 'herp-transects', 'mammals',
+] as const
 export type DatasetId = (typeof DATASET_IDS)[number]
 
 export type CountryCode = 'PE' | 'CA'
@@ -33,6 +35,13 @@ export interface MultiLineStringGeometry {
   type: 'MultiLineString'
   coordinates: Position[][]
 }
+
+export interface PointGeometry {
+  type: 'Point'
+  coordinates: Position
+}
+
+export type ScienceGeometry = MultiPolygonGeometry | MultiLineStringGeometry | PointGeometry
 
 export interface ProtectedAreaProperties {
   area_id: string
@@ -61,13 +70,102 @@ export interface ScienceCollection<G, P> {
   features: Array<ScienceFeature<G, P>>
 }
 
+/** One of the most frequent names in a summary, with how often it occurs. */
+export interface NameCount {
+  name: string
+  count: number
+}
+
+/** A big tree measured in the field: the board's Big Trees, a point per tree. */
+export interface BigTreeProperties {
+  /** Interim: Directus row number. Tree_Code is not unique in the source (F3). */
+  tree_id: string
+  country_code: CountryCode
+  tree_code: string | null
+  site_name: string | null
+  site_code: string | null
+  trail_code: string | null
+  trail_distance_m: number | null
+  family: string | null
+  species: string | null
+  local_name: string | null
+  height_m: number | null
+  dbh_m: number | null
+  /** As in the source, unit not stated there (tonnes, by the size of the values). */
+  aboveground_biomass: number | null
+  co2: number | null
+  /** YYYY-MM-DD */
+  measured_on: string | null
+  project: string | null
+}
+
+/**
+ * A forest plot: the board's Tree Plots. The source holds one row per measured tree, all
+ * carrying their plot's code and outline; the preparation step folds them into the plot.
+ */
+export interface TreePlotProperties {
+  /** The plot code, e.g. "SFO-BKT-250". */
+  plot_id: string
+  country_code: CountryCode
+  site_name: string | null
+  site_code: string | null
+  trail_code: string | null
+  trail_distance_m: number | null
+  plot_size: string | null
+  plot_area_ha: number | null
+  established_on: string | null
+  tree_count: number
+  species_count: number
+  basal_area_m2: number
+  top_species: NameCount[]
+}
+
+/**
+ * Everything recorded at one survey site: the board's Herps and Mammals, folded per site,
+ * because the source has no coordinates per record yet. The site sits at its records'
+ * locations (herps: the middle of its survey tracks; mammals: the site point).
+ */
+export interface SurveySiteProperties {
+  site_id: string
+  country_code: CountryCode
+  site_name: string
+  site_code: string | null
+  /** Every record attributed to the site, with or without a location of its own. */
+  record_count: number
+  species_count: number
+  top_species: NameCount[]
+  /** Herps: Amphibia and Reptilia. Mammals: empty. */
+  classes: NameCount[]
+  /** Herps: survey methods. Mammals: the institutions that recorded them. */
+  methods: NameCount[]
+  first_date: string | null
+  last_date: string | null
+}
+
+/** The herp survey tracks of one site, merged into one feature. */
+export interface HerpTransectProperties {
+  site_id: string
+  country_code: CountryCode
+  site_name: string
+  track_count: number
+}
+
 export type ProtectedAreaCollection = ScienceCollection<MultiPolygonGeometry, ProtectedAreaProperties>
 export type TrailCollection = ScienceCollection<MultiLineStringGeometry, TrailProperties>
+export type BigTreeCollection = ScienceCollection<PointGeometry, BigTreeProperties>
+export type TreePlotCollection = ScienceCollection<MultiPolygonGeometry | PointGeometry, TreePlotProperties>
+export type SurveySiteCollection = ScienceCollection<PointGeometry, SurveySiteProperties>
+export type HerpTransectCollection = ScienceCollection<MultiLineStringGeometry, HerpTransectProperties>
 
 /** What each dataset's file holds. */
 export interface DatasetShapes {
   'protected-areas': ProtectedAreaCollection
   trails: TrailCollection
+  'big-trees': BigTreeCollection
+  'tree-plots': TreePlotCollection
+  herps: SurveySiteCollection
+  'herp-transects': HerpTransectCollection
+  mammals: SurveySiteCollection
 }
 
 export interface DatasetVersion {
@@ -179,16 +277,41 @@ export function toMultiLineString(geometry: unknown): MultiLineStringGeometry | 
   return coordinates.length > 0 ? { type: 'MultiLineString', coordinates } : null
 }
 
-export function bboxOf(geometry: MultiPolygonGeometry | MultiLineStringGeometry): [number, number, number, number] {
-  const box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
-  const visit = (p: Position) => {
-    if (p[0] < box[0]) box[0] = p[0]
-    if (p[1] < box[1]) box[1] = p[1]
-    if (p[0] > box[2]) box[2] = p[0]
-    if (p[1] > box[3]) box[3] = p[1]
+/** A GeoJSON Point or a WKT "POINT(lon lat)" string → Point, or null. */
+export function toPoint(geometry: unknown): PointGeometry | null {
+  let lon: unknown
+  let lat: unknown
+  if (typeof geometry === 'string') {
+    const match = /^\s*POINT\s*\(\s*(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s*\)\s*$/i.exec(geometry)
+    if (!match) return null
+    lon = Number(match[1])
+    lat = Number(match[2])
+  } else {
+    const g = geometry as { type?: string; coordinates?: unknown } | null
+    if (g?.type !== 'Point' || !isPosition(g.coordinates)) return null
+    ;[lon, lat] = g.coordinates as number[]
   }
-  if (geometry.type === 'MultiPolygon') geometry.coordinates.forEach(poly => poly.forEach(ring => ring.forEach(visit)))
-  else geometry.coordinates.forEach(line => line.forEach(visit))
+  if (typeof lon !== 'number' || typeof lat !== 'number' || !Number.isFinite(lon) || !Number.isFinite(lat)) return null
+  return { type: 'Point', coordinates: [roundTo(lon, COORDINATE_DECIMALS), roundTo(lat, COORDINATE_DECIMALS)] }
+}
+
+/** Every path of a geometry; a point is a path of one position. */
+export function pathsOf(geometry: ScienceGeometry): Position[][] {
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.flat()
+  if (geometry.type === 'MultiLineString') return geometry.coordinates
+  return [[geometry.coordinates]]
+}
+
+export function bboxOf(geometry: ScienceGeometry): [number, number, number, number] {
+  const box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const path of pathsOf(geometry)) {
+    for (const p of path) {
+      if (p[0] < box[0]) box[0] = p[0]
+      if (p[1] < box[1]) box[1] = p[1]
+      if (p[0] > box[2]) box[2] = p[0]
+      if (p[1] > box[3]) box[3] = p[1]
+    }
+  }
   return box
 }
 
@@ -203,9 +326,22 @@ export function unionBbox(boxes: Array<[number, number, number, number]>): [numb
   return out
 }
 
-const ID_KEY: Record<DatasetId, 'area_id' | 'trail_id'> = { 'protected-areas': 'area_id', trails: 'trail_id' }
-const NAME_KEY: Record<DatasetId, 'area_name' | 'trail_name'> = { 'protected-areas': 'area_name', trails: 'trail_name' }
-const GEOMETRY_TYPE: Record<DatasetId, string> = { 'protected-areas': 'MultiPolygon', trails: 'MultiLineString' }
+interface DatasetSpec {
+  idKey: string
+  /** The property that must hold a non-empty name, if any. */
+  nameKey: string | null
+  geometry: readonly ScienceGeometry['type'][]
+}
+
+const SPECS: Record<DatasetId, DatasetSpec> = {
+  'protected-areas': { idKey: 'area_id', nameKey: 'area_name', geometry: ['MultiPolygon'] },
+  trails: { idKey: 'trail_id', nameKey: 'trail_name', geometry: ['MultiLineString'] },
+  'big-trees': { idKey: 'tree_id', nameKey: null, geometry: ['Point'] },
+  'tree-plots': { idKey: 'plot_id', nameKey: 'plot_id', geometry: ['MultiPolygon', 'Point'] },
+  herps: { idKey: 'site_id', nameKey: 'site_name', geometry: ['Point'] },
+  'herp-transects': { idKey: 'site_id', nameKey: 'site_name', geometry: ['MultiLineString'] },
+  mammals: { idKey: 'site_id', nameKey: 'site_name', geometry: ['Point'] },
+}
 
 /**
  * Everything wrong with a collection, as readable lines; empty when it may be published.
@@ -216,26 +352,28 @@ export function validateCollection<D extends DatasetId>(dataset: D, collection: 
   if (collection?.type !== 'FeatureCollection' || !Array.isArray(collection.features)) {
     return [`${dataset}: not a FeatureCollection`]
   }
+  const spec = SPECS[dataset]
   const problems: string[] = []
   if (collection.features.length === 0) problems.push(`${dataset}: no features`)
   const seen = new Set<string>()
-  for (const feature of collection.features) {
-    const props = feature.properties as unknown as Record<string, unknown>
-    const id = props[ID_KEY[dataset]]
+  for (const feature of collection.features as Array<{ geometry: ScienceGeometry | null; properties: unknown }>) {
+    const props = feature.properties as Record<string, unknown>
+    const id = props[spec.idKey]
     const label = `${dataset} ${String(id)}`
-    if (typeof id !== 'string' || id === '') problems.push(`${label}: missing ${ID_KEY[dataset]}`)
-    else if (seen.has(id)) problems.push(`${label}: duplicate ${ID_KEY[dataset]}`)
+    if (typeof id !== 'string' || id === '') problems.push(`${label}: missing ${spec.idKey}`)
+    else if (seen.has(id)) problems.push(`${label}: duplicate ${spec.idKey}`)
     else seen.add(id)
-    const name = props[NAME_KEY[dataset]]
-    if (typeof name !== 'string' || name.trim() === '') problems.push(`${label}: missing ${NAME_KEY[dataset]}`)
-    const geometry = feature.geometry as MultiPolygonGeometry | MultiLineStringGeometry | null
-    if (!geometry || geometry.type !== GEOMETRY_TYPE[dataset]) {
-      problems.push(`${label}: geometry is ${geometry?.type ?? 'missing'}, expected ${GEOMETRY_TYPE[dataset]}`)
+    if (spec.nameKey) {
+      const name = props[spec.nameKey]
+      if (typeof name !== 'string' || name.trim() === '') problems.push(`${label}: missing ${spec.nameKey}`)
+    }
+    const geometry = feature.geometry
+    if (!geometry || !spec.geometry.includes(geometry.type)) {
+      problems.push(`${label}: geometry is ${geometry?.type ?? 'missing'}, expected ${spec.geometry.join(' or ')}`)
       continue
     }
-    const paths: Position[][] = geometry.type === 'MultiPolygon' ? geometry.coordinates.flat() : geometry.coordinates
     let outOfRange = false
-    for (const path of paths) {
+    for (const path of pathsOf(geometry)) {
       for (const p of path) {
         if (!Number.isFinite(p[0]) || !Number.isFinite(p[1]) || Math.abs(p[0]) > 180 || Math.abs(p[1]) > 90) outOfRange = true
       }
@@ -243,7 +381,7 @@ export function validateCollection<D extends DatasetId>(dataset: D, collection: 
         const a = path[0]
         const b = path[path.length - 1]
         if (path.length < 4 || a[0] !== b[0] || a[1] !== b[1]) problems.push(`${label}: ring not closed or too short`)
-      } else if (path.length < 2) {
+      } else if (geometry.type === 'MultiLineString' && path.length < 2) {
         problems.push(`${label}: line with fewer than 2 points`)
       }
     }
@@ -295,7 +433,7 @@ export function referencedFiles(index: ScienceIndex): Set<string> {
 }
 
 /** `protected-areas.0123456789abcdef.json`: the only names the preparation step prunes. */
-export const DATASET_FILE_PATTERN = /^(protected-areas|trails)\.[0-9a-f]{16}\.json$/
+export const DATASET_FILE_PATTERN = new RegExp(`^(${DATASET_IDS.join('|')})\\.[0-9a-f]{16}\\.json$`)
 
 export function datasetFileName(dataset: DatasetId, version: string): string {
   return `${dataset}.${version}.json`

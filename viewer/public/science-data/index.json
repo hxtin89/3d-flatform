@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "generatedAt": "2026-10-07T20:17:28.845Z",
+  "generatedAt": "2026-10-07T21:27:48.290Z",
   "source": {
     "kind": "directus",
     "url": "https://wi.mediascenography.com"
@@ -32,6 +32,76 @@
         -12.815685
       ],
       "updatedAt": "2026-10-07T20:17:28.845Z",
+      "history": []
+    },
+    "big-trees": {
+      "file": "big-trees.3e941a7628ef0192.json",
+      "version": "3e941a7628ef0192",
+      "featureCount": 32,
+      "bytes": 14379,
+      "bbox": [
+        -69.5018011,
+        -12.8735228,
+        -69.4497463,
+        -12.8565977
+      ],
+      "updatedAt": "2026-10-07T21:27:48.290Z",
+      "history": []
+    },
+    "tree-plots": {
+      "file": "tree-plots.02b8a6154e7e5b99.json",
+      "version": "02b8a6154e7e5b99",
+      "featureCount": 131,
+      "bytes": 85910,
+      "bbox": [
+        -69.5325396,
+        -12.9362322,
+        -69.4514915,
+        -12.8402951
+      ],
+      "updatedAt": "2026-10-07T21:27:48.290Z",
+      "history": []
+    },
+    "herps": {
+      "file": "herps.0be3309846165044.json",
+      "version": "0be3309846165044",
+      "featureCount": 6,
+      "bytes": 4225,
+      "bbox": [
+        -71.1881188,
+        -12.8657622,
+        -69.4764887,
+        -12.5230048
+      ],
+      "updatedAt": "2026-10-07T21:27:48.290Z",
+      "history": []
+    },
+    "herp-transects": {
+      "file": "herp-transects.41977fca456c9d45.json",
+      "version": "41977fca456c9d45",
+      "featureCount": 5,
+      "bytes": 24176,
+      "bbox": [
+        -71.2065542,
+        -12.8802189,
+        -69.4466182,
+        -12.5161159
+      ],
+      "updatedAt": "2026-10-07T21:27:48.290Z",
+      "history": []
+    },
+    "mammals": {
+      "file": "mammals.eca7aa4987773d8c.json",
+      "version": "eca7aa4987773d8c",
+      "featureCount": 25,
+      "bytes": 14340,
+      "bbox": [
+        -69.6769952,
+        -13.1341397,
+        -68.7381321,
+        -11.5867823
+      ],
+      "updatedAt": "2026-10-07T21:27:48.290Z",
       "history": []
     }
   }

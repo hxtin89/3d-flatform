@@ -38,15 +38,23 @@ test('trail IDs carry their collection, so equal row numbers do not collide', ()
   assert.deepEqual(validateCollection('trails', collection), [])
 })
 
-test('the reader asks Directus for exactly the three collections and fails loudly', async () => {
+test('the reader asks Directus for exactly its seven collections and fails loudly', async () => {
   const asked: string[] = []
   const fakeFetch = (async (url: string) => {
     asked.push(url)
-    const rows = url.includes('Protected_Areas') ? [{ id: 'a', area_name: 'A', geom: peruSquare }] : [{ id: 1, trail_name: 'T', area_name: 'T', geom: peruLine }]
+    const path = new URL(url).pathname
+    const rows = path.endsWith('/Protected_Areas') ? [{ id: 'a', area_name: 'A', geom: peruSquare }]
+      : path.endsWith('Trails') ? [{ id: 1, trail_name: 'T', area_name: 'T', geom: peruLine }]
+      : []
     return new Response(JSON.stringify({ data: rows }), { status: 200 })
   }) as typeof fetch
   const result = await readDirectus('https://example.test/', fakeFetch)
-  assert.deepEqual(asked.map(u => new URL(u).pathname), ['/items/Protected_Areas', '/items/Trails', '/items/Other_Trails'])
+  assert.deepEqual(asked.map(u => new URL(u).pathname), [
+    '/items/Protected_Areas', '/items/Trails', '/items/Other_Trails',
+    '/items/bigtrees', '/items/Tree_Plot_Rect', '/items/Herp', '/items/mammals',
+  ])
+  // Only the fields the mapping reads: the full mammals collection is 18.7 MB.
+  assert.ok(asked.every(u => new URL(u).searchParams.get('fields')))
   assert.equal(result.source.url, 'https://example.test')
   assert.equal(result.collections.trails.features.length, 2)
 

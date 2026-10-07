@@ -19,40 +19,29 @@ import {
   toMultiLineString,
   toMultiPolygon,
   type CountryCode,
-  type DatasetId,
   type DatasetShapes,
   type ProtectedAreaCollection,
   type TrailCollection,
 } from '../../src/threejs-test/science-data-format.ts'
+import {
+  mapBigTrees,
+  mapHerps,
+  mapMammals,
+  mapTreePlots,
+  nullableText,
+  text,
+  type DirectusRow,
+  type Dropped,
+} from './directus-records.ts'
+
+export type { DirectusRow, Dropped }
 
 export const DIRECTUS_URL = 'https://wi.mediascenography.com'
-
-export interface DirectusRow {
-  id: string | number
-  geom?: unknown
-  [field: string]: unknown
-}
-
-export interface Dropped {
-  dataset: DatasetId
-  id: string
-  name: string
-  reason: string
-}
 
 export interface SourceResult {
   source: { kind: string; url: string }
   collections: DatasetShapes
   dropped: Dropped[]
-}
-
-function text(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function nullableText(value: unknown): string | null {
-  const t = text(value)
-  return t === '' ? null : t
 }
 
 /** Stable output order, so an unchanged source hashes the same however Directus sorts. */
@@ -140,19 +129,42 @@ async function fetchCollection(baseUrl: string, name: string, fields: string[], 
 
 export async function readDirectus(baseUrl: string = DIRECTUS_URL, fetchImpl: typeof fetch = fetch): Promise<SourceResult> {
   const base = baseUrl.replace(/\/+$/, '')
-  const [areaRows, trailRows, otherTrailRows] = await Promise.all([
+  // Only the fields the mapping reads: the full mammals collection is 18.7 MB.
+  const [areaRows, trailRows, otherTrailRows, bigTreeRows, plotRows, herpRows, mammalRows] = await Promise.all([
     fetchCollection(base, 'Protected_Areas', ['id', 'area_name', 'folder_name', 'geom'], fetchImpl),
     fetchCollection(base, 'Trails', ['id', 'trail_name', 'folder_name', 'geom'], fetchImpl),
     fetchCollection(base, 'Other_Trails', ['id', 'area_name', 'folder_name', 'geom'], fetchImpl),
+    fetchCollection(base, 'bigtrees', [
+      'id', 'Location', 'Tree_Code', 'Site_Name', 'Site_Code', 'Trail_Code', 'Trail_Distance', 'Family', 'Species',
+      'Local_Name', 'Height', 'Diameter_at_Breast_Height', 'Aboveground_Biomass', 'CO2', 'Date', 'Project',
+    ], fetchImpl),
+    fetchCollection(base, 'Tree_Plot_Rect', [
+      'id', 'plot_code', 'location', 'site_name', 'site_code', 'trail_code', 'trail_distance', 'plot_size',
+      'plot_area', 'date_establishment', 'species', 'basal_area_m2',
+    ], fetchImpl),
+    fetchCollection(base, 'Herp', ['id', 'site', 'site_code', 'location', 'date', 'survey_method', 'class', 'species'], fetchImpl),
+    fetchCollection(base, 'mammals', ['id', 'Site', 'Location', 'Date', 'Species', 'Species_scientific_name', 'Institution'], fetchImpl),
   ])
   const areas = mapProtectedAreas(areaRows)
   const trails = mapTrails([
     { collection: 'Trails', rows: trailRows },
     { collection: 'Other_Trails', rows: otherTrailRows },
   ])
+  const bigTrees = mapBigTrees(bigTreeRows)
+  const plots = mapTreePlots(plotRows)
+  const herps = mapHerps(herpRows)
+  const mammals = mapMammals(mammalRows)
   return {
     source: { kind: 'directus', url: base },
-    collections: { 'protected-areas': areas.collection, trails: trails.collection },
-    dropped: [...areas.dropped, ...trails.dropped],
+    collections: {
+      'protected-areas': areas.collection,
+      trails: trails.collection,
+      'big-trees': bigTrees.collection,
+      'tree-plots': plots.collection,
+      herps: herps.sites,
+      'herp-transects': herps.transects,
+      mammals: mammals.sites,
+    },
+    dropped: [...areas.dropped, ...trails.dropped, ...bigTrees.dropped, ...plots.dropped, ...herps.dropped, ...mammals.dropped],
   }
 }

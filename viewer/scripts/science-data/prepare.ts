@@ -86,7 +86,10 @@ async function main(): Promise<number> {
     })
   }
 
-  for (const d of result.dropped) console.log(`dropped  ${d.dataset} ${d.id} "${d.name}": ${d.reason}`)
+  for (const d of result.dropped) {
+    const what = d.count === undefined ? `${d.id} "${d.name}"` : `${d.count} ${d.name}${d.id ? ` of ${d.id}` : ''}`
+    console.log(`dropped  ${d.dataset} ${what}: ${d.reason}`)
+  }
   if (problems.length > 0) {
     for (const p of problems) console.error(`refused  ${p}`)
     console.error(`\n${problems.length} problem(s). Nothing written; ${previous ? 'the last good set stays live' : 'there is no earlier set'}.`)
