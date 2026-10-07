@@ -289,8 +289,8 @@ let groundPatchIndexNode: any = null
 export function setGroundPatchMask(cells: THREE.DataArrayTexture, indexMap: THREE.Texture): void {
   groundPatchMaskNode = texture(cells)
   groundPatchIndexNode = texture(indexMap)
-  // The imagery graph holds these nodes, so a later swap must not hit a cached graph.
-  imageryVersion++
+  // Not a swap point: the imagery graph holds these nodes and globe.ts caches it on the effect
+  // flags alone, so a second call would reach neither that cache nor the tiles already built.
 }
 
 /** Register the colour field. It arrives after the first tiles may have been built, so the
@@ -971,23 +971,12 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
  * hit the cache.
  */
 let effectsVersion = 0
-/** Bumped only by the effects the basemap's imagery graph reads, so a point-only switch
- *  (colourField, pointGrade, exactDecode, …) does not make the next map tile build a fresh,
- *  identical graph inside the render pass. */
-const IMAGERY_EFFECTS: ReadonlySet<string> = new Set(['groundFog', 'groundPatch', 'sphereFade', 'sunLight', 'canopyShadows', 'cloudShadows', 'skyCloudShadows'])
-let imageryVersion = 0
 const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any; cornerNode: any }>()
 
-/** Every effect flip, for the shader-terms readout in main.ts (`__wild.shaderTerms.state`). */
+/** Every effect flip: the stamp a new basemap material carries (globe.ts, see
+ *  effectMaterialStale), and the shader-terms readout in main.ts (`__wild.shaderTerms.state`). */
 export function cloudEffectsVersion(): number {
   return effectsVersion
-}
-
-/** The basemap builds its own graph from some of the same effect flags and needs their
- *  cache invalidation — see globe.ts, which keys on imageryEffectsKey below. Only those flags
- *  move this number. */
-export function imageryEffectsVersion(): number {
-  return imageryVersion
 }
 
 export function isCloudEffectEnabled(effect: CloudEffect): boolean {
@@ -996,8 +985,10 @@ export function isCloudEffectEnabled(effect: CloudEffect): boolean {
 
 /** The effect flags the basemap's colour graph reads — groundFogNode, applyMaskSurround and
  *  applyGroundPatch, which also reads sphereFade, and the sky package's sun light, canopy
- *  shadows and cloud shadows (globe.ts imageryColorNode). A switch the map never reads, such
- *  as the fovea bend or the inspector's terms, must not hand it a new graph and a new build. */
+ *  shadows and cloud shadows (globe.ts imageryColorNode, which caches its graph under this
+ *  key). A switch the map never reads, such as the fovea bend or the inspector's terms, must
+ *  not hand it a new graph and a new build. imagery-graph-key.test.ts holds the list to what
+ *  the graph reads. */
 export function imageryEffectsKey(): string {
   return `${effects.groundFog}|${effects.groundPatch}|${effects.sphereFade}|${effects.vignette}`
     + `|${effects.sunLight}|${effects.canopyShadows}|${effects.cloudShadows}|${effects.skyCloudShadows}`
@@ -1007,7 +998,6 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
   if (effects[effect] === enabled) return false
   effects[effect] = enabled
   effectsVersion++
-  if (IMAGERY_EFFECTS.has(effect)) imageryVersion++
   // Every cached graph carries the old version in its key and can never be looked up
   // again. Dropping them lets them go once no material still uses them — which matters
   // for the pulled graphs, whose texel reference otherwise keeps the last tile it drew
