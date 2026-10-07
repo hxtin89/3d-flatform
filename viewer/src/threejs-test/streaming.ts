@@ -602,6 +602,11 @@ export function createStreamingCloud(opts: {
      *  list because one tile can carry several point sources. */
     quads: THREE.Mesh[]
   }>()
+  /** The tiles in `tileStats`, iterable: the shadow pass asks for every loaded tile each frame,
+   *  and the library's forEachLoadedModel finds them by walking the whole tile tree (12k nodes
+   *  for ~50 loaded tiles at the landing view, ~0.5 ms a frame). Kept in step with tileStats in
+   *  the load-model and dispose-model handlers. */
+  const loadedTiles = new Set<any>()
   const failedTiles = new Set<string>()
   /** Timestamp of the previous thinning pass, for the ramp's elapsed time. */
   let lastThinningAt = 0
@@ -1157,6 +1162,7 @@ export function createStreamingCloud(opts: {
       else (source.material as any)?.dispose?.()
     }
     tileStats.set(tile, { points, density, rank: bandRank(density), debugTiles, quads })
+    loadedTiles.add(tile)
     recordArrival(performance.now() - arrivalStartedAt, points)
   })
   // Fired before 3d-tiles-renderer disposes the tile, while its scene is still whole. Both
@@ -1183,6 +1189,7 @@ export function createStreamingCloud(opts: {
       if (texture?.userData?.cloudPointData) retirePointDataTexture(texture)
     })
     tileStats.delete(tile)
+    loadedTiles.delete(tile)
   })
   // A missing tile is a gap in the published data, not a crash. Report each URL once so
   // one absent tile cannot bury the console. The renderer itself only asks again once the
@@ -1303,9 +1310,11 @@ export function createStreamingCloud(opts: {
 
   const detachedMatrix = new THREE.Matrix4()
   function forEachLoadedQuad(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void {
-    tiles.forEachLoadedModel((scene: THREE.Object3D, tile: any) => {
+    // The same tiles forEachLoadedModel would visit (a loaded scene with stats), without its walk.
+    for (const tile of loadedTiles) {
+      const scene: THREE.Object3D | undefined = tile.engineData?.scene
       const stats = tileStats.get(tile)
-      if (!stats) return
+      if (!scene || !stats) continue
       const attached = scene.parent === tiles.group
       for (const mesh of stats.quads) {
         if (attached) { visit(mesh, true, mesh.matrixWorld); continue }
@@ -1315,7 +1324,7 @@ export function createStreamingCloud(opts: {
         detachedMatrix.premultiply(tiles.group.matrixWorld)
         visit(mesh, false, detachedMatrix)
       }
-    })
+    }
   }
 
   function applyRenderGate(): void {
@@ -2067,6 +2076,7 @@ export function createStreamingCloud(opts: {
       stopRetrying()
       scene.remove(tiles.group)
       tiles.dispose()
+      loadedTiles.clear()
       lifecycle.abort()
     },
   }
