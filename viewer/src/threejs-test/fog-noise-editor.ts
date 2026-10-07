@@ -30,6 +30,7 @@ export interface FogNoiseEditorOptions {
   defaults: FogNoiseSettings
   /** Rebakes and uploads; resolves with the new texels, or null if a newer bake replaced it. */
   apply(settings: FogNoiseSettings): Promise<Uint8Array | null>
+  /** The 3D texture's texels: the fog's uploaded volume, baked first if there is none yet. */
   bake3d(size: number): Promise<Uint8Array | null>
   /** RGBA8 pixels of a density slice, row 0 at the top; resolves null while the fog is off. */
   renderDensitySlice?(request: DensitySliceRequest): Promise<Uint8Array | null>
@@ -165,7 +166,10 @@ export function mountFogNoiseEditor(options: FogNoiseEditorOptions): FogNoiseEdi
   const ortho = el('canvas', { width: 3 * 96, height: 96, className: 'fog-noise-strip' })
   const zInput = el('input', { type: 'range', min: '0', max: '1', step: '0.01', value: '0.5' })
   const zVal = el('span', { className: 'val' })
-  const bake3dButton = el('button', { className: 'act', type: 'button', textContent: '▦ Bake 3D texture (64³)' })
+  // Shows the volume the fog reads. Its settings are fixed, so there is nothing to rebake: the
+  // fog answers with the uploaded texels and bakes only if it has none yet.
+  const bake3dLabel = '▦ Show 3D texture (64³)'
+  const bake3dButton = el('button', { className: 'act', type: 'button', textContent: bake3dLabel })
   let volume: Uint8Array | null = null
   const volumeSize = 64
   container.append(
@@ -334,7 +338,7 @@ export function mountFogNoiseEditor(options: FogNoiseEditorOptions): FogNoiseEdi
   bake3dButton.addEventListener('click', async () => {
     bake3dButton.textContent = '▦ Baking…'
     volume = await options.bake3d(volumeSize) ?? volume
-    bake3dButton.textContent = '▦ Rebake 3D texture (64³)'
+    bake3dButton.textContent = bake3dLabel
     drawVolume()
   })
 

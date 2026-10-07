@@ -160,6 +160,9 @@ export interface GroundFogLayer {
   noiseSettings(): FogNoiseSettings
   /** Rebake the noise and upload it; resolves with the texels (null when superseded). */
   setNoise(settings: FogNoiseSettings): Promise<Uint8Array | null>
+  /** The 3D texture's texels for the noise editor: the uploaded volume when there is one at
+   *  that size (its settings are fixed, so a second bake would give the same bytes), otherwise
+   *  a bake that is uploaded as well. */
   bake3dPreview(size: number): Promise<Uint8Array | null>
   /** Density preview for the noise editor, rendered with the march's own density node. */
   renderDensitySlice(request: DensitySliceRequest): Promise<Uint8Array | null>
@@ -482,7 +485,7 @@ export function createGroundFogLayer(opts: {
   placeholder3d.unpackAlignment = 1
   placeholder3d.needsUpdate = true
   const noise3dNode = texture3D(placeholder3d, vec3(0), 0)
-  const ensure3d = async (size = 64) => {
+  const bake3dAndUpload = async (size: number) => {
     const data = await baker.bake3d(size)
     if (!data) return null
     noise3dTexture?.dispose()
@@ -495,6 +498,20 @@ export function createGroundFogLayer(opts: {
     noise3dTexture.needsUpdate = true
     noise3dNode.value = noise3dTexture
     return data
+  }
+  // The volume's settings are fixed (bakeFogNoise3D's defaults, one seed), so every bake at a
+  // size gives the same bytes. A size that is uploaded already, or being baked, is answered
+  // from that instead of baking and uploading it again: the noise editor's button only wants
+  // the texels to draw, and a panel switch to '3d' during the boot bake waits for that bake.
+  let noise3dBaking: { size: number; promise: Promise<Uint8Array | null> } | null = null
+  const ensure3d = (size = 64): Promise<Uint8Array | null> => {
+    if (noise3dTexture && noise3dTexture.image.width === size) return Promise.resolve(noise3dTexture.image.data as Uint8Array)
+    if (noise3dBaking?.size === size) return noise3dBaking.promise
+    const promise = bake3dAndUpload(size)
+    noise3dBaking = { size, promise }
+    const settled = () => { if (noise3dBaking?.promise === promise) noise3dBaking = null }
+    promise.then(settled, settled)
+    return promise
   }
   // setBuildOption bakes it when the panel switches to '3d'; a config that starts there needs
   // it too.
@@ -722,7 +739,7 @@ export function createGroundFogLayer(opts: {
     return select(exit.greaterThan(enter), estimate, end)
   }
 
-  const marchNode = (depth: any, fogDepth: any, options: GroundFogBuildOptions) => Fn(() => {
+  const marchNode = (fogDepth: any, options: GroundFogBuildOptions) => Fn(() => {
     const st = uv()
     // The ray goes through the texel's own centre — where the temporal filter and the
     // upsample take the texel to be — and ends at the fog depth pass's surface for it.
@@ -922,7 +939,7 @@ export function createGroundFogLayer(opts: {
     fogDepthTexture.setResolutionScale(effectiveScale)
     fogDepthTexture.updateBeforeType = 'frame'
     const fogDepth = fogDepthTexture
-    marchTexture = rtt(marchNode(depth, fogDepth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+    marchTexture = rtt(marchNode(fogDepth, options), null, null, { type: THREE.HalfFloatType, depthBuffer: false })
     marchTexture.setResolutionScale(effectiveScale)
     marchTexture.updateBeforeType = 'frame'
     // The composite reads the filtered fog when the temporal filter is on: the same texels,
@@ -1091,6 +1108,7 @@ export function createGroundFogLayer(opts: {
   // ---------------------------------------------------------------- per frame
   const cameraEnu = new THREE.Vector3()
   const matrix = new THREE.Matrix4()
+  const drawingBuffer = new THREE.Vector2()
   const wrap = (v: number, period: number) => v - Math.floor(v / period) * period
   const advance = (offset: THREE.Vector2, scaleInv: number, deltaS: number) => {
     offset.set(
@@ -1158,7 +1176,7 @@ export function createGroundFogLayer(opts: {
       near.value = cam.near
       far.value = cam.far
       // The angle one march texel spans, for the noise mip level, at the effective scale.
-      const size = renderer.getDrawingBufferSize(new THREE.Vector2())
+      const size = renderer.getDrawingBufferSize(drawingBuffer)
       bufferPixels = size.x * size.y
       applyEffectiveScale()
       u.pixelAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / Math.max(size.y * effectiveScale, 1)
@@ -1262,6 +1280,7 @@ export function createGroundFogLayer(opts: {
       previewQuads.forEach((quad) => (quad.material as NodeMaterial).dispose())
       noiseTexture.dispose()
       noise3dTexture?.dispose()
+      placeholder3d.dispose()
       baker.dispose()
     },
   }

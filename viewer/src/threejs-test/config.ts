@@ -1892,8 +1892,12 @@ export const EXPERIENCE_CONFIG = {
     mapBelowM: 20,
     /** Where the mist in a real gap ends, metres above the area floor; meant as the forest
      *  floor (~22 at the survey centre). A gap is a ray that met no crown inside the
-     *  sphere-fade dome and landed on the map, which lies 20 m under the floor. Below
-     *  `bottomM` the band's own bottom ends the mist instead. */
+     *  sphere-fade dome and landed on the map, which lies 20 m under the floor. The march's box
+     *  starts at `bottomM`, so a value below it — as here, -20 against 15 — does not reach the
+     *  gaps at all: the band's own bottom ends their mist, and this value only sets how soon,
+     *  across the dome's melt ramp, the ray's end drops from `virtualCanopyM` to that bottom.
+     *  Only a value above `bottomM` moves where a gap's mist ends. Left at -20 on purpose:
+     *  the forest floor's 22 would change the look as it was dialled in. */
     groundLevelM: -20,
     /** Beyond this distance the points are too sparse to hide anything, whatever the dome
      *  says: the virtual canopy takes over. */

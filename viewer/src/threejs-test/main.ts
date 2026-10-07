@@ -4555,6 +4555,14 @@ const setFogValue = (key: FogSlider['key'], value: number) => {
   } else (groundFog.params as unknown as Record<string, number>)[key] = value
   refreshFogDensity()
 }
+/** The build options Copy values writes into the `volumetricFog` block: the ones that are keys
+ *  of that config block. The debug view is a tuning aid, not part of the look, and the two
+ *  shadow switches are the sky package's — Copy values carries them as `sunShadows.fog` and
+ *  `skyClouds.fogCloudShadows` (sky-panel.ts). */
+const fogConfigBuildOptions = () => {
+  const { debugView, canopyShadows, cloudShadows, ...options } = groundFog.getBuildOptions()
+  return options
+}
 {
   const container = $<HTMLDivElement>('#volumetricFogControls')
   const make = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) => {
@@ -4891,7 +4899,7 @@ depthOfField: ${JSON.stringify({
 volumetricFog: ${JSON.stringify({
     enabled: groundFog.isEnabled(),
     resolutionScale: groundFog.getResolutionScale(),
-    ...groundFog.getBuildOptions(),
+    ...fogConfigBuildOptions(),
     ...Object.fromEntries(FOG_SLIDERS.flatMap((group) => group.rows)
       .filter((row) => row.key !== 'resolutionScale' && row.key !== 'windSpeed' && row.key !== 'windDirection')
       .map((row) => [row.key, fogValueOf(row.key)])),
