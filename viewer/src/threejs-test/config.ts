@@ -687,6 +687,24 @@ export const EXPERIENCE_CONFIG = {
       labelMaxDistanceM: 6_000,
       renderOrder: 9_110,
     },
+    // Point records as DOM markers (science-marker-layer.ts); their colours live in the
+    // page's CSS, next to the chips. Each set: where the dot goes, where the chip goes.
+    bigTrees: { heightM: 0.5, markerMaxDistanceM: 15_000, labelMaxDistanceM: 3_000 },
+    treePlots: {
+      outline: { color: 0x5eead4, widthPx: 1.5, heightM: 0.5, labelMaxDistanceM: 0, renderOrder: 9_105 },
+      markers: { heightM: 0.5, markerMaxDistanceM: 8_000, labelMaxDistanceM: 1_500 },
+    },
+    // Herps and mammals are summaries per survey site until the records carry coordinates.
+    herps: {
+      // Most "tracks" are a transect's start and end only, so these are straight lines
+      // between them, not the walked path: drawn thin to stay in the background.
+      tracks: { color: 0xc4b5fd, widthPx: 1, heightM: 0.5, labelMaxDistanceM: 0, renderOrder: 9_104 },
+      markers: { heightM: 0.5, markerMaxDistanceM: 60_000, labelMaxDistanceM: 40_000 },
+    },
+    mammals: {
+      // The 25 sites spread over about 150 km of Madre de Dios.
+      markers: { heightM: 0.5, markerMaxDistanceM: 250_000, labelMaxDistanceM: 60_000 },
+    },
   },
   environment: {
     // Peru has no daylight-saving change; the slider still uses the IANA zone.

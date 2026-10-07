@@ -88,15 +88,21 @@ function ringCentroid(ring: Position[]): { centre: Position; areaM2: number } {
   }
 }
 
+/** The centroid of a MultiPolygon's largest outer ring: where its label or marker goes. */
+export function largestRingCentre(polygons: Position[][][]): Position {
+  let best = { centre: polygons[0][0][0], areaM2: -1 }
+  for (const polygon of polygons) {
+    const candidate = ringCentroid(polygon[0])
+    if (candidate.areaM2 > best.areaM2) best = candidate
+  }
+  return best.centre
+}
+
 /** One label per area, at the centroid of its largest outer ring. */
 export function areaLabelAnchors(collection: ProtectedAreaCollection): LabelAnchor[] {
   return collection.features.map((feature) => {
-    let best = { centre: feature.geometry.coordinates[0][0][0], areaM2: -1 }
-    for (const polygon of feature.geometry.coordinates) {
-      const candidate = ringCentroid(polygon[0])
-      if (candidate.areaM2 > best.areaM2) best = candidate
-    }
-    return { text: displayName(feature.properties.area_name), lon: best.centre[0], lat: best.centre[1] }
+    const [lon, lat] = largestRingCentre(feature.geometry.coordinates)
+    return { text: displayName(feature.properties.area_name), lon, lat }
   })
 }
 

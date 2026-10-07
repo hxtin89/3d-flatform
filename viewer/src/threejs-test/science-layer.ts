@@ -80,6 +80,20 @@ interface LabelRecord {
   distance: number
   width: number
   height: number
+  /** What the chip shows now; the DOM is only written when this changes. */
+  shownHidden: boolean
+  shownTransform: string
+}
+
+function showLabel(label: LabelRecord, hidden: boolean, transform = ''): void {
+  if (hidden !== label.shownHidden) {
+    label.element.hidden = hidden
+    label.shownHidden = hidden
+  }
+  if (!hidden && transform !== label.shownTransform) {
+    label.element.style.transform = transform
+    label.shownTransform = transform
+  }
 }
 
 function centreOf(paths: Position[][]): Position {
@@ -145,7 +159,10 @@ export function createScienceLineLayer(options: ScienceLineLayerOptions): Scienc
     element.textContent = label.text
     element.hidden = true
     overlay.append(element)
-    return { element, ecef: toEcef([label.lon, label.lat], new THREE.Vector3()), world: new THREE.Vector3(), distance: 0, width: 0, height: 0 }
+    return {
+      element, ecef: toEcef([label.lon, label.lat], new THREE.Vector3()), world: new THREE.Vector3(),
+      distance: 0, width: 0, height: 0, shownHidden: true, shownTransform: '',
+    }
   })
   const byDistance = [...labels]
 
@@ -156,7 +173,7 @@ export function createScienceLineLayer(options: ScienceLineLayerOptions): Scienc
   let measured = false
 
   function hideLabels(): void {
-    for (const label of labels) label.element.hidden = true
+    for (const label of labels) showLabel(label, true)
   }
 
   return {
@@ -168,12 +185,14 @@ export function createScienceLineLayer(options: ScienceLineLayerOptions): Scienc
     update(camera, taken) {
       if (!visible) return
       if (!measured) {
+        // Once, all writes before all reads, so the measuring costs one layout.
+        for (const label of labels) label.element.hidden = false
         for (const label of labels) {
-          label.element.hidden = false
           label.width = label.element.offsetWidth
           label.height = label.element.offsetHeight
-          label.element.hidden = true
         }
+        for (const label of labels) label.element.hidden = true
+        for (const label of labels) label.shownHidden = true
         // A chip measured while the overlay is hidden reads 0 × 0; try again next frame.
         measured = labels.length === 0 || labels.some(label => label.width > 0)
       }
@@ -184,12 +203,11 @@ export function createScienceLineLayer(options: ScienceLineLayerOptions): Scienc
       }
       byDistance.sort((p, q) => p.distance - q.distance)
       for (const label of byDistance) {
-        const element = label.element
-        if (label.distance > style.labelMaxDistanceM) { element.hidden = true; continue }
+        if (label.distance > style.labelMaxDistanceM) { showLabel(label, true); continue }
         view.copy(label.world).applyMatrix4(camera.matrixWorldInverse)
         projected.copy(label.world).project(camera)
         if (view.z >= 0 || Math.abs(projected.x) > 1.05 || Math.abs(projected.y) > 1.05 || projected.z >= 1) {
-          element.hidden = true
+          showLabel(label, true)
           continue
         }
         const x = (projected.x * 0.5 + 0.5) * window.innerWidth
@@ -202,10 +220,9 @@ export function createScienceLineLayer(options: ScienceLineLayerOptions): Scienc
           && box.right > other.left - LABEL_GAP_PX
           && box.top < other.bottom + LABEL_GAP_PX
           && box.bottom > other.top - LABEL_GAP_PX)
-        if (collides) { element.hidden = true; continue }
+        if (collides) { showLabel(label, true); continue }
         taken.push(box)
-        element.hidden = false
-        element.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -50%)`
+        showLabel(label, false, `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -50%)`)
       }
     },
     count: () => features.length,

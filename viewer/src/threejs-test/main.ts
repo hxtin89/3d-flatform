@@ -36,9 +36,7 @@ import { densityBandForUri, densityLevelColor, ERROR_BAND_COLORS, shortBandLabel
 import { fetchGlobeManifest } from './manifest'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createBigTreesLayer, parseBigTrees, type BigTreesLayer } from './big-trees-layer'
-import { loadScienceData } from './science-data-loader'
-import { createScienceLineLayer, type LabelBox, type ScienceLineLayer } from './science-layer'
-import { areaLabelAnchors, trailLabelAnchors } from './science-geometry'
+import { createScienceLayers, SCIENCE_LAYER_KEYS, type ScienceLayers } from './science-layers'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
 import { createSkyAtmosphere, defaultSkyParams, type AerialMode, type SkyAtmosphere } from './sky-atmosphere'
@@ -850,10 +848,8 @@ let viewAngle: ViewAngleCorrection | null = null
 let viewDepth: ViewDepthCorrection | null = null
 let markerLayer: MarkerLayer | null = null
 let bigTreesLayer: BigTreesLayer | null = null
-let protectedAreasLayer: ScienceLineLayer | null = null
-let trailsLayer: ScienceLineLayer | null = null
-/** Chip boxes the science layers placed this frame; trails go first and keep their place. */
-const scienceLabelBoxes: LabelBox[] = []
+/** WI's science data: protected areas, trails, field big trees, plots, herps, mammals. */
+let scienceLayers: ScienceLayers | null = null
 let donationShapeLayer: DonationShapeLayer | null = null
 let rainLayer: RainLayer | null = null
 let keyboardNavigation: KeyboardNavigation | null = null
@@ -1196,10 +1192,12 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         bigTreesLayer?.setVisible(effective.bigTrees)
         break
       case 'protectedAreas':
-        protectedAreasLayer?.setVisible(effective.protectedAreas)
-        break
       case 'trails':
-        trailsLayer?.setVisible(effective.trails)
+      case 'fieldBigTrees':
+      case 'treePlots':
+      case 'herps':
+      case 'mammals':
+        scienceLayers?.setVisible(key, effective[key])
         break
       case 'donationShape':
         donationShapeLayer?.setVisible(effective.donationShape)
@@ -5749,9 +5747,7 @@ function loop(now: number): void {
   if (options.fieldModels) updateFieldModelFades(modelDomeLive)
   if (options.donationShape) donationShapeLayer?.update(now, camera)
   if (options.bigTrees) bigTreesLayer?.update(camera, cameraGroundRange, modelDomeLive ? modelDome : null, zOffset)
-  scienceLabelBoxes.length = 0
-  if (options.trails) trailsLayer?.update(camera, scienceLabelBoxes)
-  if (options.protectedAreas) protectedAreasLayer?.update(camera, scienceLabelBoxes)
+  scienceLayers?.update(camera)
   if (options.markers) {
     updateTowerSensorFade(modelDomeLive)
     markerLayer?.update(
@@ -6375,49 +6371,20 @@ async function main(): Promise<void> {
       console.info(`[big-trees] ${trees.length} trees`)
     })
     .catch((error) => console.warn('[big-trees] optional layer failed', error))
-  // WI's protected areas and trails (science-layer.ts), from the files the preparation step
-  // writes: next to the app for now, on CloudFront once VITE_SCIENCE_DATA_URL points there.
+  // WI's science data (science-layers.ts), from the files the preparation step writes: next
+  // to the app for now, on CloudFront once VITE_SCIENCE_DATA_URL points there. Nothing is
+  // fetched until a layer is switched on.
   if (globe) {
-    const scienceConfig = EXPERIENCE_CONFIG.scienceData
-    const scienceEllipsoid = (globe as any).ellipsoid
-    const scienceIndexUrl = import.meta.env.VITE_SCIENCE_DATA_URL || shapeAssetUrl(scienceConfig.indexPath)
-    void loadScienceData(scienceIndexUrl, ['protected-areas', 'trails'])
-      .then(({ collections }) => {
-        if (disposed) return
-        const overlay = $('#scienceOverlay')
-        const areas = collections['protected-areas']
-        const trails = collections.trails
-        if (areas) {
-          protectedAreasLayer = createScienceLineLayer({
-            name: 'wi-protected-areas',
-            scene: ecefRoot,
-            overlay,
-            ellipsoid: scienceEllipsoid,
-            features: areas.features.map(feature => feature.geometry.coordinates.flat()),
-            labels: areaLabelAnchors(areas),
-            labelClass: 'science-label--area',
-            clusterRadiusM: scienceConfig.clusterRadiusM,
-            style: scienceConfig.areas,
-          })
-          protectedAreasLayer.setVisible(renderOptions.effective().protectedAreas)
-        }
-        if (trails) {
-          trailsLayer = createScienceLineLayer({
-            name: 'wi-trails',
-            scene: ecefRoot,
-            overlay,
-            ellipsoid: scienceEllipsoid,
-            features: trails.features.map(feature => feature.geometry.coordinates),
-            labels: trailLabelAnchors(trails),
-            labelClass: 'science-label--trail',
-            clusterRadiusM: scienceConfig.clusterRadiusM,
-            style: scienceConfig.trails,
-          })
-          trailsLayer.setVisible(renderOptions.effective().trails)
-        }
-        console.info(`[science-data] ${areas?.features.length ?? 0} protected areas, ${trails?.features.length ?? 0} trails`)
-      })
-      .catch((error) => console.warn('[science-data] optional layers failed', error))
+    scienceLayers = createScienceLayers({
+      scene: ecefRoot,
+      overlay: $('#scienceOverlay'),
+      cardHost: document.body,
+      ellipsoid: (globe as any).ellipsoid,
+      indexUrl: import.meta.env.VITE_SCIENCE_DATA_URL || shapeAssetUrl(EXPERIENCE_CONFIG.scienceData.indexPath),
+      config: EXPERIENCE_CONFIG.scienceData,
+    })
+    const effective = renderOptions.effective()
+    for (const key of SCIENCE_LAYER_KEYS) scienceLayers.setVisible(key, effective[key])
   }
   const donationSource = await donationShapePromise
   if (donationSource && globe) {
@@ -6548,8 +6515,8 @@ async function main(): Promise<void> {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask, depthOfField, grade: gradeDebug, groundFog,
-    /** The science layers arrive after this object is built, hence the getter. */
-    get science() { return { protectedAreas: protectedAreasLayer, trails: trailsLayer } },
+    /** WI's science layers: status() per switch, after this object is built, hence the getter. */
+    get science() { return scienceLayers },
     /** Where the drone ortho's loading time goes, from the Start click on (ortho-trace.ts):
      *  report(); reset() and mark('start') time a later view the same way. */
     orthoTrace,
@@ -6714,8 +6681,7 @@ function dispose(): void {
   keyboardNavigation?.dispose()
   markerLayer?.dispose()
   bigTreesLayer?.dispose()
-  protectedAreasLayer?.dispose()
-  trailsLayer?.dispose()
+  scienceLayers?.dispose()
   donationShapeLayer?.dispose()
   modelTransformEditor?.dispose()
   fieldModelLayer?.dispose()

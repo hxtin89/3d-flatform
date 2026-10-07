@@ -32,6 +32,14 @@ export interface RenderOptions {
   protectedAreas: boolean
   /** WI's trails from the science data (public/science-data). */
   trails: boolean
+  /** Big trees measured in the field, from the science data (not the lidar-found `bigTrees`). */
+  fieldBigTrees: boolean
+  /** Forest plots with their outlines, from the science data. */
+  treePlots: boolean
+  /** Herp survey sites and tracks, from the science data. */
+  herps: boolean
+  /** Mammal survey sites, from the science data. */
+  mammals: boolean
   /** Per-tile point size from that tile's spacing; off = fixed base size × slider. */
   dynamicPointSize: boolean
   /** Bench-preset memory budgets; off = fixed high budgets. */
@@ -60,9 +68,14 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   // Off: an annotation layer to switch on from the panel, not part of the default look.
   bigTrees: false,
   donationShape: true,
-  // Off: annotation layers to switch on from the panel, like the big trees.
+  // Off: annotation layers to switch on from the panel, like the big trees. Each one
+  // downloads its data the first time it is switched on.
   protectedAreas: false,
   trails: false,
+  fieldBigTrees: false,
+  treePlots: false,
+  herps: false,
+  mammals: false,
   // Off: the per-tile derivation has never had a fair test — until the errorScale fix it
   // was fed a spacing twice the real one, and the Largest dot ceiling then cut off the
   // compensation exactly where a coarse tile needed it. One predictable size while the
@@ -171,6 +184,34 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '🥾 Trails · On',
     offText: '🥾 Trails · Off',
     note: 'WI research trails, drawn on the map and seen through the canopy, with name chips. Data from npm run science:prepare (public/science-data)',
+  },
+  {
+    key: 'fieldBigTrees',
+    label: 'Big trees (field)',
+    onText: '🌲 Field trees · On',
+    offText: '🌲 Field trees · Off',
+    note: 'Big trees measured by WI in the field: species, height and diameter. Click a dot for the record. Not the lidar-found Big trees above',
+  },
+  {
+    key: 'treePlots',
+    label: 'Tree plots',
+    onText: '▭ Plots · On',
+    offText: '▭ Plots · Off',
+    note: 'WI forest plots with their outlines; click a dot for stems, species and basal area',
+  },
+  {
+    key: 'herps',
+    label: 'Herps',
+    onText: '🐸 Herps · On',
+    offText: '🐸 Herps · Off',
+    note: 'Amphibian and reptile surveys: one dot per survey site with its records and species, and thin lines for the transects (mostly start to end in a straight line, not the walked path). The records have no coordinates of their own yet',
+  },
+  {
+    key: 'mammals',
+    label: 'Mammals',
+    onText: '🐾 Mammals · On',
+    offText: '🐾 Mammals · Off',
+    note: 'Mammal surveys: one dot per survey site with its records and species. The records have no coordinates of their own yet',
   },
   {
     key: 'dynamicPointSize',

@@ -167,6 +167,46 @@
                        backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
       .science-label--area { color: #effbd9; background: rgba(18,48,16,.7); border: 1px solid rgba(217,249,157,.55); }
       .science-label--trail { color: #fff3e4; background: rgba(66,32,6,.74); border: 1px solid rgba(255,184,107,.65); }
+      /* Point records (science-marker-layer.ts): a dot, and a chip that gives way to others. */
+      .science-marker { position: absolute; top: 0; left: 0; display: flex; align-items: center; gap: 5px; padding: 0;
+                        border: 0; background: none; cursor: pointer; pointer-events: auto; color: inherit;
+                        transform: translate3d(-9999px,-9999px,0); --marker: #f2d48a; --marker-ink: #2a1e08; }
+      .science-marker[hidden] { display: none; }
+      .science-marker-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--marker);
+                            box-shadow: 0 0 0 2px rgba(10,14,12,.55), 0 2px 8px rgba(0,0,0,.35); }
+      .science-marker-label { padding: 2px 6px 3px; border-radius: 5px; white-space: nowrap; color: #f7f5ee;
+                              font: 600 10.5px/1.15 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+                              background: rgba(14,18,16,.72); border: 1px solid color-mix(in srgb, var(--marker) 60%, transparent);
+                              backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+      .science-marker--bare .science-marker-label { display: none; }
+      .science-marker:hover .science-marker-dot, .science-marker:focus-visible .science-marker-dot { transform: scale(1.35); }
+      .science-marker:focus-visible { outline: none; }
+      .science-marker:focus-visible .science-marker-dot { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--marker); }
+      .science-marker--tree { --marker: #ffd166; }
+      .science-marker--plot { --marker: #5eead4; }
+      .science-marker--herp { --marker: #c4b5fd; }
+      .science-marker--mammal { --marker: #fda4af; }
+      /* The record card a marker opens. Fixed, so it can sit above the marker overlays. */
+      .science-card { position: fixed; top: 0; left: 0; z-index: 15; width: min(300px, calc(100vw - 16px));
+                      max-height: calc(100vh - 16px); overflow: auto; padding: 12px 14px 12px; border-radius: 10px;
+                      color: #f5f2e8; background: rgba(12,20,17,.9); border: 1px solid rgba(255,255,255,.14);
+                      box-shadow: 0 12px 34px rgba(0,0,0,.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                      font: 400 12.5px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      .science-card[hidden] { display: none; }
+      .science-card-close { position: absolute; top: 6px; right: 8px; width: 24px; height: 24px; border: 0; border-radius: 6px;
+                            background: none; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; opacity: .7; }
+      .science-card-close:hover, .science-card-close:focus-visible { opacity: 1; background: rgba(255,255,255,.1); outline: none; }
+      .science-card-title { margin: 0 26px 2px 0; font: 600 16px/1.2 "Iowan Old Style", Baskerville, serif; }
+      .science-card-subtitle { margin: 0 0 8px; opacity: .65; font-style: italic; }
+      .science-card-rows { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; }
+      .science-card-rows dt { opacity: .62; }
+      .science-card-rows dd { margin: 0; font-variant-numeric: tabular-nums; }
+      .science-card-list { margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.12); }
+      .science-card-list[hidden] { display: none; }
+      .science-card-list h4 { margin: 0 0 4px; opacity: .62; font: 600 10px/1.2 ui-monospace, SFMono-Regular, monospace;
+                              letter-spacing: .08em; text-transform: uppercase; }
+      .science-card-list ol { margin: 0; padding-left: 18px; font-style: italic; }
+      body.splat-solo .science-card { display: none; }
       .donation-shape-label { display: grid; gap: 3px; min-width: 92px; padding: 6px 9px 7px; margin-top: -10px;
                               color: #f5f2e8; background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
                               border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
