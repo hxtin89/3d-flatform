@@ -742,14 +742,26 @@ export const EXPERIENCE_CONFIG = {
     // Where the real canopy tower stands, from SBB's PortalCam scan of it
     // (260420_Peru_Tambopata_CanopyTower_…164137, gnss.csv): 3,175 fixes with hdop
     // under 5 cluster within ±4 m around lat −12.873473, lon −69.496417, i.e. raw ENU
-    // (1197.7, −2410.2). The scanner was on the platform, so that point is the platform
-    // centre; less the platform offset below (19.10, 2.16 m at this yaw and scale) the
-    // model's origin lands at (1178.60, −2412.36). Until 2026-10-05 the model stood
-    // where it had been placed by hand on 16 Jul, on the river bank 936 m WNW of here.
-    positionM: [1_100.961, -2_458.812, -0.2],
-    rotationRad: [Math.PI / 2, 0, -1.039],
-    scale: 24,
-    sensorHeightM: 112.138,
+    // (1197.7, −2410.2). The tower itself shows in the full-depth APH tiles there: a
+    // grey lattice shaft about 3.8 × 1.5 m and a flat platform about 5.2 × 3.1 m at
+    // 214.3 m, its centre 1.55 m east and 1.0 m north of the GNSS median, its long side
+    // 83–88° from east. The model is fitted to that scan: platform centre on the scanned
+    // one at (1199.25, −2409.20), long side at 85° (yaw −5°), so less the platform offset
+    // below (1.07, 1.93 m at this yaw and scale) its origin lands at (1198.18, −2411.13).
+    // Until 2026-10-05 the model stood where it had been placed by hand on 16 Jul, on
+    // the river bank 936 m WNW of here; until 2026-10-07 it was 107 m tall (scale 24).
+    positionM: [1_120.543, -2_457.583, -0.06],
+    rotationRad: [Math.PI / 2, 0, -0.0873],
+    // Model units to metres, across (scale) and up (heightScale). The model is far
+    // stockier than the real tower, so one factor cannot match both: across, 2.75 makes
+    // the shaft 1.9 × 4.0 m and the platform 1.8 × 5.1 m; up, 7.86 puts the deck
+    // (deckUnits) on the scanned platform at 214.3 m. The railing section above the deck
+    // keeps `scale` vertically, so it stays 1.15 m tall instead of stretching to 3.3 m.
+    scale: 2.75,
+    heightScale: 7.8627,
+    deckUnits: 4.052,
+    // The model's height (railing top) plus 5 m.
+    sensorHeightM: 37.954,
     // Where the platform centre sits in the tower's own horizontal plane, in model
     // units: the GLTF's x and −z, i.e. after the model's quarter turn and before yaw and
     // scale. The model's origin is a corner of its footprint, so without this the
@@ -758,23 +770,27 @@ export const EXPERIENCE_CONFIG = {
     // straight lattice puts the base centre in the same place.
     sensorOffsetUnits: [0.3262, 0.7315],
     // The floor the tower stands on, raw ENU metres (before the lift), measured from
-    // the full-depth APH tiles under the four legs at the scan position. The forest
-    // floor there returns few points through the canopy: the lowest steady returns
-    // are 182.6 m under the west leg and 184.9 m under the east one, while the other
-    // two only reach the undergrowth (192–195 m). 182.5 keeps every leg on or in the
-    // ground rather than lifting any into the air. positionM z −0.2 lands the mesh's
-    // lowest vertex (0.18 m above its origin) on this floor.
+    // the full-depth APH tiles. The forest floor returns few points through the canopy:
+    // under the old 107 m model's spread legs the lowest steady returns were 182.6 m
+    // (west) and 184.9 m (east); within 12 m of the scanned tower they are 186.6–187 m.
+    // 182.5 keeps the legs in the ground rather than lifting any into the air; the
+    // height scale is taken from this floor up to the scanned deck. positionM z −0.06
+    // lands the mesh's lowest vertex (0.06 m above its origin) on this floor.
     groundZM: 182.5,
   },
   boat: {
-    // z is relative to groundZM below.
-    positionM: [644.068, -1_961.281, 1.43],
+    // z is relative to groundZM below. Moored alongside the bank: the hull's south side
+    // stays at least 0.5 m north of the last bank returns along its whole length.
+    positionM: [643.971, -1_958.783, -0.07],
     rotationRad: [Math.PI / 2, 0, 0.039],
-    scale: 7.046,
+    // A covered lodge boat 16.4 m long, 2.8 m wide, its roof 2.3 m above the hull
+    // bottom. The river returns no lidar points, so there is no scan to match. Until
+    // 2026-10-07 the scale was 7.046, a boat 144 m long.
+    scale: 0.8,
     // The water line, raw ENU metres. The river itself returns no lidar points; the
     // lowest returns at its edge beside the hull sit at 156.6 m (the draped imagery
-    // under it is near 153.3). positionM z 1.43 puts the flat hull bottom (2.43 m under
-    // the model origin) 1 m below this line; the stern gear reaches 1.8 m further.
+    // under it is near 153.3). positionM z −0.07 puts the flat hull bottom (0.28 m under
+    // the model origin) 0.35 m below this line; the stern gear reaches 0.2 m further.
     // Until 2026-09-29 the keel was at areaMinZ + 5, about 20 m above the water.
     groundZM: 156.6,
   },

@@ -61,6 +61,12 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
   let selected: ModelKey = 'tower'
   let mode: TransformMode = 'translate'
   let disposed = false
+  // Height over width scale as configured (the tower is stretched upward); the scale
+  // handle resizes a model as a whole and keeps it.
+  const heightRatio: Record<ModelKey, number> = {
+    tower: targets.tower.transformNode.scale.z / targets.tower.transformNode.scale.x,
+    boat: targets.boat.transformNode.scale.z / targets.boat.transformNode.scale.x,
+  }
 
   function model(key: ModelKey) {
     return targets[key]
@@ -87,13 +93,18 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
     }
   }
 
+  function towerHeightScale(): number {
+    return targets.tower.transformNode.scale.z
+  }
+
   function snapshot(): string {
     const tower = snapshotModel('tower')
     const boat = snapshotModel('boat')
     return JSON.stringify({
       tower: {
         ...tower,
-        sensorHeightM: rounded(targets.towerHeightUnits * tower.scale + 5),
+        heightScale: rounded(towerHeightScale()),
+        sensorHeightM: rounded(targets.towerHeightUnits * towerHeightScale() + 5),
       },
       boat,
     }, null, 2)
@@ -103,7 +114,7 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
     const tower = snapshotModel('tower')
     onTowerTransform(
       tower.positionM as [number, number, number],
-      targets.towerHeightUnits * tower.scale + 5,
+      targets.towerHeightUnits * towerHeightScale() + 5,
       tower.rotationRad[2],
       tower.scale,
     )
@@ -165,8 +176,10 @@ export function createModelTransformEditor(options: ModelTransformEditorOptions)
     if (mode === 'scale') {
       const target = model(selected).transformNode
       const axis = controls.axis
-      const value = axis === 'Y' ? target.scale.y : axis === 'Z' ? target.scale.z : target.scale.x
-      target.scale.setScalar(THREE.MathUtils.clamp(value, 0.01, 250))
+      const ratio = heightRatio[selected]
+      const across = axis === 'Y' ? target.scale.y : axis === 'Z' ? target.scale.z / ratio : target.scale.x
+      const value = THREE.MathUtils.clamp(across, 0.01, 250)
+      target.scale.set(value, value, value * ratio)
     }
     if (selected === 'tower') notifyTower()
     paint()

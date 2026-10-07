@@ -90,12 +90,14 @@ function createEditableTransform(
   position: readonly [number, number, number],
   rotation: readonly [number, number, number],
   scale: number,
+  heightScale = scale,
 ): EditableFieldModel {
   const positionNode = new THREE.Group()
   const transformNode = new THREE.Group()
   positionNode.position.set(origin.x + position[0], origin.y + position[1], origin.z + position[2])
   transformNode.rotation.z = rotation[2]
-  transformNode.scale.setScalar(scale)
+  // Across and up apart: x and y are the horizontal plane here, z is up.
+  transformNode.scale.set(scale, scale, heightScale)
   object.rotation.set(rotation[0], rotation[1], 0)
   transformNode.add(object)
   positionNode.add(transformNode)
@@ -167,18 +169,28 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
   const geometries = new Set<THREE.BufferGeometry>()
 
   const tower = towerGltf.scene
-  const towerHeightUnits = new THREE.Box3().setFromObject(tower).getSize(new THREE.Vector3()).y
   tower.name = 'river-observation-tower'
+  // The tower is stretched upward (config heightScale) to the scanned height, but the
+  // railing section above the deck keeps the across scale vertically too, so its rails
+  // stay at a person's height: squeezed by scale / heightScale around the deck.
+  const railingSquash = EXPERIENCE_CONFIG.tower.scale / EXPERIENCE_CONFIG.tower.heightScale
   tower.traverse((object) => {
     const mesh = object as THREE.Mesh
     if (!mesh.isMesh) return
     if (Array.isArray(mesh.material)) mesh.material.forEach((material) => sourceMaterials.add(material))
     else if (mesh.material) sourceMaterials.add(mesh.material)
     geometries.add(mesh.geometry)
-    mesh.material = /004$/.test(mesh.name.replace('.', '')) ? towerTopMaterial : towerBottomMaterial
+    const isTopSection = /004$/.test(mesh.name.replace('.', ''))
+    mesh.material = isTopSection ? towerTopMaterial : towerBottomMaterial
+    if (isTopSection) {
+      mesh.scale.y = railingSquash
+      mesh.position.y = EXPERIENCE_CONFIG.tower.deckUnits * (1 - railingSquash)
+    }
     mesh.castShadow = false
     mesh.receiveShadow = false
   })
+  // After the railing squash, in model units: times heightScale it is the height in metres.
+  const towerHeightUnits = new THREE.Box3().setFromObject(tower).getSize(new THREE.Vector3()).y
   const towerEditTarget = createEditableTransform(
     root,
     tower,
@@ -186,6 +198,7 @@ export async function createFieldModelLayer(options: FieldModelLayerOptions): Pr
     EXPERIENCE_CONFIG.tower.positionM,
     EXPERIENCE_CONFIG.tower.rotationRad,
     EXPERIENCE_CONFIG.tower.scale,
+    EXPERIENCE_CONFIG.tower.heightScale,
   )
 
   const boat = boatGltf.scene
