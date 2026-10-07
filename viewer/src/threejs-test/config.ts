@@ -408,8 +408,9 @@ export const EXPERIENCE_CONFIG = {
      * pan speed depend on the canopy height under the cursor.
      *
      * EnvironmentControls picks the pivot by raycasting the scene, and the only thing it
-     * can hit is the draped basemap: the cloud is instanced quads whose base geometry
-     * holds four corner offsets, and the carrier Points is parked at drawRange 0 — see
+     * can hit is the draped basemap: the cloud's dot meshes hold no point positions
+     * (pulled, the default, has no attributes at all; the instanced arm only four corner
+     * offsets), and the carrier Points is parked at drawRange 0 — see
      * the comment on sampleGroundZ, which exists for the same reason. So the pivot lands
      * on the terrain while you are looking at a canopy 20 to 90 m above it, and orbiting
      * about a point that far below what you see sweeps the view out from under the
@@ -923,6 +924,228 @@ export const EXPERIENCE_CONFIG = {
       zenithElevation: 0.45,
     },
   },
+  /**
+   * The physically based sky (sky-atmosphere.ts): Hillaire's atmosphere in four small lookup
+   * tables, the sun disc drawn at full resolution, aerial perspective in place of the haze
+   * curve, and the light the sun and sky cast on the scene. Off is the graded sky and haze of
+   * atmosphere-haze.ts, the shaders as they were. `?sky=0|1` boots it off or on.
+   */
+  sky: {
+    enabled: true,
+    /** The air (atmosphere-model.ts). Aerosol optical depth 0.25 over a 1.6 km layer is the
+     *  humid haze of the Amazon lowlands outside the fire season. */
+    atmosphere: {
+      aerosolDepth: 0.22,
+      aerosolHeightKm: 1.6,
+      aerosolAlbedo: 0.95,
+      aerosolG: 0.72,
+      angstrom: 1,
+      rayleighScale: 1,
+      ozoneScale: 0.88,
+      groundAlbedo: [0.09, 0.13, 0.07] as [number, number, number],
+    },
+    /** Exposure on top of the physical anchor (a white surface under a clear 60° sun shows as
+     *  1), and how far dim scenes are lifted toward it: 0 none, 1 all the way. */
+    exposure: 1,
+    adaptation: 0.6,
+    adaptationMax: 4,
+    /** The share of the clouds' darkening the exposure adapts to (0 = time of day only). */
+    weatherAdaptation: 0.3,
+    /** The sun disc: intensity, size against the real 0.53°, edge width in pixels, limb
+     *  darkening, and an artistic glow on top of the haze's own halo. */
+    sunIntensity: 1,
+    sunSize: 1.6,
+    sunSharpnessPx: 1.5,
+    sunLimbDarkening: 0.85,
+    sunGlow: 0.02,
+    sunGlowSize: 0.3,
+    sunTint: 0xffffff,
+    /** Ceiling on the disc's displayed radiance (the frame is half float). */
+    sunMaxRadiance: 60,
+    /** The night sky's floor, linear. */
+    nightSky: 0x02060c,
+    /** Aerial perspective: the clear distance around the camera, and a multiplier on the
+     *  air's optical depth (1 is the atmosphere above). */
+    aerialStartM: 150,
+    aerialDensity: 1,
+    /** White balance to the noon sun (1), as a camera on daylight; 0 keeps the sun at the top
+     *  of the air white. And an artistic multiplier on the sky's own radiance. */
+    whiteBalance: 1,
+    skyBrightness: 1.35,
+    /** Under a full overcast the haze keeps this share of the clear sky's glow. */
+    overcastGlow: 0.3,
+    /**
+     * The aerial perspective from a camera volume (sky-atmosphere.ts) instead of per pixel:
+     * 32 × 32 froxels × 32 slices, drawn when the view moves. It reaches the far plane or
+     * `horizonFactor` × the horizon distance, at least `minRangeM`. From a camera between
+     * `anchorFromM` and `anchorToM` up the basemap hands over to the exact ground lookup; above
+     * `fineAboveM` every slice takes substeps; the sun has to move `sunThresholdRad` to redraw.
+     * `?apvol=0|1`.
+     */
+    aerialVolume: {
+      enabled: true,
+      horizonFactor: 1.1,
+      minRangeM: 32_000,
+      anchorFromM: 1000,
+      anchorToM: 2000,
+      fineAboveM: 1000,
+      sunThresholdRad: 1e-5,
+    },
+    /**
+     * The sun and sky as light on the point cloud and the basemap (point-cloud.ts sunLight):
+     * the captured colours relit by the atmosphere's sun and sky instead of the daylight
+     * grade. `sunIntensity` / `skyIntensity` scale the two; `sideLight` is how much of the sun
+     * a normal-less point catches beyond flat ground (crowns are round); the tint colours the
+     * sunlight. Night keeps the old floor: `nightLevel` × the night grade.
+     */
+    sunLight: {
+      enabled: true,
+      sunIntensity: 1,
+      skyIntensity: 1,
+      sideLight: 0.5,
+      tint: 0xffffff,
+      nightLevel: 0.3,
+    },
+  },
+  /**
+   * Soft sun shadows of the canopy (sun-shadows.ts): an additive optical-depth map of the
+   * points seen from the sun, fitted to the sphere-fade dome, blurred in metres, read by the
+   * points, the basemap and the volumetric fog. Needs the physical sky's sun light. `?shadows=0|1`.
+   */
+  sunShadows: {
+    enabled: true,
+    /** Texels per side; the dome-fitted map covers 1–6 km, so 1024 gives 1–6 m texels, plenty
+     *  for soft blobs (each map is 1024² RGBA16F, ~11 MB with mips). */
+    resolution: 1024,
+    /** 1 or 2: an inner map over the dome's middle (`cascadeSplit` of the extent) for close-ups. */
+    cascades: 1,
+    cascadeSplit: 0.35,
+    /** Optical depth one fully covered layer of points adds straight up. A rainforest canopy
+     *  lets 5–10 % of the sun through (LAI ≈ 5, k ≈ 0.5); a few layers of 1 get there. */
+    density: 1.4,
+    strength: 1,
+    /** Blur, metres (one standard deviation). Soft blobs, not crisp leaves. */
+    softnessM: 1.5,
+    /** Share of each tile's points drawn into the map; the rest is made up by the weight. */
+    pointFraction: 0.2,
+    splatScale: 0.7,
+    minSplatTexels: 1.25,
+    /** A point lifts itself this far toward the sun before it looks up its shadow. */
+    selfOffsetM: 3,
+    /** Floor on the occluders' height spread in one texel, metres. */
+    minSpreadM: 1.5,
+    /** Redraw the map at most every this many frames; never while nothing moved. */
+    updateEvery: 2,
+    /** The shadows fade in as the sun climbs from 2° to 8°. */
+    fadeStartDeg: 2,
+    fadeEndDeg: 8,
+    /** Volumetric shadows in the fog's march: on, optical-depth multiplier and mip bias. */
+    fog: true,
+    fogStrength: 1,
+    fogLodBias: 1,
+  },
+  /**
+   * Clouds on the sky dome (sky-clouds.ts): one cloud field baked into a panorama from the
+   * survey's centre — volumetric light transport, infinitely far geometry — and its shadows on
+   * the ground, the points and inside the fog. Needs the physical sky. `?clouds=0|1|<preset>`.
+   * Lengths in km.
+   */
+  skyClouds: {
+    enabled: true,
+    preset: 'fair',
+    /** The clouds' shadows on the points and the basemap, and in the fog's march. */
+    cloudShadows: true,
+    fogCloudShadows: true,
+    /** Panorama size (azimuth × elevation, rows packed toward the horizon), steps per ray, and
+     *  the frames one bake is spread over. */
+    bakeWidth: 2048,
+    bakeHeight: 768,
+    bakeSteps: 64,
+    bakeFrames: 48,
+    /** Seconds a new bake cross-fades over the old one. */
+    fadeSeconds: 1.2,
+    sunLight: 1,
+    ambient: 1,
+    multipleScattering: 3,
+    powder: 0.4,
+    /** Deep multiple scattering (two-stream diffusion): its strength against the octaves'
+     *  phases, both normalised to 1 / 4π (2.2 is the look tuned when it was 4× that, at 0.55),
+     *  and how fast it fades with the optical depth toward the sun. */
+    diffuse: 2.2,
+    /** The fall-off 2 / (2 + kτ) of the diffuse light inward: (1 − g) of the droplets is 0.15;
+     *  a little steeper keeps fair-weather cumulus their grey bases. */
+    diffusePenetration: 0.3,
+    /** How strongly the cloud above a point hides the sky light from it: dark storm cores. */
+    ambientOcclusion: 0.08,
+    /** Share of the air's optical depth the clouds are hazed with: below 1 distant towers
+     *  keep standing over the haze. */
+    haze: 0.65,
+    /** Cloud shadows: optical-depth multiplier (thick clouds are opaque; below 1 lets the
+     *  diffuse light through) and the mip bias that softens them. */
+    shadowStrength: 0.6,
+    shadowSoftness: 1.5,
+    weatherSize: 256,
+    shapeSize: 64,
+    /** Longest slant a ray marches through the layer, km: farther the haze hides it. */
+    maxSlabKm: 40,
+    rainDensityPerKm: 1.2,
+    shadowSize: 512,
+    shadowHalfExtentM: 16_000,
+    /** The cloud-shadow map's march toward the sun: one step per this many km of the slant
+     *  through the layer, at least 24, at most `shadowMaxSteps` (a 10° sun crosses 12 km of a
+     *  2 km layer). Drawn once per bake. */
+    shadowStepKm: 0.1,
+    shadowMaxSteps: 96,
+    /** Weather situations. Each carries its own haze (aerosol optical depth). */
+    presets: {
+      clear: {
+        coverage: 0.04, cells: 0.6, type: 0.5, typeVariation: 0.3, baseKm: 1.2, thicknessKm: 1.5,
+        densityPerKm: 25, erosion: 0.6, shapeScaleKm: 3, weatherScaleKm: 50, absorption: 0,
+        precipitation: 0, anvil: 0, highCoverage: 0.25, highAltitudeKm: 9, highDepth: 0.15,
+        offsetKm: [0, 0] as [number, number], aerosolDepth: 0.15,
+      },
+      fair: {
+        coverage: 0.32, cells: 0.75, type: 0.5, typeVariation: 0.35, baseKm: 1.1, thicknessKm: 2.2,
+        densityPerKm: 35, erosion: 0.55, shapeScaleKm: 2.6, weatherScaleKm: 40, absorption: 0.02,
+        precipitation: 0, anvil: 0, highCoverage: 0.15, highAltitudeKm: 8, highDepth: 0.1,
+        offsetKm: [3, 5] as [number, number], aerosolDepth: 0.2,
+      },
+      scattered: {
+        coverage: 0.55, cells: 0.65, type: 0.6, typeVariation: 0.4, baseKm: 1, thicknessKm: 3.2,
+        densityPerKm: 40, erosion: 0.5, shapeScaleKm: 3, weatherScaleKm: 45, absorption: 0.05,
+        precipitation: 0.15, anvil: 0.1, highCoverage: 0.3, highAltitudeKm: 7, highDepth: 0.2,
+        offsetKm: [11, -4] as [number, number], aerosolDepth: 0.25,
+      },
+      /** Low sun, scattered cumulus under a sheet of altocumulus (the RDR2 reference). */
+      golden: {
+        coverage: 0.38, cells: 0.7, type: 0.5, typeVariation: 0.35, baseKm: 1.2, thicknessKm: 2.4,
+        densityPerKm: 32, erosion: 0.6, shapeScaleKm: 2.8, weatherScaleKm: 40, absorption: 0,
+        precipitation: 0, anvil: 0, highCoverage: 0.55, highAltitudeKm: 4.5, highDepth: 0.35,
+        offsetKm: [-7, 9] as [number, number], aerosolDepth: 0.18,
+      },
+      /** Low, misty stratus over the cloud forest (the second reference). */
+      mist: {
+        coverage: 0.95, cells: 0.2, type: 0.1, typeVariation: 0.15, baseKm: 0.35, thicknessKm: 2.4,
+        densityPerKm: 30, erosion: 0.75, shapeScaleKm: 1.8, weatherScaleKm: 30, absorption: 0.12,
+        precipitation: 0.1, anvil: 0, highCoverage: 0.6, highAltitudeKm: 3.5, highDepth: 0.8,
+        offsetKm: [2, 2] as [number, number], aerosolDepth: 0.45,
+      },
+      /** Heavy grey overcast with rain shafts (the rainy river reference). */
+      overcast: {
+        coverage: 0.92, cells: 0.35, type: 0.3, typeVariation: 0.3, baseKm: 0.7, thicknessKm: 2.5,
+        densityPerKm: 40, erosion: 0.5, shapeScaleKm: 3.5, weatherScaleKm: 50, absorption: 0.12,
+        precipitation: 0.6, anvil: 0, highCoverage: 0.7, highAltitudeKm: 5, highDepth: 1,
+        offsetKm: [-3, -8] as [number, number], aerosolDepth: 0.4,
+      },
+      /** Towering cells with anvils, dark bases and rain (the mountain storm reference). */
+      storm: {
+        coverage: 0.6, cells: 0.95, type: 0.8, typeVariation: 0.4, baseKm: 0.9, thicknessKm: 9,
+        densityPerKm: 70, erosion: 0.4, shapeScaleKm: 4.5, weatherScaleKm: 60, absorption: 0.4,
+        precipitation: 0.9, anvil: 1, highCoverage: 0.75, highAltitudeKm: 10, highDepth: 2.5,
+        offsetKm: [6, -12] as [number, number], aerosolDepth: 0.35,
+      },
+    },
+  },
   // Look grading exposed live by the DESIGN section of the panel. These are the
   // shipped defaults; the sliders write the same uniforms, so anything dialled in
   // here can be pasted back as a new default.
@@ -1257,7 +1480,8 @@ export const EXPERIENCE_CONFIG = {
      * Looking across the canopy (side view), that same raycast can swing
      * kilometres per degree of pitch, so it blends toward a point pinned to
      * the camera itself: the near field is always "inside" the mask, and only
-     * the far field fades — through groundFog, not a hard mask edge. */
+     * the far field fades — through the distance haze (and groundFog when it is switched
+     * on), not a hard mask edge. */
     vignettePosition: {
       /** Pitch (degrees below horizontal) at and below which the mask is
        * fully in side-view mode. */
@@ -1273,7 +1497,7 @@ export const EXPERIENCE_CONFIG = {
       sideMinRadiusM: 150,
       /** Cap on vignetteStrength while fully in side view. Below the shader's
        * 0.95 discard threshold, side-view points are only dimmed/tinted toward
-       * the surround and the far field is left to groundFog. At 1 the threshold
+       * the surround and the far field is left to the haze (and groundFog). At 1 the threshold
        * is reached again, so the stochastic fringe discard is back in side view
        * too — which is what the dialled-in look uses. */
       sideMaxVignetteStrength: 1,
@@ -1290,9 +1514,10 @@ export const EXPERIENCE_CONFIG = {
     // ends the band 30 m under the floor. Pinned to a warm cream instead of
     // following the daylight ramp, so it stays cream at night too.
     groundFog: {
-      /** Ground mist on at startup. Off compiles it out of the point and imagery
-       * shaders; the panel switch takes it out for density A/Bs. */
-      enabled: true,
+      /** The analytic ground mist at startup; off since the volumetric fog carries the mist.
+       * Off compiles it out of the point and imagery shaders; the panel switch brings it
+       * back for A/Bs. */
+      enabled: false,
       /** Final multiplier, so 0 is reliably off regardless of the other values.
        * The panel allows up to 3; the resulting coverage is clamped to 1, so past
        * 100% the fog saturates earlier rather than overshooting its colour. */
@@ -1537,6 +1762,214 @@ export const EXPERIENCE_CONFIG = {
      * comes from a flat plane, not the points) but jumps in low side views near the
      * horizon, where the range changes by kilometres per degree. */
     focusSmoothing: 1,
+  },
+  /**
+   * Volumetric ground fog (ground-fog.ts): mist ray-marched through a band just above the
+   * forest floor, so it lies in the gaps between the crowns, is cut off by them, and sends
+   * wisps up past the canopy — what the analytic `design.groundFog` can only fake as a
+   * tint. A post pass between eye-dome lighting and depth of field; off removes it from
+   * the pipeline. `?vfog=0|1` boots it off or on.
+   *
+   * Heights are metres above the default area's floor, the same floor the analytic fog
+   * uses; the survey-centre ground sits ~22 m above it, the crown tops ~50 m.
+   */
+  volumetricFog: {
+    enabled: true,
+    // ---- fidelity and cost
+    /** Fraction of the drawing buffer the march runs at; a depth-aware upsample brings it
+     *  back to full resolution. 0.5 marches a quarter of the pixels. The cost goes with the
+     *  marched pixels: measured 2026-09-30 with the defaults of 517dc5a (NVIDIA Ampere,
+     *  2000×1125 buffer, 40 steps, '2d' noise, 9 km rays), +0.5 ms at 0.25, +2.4 ms at 0.5,
+     *  +10 ms at 1. */
+    resolutionScale: 0.5,
+    /** A cap on the march's texels, as a share of what the scale gives on the 2000 × 1125
+     *  buffer the presets were measured on: on a larger screen the march runs at
+     *  min(scale, √(this × 2000 × 1125 × scale² / buffer pixels)), so its cost stops growing
+     *  with the screen. 1.5 leaves today's look up to 1.5× that buffer's pixels (2560 × 1440
+     *  marches at 0.48 of it, 4K at 0.32, both ½ asked for); 0 = no cap. */
+    marchBudget: 1.5,
+    /** Hold the fog off, without a rebuild, while the camera is farther from the band's box
+     *  than `maxDistanceM` (no ray could reach it; the entrance flight's first seconds).
+     *  false = always march, for an A/B. */
+    visibilityGate: true as boolean,
+    /** Samples per ray through the band. The main cost knob together with the resolution,
+     *  about linear: +0.85 / +1.4 / +2.4 / +3.6 ms for 16 / 24 / 40 / 64 at half resolution
+     *  (same measurement, same look; on it 24 looked all but the same as 40 and 16 showed
+     *  grain). The look dialled in on 2026-09-30 runs 32, on the strong preset too. */
+    steps: 32,
+    /** How the samples crowd toward the camera in the dense segment of the ray (the mist
+     *  and puffs; the sparse plume segment above is spaced evenly): 1 spaces them evenly,
+     *  2 puts half of them in the nearest quarter, where detail is resolvable. */
+    stepDistribution: 1.45,
+    /** Rays stop here: nothing of the fog, the veil included, is drawn farther from the
+     *  camera, and seen from higher than this plus the band's top there is no fog at all.
+     *  Beyond, the distance haze carries the atmosphere on its own. */
+    maxDistanceM: 6_000,
+    /** Extra scattering orders in Wrenninge's approximation (0 = single scattering only).
+     *  Costs nothing measurable. Rebuilds the shader. */
+    multipleScattering: 3,
+    /** Where the height detail comes from; coverage, billows and erosion always come from the
+     *  2D texture. '3d' (the default): a fixed 64³ value-noise texture — the noise editor
+     *  only previews it, and its B (wisps) layer goes unused. '2d': stacked slices of the 2D
+     *  texture's B layer, editable in the noise editor; the same cost (measured with the
+     *  defaults of 517dc5a), and 8× less memory per doubling. 'procedural': every layer
+     *  evaluated in the shader, +9 ms over '2d', for the cost comparison. Rebuilds the
+     *  shader. */
+    noiseSource: '3d' as '2d' | '3d' | 'procedural',
+    /** Height detail and plumes: the height noise (see `noiseSource`) that carves the mist
+     *  into rounded puffs and wisps, and the columns rising out of the canopy. Off saves two
+     *  3D reads per sample (three 2D reads with '2d', about 45 % of the fog's cost with the
+     *  defaults of 517dc5a) and leaves flat-topped prisms; rebuilds the shader. */
+    wisps: true,
+    /** Weigh the four low-resolution neighbours by depth when upsampling, so fog does not
+     *  bleed across crown silhouettes. Off = plain bilinear. Rebuilds the shader. */
+    depthAwareUpsample: true,
+    /** Temporal filter: blend every frame into the last, carried along with the camera, and
+     *  move the march's jitter each frame, so its sampling error averages out rather than
+     *  boiling while the camera moves (fog-temporal.ts). Rebuilds the shader. */
+    temporal: true,
+    /** Weight of the current frame, 0.02–1. Lower is smoother but lags behind a moving
+     *  camera and fast-changing fog; 1 is no averaging. The default, the floor, dialled in on
+     *  2026-09-30, averages about fifty frames: with so long a memory it is the clip
+     *  (`temporalClip`) that keeps moving fog from trailing. Measured 2026-09-30 in a
+     *  sideways move: 0.1 and 0.25 were about equally steady, 0.25 lagged less. */
+    temporalBlend: 0.02,
+    /** How far the carried-over fog may differ from the current frame's neighbourhood, in its
+     *  standard deviations. Wider keeps more history (smoother, may trail at crown edges);
+     *  narrower rejects it sooner (sharper, grainier). */
+    temporalClip: 1.4,
+    /** How much the surface behind a texel may have moved in depth since last frame, relative,
+     *  before its history counts as another surface's and is left out of the fetch (a gap
+     *  opening beside a crown). Smaller keeps the fog's outlines sharp in motion; large (10)
+     *  switches the test off — steadier still, but the outlines smear, measured 4× further
+     *  from the settled image in a sideways move. The default, 1, dialled in on 2026-09-30,
+     *  keeps any history from nearer than the surface or up to twice as far behind it. */
+    temporalOcclusion: 1,
+    /** March each texel to the nearest surface among the full-resolution pixels it covers,
+     *  so the sub-pixel holes between point splats cannot let rays through a crown into the
+     *  mist below: bright specks that jump as the camera moves. Real gaps keep their mist.
+     *  Only below full resolution; rebuilds the shader. */
+    fillCanopyHoles: true,
+    /** Picked by the loader benchmark, on top of the values above. Against a 60 fps frame,
+     *  10 fps is 3.3 ms. Measured 2026-09-30 with the defaults of 517dc5a (strong then at 40
+     *  steps): +2.5, +1.5 and +0.35 ms. Strong runs the 32 steps dialled in on 2026-09-30,
+     *  which the same measurement puts at about +2 ms. */
+    qualityByPreset: {
+      strong: { resolutionScale: 0.5, steps: 32 },
+      medium: { resolutionScale: 0.5, steps: 24 },
+      constrained: { resolutionScale: 0.25, steps: 20 },
+    },
+    // ---- the band, metres above the area floor
+    bottomM: 15,
+    topM: 59,
+    /** How far plumes rise above the puff layer (`puffCentreM`), whatever `topM` is. */
+    plumeHeightM: 53,
+    bottomSoftM: 16.5,
+    topSoftM: 15,
+    /** How far the band reaches past the survey's bounding box, fading out over it. The
+     *  march never leaves the box: beyond the point cloud the bare map has no crowns to
+     *  hide the band, and the haze carries the distance. */
+    marginM: 900,
+    /** Height above the floor of the crown surface the flat map stands for beyond the drawn
+     *  point cloud; mist below it is hidden there. The survey-centre crowns top out ~50 m. */
+    virtualCanopyM: 19,
+    /** A ray whose scene surface lies below this height above the floor (metres; negative =
+     *  under the floor) has landed on the bare map, not on the point cloud: a hole or the
+     *  faded-out distance. Its march ends at the virtual canopy. The map drape sits 20 m under
+     *  the floor; a positive value counts low point-cloud ground as map too. */
+    mapBelowM: 20,
+    /** Where the mist in a real gap ends, metres above the area floor; meant as the forest
+     *  floor (~22 at the survey centre). A gap is a ray that met no crown inside the
+     *  sphere-fade dome and landed on the map, which lies 20 m under the floor. Below
+     *  `bottomM` the band's own bottom ends the mist instead. */
+    groundLevelM: -20,
+    /** Beyond this distance the points are too sparse to hide anything, whatever the dome
+     *  says: the virtual canopy takes over. */
+    pointsReachM: 1_200,
+    /** The veil: a sheet of mist banks lying on the virtual canopy — what mist far away reads
+     *  as, and all of it outside the sphere-fade dome (up to `maxDistanceM`). Visibility
+     *  inside its densest banks (0 = off) and its thickness; over the drawn points it is kept
+     *  to a third. */
+    veilVisibilityM: 6_700,
+    veilHeightM: 79,
+    /** Plumes: columns of rising vapour. One candidate per square of this side, present by
+     *  `plumeChance`, this wide at its foot (radius, metres; it flares to about twice that as
+     *  it rises), leaning downwind. */
+    plumeSpacingM: 250,
+    plumeRadiusM: 17,
+    plumeChance: 0.57,
+    /** Puffs: flat, rounded clumps lying on the canopy, on billow clumps above `puffCut`,
+     *  centred this high above the floor (the crown tops are ~50 m) and this thick at their
+     *  strongest; taller puffs read as standing columns from above. 1 m is the least the
+     *  shader takes. */
+    puffCentreM: 45,
+    puffHeightM: 1,
+    puffCut: 0.38,
+    puffAmount: 2.49,
+    /** How much of the sky's colour the skylight on the mist keeps, at the back of the view
+     *  (0 = white of the same brightness — with the daylight ramp, the daylight's own colour —
+     *  1 = the sky's colour as it is). Humid forest air is pale. */
+    skyTint: 0.56,
+    /** The tint from front to back, so mist near the camera reads as white water vapour and
+     *  the far field takes the colour of the haze and sky: the share of `skyTint` right at the
+     *  camera (0 = white), the distance where all of it is reached, and the fade's curve
+     *  between (1 even, above 1 white farther out, below 1 tinted sooner). */
+    skyTintFront: 0.3,
+    skyTintFadeM: 1500,
+    skyTintCurve: 1,
+    // ---- shape
+    /** Visibility in the body of the mist (Koschmieder: extinction = 3.912 / visibility). The
+     *  height detail carves it unevenly, and puffs and plume cores stack on top, so parts of
+     *  it run denser than this. */
+    visibilityM: 230,
+    /** Share of the ground the mist pools over, and how soft the banks' edges are. */
+    coverage: 1,
+    coverageSoftness: 0.17,
+    /** World size of one noise tile per layer, metres. */
+    coverageScaleM: 3_200,
+    billowScaleM: 420,
+    erosionScaleM: 195,
+    wispScaleM: 275,
+    wispHeightM: 284,
+    billowAmount: 0.47,
+    erosionAmount: 0.66,
+    wispAmount: 0.95,
+    plumeAmount: 1.23,
+    /** Drift with the breeze, and the rise of warm, moist air out of the canopy (m/s). */
+    windMps: [3.06, -0.936] as [number, number],
+    riseMps: 2.15,
+    // ---- light
+    /** Droplet diameter for the Mie phase fit (Jendersie & d'Eon 2023): radiation fog runs
+     *  ~5–20 µm. Larger drops push the sunward glow into a tighter, brighter halo. */
+    dropletDiameterUm: 14,
+    /** Single-scattering albedo: the share of the light the droplets scatter rather than
+     *  absorb. Water fog is ~0.995; lower values grey and darken the mist. */
+    albedo: 0.735,
+    sunStrength: 1.95,
+    ambientStrength: 1.05,
+    /** How much of the sky the crowns hide from mist low in the band (0 = none). */
+    canopyOcclusion: 0.37,
+    /** Rayleigh scattering by the air in the band, 1 = sea-level air. Physically a small
+     *  bluish addition over these distances; the haze carries aerial perspective beyond. */
+    rayleighScale: 1,
+    /** With the physically based sky (sky-atmosphere.ts) the fog takes the atmosphere's sun
+     *  and sky light instead of the daylight ramp; these scale it so the look the panel was
+     *  tuned to at 14:00 carries over (the sun strength and ambient strength above still
+     *  apply on top). */
+    skySunScale: 1,
+    skyAmbientScale: 1,
+    /** Colour multiplied into the fog's light, for grading. */
+    tint: 0xffffff,
+    /** Tileable noise layers (fog-noise.ts); the noise editor rewrites these live. */
+    noise: {
+      size: 256,
+      layers: [
+        { kind: 'perlin', period: 4, octaves: 5, gain: 0.5, seed: 1, warp: 0.6, contrast: 1, invert: false },
+        { kind: 'worley', period: 6, octaves: 3, gain: 0.45, seed: 7, warp: 0.35, contrast: 1.2, invert: false },
+        { kind: 'perlin', period: 16, octaves: 4, gain: 0.55, seed: 13, warp: 1.1, contrast: 1, invert: false },
+        { kind: 'worley', period: 12, octaves: 4, gain: 0.5, seed: 29, warp: 0, contrast: 1, invert: false },
+      ],
+    },
   },
   rain: {
     dryDurationMs: 10_000,

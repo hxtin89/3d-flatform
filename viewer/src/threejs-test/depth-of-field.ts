@@ -6,8 +6,10 @@
 // Eye-dome lighting (eye-dome-lighting.ts) is the other exception for the same reason
 // — it reads neighbouring depth — and rides in the same pipeline so the scene is drawn
 // into a pass once whichever of the two is on. EDL runs first, so DoF blurs shaded
-// edges rather than EDL outlining blurred ones. With both off and no output stage the
-// frame goes straight to the canvas and neither graph exists.
+// edges rather than EDL outlining blurred ones. The volumetric ground fog (ground-fog.ts)
+// is a third stage between them: it composites over the shaded scene, and DoF then blurs
+// the fog with the ground behind it. With all three off and no output stage the frame goes
+// straight to the canvas and no graph exists.
 //
 // An output stage (setOutputStage; the colour grade's LUT tap in grade-output.ts) works on
 // the displayed frame: after the tone curve and the sRGB encode, in the same final quad, so
@@ -42,9 +44,9 @@ import { eyeDomeLighting } from './eye-dome-lighting'
 export type OutputStage = (display: any) => any
 
 export interface DepthOfFieldLayer {
-  /** Draw the frame. Falls back to a plain renderer.render while DoF and eye-dome
-   * lighting are both off and no output stage is set, so that costs exactly what it did
-   * before this module existed. */
+  /** Draw the frame. Falls back to a plain renderer.render while DoF, eye-dome lighting
+   * and the ground fog are all off and no output stage is set, so that costs exactly what
+   * it did before this module existed. */
   render(): void
   /** Advance the auto-focus toward `groundRangeM`. Call once per frame before
    * render(); ignored while autoFocus is off. */
@@ -59,7 +61,8 @@ export interface DepthOfFieldLayer {
   setFocalLength(metres: number): void
   setBokehScale(scale: number): void
   setFocusSmoothing(factor: number): void
-  /** Eye-dome lighting. Off drops it from the graph; with DoF also off, from the frame. */
+  /** Eye-dome lighting. Off drops it from the graph; with DoF and the ground fog also off,
+   *  the post pass leaves the frame altogether. */
   setEyeDome(enabled: boolean): void
   isEyeDome(): boolean
   setEyeDomeStrength(strength: number): void
@@ -74,7 +77,15 @@ export interface DepthOfFieldLayer {
    * the EDL quad (see applyOutput). DoF's and EDL's render targets are kept. */
   setOutputStage(stage: OutputStage | null): void
   hasOutputStage(): boolean
+  /** The volumetric ground fog stage, or null to drop it from the graph. Also call after
+   *  the fog's own build options change: the graph is rebuilt either way. */
+  setGroundFog(fog: GroundFogStage | null): void
   dispose(): void
+}
+
+/** What the pipeline needs from the fog: a node that composites a colour through it. */
+export interface GroundFogStage {
+  build(color: any, depth: any): any
 }
 
 export function createDepthOfFieldLayer(opts: {
@@ -108,6 +119,7 @@ export function createDepthOfFieldLayer(opts: {
   const eyeDomeStrength = uniform(EDL.strength)
   const eyeDomeRadius = uniform(Math.max(Math.round(EDL.radiusPx), 1))
   const eyeDomeFloor = uniform(EDL.floor)
+  let groundFog: GroundFogStage | null = null
 
   const pipeline = new RenderPipeline(renderer)
   // The end of the effect chain (scene pass, EDL, DoF) as rebuild() last left it, and the
@@ -115,8 +127,9 @@ export function createDepthOfFieldLayer(opts: {
   let effectNode: any = null
   let outputStage: OutputStage | null = null
   // What the current graph owns and nothing else frees. A DoF node carries six render
-  // targets (40–60 MB at full resolution) and its CoC blur two more; the EDL texture that
-  // feeds DoF is one more full-resolution target. The graph is rebuilt on every switch,
+  // targets (40–60 MB at full resolution) and its CoC blur two more; the texture that
+  // feeds DoF the shaded, fogged scene is one more full-resolution target (the fog frees its
+  // own march target when it rebuilds). The graph is rebuilt on every switch,
   // so each rebuild must release the previous one, or toggling for an fps A/B leaks VRAM.
   let dofNode: any = null
   let eyeDomeTexture: any = null
@@ -178,20 +191,22 @@ export function createDepthOfFieldLayer(opts: {
   // released first: the next render swaps the new one in before drawing anything.
   const rebuild = () => {
     release()
-    let node: any = scenePass.getTextureNode()
+    const sceneColor = scenePass.getTextureNode()
+    let node: any = sceneColor
     if (eyeDome) {
       node = eyeDomeLighting(node, scenePass.getTextureNode('depth'), camera, eyeDomeStrength, eyeDomeRadius, eyeDomeFloor)
-      if (enabled) {
-        // DoF samples its input from three separate draws. Left to dof()'s own
-        // convertToTexture, the EDL quad re-rendered for each of them; an explicit target
-        // updated once per frame renders it once. Sized now, because DoF sizes its own
-        // targets from this one on its first frame.
-        eyeDomeTexture = rtt(node, null, null, { type: THREE.HalfFloatType, depthBuffer: false })
-        eyeDomeTexture.updateBeforeType = NodeUpdateType.FRAME
-        renderer.getDrawingBufferSize(drawingBufferSize)
-        eyeDomeTexture.setSize(drawingBufferSize.x, drawingBufferSize.y)
-        node = eyeDomeTexture
-      }
+    }
+    if (groundFog) node = groundFog.build(node, scenePass.getTextureNode('depth'))
+    if (enabled && node !== sceneColor) {
+      // DoF samples its input from three separate draws. Left to dof()'s own
+      // convertToTexture, the EDL and fog composite re-rendered for each of them; an
+      // explicit target updated once per frame renders them once. Sized now, because DoF
+      // sizes its own targets from this one on its first frame.
+      eyeDomeTexture = rtt(node, null, null, { type: THREE.HalfFloatType, depthBuffer: false })
+      eyeDomeTexture.updateBeforeType = NodeUpdateType.FRAME
+      renderer.getDrawingBufferSize(drawingBufferSize)
+      eyeDomeTexture.setSize(drawingBufferSize.x, drawingBufferSize.y)
+      node = eyeDomeTexture
     }
     if (enabled) {
       dofNode = dof(node, scenePass.getViewZNode(), focusDistanceUniform, focalLengthUniform, bokehScaleUniform)
@@ -215,7 +230,7 @@ export function createDepthOfFieldLayer(opts: {
 
   return {
     render() {
-      if (!enabled && !eyeDome && !outputStage) {
+      if (!enabled && !eyeDome && !groundFog && !outputStage) {
         renderer.render(scene, camera)
         return
       }
@@ -264,6 +279,10 @@ export function createDepthOfFieldLayer(opts: {
       applyOutput()
     },
     hasOutputStage() { return outputStage !== null },
+    setGroundFog(fog) {
+      groundFog = fog
+      rebuild()
+    },
     dispose() {
       release()
       pipeline.dispose()

@@ -129,6 +129,16 @@ export interface StreamingCloud {
   setHighPrecision(enabled: boolean): void
   /** Rebuild loaded tile shaders after an effect switch — see setCloudEffectEnabled. */
   refreshEffects(): void
+  /** Visit every dot mesh drawn this frame: the selected tiles' quads that pass the render
+   *  gate. For passes that draw the same points from elsewhere (the canopy shadows). */
+  forEachDrawnQuad(visit: (mesh: THREE.Mesh) => void): void
+  /**
+   * Every loaded tile's dot meshes, shown or not, with the world matrix each would draw with.
+   * `attached` is false for a tile the renderer has taken out of the scene (hidden: out of
+   * the frustum or no longer needed at this distance); its matrix is rebuilt from the tile
+   * group, since a detached object's own matrixWorld goes stale (the floating origin moves).
+   */
+  forEachLoadedQuad(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void
   /**
    * Hold freshly built tiles back and release a few per frame, instead of letting every
    * tile that arrived in one frame upload and compile in that same frame.
@@ -182,7 +192,7 @@ export interface StreamingCloud {
   sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4): GroundSample | null
   stats(): StreamingStats
   /**
-   * Pixels the drawn quads cover this frame, summed over every visible tile, with the
+   * Pixels the drawn dots' primitives cover this frame, summed over every visible tile, with the
    * point count those pixels belong to.
    *
    * `diameterPx` is handed one tile's own point spacing and the view depth to its
@@ -191,10 +201,11 @@ export interface StreamingCloud {
    * have to move together or the readout quietly measures a size the shader is not using,
    * which is exactly the state this replaced.
    *
-   * The area counted is the **quad**, not the round dot inside it. Every fragment of
-   * the quad is rasterised and shaded; the circle is a Discard in the colour node, which
-   * runs afterwards. So this is fragments shaded — what it costs — rather than pixels
-   * lit, which is what shows.
+   * The area counted is the **primitive**, not the round dot inside it: the triangle by
+   * default (1.325 d²), the quad (1 d²) on `?dot=quad` or under Square — see dotAreaFactor.
+   * Every fragment of the primitive is rasterised and shaded; the circle is a Discard in
+   * the colour node, which runs afterwards. So this is fragments shaded — what it costs —
+   * rather than pixels lit, which is what shows.
    *
    * `points` is returned rather than taken from `stats()` because the two sets differ:
    * tiles wholly behind the camera are excluded here, and dividing a partial area by a
@@ -1282,6 +1293,31 @@ export function createStreamingCloud(opts: {
    * pipeline; and the tile itself is untouched — still in `visibleTiles`, so the unload
    * plugin never fires and the cache keeps it, which is what "hidden but loaded" means.
    */
+  function forEachDrawnQuad(visit: (mesh: THREE.Mesh) => void): void {
+    for (const tile of tiles.visibleTiles) {
+      const stats = tileStats.get(tile)
+      if (!stats) continue
+      for (const mesh of stats.quads) if (mesh.visible && mesh.parent) visit(mesh)
+    }
+  }
+
+  const detachedMatrix = new THREE.Matrix4()
+  function forEachLoadedQuad(visit: (mesh: THREE.Mesh, attached: boolean, matrixWorld: THREE.Matrix4) => void): void {
+    tiles.forEachLoadedModel((scene: THREE.Object3D, tile: any) => {
+      const stats = tileStats.get(tile)
+      if (!stats) return
+      const attached = scene.parent === tiles.group
+      for (const mesh of stats.quads) {
+        if (attached) { visit(mesh, true, mesh.matrixWorld); continue }
+        // The local chain up to the tile's scene root, then the group's current world matrix.
+        detachedMatrix.copy(mesh.matrix)
+        for (let node = mesh.parent; node; node = node.parent) detachedMatrix.premultiply(node.matrix)
+        detachedMatrix.premultiply(tiles.group.matrixWorld)
+        visit(mesh, false, detachedMatrix)
+      }
+    })
+  }
+
   function applyRenderGate(): void {
     renderGateHidden = 0
     renderGateTiles = 0
@@ -1309,6 +1345,8 @@ export function createStreamingCloud(opts: {
   return {
     tiles,
     group: tiles.group,
+    forEachDrawnQuad,
+    forEachLoadedQuad,
     debugVolume: requestVolumePlugin?.debugCounts
       ?? { blockedByCeiling: [], inside: [], outside: [], noVolume: [] },
     update() {
@@ -1572,13 +1610,14 @@ export function createStreamingCloud(opts: {
     },
     sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
       // Deliberately not a raycast. The load-model handler above parks every
-      // carrier Points at drawRange 0 and hangs instanced quads underneath, so
-      // THREE.Points.raycast clamps its loop to zero vertices and the instanced
-      // child only carries four corner offsets in `position` — a raycast here
-      // finds nothing, silently, whatever threshold it is given. The raw tile
-      // positions do survive, on the carrier itself — its own position, a four-float
-      // view of the point texture in the pulled feed — so we sample those directly.
-      // See ground-sample.ts.
+      // carrier Points at drawRange 0 and hangs a dot mesh underneath, so
+      // THREE.Points.raycast clamps its loop to zero vertices, and the dot mesh holds
+      // no point positions a raycast can use: a pulled one (the default) has no
+      // attributes at all, an instanced one only four corner offsets in `position`. A
+      // raycast here finds nothing, silently, whatever threshold it is given. The raw
+      // tile positions do survive, on the carrier itself — its own position, a
+      // four-float view of the point texture in the pulled feed — so we sample those
+      // directly. See ground-sample.ts.
       return sampleGroundHeights(
         visibleTileScenes(), centreEnu, radiusM, enuInverse, EXPERIENCE_CONFIG.donationShape,
       )

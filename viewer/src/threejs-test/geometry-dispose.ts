@@ -32,6 +32,15 @@ export function installGeometryDisposeFix(renderer: any): boolean {
     // Added after three's listener, so it runs after the buffers are destroyed.
     const forget = () => {
       geometry.removeEventListener('dispose', forget)
+      // three's listener frees only the attributes of the render object that drew the
+      // geometry first. A canopy-shadow proxy drawing a tile first (sun-shadows.ts, it reads
+      // positions only) would leave the colour and uv buffers pinned. Every attribute, then;
+      // one already freed is a no-op.
+      const attributes = geometries.attributes
+      if (attributes && typeof attributes.delete === 'function') {
+        if (geometry.index) attributes.delete(geometry.index)
+        for (const attribute of Object.values(geometry.attributes ?? {})) attributes.delete(attribute)
+      }
       geometries.delete(geometry)
     }
     geometry.addEventListener('dispose', forget)

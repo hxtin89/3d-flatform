@@ -6,12 +6,13 @@
 // No Cesium, no Ion. Uses the same satellite-v4 raster endpoint as the Cesium viewer.
 import * as THREE from 'three'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
-import { materialReference, mix } from 'three/tsl'
+import { float, materialReference, max, mix, positionWorld, vec4 } from 'three/tsl'
 import { TilesRenderer, GlobeControls } from '3d-tiles-renderer'
 import { XYZTilesPlugin, UpdateOnChangePlugin } from '3d-tiles-renderer/plugins'
 import {
   applyHighPrecisionAlways, applyMaskSurround, groundFogNode, gradeImageryNode,
   applyGroundPatch, rebuildEffectMaterial, cloudEffectsVersion, imageryEffectsKey,
+  isCloudEffectEnabled, sunLight, effectMaterialStale,
   type CloudUniforms,
 } from './point-cloud'
 import { EXPERIENCE_CONFIG } from './config'
@@ -22,6 +23,8 @@ import { retryFailedTiles } from './tile-retry'
 import { createOrthoComposite, type OrthoComposite, type OrthoCompositeConfig, type OrthoStats } from './ortho-composite'
 import { parseSatelliteZxy, createPlanner, type OrthoDensity, type OrthoMeta } from './ortho-plan'
 import { keepSatelliteBytes } from './ortho-upgrade'
+import { canopyTransmittance } from './sun-shadows'
+import { cloudTransmittance } from './sky-clouds'
 
 // Note: TilesFadePlugin is deliberately NOT used — its shader patching targets the
 // WebGL program pipeline and is not safe on the WebGPU backend.
@@ -147,9 +150,20 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   imageryGraphCache.clear()
 
   const raw = (materialReference('map', 'texture') as any).rgb
-  const graded = gradeImageryNode(uniforms, raw)
-    .mul(uniforms.daylightColor)
-    .mul(uniforms.daylightIntensity)
+  // Physically lit (effects.sunLight): flat ground takes the sun by the sine of its elevation.
+  const lit = isCloudEffectEnabled('sunLight')
+  const enu = (uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz
+  const canopy = lit && isCloudEffectEnabled('canopyShadows') ? canopyTransmittance(enu, float(0)) : float(1)
+  // The sky's cloud shadows with or without the sun light, as on the points.
+  const skyClouds = isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
+  const clouds = skyClouds ? cloudTransmittance(enu) : float(1)
+  const graded = lit
+    ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), (canopy as any).mul(clouds)))
+    : skyClouds
+      ? gradeImageryNode(uniforms, raw).mul(uniforms.daylightColor).mul(uniforms.daylightIntensity).mul(clouds)
+      : gradeImageryNode(uniforms, raw)
+        .mul(uniforms.daylightColor)
+        .mul(uniforms.daylightIntensity)
   const fog = groundFogNode(uniforms)
   const fogged = fog ? mix(graded, fog.color, fog.amount) : graded
   const atmospheric = applyMaskSurround(uniforms, fogged, 0.50)
@@ -255,6 +269,14 @@ export function createGlobe(opts: {
   tiles.setCamera(camera)
   scene.add(tiles.group)
 
+  // The backstop under refreshEffects: a tile shown again with a graph older than the effect
+  // flags is rebuilt before it draws (the event fires inside tiles.update(), before the render).
+  const onTileShown = ({ scene: s, visible }: any) => {
+    if (!visible || !s) return
+    s.traverse((o: any) => { if (effectMaterialStale(o.material)) rebuildEffectMaterial(o.material) })
+  }
+  tiles.addEventListener('tile-visibility-change', onTileShown)
+
   // The image plugin pre-flips tiles via createImageBitmap({imageOrientation:'flipY'})
   // because WebGL ignores Texture.flipY for ImageBitmaps. three's WebGPU backend,
   // however, DOES honour flipY for ImageBitmaps (copyExternalImageToTexture flips) → double
@@ -322,7 +344,12 @@ export function createGlobe(opts: {
       // code out entirely instead of turning it down — see setCloudEffectEnabled.
       mat.colorNode = imageryColorNode(uniforms)
       mat.userData.rebuildEffectGraph = () => { mat.colorNode = imageryColorNode(uniforms) }
+      // Stamped like the point tiles, so one parked in the cache across an effect switch is
+      // caught when it is shown again (onTileShown below).
       mat.userData.effectsVersion = cloudEffectsVersion()
+      // The ground for the physical haze: colour transmittance, and the exact ground lookup from
+      // a high camera (atmosphere-haze.ts volumeHaze).
+      mat.userData.hazeGround = true
       o.material.dispose()
       o.material = mat
       // The library lists a tile's materials before this event and disposes that list on
@@ -747,6 +774,7 @@ export function createGlobe(opts: {
       if (!ortho) satellite.setCapturing(false)
     },
     dispose() {
+      tiles.removeEventListener('tile-visibility-change', onTileShown)
       stopRetrying()
       ortho?.dispose()
       detachPanRebase()

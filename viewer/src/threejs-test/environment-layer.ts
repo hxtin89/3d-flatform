@@ -447,11 +447,21 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
       if (!haze || !weightedDistance) return vec4(finalColor.rgb, finalColor.a.mul(cloudOpacity) as any)
       const cloudDistance = weightedDistance.div(max(finalColor.a, 1e-4))
       const exitDistance = length(positionWorld.sub(cameraPosition))
+      if (haze.aerial) {
+        // The physical sky: the scene's own aerial perspective. Transmittance 0 keeps this
+        // material's straight-alpha colour (the cloud at no haze, the sky's in-scatter at
+        // full); the far wall fades the cloud's coverage toward the background behind it.
+        const viewDir = normalize(positionWorld.sub(cameraPosition))
+        const lit = haze.aerial(finalColor.rgb, float(0), cloudDistance, viewDir)
+        return vec4(lit, finalColor.a.mul(cloudOpacity).mul(float(1).sub(haze.wall(exitDistance))))
+      }
       const hazed = mix(finalColor.rgb, haze.color, max(haze.amount(cloudDistance), haze.wall(exitDistance)))
       return vec4(hazed, finalColor.a.mul(cloudOpacity) as any)
     })()
     const plainNode = makeVolumeNode(null)
     let hazedNode: any = null
+    /** The haze the hazed node was built for: physical mode hands over another object. */
+    let hazedFor: CloudHaze | null = null
     const material = new NodeMaterial()
     material.colorNode = plainNode
     material.side = THREE.BackSide
@@ -460,7 +470,8 @@ export function createEnvironmentLayer(options: EnvironmentLayerOptions): Enviro
     const handle: VolumeMaterialHandle = {
       material,
       setHaze(haze) {
-        material.colorNode = haze ? (hazedNode ??= makeVolumeNode(haze)) : plainNode
+        if (haze && haze !== hazedFor) { hazedNode = makeVolumeNode(haze); hazedFor = haze }
+        material.colorNode = haze ? hazedNode : plainNode
         material.fog = !haze
         material.needsUpdate = true
       },

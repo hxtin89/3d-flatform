@@ -37,6 +37,14 @@ import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './
 import { createBigTreesLayer, parseBigTrees, type BigTreesLayer } from './big-trees-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { createHazeLayer, type HazeLayer } from './atmosphere-haze'
+import { createSkyAtmosphere, defaultSkyParams, type AerialMode, type SkyAtmosphere } from './sky-atmosphere'
+import { createSunShadowLayer, type SunShadowLayer } from './sun-shadows'
+import { createSkyClouds, type SkyClouds } from './sky-clouds'
+import { mountSkyPanel } from './sky-panel'
+import { ellipsoidHeight } from './atmosphere-model'
+import { createGroundFogLayer } from './ground-fog'
+import { createFogNoiseBaker } from './fog-noise-baker'
+import { mountFogNoiseEditor, type FogNoiseEditor } from './fog-noise-editor'
 import { Fps } from './stats'
 import { recordFrame, costReport, resetCost, installUploadProbe, arrivalsSoFar } from './arrival-cost'
 import { installGeometryDisposeFix } from './geometry-dispose'
@@ -532,12 +540,17 @@ function applyBenchPreset(): void {
     applyPointSize()
   }
   applyPixelRatio()
+  groundFog.applyPreset(preset)
+  syncGroundFogQualityControls()
 }
 
 const onLoaderStart = () => {
   if (!loaderReadyShown || loaderFinishAt > 0 || loaderFlightStarted) return
   // Already applied if the benchmark settled while the visitor read the Start screen.
   if (!benchPresetApplied) applyBenchPreset()
+  // Held off behind the loader (end of the frame): the flight shows it.
+  fogLoaderHoldDone = true
+  groundFog.setHeld(false)
   eagleBench?.dispose()
   eagleBench = null
   if (import.meta.env.DEV) delete (window as any).__eagleBenchDebug
@@ -1162,6 +1175,8 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
       case 'daylightGrading':
         environmentLayer?.setGradingEnabled(effective.daylightGrading)
         hazeLayer.setNeutral(!effective.daylightGrading)
+        // The sky's light follows the switch too: neutral light while grading is off.
+        applySkyPackage()
         break
       case 'fieldModels':
         fieldModelLayer?.setVisible(effective.fieldModels)
@@ -1374,6 +1389,82 @@ const cloudCenterEcef = new THREE.Vector3()
 const enuUp = new THREE.Vector3(0, 0, 1)
 /** Distance haze and the graded sky; reads enuUp live, so it can exist before the frame does. */
 const hazeLayer: HazeLayer = createHazeLayer({ scene, up: enuUp })
+/** The physically based sky, sun and aerial perspective (sky-atmosphere.ts), which take over
+ *  the haze layer's two nodes while on. `?sky=0|1` boots it off or on whatever the config says. */
+const SKY = EXPERIENCE_CONFIG.sky
+const skyAtmosphere: SkyAtmosphere = createSkyAtmosphere({ renderer, settings: SKY.atmosphere, params: defaultSkyParams(SKY), aerialVolume: SKY.aerialVolume })
+let skyEnabled: boolean = params.get('sky') === '0' ? false : params.get('sky') === '1' ? true : SKY.enabled
+/** The aerial perspective from the camera volume or per fragment: `?apvol=0|1`, and two
+ *  developer views, `ref` (a per-fragment reference march) and `dircheck` (froxel directions). */
+let aerialVolumeIntent: string = params.get('apvol') ?? (SKY.aerialVolume.enabled ? '1' : '0')
+const aerialModeFor = (intent: string): AerialMode =>
+  intent === 'ref' ? 'reference' : intent === 'dircheck' ? 'dircheck' : intent === '0' ? 'analytic' : 'volume'
+// Before the haze builds its nodes, so the first graphs come out in the right mode.
+skyAtmosphere.setAerialMode(aerialModeFor(aerialVolumeIntent))
+if (skyEnabled) hazeLayer.setPhysicalSky(skyAtmosphere)
+/** The sky's light on the points and the basemap (point-cloud.ts sunLight): compiled in before
+ *  the first tile material exists, so no tile is ever built without it. */
+const sunLightParams = {
+  sunIntensity: SKY.sunLight.sunIntensity as number,
+  skyIntensity: SKY.sunLight.skyIntensity as number,
+  tint: new THREE.Color(SKY.sunLight.tint),
+  nightLevel: SKY.sunLight.nightLevel as number,
+}
+setCloudEffectEnabled('sunLight', skyEnabled && SKY.sunLight.enabled)
+/** What the panel asked for; the effective states also need the sky (and shadows the sun light). */
+let sunLightIntent: boolean = SKY.sunLight.enabled
+/** Volumetric ground fog (ground-fog.ts): a stage of the post pipeline, between eye-dome
+ *  lighting and depth of field. `?vfog=0|1` boots it off or on whatever the config says. */
+const groundFog = createGroundFogLayer({ renderer, camera, shared: uniforms, baker: createFogNoiseBaker() })
+{
+  const value = params.get('vfog')
+  groundFog.setEnabled(value === '0' ? false : value === '1' ? true : EXPERIENCE_CONFIG.volumetricFog.enabled)
+  groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  groundFog.setSkyLight(skyEnabled ? skyAtmosphere.light : null)
+  if (groundFog.isEnabled()) depthOfField.setGroundFog(groundFog)
+}
+/** Soft canopy shadows from the sky's sun (sun-shadows.ts): on the points, the basemap and
+ *  inside the fog's march. Needs the sun light; `?shadows=0|1` boots them off or on. */
+const SUN_SHADOWS = EXPERIENCE_CONFIG.sunShadows
+const sunShadows: SunShadowLayer = createSunShadowLayer({ renderer, uniforms })
+let shadowsIntent: boolean = params.get('shadows') === '0' ? false : params.get('shadows') === '1' ? true : SUN_SHADOWS.enabled
+let shadowsEnabled: boolean = skyEnabled && SKY.sunLight.enabled && shadowsIntent
+let fogShadowsIntent: boolean = SUN_SHADOWS.fog
+sunShadows.setEnabled(shadowsEnabled)
+setCloudEffectEnabled('canopyShadows', shadowsEnabled)
+groundFog.setBuildOption('canopyShadows', shadowsEnabled)
+/** Clouds on the sky dome and their shadows (sky-clouds.ts). Need the physical sky.
+ *  `?clouds=0|1|<preset>` boots them off, on, or on with a preset. */
+const SKY_CLOUDS = EXPERIENCE_CONFIG.skyClouds
+const skyClouds: SkyClouds = createSkyClouds({ renderer, sky: skyAtmosphere })
+let cloudsEnabled: boolean
+let cloudsIntent = true
+let fogCloudShadowsIntent: boolean = SKY_CLOUDS.fogCloudShadows
+let cloudShadowsIntent: boolean = SKY_CLOUDS.cloudShadows
+/** The old cloud-shadow button's choice (master over every cloud shadow). */
+let legacyCloudShadowsIntent: boolean = EXPERIENCE_CONFIG.pointLighting.cloudShadowsEnabled
+{
+  const value = params.get('clouds')
+  cloudsIntent = value === '0' ? false : value ? true : SKY_CLOUDS.enabled
+  cloudsEnabled = skyEnabled && cloudsIntent
+  const look = skyClouds.applyPreset(value && value !== '1' && value !== '0' ? value : SKY_CLOUDS.preset)
+  skyClouds.params.enabled = cloudsEnabled
+  if (cloudsEnabled) {
+    skyAtmosphere.setClouds(skyClouds)
+    hazeLayer.refreshPhysicalSky()
+    // The weather brings its haze.
+    if (look) skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth })
+  }
+  setCloudEffectEnabled('skyCloudShadows', cloudsEnabled)
+  groundFog.setBuildOption('cloudShadows', cloudsEnabled)
+  groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  // The fog's graph was built above, before the shadow and cloud options were set: once more.
+  if (groundFog.isEnabled()) depthOfField.setGroundFog(groundFog)
+}
+/** Rebuild the post graph after the fog changed shape (switch, build option, haze). */
+const refreshGroundFog = () => depthOfField.setGroundFog(groundFog.isEnabled() ? groundFog : null)
+const scratchFogMin = new THREE.Vector2()
+const scratchFogMax = new THREE.Vector2()
 let zOffset = 0
 
 /** Lift the streamed cloud off the draped imagery. Diagnostic only when off:
@@ -2830,7 +2921,7 @@ function updateMaskFollow(): void {
   // shrinks the "portal" below arm's reach, and cap the strength below the
   // shader's 0.95 discard threshold — points are dimmed/tinted toward the
   // surround at most, never discarded. Distant points still disappear, but
-  // through groundFog rather than a hard mask edge.
+  // through the distance haze (and groundFog when it is on) rather than a hard mask edge.
   const radius = Math.max(
     THREE.MathUtils.clamp(cameraGroundRange * 0.55, 30, 2000),
     vignetteSideMinRadiusM * sideFactor,
@@ -2999,6 +3090,13 @@ sizeEl.addEventListener('input', () => {
 let groundFogBaseOffset: number = EXPERIENCE_CONFIG.design.groundFog.baseOffsetM
 function applyGroundFogBase(): void {
   uniforms.groundFogBaseZ.value = groundFogFloorZ + groundFogBaseOffset
+  syncGroundFogFrame()
+}
+/** The volumetric fog's band stands on the analytic fog's floor, over the survey's box. */
+function syncGroundFogFrame(): void {
+  const bounds = maskBoundsEnu
+  if (bounds) groundFog.setFrame(groundFogFloorZ, scratchFogMin.set(bounds.minX, bounds.minY), scratchFogMax.set(bounds.maxX, bounds.maxY))
+  else groundFog.setFrame(groundFogFloorZ, scratchFogMin.set(cloudCenterEnu.x - 5000, cloudCenterEnu.y - 5000), scratchFogMax.set(cloudCenterEnu.x + 5000, cloudCenterEnu.y + 5000))
 }
 
 const asPercent = (value: number) => `${Math.round(value * 100)}%`
@@ -4085,9 +4183,12 @@ function bindShaderEffectToggle(
 }
 
 bindShaderEffectToggle('groundFogToggle', '≡ Ground fog', 'groundFog', DESIGN.groundFog.enabled)
-bindShaderEffectToggle(
-  'cloudShadowToggle', '☁ Cloud shadows', 'cloudShadows', EXPERIENCE_CONFIG.pointLighting.cloudShadowsEnabled,
-)
+// The master switch over every cloud shadow, the sky's or the old noise deck's: an intent the
+// sky package resolves (applySkyPackage), so the two can never disagree about the flag.
+bindEffectToggle('cloudShadowToggle', '☁ Cloud shadows', legacyCloudShadowsIntent, (on) => {
+  legacyCloudShadowsIntent = on
+  applySkyPackage()
+})
 // Distance fog is three's own scene fog, so switching it off is a matter of taking
 // it off the scene — with no fog there, the node materials build without it. The
 // device tier can also disable it (see the fogAtmosphere case), and that still wins.
@@ -4103,6 +4204,8 @@ bindEffectToggle('hazeToggle', '≈ Distance haze', HAZE.enabled, (enabled) => {
   if (hazeLayer.setHaze(enabled)) refreshEffectShaders()
   // The ray-marched clouds haze themselves while it is on; see environment-layer.ts.
   environmentLayer?.setCloudHaze(enabled ? hazeLayer.cloudHaze : null)
+  // So does the volumetric ground fog, which bakes it into its march.
+  if (groundFog.setHaze(enabled ? hazeLayer.cloudHaze : null)) refreshGroundFog()
 })
 bindEffectToggle('skyGradientToggle', '◠ Sky gradient', HAZE.skyGradient, (enabled) => hazeLayer.setSky(enabled))
 bindDesignSlider('hazeStart', HAZE.startM, asMetres, (v) => hazeLayer.setStartM(v))
@@ -4347,6 +4450,291 @@ const gradeEditor: GradeEditor = createGradeEditor({
 })
 gradeDebug.editor = gradeEditor
 
+// Volumetric ground fog. Built from one table rather than written out in the markup: some
+// thirty sliders that all write straight into groundFog.params, plus the switches that
+// rebuild the pass. Copy values reads the same table, so nothing can be left out of it.
+const VFOG = EXPERIENCE_CONFIG.volumetricFog
+/** The noise editor, built the first time its window is opened. */
+let fogNoiseEditor: FogNoiseEditor | null = null
+/** Redraw the editor's density slices, only while its window is open: each redraw is three
+ *  GPU renders and readbacks. Opening the window redraws them anyway. */
+const refreshFogDensity = () => {
+  if (document.body.classList.contains('fog-noise-open')) fogNoiseEditor?.refreshDensity()
+}
+let drawFogThumbnails: ((data: Uint8Array) => void) | null = null
+type FogParamKey = { [K in keyof typeof groundFog.params]: typeof groundFog.params[K] extends number ? K : never }[keyof typeof groundFog.params]
+interface FogSlider { key: FogParamKey | 'resolutionScale' | 'windSpeed' | 'windDirection'; label: string; min: number; max: number; step: number; format: (v: number) => string; note?: string }
+const asKm = (v: number) => `${(v / 1000).toFixed(1)} km`
+const windSpeedOf = () => Math.hypot(groundFog.params.windMps[0], groundFog.params.windMps[1])
+// Kept apart from windMps: at speed 0 the vector has no direction left to read back.
+let windTowardDeg = (THREE.MathUtils.radToDeg(Math.atan2(groundFog.params.windMps[0], groundFog.params.windMps[1])) + 360) % 360
+const windDirectionOf = () => windTowardDeg
+const FOG_SLIDERS: { heading: string; rows: FogSlider[] }[] = [
+  { heading: 'Fidelity and cost', rows: [
+    { key: 'resolutionScale', label: 'March resolution', min: 0.25, max: 1, step: 0.25, format: asPercent, note: 'Of the drawing buffer, per axis: 50 % marches a quarter of the pixels' },
+    { key: 'steps', label: 'Steps per ray', min: 4, max: 96, step: 1, format: (v) => String(v), note: 'The main cost knob with the resolution' },
+    { key: 'stepDistribution', label: 'Step crowding', min: 1, max: 3, step: 0.05, format: (v) => v.toFixed(2), note: '1 spaces samples evenly; higher crowds them near the camera' },
+    { key: 'maxDistanceM', label: 'Max distance', min: 500, max: 20000, step: 250, format: asKm },
+    { key: 'temporalBlend', label: 'Temporal blend', min: 0.02, max: 1, step: 0.01, format: asPercent, note: 'Share of each new frame when the temporal filter is on: lower is smoother, 100 % is no averaging' },
+    { key: 'temporalClip', label: 'Temporal clip', min: 0.25, max: 4, step: 0.05, format: (v) => v.toFixed(2), note: 'How far the carried-over fog may differ from the current frame, in standard deviations: wider is smoother, narrower trails less' },
+    { key: 'temporalOcclusion', label: 'Temporal occlusion', min: 0.02, max: 10, step: 0.01, format: asPercent, note: 'How far the surface behind a pixel may change in depth before its history is left out: smaller keeps outlines sharp in motion, large is steadier but smears' },
+  ] },
+  { heading: 'Band', rows: [
+    { key: 'bottomM', label: 'Bottom', min: -40, max: 60, step: 1, format: asMetres, note: 'Above the area floor; the survey-centre ground is ~22 m up, the crown tops ~50 m' },
+    { key: 'topM', label: 'Top', min: 5, max: 150, step: 1, format: asMetres },
+    { key: 'plumeHeightM', label: 'Plume height', min: 0, max: 150, step: 1, format: asMetres, note: 'How far plumes rise above the puff layer' },
+    { key: 'bottomSoftM', label: 'Bottom softness', min: 0.5, max: 60, step: 0.5, format: asMetres },
+    { key: 'topSoftM', label: 'Top softness', min: 0.5, max: 60, step: 0.5, format: asMetres },
+    { key: 'marginM', label: 'Margin past the survey', min: 0, max: 3000, step: 50, format: asMetres, note: 'The band covers the survey box plus this, fading out over it' },
+    { key: 'virtualCanopyM', label: 'Virtual canopy', min: 0, max: 120, step: 1, format: asMetres, note: 'Beyond the drawn points the map stands for the crown tops at this height; mist below it is hidden there' },
+    { key: 'mapBelowM', label: 'Bare map below', min: -60, max: 20, step: 1, format: asMetres, note: 'A ray whose surface lies below this height (negative = under the floor) has hit the map, not the points; the drape is 20 m under the floor' },
+    { key: 'groundLevelM', label: 'Forest floor', min: -20, max: 60, step: 1, format: asMetres, note: 'Where mist in a real gap ends (a map hit inside the sphere-fade dome); below Bottom, the band’s own bottom ends it' },
+    { key: 'pointsReachM', label: 'Points reach', min: 200, max: 8000, step: 50, format: asMetres, note: 'Beyond it, map hits stop at the virtual canopy even inside the dome, and the mist gives way to the veil; no effect past the max distance' },
+    { key: 'veilVisibilityM', label: 'Veil visibility', min: 0, max: 20000, step: 100, format: asMetres, note: 'The sheet of mist on the virtual canopy that far mist reads as; 0 = off' },
+    { key: 'veilHeightM', label: 'Veil thickness', min: 1, max: 80, step: 1, format: asMetres },
+  ] },
+  { heading: 'Shape', rows: [
+    { key: 'visibilityM', label: 'Visibility in the mist', min: 5, max: 1000, step: 5, format: asMetres, note: 'Koschmieder: extinction = 3.912 / visibility' },
+    { key: 'coverage', label: 'Coverage', min: 0, max: 1, step: 0.01, format: asPercent },
+    { key: 'coverageSoftness', label: 'Bank edge softness', min: 0.01, max: 0.5, step: 0.01, format: (v) => v.toFixed(2) },
+    { key: 'coverageScaleM', label: 'Bank size (tile)', min: 200, max: 8000, step: 50, format: asMetres },
+    { key: 'billowScaleM', label: 'Billow size (tile)', min: 20, max: 1500, step: 10, format: asMetres },
+    { key: 'erosionScaleM', label: 'Erosion size (tile)', min: 10, max: 800, step: 5, format: asMetres },
+    { key: 'wispScaleM', label: '3D detail width (tile)', min: 5, max: 400, step: 5, format: asMetres },
+    { key: 'wispHeightM', label: '3D detail height', min: 5, max: 400, step: 1, format: asMetres, note: 'How far up the pattern turns over; smaller gives shorter puffs' },
+    { key: 'billowAmount', label: 'Billows', min: 0, max: 1, step: 0.01, format: asPercent },
+    { key: 'erosionAmount', label: 'Erosion', min: 0, max: 0.95, step: 0.01, format: asPercent },
+    { key: 'wispAmount', label: '3D detail', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How far the 3D noise carves the mist into puffs; 0 leaves the 2D layers extruded through the band, which reads as streaks' },
+    { key: 'puffAmount', label: 'Puffs on the canopy', min: 0, max: 3, step: 0.01, format: asPercent },
+    { key: 'puffCentreM', label: 'Puff height', min: 0, max: 120, step: 1, format: asMetres, note: 'Centre of the puffs above the floor; crown tops ~50 m' },
+    { key: 'puffHeightM', label: 'Puff thickness', min: 1, max: 60, step: 1, format: asMetres },
+    { key: 'puffCut', label: 'Puff rarity', min: 0, max: 1, step: 0.01, format: (v) => v.toFixed(2), note: 'Billow clump a puff needs; higher = fewer, smaller puffs' },
+    { key: 'plumeAmount', label: 'Plumes', min: 0, max: 3, step: 0.01, format: asPercent },
+    { key: 'plumeSpacingM', label: 'Plume spacing', min: 40, max: 2000, step: 10, format: asMetres, note: 'One candidate column per square of this side' },
+    { key: 'plumeChance', label: 'Plume chance', min: 0, max: 1, step: 0.01, format: asPercent },
+    { key: 'plumeRadiusM', label: 'Plume radius', min: 0.5, max: 40, step: 0.5, format: asMetres, note: 'At its foot; it flares to about twice that as it rises' },
+    { key: 'windSpeed', label: 'Wind', min: 0, max: 6, step: 0.05, format: (v) => `${v.toFixed(2)} m/s` },
+    { key: 'windDirection', label: 'Wind toward', min: 0, max: 359, step: 1, format: (v) => `${Math.round(v)}°`, note: '0° = north, 90° = east' },
+    { key: 'riseMps', label: 'Rise', min: 0, max: 3, step: 0.05, format: (v) => `${v.toFixed(2)} m/s` },
+  ] },
+  { heading: 'Light', rows: [
+    { key: 'dropletDiameterUm', label: 'Droplet diameter', min: 2, max: 40, step: 0.5, format: (v) => `${v} µm`, note: 'Mie phase fit (Jendersie & d’Eon 2023): larger drops give a tighter, brighter glow toward the sun' },
+    { key: 'albedo', label: 'Albedo', min: 0.5, max: 1, step: 0.005, format: (v) => v.toFixed(3) },
+    { key: 'sunStrength', label: 'Sunlight', min: 0, max: 4, step: 0.05, format: asFactor },
+    { key: 'ambientStrength', label: 'Skylight', min: 0, max: 4, step: 0.05, format: asFactor },
+    { key: 'canopyOcclusion', label: 'Canopy occlusion', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How much sky and sun the crowns hide from mist low in the band' },
+    { key: 'skyTint', label: 'Sky tint', min: 0, max: 1, step: 0.01, format: asPercent, note: 'How much of the sky’s blue the skylight on the mist keeps, at the back; 0 = white. Humid forest air is pale' },
+    { key: 'skyTintFront', label: 'Tint in front', min: 0, max: 1, step: 0.01, format: asPercent, note: 'Share of that tint right at the camera: 0 = white vapour, 100 % = as at the back' },
+    { key: 'skyTintFadeM', label: 'Tint fade distance', min: 50, max: 6000, step: 50, format: asMetres, note: 'Where the back’s tint is reached' },
+    { key: 'skyTintCurve', label: 'Tint fade curve', min: 0.2, max: 4, step: 0.05, format: (v) => v.toFixed(2), note: 'Above 1 the mist stays white farther out; below 1 the tint comes in sooner' },
+    { key: 'rayleighScale', label: 'Rayleigh (air)', min: 0, max: 200, step: 1, format: asFactor, note: '1× = sea-level air; the haze carries aerial perspective beyond the band' },
+  ] },
+]
+const fogSliderRefresh = new Map<string, () => void>()
+const fogValueOf = (key: FogSlider['key']): number => {
+  if (key === 'resolutionScale') return groundFog.getResolutionScale()
+  if (key === 'windSpeed') return windSpeedOf()
+  if (key === 'windDirection') return windDirectionOf()
+  return groundFog.params[key] as number
+}
+const setFogValue = (key: FogSlider['key'], value: number) => {
+  if (key === 'resolutionScale') groundFog.setResolutionScale(value)
+  else if (key === 'windSpeed' || key === 'windDirection') {
+    const speed = key === 'windSpeed' ? value : windSpeedOf()
+    if (key === 'windDirection') windTowardDeg = value
+    const toward = THREE.MathUtils.degToRad(windTowardDeg)
+    groundFog.params.windMps = [Math.sin(toward) * speed, Math.cos(toward) * speed]
+  } else (groundFog.params as unknown as Record<string, number>)[key] = value
+  refreshFogDensity()
+}
+{
+  const container = $<HTMLDivElement>('#volumetricFogControls')
+  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...children: (Node | string)[]) => {
+    const node = document.createElement(tag); Object.assign(node, props); node.append(...children); return node
+  }
+  const note = (text: string) => make('span', { className: 'weather-note', textContent: text })
+  const toggle = (label: string, isOn: () => boolean, flip: () => void) => {
+    const button = make('button', { className: 'act', type: 'button' })
+    const sync = () => { const on = isOn(); button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on)); button.textContent = `${label} · ${on ? 'On' : 'Off'}` }
+    button.addEventListener('click', () => { flip(); sync() })
+    sync()
+    return button
+  }
+  container.append(
+    make('div', { className: 'row' }, make('label', { className: 'h', textContent: 'Effect' }),
+      toggle('☁ Volumetric fog', () => groundFog.isEnabled(), () => { groundFog.setEnabled(!groundFog.isEnabled()); refreshGroundFog(); refreshFogDensity() }),
+      note('Ray-marched mist in the gaps between the crowns, lit by the sun and sky. Off removes the pass from the pipeline, so it costs nothing. ?vfog=0 boots with it off')),
+  )
+  // Build options: each rebuilds the pass.
+  const rebuildWith = <K extends keyof ReturnType<typeof groundFog.getBuildOptions>>(key: K, value: ReturnType<typeof groundFog.getBuildOptions>[K]) => {
+    if (groundFog.setBuildOption(key, value) && groundFog.isEnabled()) refreshGroundFog()
+    refreshFogDensity()
+  }
+  const source = make('select', { id: 'vfogNoiseSource' })
+  for (const [value, text] of [['2d', '2D slices, editable'], ['3d', '3D texture (default)'], ['procedural', 'In-shader noise (comparison)']]) source.append(make('option', { value, textContent: text }))
+  source.value = groundFog.getBuildOptions().noiseSource
+  source.addEventListener('change', () => rebuildWith('noiseSource', source.value as '2d' | '3d' | 'procedural'))
+  const scattering = make('select', { id: 'vfogScattering' })
+  for (let n = 0; n <= 3; n++) scattering.append(make('option', { value: String(n), textContent: n === 0 ? 'Single scattering' : `+${n} order${n > 1 ? 's' : ''} (Wrenninge)` }))
+  scattering.value = String(groundFog.getBuildOptions().multipleScattering)
+  scattering.addEventListener('change', () => rebuildWith('multipleScattering', Number(scattering.value)))
+  const debugView = make('select', { id: 'vfogDebug' })
+  for (const [value, text] of [['off', 'Off (composite)'], ['light', 'Fog light only'], ['transmittance', 'Transmittance']]) debugView.append(make('option', { value, textContent: text }))
+  debugView.value = groundFog.getBuildOptions().debugView
+  debugView.addEventListener('change', () => rebuildWith('debugView', debugView.value as 'off' | 'light' | 'transmittance'))
+  container.append(
+    make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogNoiseSource', textContent: 'Noise source' }), source,
+      note('Rebuilds the pass. The height detail: the 3D texture is fixed; the 2D slices cost the same and take the noise editor’s B (wisps) layer')),
+    make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogScattering', textContent: 'Multiple scattering' }), scattering),
+    make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogDebug', textContent: 'Debug view' }), debugView,
+      note('Light: the fog’s scattered light alone. Transmittance: how much of the scene gets through (white = all)')),
+    make('div', { className: 'row' }, toggle('≋ 3D detail & plumes', () => groundFog.getBuildOptions().wisps, () => rebuildWith('wisps', !groundFog.getBuildOptions().wisps)),
+      toggle('◧ Depth-aware upsample', () => groundFog.getBuildOptions().depthAwareUpsample, () => rebuildWith('depthAwareUpsample', !groundFog.getBuildOptions().depthAwareUpsample)),
+      toggle('⧗ Temporal filter', () => groundFog.getBuildOptions().temporal, () => rebuildWith('temporal', !groundFog.getBuildOptions().temporal)),
+      toggle('◌ Fill canopy holes', () => groundFog.getBuildOptions().fillCanopyHoles, () => rebuildWith('fillCanopyHoles', !groundFog.getBuildOptions().fillCanopyHoles))),
+  )
+  for (const group of FOG_SLIDERS) {
+    container.append(make('div', { className: 'vfog-heading', textContent: group.heading }))
+    for (const row of group.rows) {
+      const id = `vfog_${row.key}`
+      const input = make('input', { type: 'range', id, min: String(row.min), max: String(row.max), step: String(row.step) })
+      const value = make('span', { className: 'val' })
+      const refresh = () => { input.value = String(fogValueOf(row.key)); value.textContent = row.format(Number(input.value)) }
+      input.addEventListener('input', () => { setFogValue(row.key, Number(input.value)); value.textContent = row.format(Number(input.value)) })
+      fogSliderRefresh.set(row.key, refresh)
+      refresh()
+      container.append(make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: id }, `${row.label} · `, value), input, ...(row.note ? [note(row.note)] : [])))
+    }
+  }
+  const tint = make('input', { type: 'color', id: 'vfogTint', value: `#${groundFog.params.tint.getHexString()}` })
+  tint.addEventListener('input', () => { groundFog.params.tint.set(tint.value) })
+  container.append(make('div', { className: 'row' }, make('label', { className: 'h', htmlFor: 'vfogTint', textContent: 'Light tint' }), tint))
+  // Noise: a thumbnail per layer, and the full editor in its own window.
+  const thumbs = [0, 1, 2, 3].map(() => make('canvas', { width: 64, height: 64 }))
+  const openEditor = make('button', { className: 'act', type: 'button', textContent: '▦ Open noise editor' })
+  container.append(
+    make('div', { className: 'vfog-heading', textContent: 'Noise' }),
+    make('div', { className: 'vfog-thumbs', title: 'R coverage · G billows · B wisps · A erosion' }, ...thumbs),
+    make('div', { className: 'row' }, openEditor, note('Inspect the tiles, edit every layer, preview the density slices')),
+  )
+  drawFogThumbnails = (data: Uint8Array) => {
+    const size = Math.round(Math.sqrt(data.length / 4))
+    const step = Math.max(1, Math.floor(size / 64))
+    thumbs.forEach((canvas, channel) => {
+      const image = new ImageData(64, 64)
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        const v = data[((Math.min(y * step, size - 1)) * size + Math.min(x * step, size - 1)) * 4 + channel]
+        const i = (y * 64 + x) * 4
+        image.data[i] = v; image.data[i + 1] = v; image.data[i + 2] = v; image.data[i + 3] = 255
+      }
+      canvas.getContext('2d')!.putImageData(image, 0, 0)
+    })
+  }
+  void groundFog.setNoise(groundFog.noiseSettings()).then((data) => { if (data) drawFogThumbnails?.(data) })
+  const closeEditor = $<HTMLButtonElement>('#fogNoiseClose')
+  openEditor.addEventListener('click', () => {
+    document.body.classList.add('fog-noise-open')
+    fogNoiseEditor ??= mountFogNoiseEditor({
+      container: $<HTMLDivElement>('#fogNoiseEditorBody'),
+      settings: groundFog.noiseSettings(),
+      defaults: JSON.parse(JSON.stringify(VFOG.noise)),
+      apply: async (settings) => {
+        const data = await groundFog.setNoise(settings)
+        if (data) drawFogThumbnails?.(data)
+        return data
+      },
+      bake3d: (size) => groundFog.bake3dPreview(size),
+      renderDensitySlice: (request) => groundFog.renderDensitySlice(request),
+      bandHeightM: () => groundFog.bandHeightM(),
+    })
+    fogNoiseEditor.refreshDensity()
+  })
+  closeEditor.addEventListener('click', () => document.body.classList.remove('fog-noise-open'))
+}
+/**
+ * Apply the sky package's switches together: every effect flag, scene node and fog option
+ * that depends on them, so no combination leaves a stale graph. The sun light needs the sky,
+ * the shadows the sun light, the clouds the sky.
+ */
+function applySkyPackage(): void {
+  // Daylight grading off (the compare mode) means neutral light: no sun light, no shadows.
+  const grading = renderOptions.effective().daylightGrading
+  const sunLightOn = skyEnabled && sunLightIntent && grading
+  shadowsEnabled = sunLightOn && shadowsIntent
+  cloudsEnabled = skyEnabled && cloudsIntent
+  let tiles = false
+  if (hazeLayer.setPhysicalSky(skyEnabled ? skyAtmosphere : null)) tiles = true
+  skyClouds.params.enabled = cloudsEnabled
+  skyAtmosphere.setClouds(cloudsEnabled ? skyClouds : null)
+  // Its update only runs while it is on: let go of its targets here, as the shadows do.
+  if (!cloudsEnabled) skyClouds.release()
+  skyAtmosphere.setAerialMode(aerialModeFor(aerialVolumeIntent))
+  if (hazeLayer.refreshPhysicalSky()) tiles = true
+  tiles = setCloudEffectEnabled('sunLight', sunLightOn) || tiles
+  sunShadows.setEnabled(shadowsEnabled)
+  tiles = setCloudEffectEnabled('canopyShadows', shadowsEnabled) || tiles
+  const cloudShadowsOn = cloudsEnabled && cloudShadowsIntent && grading
+  tiles = setCloudEffectEnabled('skyCloudShadows', cloudShadowsOn) || tiles
+  tiles = setCloudEffectEnabled('skyClouds', cloudsEnabled) || tiles
+  // Under the dome clouds only their own shadows; without them the old deck, as before.
+  tiles = setCloudEffectEnabled('cloudShadows', legacyCloudShadowsIntent && (!cloudsEnabled || cloudShadowsOn)) || tiles
+  groundFog.setSkyLight(skyEnabled ? skyAtmosphere.light : null)
+  let fogGraph = groundFog.setHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  fogGraph = groundFog.setBuildOption('canopyShadows', shadowsEnabled && fogShadowsIntent) || fogGraph
+  fogGraph = groundFog.setBuildOption('cloudShadows', cloudsEnabled && fogCloudShadowsIntent && grading) || fogGraph
+  environmentLayer?.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  syncBoxClouds()
+  if (tiles) refreshEffectShaders()
+  if (fogGraph && groundFog.isEnabled()) refreshGroundFog()
+}
+/** The box clouds' intent from before the sky's clouds suppressed them; null while they are
+ *  not suppressed. Suppressed on the sky clouds' off → on, restored on on → off (only if they
+ *  were on, and never over a choice made with the cloud button meanwhile). */
+let boxCloudIntentBeforeSky: boolean | null = null
+function syncBoxClouds(): void {
+  if (!environmentLayer) return
+  if (cloudsEnabled && boxCloudIntentBeforeSky === null) {
+    boxCloudIntentBeforeSky = environmentLayer.getCloudState().intent
+    environmentLayer.setCloudIntent(false, false)
+  } else if (!cloudsEnabled && boxCloudIntentBeforeSky !== null) {
+    const state = environmentLayer.getCloudState()
+    const restore = boxCloudIntentBeforeSky && !state.intent && state.tier !== 'constrained'
+    boxCloudIntentBeforeSky = null
+    if (restore) environmentLayer.setCloudIntent(true, false)
+  }
+}
+const skyPanel = mountSkyPanel({
+  containers: {
+    sky: $<HTMLDivElement>('#skyControls'),
+    shadows: $<HTMLDivElement>('#sunShadowControls'),
+    clouds: $<HTMLDivElement>('#skyCloudControls'),
+  },
+  sky: skyAtmosphere,
+  sunLight: sunLightParams,
+  sideLight: uniforms.sunSideLight,
+  fog: groundFog.params,
+  shadows: sunShadows,
+  clouds: skyClouds,
+  switches: {
+    sky: { get: () => skyEnabled, set: (on) => { skyEnabled = on; applySkyPackage() } },
+    sunLight: { get: () => sunLightIntent, set: (on) => { sunLightIntent = on; applySkyPackage() } },
+    shadows: { get: () => shadowsIntent, set: (on) => { shadowsIntent = on; applySkyPackage() } },
+    fogShadows: { get: () => fogShadowsIntent, set: (on) => { fogShadowsIntent = on; applySkyPackage() } },
+    clouds: { get: () => cloudsIntent, set: (on) => { cloudsIntent = on; applySkyPackage() } },
+    cloudShadows: { get: () => cloudShadowsIntent, set: (on) => { cloudShadowsIntent = on; applySkyPackage() } },
+    fogCloudShadows: { get: () => fogCloudShadowsIntent, set: (on) => { fogCloudShadowsIntent = on; applySkyPackage() } },
+    aerialVolume: { get: () => aerialVolumeIntent !== '0', set: (on) => { aerialVolumeIntent = on ? '1' : '0'; applySkyPackage() } },
+  },
+  onPreset: (look) => skyAtmosphere.setAtmosphere({ ...skyAtmosphere.getAtmosphere(), aerosolDepth: look.aerosolDepth }),
+})
+// Once everything the package touches exists: one consistent set of flags from the start.
+applySkyPackage()
+/** Re-read the sliders the loader preset may have moved. */
+function syncGroundFogQualityControls(): void {
+  fogSliderRefresh.get('steps')?.()
+  fogSliderRefresh.get('resolutionScale')?.()
+}
+
 // Canopy cloud shadows. Scale and contrast are plain uniforms; strength has to go
 // through the environment layer, which rewrites that uniform from the daylight
 // ramp on every pass and would otherwise overwrite the slider immediately.
@@ -4491,7 +4879,19 @@ depthOfField: ${JSON.stringify({
     focalLengthM: Number($<HTMLInputElement>('#dofFocalLength').value),
     bokehScale: Number($<HTMLInputElement>('#dofBokehScale').value),
     focusSmoothing: Number($<HTMLInputElement>('#dofFocusSmoothing').value),
-  }, null, 2)}`
+  }, null, 2)}
+volumetricFog: ${JSON.stringify({
+    enabled: groundFog.isEnabled(),
+    resolutionScale: groundFog.getResolutionScale(),
+    ...groundFog.getBuildOptions(),
+    ...Object.fromEntries(FOG_SLIDERS.flatMap((group) => group.rows)
+      .filter((row) => row.key !== 'resolutionScale' && row.key !== 'windSpeed' && row.key !== 'windDirection')
+      .map((row) => [row.key, fogValueOf(row.key)])),
+    windMps: groundFog.params.windMps.map((v) => Number(v.toFixed(3))),
+    tint: `0x${groundFog.params.tint.getHexString()}`,
+    noise: groundFog.noiseSettings(),
+  }, null, 2)}
+${Object.entries(skyPanel.copyValues()).map(([key, value]) => `${key}: ${JSON.stringify(value, null, 2)}`).join('\n')}`
   try {
     await navigator.clipboard.writeText(snippet)
     designCopyEl.textContent = '✓ Copied'
@@ -5256,6 +5656,9 @@ function recoverCameraPose(): void {
   console.warn('[nan-watch] camera restored to the staging pose')
 }
 
+let lastGroundFogFrameMs = 0
+/** Set once the fog has been held behind the loader (see the end of the frame). */
+let fogLoaderHoldDone = false
 function loop(now: number): void {
   if (graphicsFailed) return
   fps.tick(now)
@@ -5358,17 +5761,99 @@ function loop(now: number): void {
   // immediately once the queue is empty, which it is for all but the first
   // seconds after a tile loads.
   groundPatchMask.update()
+  // Decided before the sky package's own passes (its tables, the shadow map, the cloud bake):
+  // on the idle Start screen they wait for a drawn frame, as the draw does.
+  const drawing = drawThisFrame(now)
+  if (drawing) {
+    const deltaS = (now - lastGroundFogFrameMs) / 1000
+    if (skyEnabled && daylightState) updateSky(daylightState, deltaS)
+    if (shadowsEnabled && daylightState) updateSunShadows(daylightState)
+    if (cloudsEnabled && daylightState) updateSkyClouds(daylightState, deltaS)
+    if (groundFog.isEnabled()) groundFog.update(camera, daylightState ?? null, deltaS)
+    lastGroundFogFrameMs = now
+  }
   depthOfField.update(cameraGroundRange)
-  if (drawThisFrame(now)) {
+  if (drawing) {
     // Disposes replaced LUT textures, runs at most one main-thread bake and uploads the newest
     // bake result: at most one upload a frame, right before the frame that shows it.
     gradeEditor.update()
     depthOfField.render()
+    // Behind the loader the fog is unseen, and the eagle bench times frames on the same GPU:
+    // one frame with it, so its pipelines compile, then it is held off (its gate, no rebuild)
+    // until the flight starts.
+    if (!fogLoaderHoldDone && !loaderFlightStarted && groundFog.isEnabled()) {
+      groundFog.setHeld(true)
+      fogLoaderHoldDone = true
+    }
     // Taken here, after the draw, and shown on the next frame. The animation loop resets
     // renderer.info immediately before calling this function, so anything read further up
     // — updateHud included — sees a counter that has just been zeroed.
     lastDrawCalls = (renderer.info as any).render?.drawCalls ?? 0
   }
+}
+
+const skyCameraEcef = new THREE.Vector3()
+const skyWorldToEnu = new THREE.Matrix3()
+const skyBufferSize = new THREE.Vector2()
+/** The physically based sky's frame: its tables for this camera and sun, and the light it
+ *  casts. The sun uniform the tile shaders and the fog share is written here too, every
+ *  frame, so it also follows the clock while the daylight grading is off. */
+function updateSky(daylight: DaylightState, deltaS: number): void {
+  renderToEcef(camera.position, skyCameraEcef)
+  // ECEF → ENU; the floating origin only translates, so it is also render space → ENU.
+  skyWorldToEnu.setFromMatrix4(enuInverse)
+  renderer.getDrawingBufferSize(skyBufferSize)
+  skyAtmosphere.update({
+    cameraEcef: skyCameraEcef,
+    worldToEnu: skyWorldToEnu,
+    sunDirectionEnu: daylight.sunDirectionEnu,
+    groundAltitudeM: 0,
+    fovDeg: camera.fov,
+    bufferHeightPx: skyBufferSize.y,
+    deltaS: Math.min(Math.max(deltaS, 0), 0.25),
+    camera,
+    aerialWanted: hazeLayer.isHaze(),
+  })
+  uniforms.sunDirectionEnu.value.copy(daylight.sunDirectionEnu)
+  const light = skyAtmosphere.light
+  // With the clouds' own shadows on the receivers the sun is not dimmed twice.
+  const cloudsShadowLocally = isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
+  uniforms.sunLightColor.value.copy(light.sun).multiply(sunLightParams.tint)
+    .multiplyScalar(sunLightParams.sunIntensity * (cloudsShadowLocally ? 1 : light.sunThroughClouds))
+  uniforms.skyLightColor.value.copy(light.sky).multiplyScalar(sunLightParams.skyIntensity)
+  // The night floor of the daylight grade, faded in as the sun sinks from 0° to −12°.
+  const night = 1 - THREE.MathUtils.smoothstep(light.sunElevation, THREE.MathUtils.degToRad(-12), 0)
+  uniforms.nightLightColor.value.copy(nightGradeColor).multiplyScalar(sunLightParams.nightLevel * night)
+}
+const nightGradeColor = new THREE.Color(EXPERIENCE_CONFIG.pointLighting.nightGrade)
+const cloudCameraKm = new THREE.Vector3()
+const cloudCameraEnu = new THREE.Vector3()
+/** The dome's clouds: the camera relative to the survey for the parallax-corrected lookup,
+ *  and the bake when it is due. */
+function updateSkyClouds(daylight: DaylightState, deltaS: number): void {
+  cloudCameraEnu.copy(camera.position).applyMatrix4(enuInverseRender)
+  const heightKm = ellipsoidHeight(skyCameraEcef.x, skyCameraEcef.y, skyCameraEcef.z) / 1000
+  cloudCameraKm.set(cloudCameraEnu.x / 1000, cloudCameraEnu.y / 1000, Math.max(heightKm, 0))
+  ;(skyClouds as any).setGroundZ(groundFogFloorZ)
+  skyClouds.update({ cameraEnuKm: cloudCameraKm, groundAltitudeKm: 0, sunDirectionEnu: daylight.sunDirectionEnu, deltaS: Math.min(Math.max(deltaS, 0), 0.25) })
+}
+const shadowFallbackCentre = new THREE.Vector3()
+/** Fit the canopy shadow map to this frame's dome and draw it if anything moved. After the
+ *  traversal (the drawn tiles are final) and before the scene renders. */
+function updateSunShadows(daylight: DaylightState): void {
+  const placed = sphereFade?.placed() ?? false
+  enuToWorld(cloudCenterEnu, shadowFallbackCentre)
+  sunShadows.update({
+    enuInverse: enuInverseRender,
+    sunDirectionEnu: daylight.sunDirectionEnu,
+    domeCentre: placed ? sphereFade!.centreWorld : null,
+    domeRadius: placed ? sphereFade!.innerRadius() : 0,
+    fallbackCentre: shadowFallbackCentre,
+    fallbackRadius: 1500,
+    floorZ: groundFogFloorZ,
+    bandHeightM: uniforms.canopyTopZ.value - groundFogFloorZ + 10,
+    forEachCaster: (visit) => stream?.forEachLoadedQuad(visit),
+  })
 }
 
 // ---------------------------------------------------------------- boot
@@ -5481,6 +5966,7 @@ async function main(): Promise<void> {
     )
   }
   uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
+  syncGroundFogFrame()
   groundPlanePointEnu.set(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40)
   enuFrameReady = true
   // Now that the frame is ready this fills cloudCenterEcef and the ground plane too.
@@ -5608,6 +6094,10 @@ async function main(): Promise<void> {
   })
   // Debug handle for streaming diagnosis in the console.
   ;(window as any).__wild = {
+    /** The sky package: atmosphere, canopy shadows (sky-atmosphere.ts, sun-shadows.ts). */
+    get sky() { return skyAtmosphere },
+    get shadows() { return sunShadows },
+    get clouds() { return skyClouds },
     stream,
     camera,
     /** Still-frame gate: frames, traversals run, and why each ran. `?stillgate=off` to A/B. */
@@ -5819,6 +6309,8 @@ async function main(): Promise<void> {
     onCloudStateChange: updateCloudControls,
   })
   environmentLayer.setCloudHaze(hazeLayer.isHaze() ? hazeLayer.cloudHaze : null)
+  // The sky's clouds replace the box clouds: off while they are on, the stored choice kept.
+  syncBoxClouds()
   updateCloudControls(environmentLayer.getCloudState())
   updateTimeControls(environmentLayer.getDaylightState())
   // Hand over anything dialled in while the layer did not exist yet — both of
@@ -5995,7 +6487,9 @@ async function main(): Promise<void> {
   ;(window as any).__three = {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-    groundPatchMask, depthOfField, grade: gradeDebug,
+    groundPatchMask, depthOfField, grade: gradeDebug, groundFog,
+    /** The fog band's frame: its floor in the shader's ENU frame and the survey centre. */
+    fogFrame: () => ({ floorZ: groundFogFloorZ, centre: [cloudCenterEnu.x, cloudCenterEnu.y] }),
   }
   /**
    * Where the drawn point size comes from, per band: the spacing read off the tiles, the
@@ -6164,7 +6658,12 @@ function dispose(): void {
   depthOfField.dispose()
   gradeEditor.dispose()
   gradeOutput.dispose()
+  fogNoiseEditor?.dispose()
+  groundFog.dispose()
   hazeLayer.dispose()
+  skyAtmosphere.dispose()
+  sunShadows.dispose()
+  skyClouds.dispose()
   cloudNoiseTexture?.dispose()
   cloudNoiseTexture = null
   eagleBench?.dispose()

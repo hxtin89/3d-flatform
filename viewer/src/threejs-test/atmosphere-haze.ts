@@ -25,13 +25,21 @@
 // mixed toward the haze colour, which on an additive blend would add a pale veil; helpers
 // flagged `userData.noHaze` (pivot marker, debug shells) are left untouched. Both are
 // decided per material inside the one fog node, so with the haze off they do not exist.
+//
+// Physical mode (sky-atmosphere.ts, `setPhysicalSky`). The same two switches, other nodes:
+// the background is the physically based sky with its sun disc and the clouds in front, and
+// the haze is aerial perspective — the air's own transmittance over the distance and the
+// light it scatters in, which is the sky's colour in that very direction, so the hazed ground
+// meets the horizon without a seam at any altitude. The far-plane wall stays: it fades the
+// clipped globe into what the background draws along the same ray.
 import * as THREE from 'three'
 import {
-  Fn, cameraPosition, dot, exp, float, fog, length, max, mix, normalWorldGeometry, normalize,
-  output, positionWorld, pow, renderGroup, smoothstep, uniform, vec4,
+  Fn, If, cameraPosition, dot, exp, float, fog, length, max, mix, normalWorldGeometry, normalize,
+  output, positionWorld, pow, renderGroup, screenUV, smoothstep, uniform, vec3, vec4,
 } from 'three/tsl'
 import { EXPERIENCE_CONFIG } from './config'
 import type { DaylightState } from './environment-layer'
+import type { SkyAtmosphere } from './sky-atmosphere'
 
 export interface HazeLayer {
   /** Follow the camera and the daylight ramp. Call once per frame after the far plane is set. */
@@ -48,8 +56,17 @@ export interface HazeLayer {
   /** Neutral light (Daylight grading off): day sky and white sunlight, whatever the clock. */
   setNeutral(neutral: boolean): void
   /** The haze as parts, for a material that has to evaluate it itself — the ray-marched
-   *  clouds, whose fragment sits on the far side of their box. */
+   *  clouds, whose fragment sits on the far side of their box. A different object in
+   *  physical mode, so a caller holding the old one sees the change. */
   readonly cloudHaze: CloudHaze
+  /** The physically based sky and aerial perspective, or null for the graded sky and the
+   *  haze curve. Returns true when the fog node changed, so the caller rebuilds the tile
+   *  shaders (and hands the fog its new `cloudHaze`). */
+  setPhysicalSky(sky: SkyAtmosphere | null): boolean
+  isPhysicalSky(): boolean
+  /** Rebuild the physical nodes after the sky's own shape changed (clouds switched).
+   *  Returns true when the fog node changed. */
+  refreshPhysicalSky(): boolean
   dispose(): void
 }
 
@@ -61,6 +78,10 @@ export interface CloudHaze {
   wall(distance: any): any
   /** The horizon colour the haze mixes toward. */
   color: any
+  /** Physical mode: the full composite for premultiplied light seen through `transmittance`
+   *  at `distance` metres along the render-space direction `dirWorld` — the light dimmed by
+   *  the air in front of it plus the air's own in-scatter over what it hides. */
+  aerial?(light: any, transmittance: any, distance: any, dirWorld: any, screen?: any): any
 }
 
 const EARTH_RADIUS_M = 6_371_000
@@ -81,6 +102,9 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
   // The caller's vector itself, not a copy: main.ts fills it in once the survey frame is known.
   const up = uniform(opts.up).setGroup(renderGroup)
   const dip = uniform(0.003).setGroup(renderGroup)
+  /** 1 while the sky gradient is off: the physical haze's far wall then meets the flat
+   *  scene.background colour (copied into horizonColor), as the graded mode does. */
+  const flatSky = uniform(CONFIG.skyGradient ? 0 : 1).setGroup(renderGroup)
   let horizonBlend: number = CONFIG.horizonBlend
 
   // 1 − e^(−(d − start)/distance), scaled by strength, then forced to 1 over the last
@@ -105,9 +129,84 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
 
   let haze: boolean = CONFIG.enabled
   let sky: boolean = CONFIG.skyGradient
+  let physical: SkyAtmosphere | null = null
+  let physicalHaze: any = null
+  let physicalSky: any = null
+  let physicalVersion = -1
+  const gradedCloudHaze: CloudHaze = { amount: hazeAmount, wall: hazeWall, color: horizonColor }
+  let physicalCloudHaze: CloudHaze | null = null
+  const buildPhysical = (atmosphere: SkyAtmosphere) => {
+    const nodes = atmosphere.nodes
+    physicalVersion = atmosphere.version
+    // The camera volume (sky-atmosphere.ts aerialMode), read at the fragment's own pixel: valid
+    // for this frame's main camera only, so a material drawn into another view must not take
+    // this fog node. Points and props take grey transmittance and no direction outside the far
+    // wall; the ground (userData.hazeGround, the basemap) colour transmittance and, from a high
+    // camera, the exact ground lookup.
+    const volumeHaze = (material: any, toPoint: any) => {
+      const d = length(toPoint).toVar()
+      const ground = material?.userData?.hazeGround === true
+      const direction = nodes.toEnu(toPoint.div(max(d, 1e-3)))
+      // On the ground it is read in two sibling branches, the anchor and the wall: one variable.
+      const dirEnu = ground ? direction.toVar() : direction
+      const wall = hazeWall(d)
+      const ap = nodes.aerial(d, dirEnu, { screen: screenUV, chromatic: ground, ground })
+      if (material?.blending === THREE.AdditiveBlending) {
+        return vec4(output.rgb.mul(ap.transmittance).mul(float(1).sub(wall)), output.a)
+      }
+      const hazed = output.rgb.mul(ap.transmittance).add(ap.inscatter).toVar()
+      If(wall.greaterThan(0), () => {
+        If(flatSky.greaterThan(0.5), () => {
+          hazed.assign(mix(hazed, vec3(horizonColor as any), wall))
+        }).Else(() => {
+          hazed.assign(mix(hazed, nodes.background(dirEnu, false), wall))
+        })
+      })
+      return vec4(hazed, output.a)
+    }
+    physicalHaze = Fn((_inputs: unknown, builder: any) => {
+      const material = builder.material
+      if (material?.userData?.noHaze) return output
+      const toPoint = positionWorld.sub(cameraPosition)
+      if (nodes.aerialVolume) return volumeHaze(material, toPoint)
+      const d = length(toPoint)
+      const dirEnu = nodes.toEnu(toPoint.div(max(d, 1e-3)))
+      const wall = hazeWall(d)
+      const ap = nodes.aerial(d, dirEnu)
+      if (material?.blending === THREE.AdditiveBlending) {
+        return vec4(output.rgb.mul(ap.transmittance).mul(float(1).sub(wall)), output.a)
+      }
+      const hazed = output.rgb.mul(ap.transmittance).add(ap.inscatter).toVar()
+      // Only near the far plane, so the background's own lookups run for few fragments.
+      If(wall.greaterThan(0), () => {
+        If(flatSky.greaterThan(0.5), () => {
+          hazed.assign(mix(hazed, vec3(horizonColor as any), wall))
+        }).Else(() => {
+          hazed.assign(mix(hazed, nodes.background(dirEnu, false), wall))
+        })
+      })
+      return vec4(hazed, output.a)
+    })()
+    physicalSky = nodes.background(nodes.toEnu(normalize(normalWorldGeometry)), true)
+    physicalCloudHaze = {
+      amount: hazeAmount,
+      wall: hazeWall,
+      color: horizonColor,
+      aerial: (light: any, transmittance: any, distance: any, dirWorld: any, screen?: any) => {
+        const ap = nodes.aerial(distance, nodes.toEnu(dirWorld), { screen, chromatic: true })
+        return vec3(light).mul(ap.transmittance).add(ap.inscatter.mul(float(1).sub(transmittance)))
+      },
+    }
+  }
   const apply = () => {
-    sceneNodes.fogNode = haze ? hazeNode : null
-    sceneNodes.backgroundNode = sky ? skyNode : null
+    flatSky.value = sky ? 0 : 1
+    if (physical) {
+      sceneNodes.fogNode = haze ? physicalHaze : null
+      sceneNodes.backgroundNode = sky ? physicalSky : null
+    } else {
+      sceneNodes.fogNode = haze ? hazeNode : null
+      sceneNodes.backgroundNode = sky ? skyNode : null
+    }
   }
   apply()
 
@@ -138,7 +237,21 @@ export function createHazeLayer(opts: { scene: THREE.Scene; up: THREE.Vector3 })
       }
     },
     setNeutral(next) { neutral = next },
-    cloudHaze: { amount: hazeAmount, wall: hazeWall, color: horizonColor },
+    get cloudHaze() { return physical && physicalCloudHaze ? physicalCloudHaze : gradedCloudHaze },
+    setPhysicalSky(next) {
+      if (next === physical) return false
+      physical = next
+      if (physical) buildPhysical(physical)
+      apply()
+      return haze
+    },
+    isPhysicalSky() { return physical !== null },
+    refreshPhysicalSky() {
+      if (!physical || physical.version === physicalVersion) return false
+      buildPhysical(physical)
+      apply()
+      return haze
+    },
     setHaze(next) {
       if (next === haze) return false
       haze = next
