@@ -158,6 +158,15 @@
       .big-tree-label b { font: 600 14px/1 "Iowan Old Style", Baskerville, serif; }
       .big-tree-label small { opacity: .62; font: 700 7px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: .1em;
                               text-transform: uppercase; }
+      /* Protected areas and trails from the science data (science-layer.ts); below the big
+         trees and markers, which are closer and more specific. Each layer hides its own chips. */
+      #scienceOverlay { position: fixed; inset: 0; z-index: 10; overflow: hidden; pointer-events: none; }
+      .science-label { padding: 3px 7px 4px; border-radius: 6px; white-space: nowrap; pointer-events: none;
+                       font: 600 11px/1.15 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+                       letter-spacing: .01em; box-shadow: 0 4px 14px rgba(0,0,0,.28);
+                       backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+      .science-label--area { color: #effbd9; background: rgba(18,48,16,.7); border: 1px solid rgba(217,249,157,.55); }
+      .science-label--trail { color: #fff3e4; background: rgba(66,32,6,.74); border: 1px solid rgba(255,184,107,.65); }
       .donation-shape-label { display: grid; gap: 3px; min-width: 92px; padding: 6px 9px 7px; margin-top: -10px;
                               color: #f5f2e8; background: rgba(0,45,34,.83); border: 1px solid rgba(217,249,157,.46);
                               border-radius: 3px 10px 10px 10px; box-shadow: 0 9px 30px rgba(0,15,10,.3);
@@ -404,6 +413,7 @@
          bleiben, damit man wieder herausschalten kann. */
       body.splat-solo #markerOverlay,
       body.splat-solo #bigTreeOverlay,
+      body.splat-solo #scienceOverlay,
       body.splat-solo #hud,
       body.splat-solo #hudChip,
       body.splat-solo #keyboardGuide,
@@ -808,6 +818,7 @@
     <div id="vignette"></div>
     <div id="markerOverlay"></div>
     <div id="bigTreeOverlay" hidden></div>
+    <div id="scienceOverlay"></div>
     <div id="splatHint" aria-hidden="true">
       <div class="splat-caps">
         <span class="keycap" data-key="KeyW">W</span>

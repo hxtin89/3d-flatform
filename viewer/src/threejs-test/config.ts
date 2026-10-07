@@ -663,6 +663,31 @@ export const EXPERIENCE_CONFIG = {
     // Escape hatch when a site's canopy defeats the probe.
     groundZOverrideM: null as number | null,
   },
+  // WI's protected areas and trails (science-layer.ts). The files come from
+  // `npm run science:prepare` (scripts/science-data/); the index sits next to the app until
+  // the S3/CloudFront folder exists, then VITE_SCIENCE_DATA_URL points there instead.
+  scienceData: {
+    indexPath: 'science-data/index.json',
+    // Features further apart than this get separate anchors and draw calls, so the float32
+    // offsets inside one draw call stay at millimetres.
+    clusterRadiusM: 50_000,
+    areas: {
+      color: 0xd9f99d,
+      widthPx: 2,
+      // Above the ellipsoid, where the basemap is draped. The lines ignore depth, so this
+      // only sets the parallax against the map.
+      heightM: 0.5,
+      labelMaxDistanceM: 30_000,
+      renderOrder: 9_100,
+    },
+    trails: {
+      color: 0xffb86b,
+      widthPx: 2.5,
+      heightM: 0.5,
+      labelMaxDistanceM: 6_000,
+      renderOrder: 9_110,
+    },
+  },
   environment: {
     // Peru has no daylight-saving change; the slider still uses the IANA zone.
     timeZone: 'America/Lima',

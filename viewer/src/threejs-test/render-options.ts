@@ -28,6 +28,10 @@ export interface RenderOptions {
   bigTrees: boolean
   /** Donation shape: protected-parcel outline, 1 m² grid and area chip. */
   donationShape: boolean
+  /** WI's protected areas from the science data (public/science-data). */
+  protectedAreas: boolean
+  /** WI's trails from the science data (public/science-data). */
+  trails: boolean
   /** Per-tile point size from that tile's spacing; off = fixed base size × slider. */
   dynamicPointSize: boolean
   /** Bench-preset memory budgets; off = fixed high budgets. */
@@ -56,6 +60,10 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   // Off: an annotation layer to switch on from the panel, not part of the default look.
   bigTrees: false,
   donationShape: true,
+  // On while the science data is new on this branch, so it is seen; whether it belongs in
+  // the default look is a decision for the merge.
+  protectedAreas: true,
+  trails: true,
   // Off: the per-tile derivation has never had a fair test — until the errorScale fix it
   // was fed a spacing twice the real one, and the Largest dot ceiling then cut off the
   // compensation exactly where a coarse tile needed it. One predictable size while the
@@ -150,6 +158,20 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     onText: '🌳 Shape · On',
     offText: '🌳 Shape · Off',
     note: 'Protected-parcel outline from GeoJSON — footprint, 1 m² cell grid and area chip',
+  },
+  {
+    key: 'protectedAreas',
+    label: 'Protected areas',
+    onText: '🗺 Areas · On',
+    offText: '🗺 Areas · Off',
+    note: 'WI protected areas in Peru and British Columbia, drawn on the map with name chips. Data from npm run science:prepare (public/science-data)',
+  },
+  {
+    key: 'trails',
+    label: 'Trails',
+    onText: '🥾 Trails · On',
+    offText: '🥾 Trails · Off',
+    note: 'WI research trails, drawn on the map and seen through the canopy, with name chips. Data from npm run science:prepare (public/science-data)',
   },
   {
     key: 'dynamicPointSize',
