@@ -212,6 +212,17 @@ test('turn gate: nothing goes out without a pump, then first come first served u
   assert.equal(gate.inFlight, 2)
 })
 
+test('turn gate: a pump with a lower limit hands out only up to it, never past the gate\'s own', async () => {
+  const gate = createTurnGate(4)
+  for (let i = 0; i < 6; i++) gate.turn(new AbortController().signal).catch(() => {})
+  assert.equal(gate.pump(2), 2, 'a busy stream lets two out')
+  assert.equal(gate.pump(2), 0, 'two are in flight already')
+  assert.equal(gate.pump(), 2, 'idle: up to the gate\'s own four')
+  assert.equal(gate.pump(9), 0, 'a limit above the gate\'s own does not raise it')
+  assert.equal(gate.inFlight, 4)
+  gate.rejectAll()
+})
+
 test('turn gate: an aborted waiter leaves without using a turn; rejectAll empties the line', async () => {
   const gate = createTurnGate(1)
   const gone = new AbortController()

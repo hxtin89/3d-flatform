@@ -2,9 +2,10 @@
 //
 // Every basemap tile loads as plain satellite through the library's own fetch, parse and child
 // expansion, exactly as with the ortho off, so the descent to the sharpest zoom never waits for
-// the ortho. Once the basemap is idle and a covered tile has stayed on screen as the view's own
-// detail for `settleMs`, its ortho is fetched and composited (ortho-composite.ts, the worker) and
-// the result is put into the tile's existing texture: `texture.image = composite`, one in-place
+// the ortho. Once a covered tile is on screen as the view's own detail, and has stayed so for
+// `settleMs` or the view has stopped, its ortho is fetched (only a few requests at a time while
+// the basemap or the point stream still loads) and composited (ortho-composite.ts, the worker),
+// and the result is put into the tile's existing texture: `texture.image = composite`, one in-place
 // upload, the same GPU texture, bind group, material and shader, no draw call. Off and density
 // 'off' put the satellite back from its kept JPEG bytes, without a request.
 //
@@ -78,8 +79,8 @@ export interface UpgradeEngine {
   plan(z: number, x: number, y: number): TilePlan | null
   /** `onGrant` runs as each child request gets its turn and goes out. */
   compose(plan: TilePlan, satellite: ArrayBuffer, signal: AbortSignal, onGrant: () => void): Promise<ComposeOutcome>
-  /** Lets waiting child requests go out, up to the engine's limit. */
-  pump(): void
+  /** Lets waiting child requests go out, up to `limit` in flight or the engine's own limit. */
+  pump(limit?: number): void
   readonly requestsWaiting: number
 }
 
@@ -95,12 +96,23 @@ export interface UpgraderOptions {
   upload(texture: UpgradeTexture): void
   /** Point tiles arrived so far: a swap waits out a frame that uploads an arriving point tile. */
   pointArrivals(): number
-  /** The point stream has tiles queued, downloading or parsing: ortho requests wait for it. */
+  /** The point stream has tiles queued, downloading or parsing: ortho requests go out at
+   *  `busyRequests` meanwhile. */
   pointsBusy?(): boolean
   /** False until the Start click and while a camera flight runs. */
   upgradesAllowed(): boolean
+  /** performance.now() of the camera's last move. Without it, the basemap's last traversal
+   *  stands in, which a loading tile or a retry also causes. */
+  viewMovedAt?(): number
+  /** How long a tile must stay settled in a moving view, and the view stay still before a swap. */
   settleMs: number
   maxConcurrentComposes: number
+  /** Ortho requests in flight while the basemap or the point stream loads; the engine's own
+   *  limit applies once both are idle. Unset: the engine's limit throughout. */
+  busyRequests?: number
+  /** A finished composite held this long for a still view goes in at the next frame without an
+   *  arrival. Unset: it waits for a still view however long that takes. */
+  maxSwapHoldMs?: number
   density: OrthoDensity | 'off'
   now?: () => number
   /** Where the time goes (ortho-trace.ts): the gates of every tick and each tile's steps. */
@@ -127,6 +139,8 @@ export interface UpgraderStats {
   dropped: number
   sizeMismatch: number
   swapDeferrals: number
+  /** Swaps that went in after maxSwapHoldMs without a still view. */
+  swapsAfterHoldLimit: number
   abortedEarly: number
   givenUp: number
   swaps: number
@@ -167,13 +181,16 @@ interface Swap {
   bitmap: Bitmap
   density: OrthoDensity | null
   edge: boolean
+  /** When it was ready, for maxSwapHoldMs. */
+  readyAt: number
 }
 
 interface Candidate {
   key: any
   tile: any
   priority: number
-  /** Its parent or a child shows the ortho already: no dwell, so a zoom out or in keeps the look. */
+  /** The view has stood still for URGENT_STILL_MS: a settled tile cannot be a zoom passed on
+   *  the way down, so it needs no dwell. */
   urgent: boolean
   texture: UpgradeTexture
   bytes: ArrayBuffer
@@ -186,8 +203,6 @@ const UPLOAD_RING = 200
 const REVERT_TRIES = 3
 /** A view held this long counts as still for an urgent upgrade, which skips the dwell. */
 const URGENT_STILL_MS = 300
-/** Point tiles that never stop loading still let the ortho out after this long. */
-const POINTS_BUSY_LIMIT_MS = 8000
 
 /** The texture a tile draws, and one the library will close and dispose with it. */
 function textureOf(tile: any): UpgradeTexture | null {
@@ -216,14 +231,14 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
   let seenFrame = -1
   /** When the basemap last traversed, i.e. when the view last moved or a tile last loaded. */
   let lastTraversalAt = -Infinity
+  const viewMovedAt = () => o.viewMovedAt?.() ?? lastTraversalAt
   /** A basemap tile turned visible this traversal: three uploads it at its first draw. */
   let shown = false
-  let pointsBusySince = -1
   let pending = 0
   let waiting = 0
   const counts = {
     composed: 0, fullTiles: 0, edgeTiles: 0, fallbacks: 0, reverted: 0, revertFailures: 0, dropped: 0,
-    sizeMismatch: 0, swapDeferrals: 0, abortedEarly: 0, swaps: 0, lastSwapAt: 0,
+    sizeMismatch: 0, swapDeferrals: 0, swapsAfterHoldLimit: 0, abortedEarly: 0, swaps: 0, lastSwapAt: 0,
   }
 
   const reverting = () => !enabled || density === 'off'
@@ -250,20 +265,15 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     givenUp.add(key)
   }
 
-  /** The tile's parent or a child shows a composite at the current density. */
-  function nearUpgraded(tile: any): boolean {
-    const shows = (other: any) => {
-      const entry = other ? entries.get(other) : undefined
-      return !!entry && entry.composite && entry.density === density
-    }
-    if (shows(tile.parent)) return true
-    if (Array.isArray(tile.children)) for (const child of tile.children) if (shows(child)) return true
-    return false
-  }
-
+  /**
+   * Settled covered tiles not yet upgraded at this density. A settled tile is the view's own
+   * detail and stays so until the view moves; while it moves, the dwell keeps the zooms a
+   * descent passes through from being fetched, and once it has stood still for URGENT_STILL_MS
+   * there is nothing left to pass through.
+   */
   function candidates(now: number): Candidate[] {
     const out: Candidate[] = []
-    const still = now - lastTraversalAt >= URGENT_STILL_MS
+    const still = now - viewMovedAt() >= URGENT_STILL_MS
     let found = 0
     for (const tile of (tiles.visibleTiles ?? []) as Iterable<any>) {
       if (!settled(tile)) continue
@@ -281,7 +291,7 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
       trace?.tile(keyOf(zxy), 'seen', now)
       trace?.mark('firstSeen', now)
       if (hasWork(tile)) continue
-      out.push({ key: tile, tile, priority: tile.traversal.error, urgent: still && nearUpgraded(tile), texture, bytes, plan, zxy })
+      out.push({ key: tile, tile, priority: tile.traversal.error, urgent: still, texture, bytes, plan, zxy })
     }
     pending = found
     return out
@@ -303,7 +313,7 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
       const aborted = job.controller.signal.aborted
       if (out.type === 'done') {
         if (aborted) out.bitmap.close()
-        else swaps.push({ kind: 'ortho', tile, scene, texture, bitmap: out.bitmap, density: at, edge: out.edge })
+        else swaps.push({ kind: 'ortho', tile, scene, texture, bitmap: out.bitmap, density: at, edge: out.edge, readyAt: clock() })
         trace?.tile(key, aborted ? 'abandoned' : 'composed')
         return
       }
@@ -335,7 +345,7 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
       jobs.set(tile, job)
       o.decodeSatellite(bytes).then((bitmap) => {
         if (job.controller.signal.aborted) { bitmap.close(); return }
-        swaps.push({ kind: 'satellite', tile, scene, texture: entry.texture, bitmap, density: null, edge: false })
+        swaps.push({ kind: 'satellite', tile, scene, texture: entry.texture, bitmap, density: null, edge: false, readyAt: clock() })
       }, () => {
         counts.revertFailures++
         entry.revertTries = (entry.revertTries ?? 0) + 1
@@ -438,15 +448,21 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     // At most one swap per frame, never in a frame that uploads an arriving or newly shown
     // tile, and, for upgrades, only in a view held still for settleMs outside a flight: point
     // tiles the moving dome reveals upload without an arrival, so a moving view is no place for a
-    // swap. A revert (Off) only waits for arrivals.
+    // swap. Still means the camera's own stillness: the basemap's traversals also come from
+    // tiles loading and from failed tiles being retried, and those once held finished composites
+    // for 55 s in a view that did not move. And a composite held for maxSwapHoldMs goes in at
+    // the next frame without an arrival anyway: the swap is one ~1 ms upload. A revert (Off)
+    // only waits for arrivals.
     const allowed = o.upgradesAllowed()
     if (swaps.length) {
-      const still = now - lastTraversalAt >= o.settleMs
-      const hold = arrived || (!reverting() && (!still || !allowed))
+      const still = now - viewMovedAt() >= o.settleMs
+      const overdue = !still && swaps.some((swap) => now - swap.readyAt >= (o.maxSwapHoldMs ?? Infinity))
+      const hold = arrived || (!reverting() && (!allowed || (!still && !overdue)))
       if (hold) {
         counts.swapDeferrals++
         gates.push(arrived ? 'swapHeldByArrival' : 'swapHeldByMotion')
       } else {
+        if (overdue && !reverting()) counts.swapsAfterHoldLimit++
         applySwap(takeSwap())
       }
     }
@@ -462,24 +478,21 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     else if (allowed) trace?.mark('basemapIdleAfterLanding', now)
     if (!engine.ready) gates.push('workerStarting')
     if (jobs.size) gates.push('working')
-    if (busy || !allowed || !engine.ready) {
+    if (!allowed || !engine.ready) {
       picker.clear()
       waiting = swaps.length
-      // Only for the trace: the tiles that would be candidates, so a tile's wait starts when it
-      // settles, not when the gates open.
-      if (trace && allowed && engine.ready) candidates(now)
       return
     }
     const found = candidates(now)
     // Finished composites waiting for their frame hold their slot too.
     const started = picker.pick(now, found, o.maxConcurrentComposes - jobs.size - swaps.length)
     for (const c of started) startUpgrade(c)
-    // The only place ortho requests are let out, and the point tiles of a new view go first.
-    const pointsBusy = o.pointsBusy?.() === true
-    if (!pointsBusy) pointsBusySince = -1
-    else if (pointsBusySince < 0) pointsBusySince = now
-    if (!pointsBusy || now - pointsBusySince >= POINTS_BUSY_LIMIT_MS) engine.pump()
-    else if (engine.requestsWaiting) gates.push('requestsHeldByPoints')
+    // The only place ortho requests are let out. While the basemap or the point stream loads,
+    // only busyRequests go out, so the ortho's downloads overlap the streams' instead of
+    // queuing behind them, without taking their connections; the rest go out once both are idle.
+    const streaming = busy || o.pointsBusy?.() === true
+    engine.pump(streaming ? o.busyRequests : undefined)
+    if (streaming && engine.requestsWaiting) gates.push('requestsCapped')
     if (!jobs.size && !swaps.length && found.length) gates.push('dwelling')
     waiting = found.length - started.length + swaps.length
     if (!found.length && !jobs.size && !swaps.length && counts.composed) trace?.mark('landingComplete', now)

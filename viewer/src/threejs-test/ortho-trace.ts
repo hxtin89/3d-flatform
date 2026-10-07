@@ -15,13 +15,13 @@ export type OrthoGate =
   | 'workerStarting'
   /** Settled tiles are dwelling, nothing is in flight. */
   | 'dwelling'
-  /** Ortho requests are queued but held back because the point stream is busy. */
-  | 'requestsHeldByPoints'
+  /** Ortho requests are queued beyond the few a loading basemap or point stream lets out. */
+  | 'requestsCapped'
   /** Upgrades are fetching or composing. */
   | 'working'
   /** A finished composite waits because a tile arrived or was shown this frame. */
   | 'swapHeldByArrival'
-  /** A finished composite waits for the view to hold still for settleMs. */
+  /** A finished composite waits for the view to hold still for settleMs, or for a flight to end. */
   | 'swapHeldByMotion'
 
 export type TilePhase = 'seen' | 'picked' | 'granted' | 'fetched' | 'composed' | 'swapped' | 'abandoned'

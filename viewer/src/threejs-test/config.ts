@@ -1398,18 +1398,30 @@ export const EXPERIENCE_CONFIG = {
        *  through the dev proxy (six HTTP/1.1 sockets, a TLS connect per tile) at 'full'. */
       fetchTimeoutMs: 20000,
       composeTimeoutMs: 5000,
-      /** Upgrades in flight at once. They start only while the basemap has nothing queued,
-       *  downloading or parsing; this bounds the worker's scratch (~6 MB each) and the finished
+      /** Upgrades in flight at once; bounds the worker's scratch (~6 MB each) and the finished
        *  bitmaps waiting for their frame. */
-      maxConcurrentComposes: 2,
-      /** Ortho requests in flight at once, let out only while the basemap is idle. Keeps 4 of the
-       *  dev proxy's 6 HTTP/1.1 sockets for the satellite when a move starts mid-upgrade. */
-      maxOrthoRequests: 2,
-      /** How long a covered tile must be the view's own detail on screen, with the basemap idle
-       *  all the while, before its ortho is fetched: intermediate zooms of a descent never are.
-       *  A tile evicted and loaded again composes again, but its ortho tiles then come from the
-       *  browser's HTTP cache (measured: 51 of 52 repeats, no MapTiler request). */
+      maxConcurrentComposes: 4,
+      /** Ortho requests in flight once the basemap and the point stream are idle. One request
+       *  takes ~70-250 ms, so the count, not the network, set the pace: measured 2026-10-07
+       *  through the dev proxy, the tower hotspot's 14 tiles (56 requests at 'full') were all
+       *  upgraded 16.8 s after the click at 2 requests and 2 upgrades, 9.3 s at 8 and 4. In dev
+       *  all 8 can hold the proxy's six HTTP/1.1 sockets when a move starts; a tile that leaves
+       *  the view aborts its requests, and the rest are done within a few hundred ms. */
+      maxOrthoRequests: 8,
+      /** Ortho requests in flight while the basemap or the point stream loads, so the ortho's
+       *  downloads overlap theirs instead of waiting 2-5 s for them, and keep 4 of the dev proxy's
+       *  6 sockets free for the satellite. 0 holds them back until both are idle. */
+      busyOrthoRequests: 2,
+      /** How long a covered tile must be the view's own detail on screen while the view moves
+       *  before its ortho is fetched: intermediate zooms of a descent never are. In a view that
+       *  has stood still for 300 ms a settled tile is fetched at once. Also how long the view
+       *  must stand still before a composite goes in. A tile evicted and loaded again composes
+       *  again, but its ortho tiles then come from the browser's HTTP cache (measured: 51 of 52
+       *  repeats, no MapTiler request). */
       settleMs: 1000,
+      /** A composite that has waited this long for a still view goes in at the next frame without
+       *  a tile arrival anyway: one ~1 ms upload (0.7 ms median, 2.3 ms max measured). */
+      maxSwapHoldMs: 3000,
       /** 401/403 answers after which a source is switched off for the session. */
       forbiddenLimit: 3,
     },
