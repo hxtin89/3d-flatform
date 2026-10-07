@@ -12,8 +12,10 @@ line: `sbb-main` = `origin/sbb-main` = `sbb/quick-wins` (this worktree's checkou
 quick wins it gained, in order: the real tower position and Big trees (`de49bd1`), the point-memory
 readout (`b7a2a09`), the whole grade-editor stack (`435b7c9`: tone mapping, colour match, drone ortho
 upgrade, grade editor), and from another session the sky with the volumetric ground fog (`9635557`),
-vite 7 (`577923f`, `1a36b03`) and `npm audit fix` (`ce09bb1`). On `ce09bb1` in this worktree: plain
-`npm ci`, tsc, 323 tests and the build pass.
+vite 7 (`577923f`, `1a36b03`) and `npm audit fix` (`ce09bb1`), then the sky handover (`4412419`) and
+the drone ortho speed-up from the colour-matching session (`2b0af1b`; it keeps the closed-image fix
+below). On `2b0af1b` in this worktree: plain `npm ci`, tsc, 326 tests and the build pass. Other
+sessions push to `sbb-main` often: `git fetch` before trusting any head named here.
 
 **Talk to the user in plain names, not item numbers.** The numbers are the IDs of the ranked list in
 the appendix of `plans/handover-dot-geometry-ab.md`: 1.x quick wins, 2.x bigger projects, 3.x
@@ -76,13 +78,20 @@ all." Do not optimise them; remove the flock only when she asks (field-model-lay
 held-tracks.ts and its test, the `parrots` block in config.ts, `public/assets/models/parrot/`).
 
 **Waiting on the user:**
-1. **Server `sbb-prod`** (`/srv/projekte/wide/wi-dev`) was at `7f22bb6` on 2026-10-07, before the sky
-   merge. Steps: `git fetch origin && git merge --ff-only origin/sbb-main`, then in `viewer/`
-   `npm ci && npm run build` (plain `npm ci` works since `1a36b03`). Then on the live page: Design →
-   Colour grade is there and a slider changes the frame; `__three.globe.orthoStats()` shows swaps
-   with `sizeMismatch: 0`; `__three.globe.stats().reuploadsAfterClose` is 0; `__wild.dots.memory`
-   answers; no HTTP 500s in the console (the dev server showed nine, from its MapTiler proxy).
-2. **Main folder:** fast-forward to `origin/sbb-main` for the latest handover commit (docs only).
+1. **Server `sbb-prod`** (`/srv/projekte/wide/wi-dev`) was fast-forwarded to `2b0af1b` and built on
+   2026-10-07 (`npm ci` installed 35 packages, vite 7.3.7; build clean). What is public:
+   **https://wi-dev.mediascenography.com/threejs-test.html** is the vite dev server running from that
+   checkout, so it showed the new code as soon as she pulled (files new in `2b0af1b` answer 200).
+   https://wilderness-prototype.de/livingdashboard/ is a **separate S3/CloudFront deployment**, still
+   the 2026-10-06 10:44 build (`threejs-test-DgfyeEol.js`), not sbb-prod. The `viewer/dist` build was
+   found at no public URL (`wi-dev…/livingdashboard/` is 404); ask the user where it is published
+   before calling a build "live". Open checks for her on wi-dev: Design → Colour grade works;
+   `__three.globe.stats().reuploadsAfterClose` is 0; `__three.globe.orthoStats()` shows swaps with
+   `sizeMismatch: 0`; `__wild.dots.memory` answers; no red 500s (wi-dev fetches the basemap through
+   the dev proxy, which can throw a few). If wi-dev shows "Outdated Optimize Dep" 504s, the dev server
+   process there needs a restart (its node_modules were replaced under it).
+2. **Main folder:** fast-forward to `origin/sbb-main` (docs only since `ce09bb1` apart from the
+   ortho speed-up).
 3. **Device session with Jan** (desktop, weak laptop, Android, iPhone): the benchmark calibration
    (2.4), `__wild.dots.memory` per device at the landing view and after a minute of roaming (decides
    2.3), the phone-only 3.x items, and the closed-image check above.
@@ -102,9 +111,9 @@ held-tracks.ts and its test, the `parrots` block in config.ts, `public/assets/mo
    `sbb/grade-editor`, `sbb/tone-mapping`, `sbb/volumetric-ground-fog`, `sbb/tower-site-big-trees`,
    `sbb/object-position-regression` and older ones; `git branch -r --merged sbb-main` lists them.
 
-**Other sessions' lines, not ours:** `sky` (ahead of `sbb-main`, the sky session, worktree `sky`) and
-`sbb/ortho-speed` (worktree `sbb-colour-matching`, branched from `1a36b03`, so it already has the
-closed-image fix; a dry-run merge into `sbb-main` is clean). Don't touch them.
+**Other sessions' lines, not ours:** `sky` (the sky session, worktree `sky`) and `sbb/ortho-speed`
+(the colour-matching session, worktree `sbb-colour-matching`; merged into `sbb-main` as `2b0af1b`).
+Their handovers: `plans/handover-sky-section-c.md`, `plans/handover-ortho-speed.md`. Don't touch them.
 
 **Do not:** touch the parrot flock; build the 2.3 spec (section 9); raise the medium or constrained
 map ceilings before phone memory is known; propose merging into `main` (the user keeps `sbb-main`
@@ -118,11 +127,11 @@ Co-Authored-By trailer** (the user's rule, memory `commit-message-style`). The m
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | = `sbb/quick-wins` | Pushed. Holds rounds 1-4 below, the point-memory readout, the grade-editor stack, the sky and fog, vite 7 and this handover. `sbb-prod` builds from it; the user rebuilds the server herself. |
+| `sbb-main` | = `sbb/quick-wins` | Pushed. Holds rounds 1-4 below, the point-memory readout, the grade-editor stack, the sky and fog, vite 7, the ortho speed-up and this handover. `sbb-prod` pulls from it; the user runs the server steps herself. |
 | `sbb/quick-wins` | = `sbb-main` | This worktree's checkout; push both names together: `git push origin sbb/quick-wins sbb/quick-wins:sbb-main`. |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
-  on `sbb/quick-wins`. It has `viewer/.env` and a vite-7 `node_modules` (`npm ci` on `ce09bb1`).
+  on `sbb/quick-wins`. It has `viewer/.env` and a vite-7 `node_modules` (`npm ci` on `2b0af1b`).
   After a session restart it can be back on `claude/point-reorder-thinning-flicker-f48d6c` (old main
   code): run `git checkout sbb/quick-wins` first. `sbb-main` cannot be checked out here (the main
   folder holds it); start new branches from it.
@@ -134,7 +143,7 @@ Co-Authored-By trailer** (the user's rule, memory `commit-message-style`). The m
   basemap (the local MapTiler key only answers listed ports).
 - The main folder `C:\projects\WIDE_3d-flatform` has `sbb-main` checked out and is shared with other
   sessions: never switch its branch, and a worktree-isolated session may not run git there.
-- Checks: `npx tsc --noEmit`, `npm run bench:verify` (323 tests) and `npm run build` pass on `ce09bb1`.
+- Checks: `npx tsc --noEmit`, `npm run bench:verify` (326 tests) and `npm run build` pass on `2b0af1b`.
 - Merge procedure (ask before pushing):
   1. `git fetch`; `sbb-main` = `origin/sbb-main`.
   2. Dry run: `git merge-tree --write-tree --name-only sbb-main <branch>` (a bare tree hash = no
