@@ -3,6 +3,6 @@
   "compilerOptions": {
     "types": ["vite/client", "node"]
   },
-  "include": ["src"],
+  "include": ["src", "scripts/science-data"],
   "exclude": []
 }

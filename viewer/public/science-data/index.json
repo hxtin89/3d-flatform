@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "generatedAt": "2026-10-07T20:17:28.845Z",
+  "source": {
+    "kind": "directus",
+    "url": "https://wi.mediascenography.com"
+  },
+  "datasets": {
+    "protected-areas": {
+      "file": "protected-areas.dd9307eefba7cebf.json",
+      "version": "dd9307eefba7cebf",
+      "featureCount": 51,
+      "bytes": 123082,
+      "bbox": [
+        -130.7231655,
+        -12.9631128,
+        -69.4198072,
+        54.6484794
+      ],
+      "updatedAt": "2026-10-07T20:17:28.845Z",
+      "history": []
+    },
+    "trails": {
+      "file": "trails.ff1f822b0a93acc1.json",
+      "version": "ff1f822b0a93acc1",
+      "featureCount": 111,
+      "bytes": 133568,
+      "bbox": [
+        -69.6050269,
+        -12.9621124,
+        -69.2703984,
+        -12.815685
+      ],
+      "updatedAt": "2026-10-07T20:17:28.845Z",
+      "history": []
+    }
+  }
+}
