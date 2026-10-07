@@ -20,7 +20,7 @@ export interface RenderOptions {
   fogAtmosphere: boolean
   /** Daylight colour grading on points/imagery, golden rim, cloud shadows. */
   daylightGrading: boolean
-  /** GLTF props: tower, boat, parrots. */
+  /** GLTF props: tower, boat. */
   fieldModels: boolean
   /** Interactive hotspot markers (DOM chips + 3D geometry). */
   markers: boolean
@@ -128,7 +128,7 @@ export const RENDER_OPTION_ROWS: RenderOptionRow[] = [
     label: '3D models',
     onText: '🗼 Models · On',
     offText: '🗼 Models · Off',
-    note: 'Tower, boat, parrots (GLTF)',
+    note: 'Tower, boat (GLTF)',
   },
   {
     key: 'markers',

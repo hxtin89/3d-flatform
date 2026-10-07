@@ -778,25 +778,6 @@ export const EXPERIENCE_CONFIG = {
     // Until 2026-09-29 the keel was at areaMinZ + 5, about 20 m above the water.
     groundZM: 156.6,
   },
-  parrots: {
-    // Each pass is sampled from the camera once, then remains fixed in world space.
-    cameraDepthM: [650, 2_800],
-    screenHeightRange: [-0.28, 0.34],
-    edgeOverscan: 0.68,
-    // The GLTF already uses +Z as forward and +Y as up.
-    modelRotationRad: [0, 0, 0],
-    modelScale: 0.28,
-    strongCount: 12,
-    balancedCount: 8,
-    constrainedCount: 4,
-    // Along-track spacing, lateral variation and minimal height variation.
-    spreadM: [64, 16, 4],
-    flightDurationMs: 18_000,
-    passIntervalMs: 22_000,
-    passIntervalJitterMs: 5_000,
-    animationSpeed: 0.48,
-    nightFadeMs: 1_200,
-  },
   eagleBench: {
     // Loader eagle doubles as a point-rendering benchmark: density follows the
     // load progress, frame times are sampled, and the result picks the start

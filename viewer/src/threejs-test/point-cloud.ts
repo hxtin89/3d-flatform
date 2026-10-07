@@ -738,8 +738,7 @@ export const POINT_COLOR_ATTRIBUTE = 'cloudPointColor'
 //
 // Applied per material rather than through `renderer.highPrecision`, which is
 // documented as incompatible with InstancedMesh and SkinnedMesh; this scene has
-// both (cloud puffs in environment-layer, the rigged parrots in
-// field-model-layer). Our tiles are plain Meshes — a pulled BufferGeometry by default,
+// InstancedMeshes (cloud puffs in environment-layer). Our tiles are plain Meshes — a pulled BufferGeometry by default,
 // an InstancedBufferGeometry in the A/B arm — whose point feeds positionLocal before the
 // matrix is applied.
 const HIGH_PRECISION_CONTEXT = context({ modelViewMatrix: highpModelViewMatrix })

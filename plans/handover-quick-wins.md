@@ -31,8 +31,8 @@ measure first.
 | 1.3 | Faster ground probe | Built |
 | 1.4 | No point-cloud shader builds after Start | Built |
 | 1.5 | One shared near-cloud shader | Built |
-| 1.6 | Lighter parrot animation | Built |
-| 1.6b | One mesh per parrot | Dropped 2026-10-06: the parrots are to be removed |
+| 1.6 | Lighter parrot animation | Gone with the parrots (removed 2026-10-07) |
+| 1.6b | One mesh per parrot | Dropped 2026-10-06; the parrots were removed 2026-10-07 |
 | 1.8 | Basemap images freed after upload | Built |
 | 1.9 | Faster cloud-noise bake at boot | Built |
 | 1.10 | Smaller ground-patch mask | Built |
@@ -73,9 +73,10 @@ reading (pane, constrained, landing view): d = 0.65 by tiles, 0.67 by points; 35
 textures; 42.5 MiB CPU; heap 150 MiB. GPU memory and the real tab footprint come from the OS task
 manager only. Section 9 step 1.
 
-**Parrots:** on 2026-10-06 the user said "leave the parrots as they are. I want to get rid of them at
-all." Do not optimise them; remove the flock only when she asks (field-model-layer.ts flock section,
-held-tracks.ts and its test, the `parrots` block in config.ts, `public/assets/models/parrot/`).
+**Parrots:** removed on 2026-10-07 at the user's request: the flock in field-model-layer.ts (and the
+layer's `update`, tier and daylight calls that only the birds needed), held-tracks.ts and its test,
+the `parrots` block in config.ts and `public/assets/models/parrot/`. The parrot figures further down
+are history; they no longer describe the frame.
 
 **Waiting on the user:**
 1. **Server `sbb-prod`** (`/srv/projekte/wide/wi-dev`) was fast-forwarded to `2b0af1b` and built on
@@ -115,7 +116,7 @@ held-tracks.ts and its test, the `parrots` block in config.ts, `public/assets/mo
 (the colour-matching session, worktree `sbb-colour-matching`; merged into `sbb-main` as `2b0af1b`).
 Their handovers: `plans/handover-sky-section-c.md`, `plans/handover-ortho-speed.md`. Don't touch them.
 
-**Do not:** touch the parrot flock; build the 2.3 spec (section 9); raise the medium or constrained
+**Do not:** build the 2.3 spec (section 9); raise the medium or constrained
 map ceilings before phone memory is known; propose merging into `main` (the user keeps `sbb-main`
 apart). Before building any other item from the old list, re-check it against the current code first.
 
@@ -231,7 +232,7 @@ measured on a phone or in a visible window yet.
 | 3.6 Quantised point layout | VRAM only | Only if phones still need VRAM after 2.3 |
 | 3.7 Fewer basemap tiles under the ground patch | 10-20 MB, fewer MapTiler requests | Count requests per landing first |
 | 3.8 Android label layout thrash | unknown | A phone trace |
-| 1.6b One mesh per parrot | Dropped 2026-10-06. Built and verified (one draw a bird), then discarded: the user wants the parrots removed from the app altogether | Nothing; wait for the removal request |
+| 1.6b One mesh per parrot | Dropped 2026-10-06. Built and verified (one draw a bird), then discarded: the user wants the parrots removed from the app altogether | Nothing; the parrots were removed 2026-10-07 |
 | Report B8 to three.js? | Upstream fix, then drop `retirePointDataTexture` | Check three's tracker first; listed on the Tile Leak Register (https://claude.ai/artifact/7JXwC4Xdnbj4SyKKGao7fZ, B1–B8) |
 
 Watch: 1.10's 32 cells cover one site. When several sites load at once, look for the

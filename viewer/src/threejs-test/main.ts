@@ -68,7 +68,6 @@ import {
   type CloudState,
   type DaylightState,
   type EnvironmentLayer,
-  type PerformanceTier,
 } from './environment-layer'
 import { createFieldModelLayer, type FieldModelLayer } from './field-model-layer'
 import { createAudioLayer, type AudioLayer } from './audio-layer'
@@ -444,8 +443,8 @@ function drawThisFrame(now: number): boolean {
  * experience never dips below the target frame rate. Runtime guards remain. */
 /** The loader benchmark picks how much scenery the device can afford. Point
  * density is not part of that bargain — it is fixed by camera distance — so the
- * budget is spent on the vignette mask, pixel ratio, view distance, cloud and
- * parrot detail instead. */
+ * budget is spent on the vignette mask, pixel ratio, view distance and cloud
+ * detail instead. */
 function applyBenchPreset(): void {
   const measured = eagleBench?.result() ?? null
   const heuristicTier = environmentLayer?.getCloudState().tier ?? 'balanced'
@@ -915,7 +914,6 @@ function applyGroundPatchExtent(): void {
 let groundPatchMaskBuilt = false
 /** Survey extent in ENU for the ground-patch lattice, from the manifest. */
 let maskBoundsEnu: { minX: number; minY: number; maxX: number; maxY: number } | null = null
-let lastFieldTier: PerformanceTier | null = null
 let disposed = false
 
 const rainToggleEl = $<HTMLButtonElement>('#rainToggle')
@@ -5723,22 +5721,11 @@ function loop(now: number): void {
     fps.fps,
     !bootLoading && !cameraFlight.active && videoModalEl.hidden,
   )
-  if (daylightState) {
-    updateTimeControls(daylightState)
-    fieldModelLayer?.setDaylightPhase(daylightState.phase)
-  }
-  const nextFieldTier = environmentLayer?.getCloudState().tier ?? null
-  if (nextFieldTier && nextFieldTier !== lastFieldTier) {
-    lastFieldTier = nextFieldTier
-    fieldModelLayer?.setPerformanceTier(nextFieldTier)
-  }
+  if (daylightState) updateTimeControls(daylightState)
   const options = renderOptions.effective()
   // After updateStreaming, which handed the shader this frame's dome.
   const modelDomeLive = readModelDome()
-  if (options.fieldModels) {
-    updateFieldModelFades(modelDomeLive)
-    fieldModelLayer?.update(now)
-  }
+  if (options.fieldModels) updateFieldModelFades(modelDomeLive)
   if (options.donationShape) donationShapeLayer?.update(now, camera)
   if (options.bigTrees) bigTreesLayer?.update(camera, cameraGroundRange, modelDomeLive ? modelDome : null, zOffset)
   if (options.markers) {
@@ -6458,12 +6445,9 @@ async function main(): Promise<void> {
   )
   void createFieldModelLayer({
     scene: ecefRoot,
-    camera,
     enuFrame,
     zOffset,
     originEnu: fieldOrigin,
-    performanceTier: environmentLayer.getCloudState().tier,
-    reducedMotion,
     onStatus: (message) => console.info(`[field-models] ${message}`),
   }).then((layer) => {
     if (disposed) layer.dispose()
@@ -6473,8 +6457,6 @@ async function main(): Promise<void> {
       // now, not the ones from when loading started.
       layer.setVisible(renderOptions.effective().fieldModels)
       layer.setZOffset(zOffset)
-      if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
-      layer.setDaylightPhase(environmentLayer?.getDaylightState().phase ?? 'day')
       if (modelEditorEnabled) {
         modelTransformEditor = createModelTransformEditor({
           scene,
