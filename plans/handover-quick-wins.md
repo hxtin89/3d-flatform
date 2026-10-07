@@ -67,8 +67,11 @@ this file was taken before it. Keep in mind for later:
   whole frame 3.1–3.3 ms GPU, of which the point cloud ~0.7–1.0 ms (measured by hiding it, so not
   directly comparable to the old 2.6 ms); main thread 1.8 ms median per frame (p90 2.8 ms), HUD
   closed. Measure the main thread **without** `?gputime`: its timer pool alone lifted the same
-  frames to 7.9 ms. The biggest main-thread items are the shadow pass's bookkeeping (up to
-  1.3 ms, also on a still camera), the map update (0.9 ms) and the camera controls (0.8 ms).
+  frames to 7.9 ms. The biggest main-thread items were the shadow pass's bookkeeping, the
+  map update (0.9 ms) and the camera controls (0.8 ms). The bookkeeping was almost all one walk
+  of the whole tile tree (12,263 nodes for ~50 loaded tiles) every frame to list the casters;
+  the stream now keeps its own set of loaded tiles (0544120): 0.59 → 0.006 ms per frame, same
+  tiles before and after evictions.
   The fog then went from 32 to 24 steps per ray (−0.3 ms at the landing view, c7c49e5).
 
 **Memory readout:** `__wild.dots.memory` reports the drawn share of resident point tiles, point bytes
