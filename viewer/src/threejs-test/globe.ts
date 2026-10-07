@@ -152,7 +152,12 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   imageryGraphCache.clear()
 
   const raw = (materialReference('map', 'texture') as any).rgb
-  // Physically lit (effects.sunLight): flat ground takes the sun by the sine of its elevation.
+  // Physically lit (effects.sunLight): the map takes the sun the way the points do, by the
+  // sine of its elevation plus the side light round crowns catch (sideLight). The colour
+  // match evens the cloud out against the map under one light, and beyond the drawn points
+  // the map shows the same crowns from above; with the sine alone the points came out up to
+  // a quarter brighter than the map toward evening. The ground seen through gaps under the
+  // cloud still takes the canopy's shadows.
   const lit = isCloudEffectEnabled('sunLight')
   const enu = (uniforms.enuInverse as any).mul(vec4(positionWorld, 1)).xyz
   const canopy = lit && isCloudEffectEnabled('canopyShadows') ? canopyTransmittance(enu, float(0)) : float(1)
@@ -160,7 +165,11 @@ function imageryColorNode(uniforms: CloudUniforms): any {
   const skyClouds = isCloudEffectEnabled('cloudShadows') && isCloudEffectEnabled('skyCloudShadows')
   const clouds = skyClouds ? cloudTransmittance(enu) : float(1)
   const graded = lit
-    ? gradeImageryNode(uniforms, raw).mul(sunLight(uniforms, max(uniforms.sunDirectionEnu.z, 0), (canopy as any).mul(clouds)))
+    ? gradeImageryNode(uniforms, raw).mul(sunLight(
+      uniforms,
+      mix(max(uniforms.sunDirectionEnu.z, 0), float(1), uniforms.sunSideLight),
+      (canopy as any).mul(clouds),
+    ))
     : skyClouds
       ? gradeImageryNode(uniforms, raw).mul(uniforms.daylightColor).mul(uniforms.daylightIntensity).mul(clouds)
       : gradeImageryNode(uniforms, raw)

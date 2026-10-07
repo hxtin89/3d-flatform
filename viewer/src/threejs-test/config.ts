@@ -992,7 +992,8 @@ export const EXPERIENCE_CONFIG = {
      * The sun and sky as light on the point cloud and the basemap (point-cloud.ts sunLight):
      * the captured colours relit by the atmosphere's sun and sky instead of the daylight
      * grade. `sunIntensity` / `skyIntensity` scale the two; `sideLight` is how much of the sun
-     * a normal-less point catches beyond flat ground (crowns are round); the tint colours the
+     * a normal-less point catches beyond flat ground (crowns are round), and the basemap takes
+     * the same so the colour match holds at every sun height (globe.ts); the tint colours the
      * sunlight. Night keeps the old floor: `nightLevel` × the night grade.
      */
     sunLight: {
