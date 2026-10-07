@@ -59,13 +59,17 @@ this file was taken before it. Keep in mind for later:
   handle (`VolumeMaterialHandle` in environment-layer.ts) instead of per cloud. Flipping the haze or
   the grade rebuilds shaders once; both are user actions, so 1.4's "no builds after Start" holds for
   a session that does not touch them.
-- **Duplicate to tidy:** globe.ts keys its graph cache on `imageryEffectsKey()`; the other line's
-  `imageryEffectsVersion()` still exists in point-cloud.ts and bumps on the same flags. Remove one.
-- **The baseline moved.** The frame now also runs the tone curve, haze, sky, eye-dome lighting
-  (+0.18 ms on its branch), the colour match (+0.04 ms), the grade tap (~0.01 ms), the ortho's
-  in-place uploads (0.4 ms each, never in an arrival frame), and the sky's sun shadows and ground
-  fog. Re-read the HUD-closed frame (was 4.1–5.9 ms) and the cloud GPU time (was 2.6 ms) on the
-  merged build before judging any new optimisation against them.
+- **Duplicate tidied (2026-10-07):** `imageryEffectsVersion()` was unused since the merge and
+  is gone; globe.ts keeps keying its graph cache on `imageryEffectsKey()`, and
+  `imagery-graph-key.test.ts` holds that key to the flags the map graph reads.
+- **The baseline moved, and was re-read on 2026-10-07** (sbb-main 3071275: parrots gone, sky,
+  fog, grade and ortho in; strong preset, 1280 × 960, WebGPU pane, landing view, 2.41 M points):
+  whole frame 3.1–3.3 ms GPU, of which the point cloud ~0.7–1.0 ms (measured by hiding it, so not
+  directly comparable to the old 2.6 ms); main thread 1.8 ms median per frame (p90 2.8 ms), HUD
+  closed. Measure the main thread **without** `?gputime`: its timer pool alone lifted the same
+  frames to 7.9 ms. The biggest main-thread items are the shadow pass's bookkeeping (up to
+  1.3 ms, also on a still camera), the map update (0.9 ms) and the camera controls (0.8 ms).
+  The fog then went from 32 to 24 steps per ray (−0.3 ms at the landing view, c7c49e5).
 
 **Memory readout:** `__wild.dots.memory` reports the drawn share of resident point tiles, point bytes
 on the GPU from three's memory map (drawn / hidden / orphan), CPU point bytes and Chrome's heap. First
@@ -98,13 +102,11 @@ are history; they no longer describe the frame.
    2.3), the phone-only 3.x items, and the closed-image check above.
 
 **Next for a session without devices, in order:**
-1. **Re-read the baseline** on the merged build: HUD-closed frame time and cloud GPU ms, with the
-   shipped look on. GPU ratios work in the hidden pane with `?bgclock`; absolute frame times need a
-   visible window.
+1. ~~Re-read the baseline~~ done 2026-10-07, see above.
 2. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether
    tile arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation
    press (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
-3. **Tidy:** the `imageryEffectsVersion` / `imageryEffectsKey` duplicate.
+3. ~~Tidy the `imageryEffectsVersion` / `imageryEffectsKey` duplicate~~ done 2026-10-07.
 4. **Branch cleanup, only with the user's OK.** Fully contained in `sbb-main`, locally:
    `sbb/colour-matching`, `sbb/grade-editor`, `sbb/ortho-upgrade`, `sbb/tone-mapping`,
    `sbb/tower-site-big-trees`, `sbb/volumetric-ground-fog`, `sbb/object-position-regression` (some are
