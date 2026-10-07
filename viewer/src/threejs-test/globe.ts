@@ -99,6 +99,8 @@ export interface Globe {
     pointArrivals: () => number
     /** The point stream has tiles queued, downloading or parsing: ortho requests wait for it. */
     pointsBusy: () => boolean
+    /** Ortho requests skip the browser cache, as on a first visit (?orthocold). */
+    bypassCache?: boolean
   }): Promise<boolean>
   /** Off puts the satellite back into upgraded tiles from their kept bytes; On upgrades again. */
   setOrthoEnabled(on: boolean): void
@@ -256,6 +258,9 @@ export function createGlobe(opts: {
   const ORTHO_MIN_ZOOM = EXPERIENCE_CONFIG.design.droneOrtho.minZoom
   let orthoCovers: ((tile: any) => boolean) | null = null
   let ortho: OrthoComposite | null = null
+  const viewMatrix = new THREE.Matrix4()
+  const lastViewMatrix = new THREE.Matrix4()
+  let viewMovedAt = performance.now()
   tiles.registerPlugin(new UpdateOnChangePlugin())
   // After the plugin: useRecommendedSettings above writes errorTarget = 1, so the
   // configured value has to land afterwards to win.
@@ -684,6 +689,14 @@ export function createGlobe(opts: {
       // remove it before rendering; touch controls already hide it themselves.
       ;(controls as any).pivotMesh?.removeFromParent()
       camera.updateMatrixWorld()
+      // When the view last moved, for the drone ortho's swaps: the test UpdateOnChangePlugin
+      // makes, without the tile loads and retries that also make the basemap traverse.
+      viewMatrix.copy(tiles.group.matrixWorld).premultiply(camera.matrixWorldInverse)
+        .premultiply(camera.projectionMatrix)
+      if (!viewMatrix.equals(lastViewMatrix)) {
+        lastViewMatrix.copy(viewMatrix)
+        viewMovedAt = performance.now()
+      }
       // Navigation above always runs; only traversal and downloads are gated.
       if (imageryEnabled) tiles.update()
     },
@@ -740,6 +753,7 @@ export function createGlobe(opts: {
         },
         orthoTileUrl: (id, format, z, x, y) =>
           `${MAPTILER_BASE}/tiles/${id}/${z}/${x}/${y}.${format}?key=${encodeURIComponent(maptilerKey)}`,
+        viewMovedAt: () => viewMovedAt,
       })
       const ok = await ortho.ready
       if (!ok) {

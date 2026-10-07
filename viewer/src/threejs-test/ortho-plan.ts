@@ -267,10 +267,11 @@ export function createTurnGate(max: number) {
     release(): void {
       inFlight = Math.max(0, inFlight - 1)
     },
-    /** Hands out free turns, first come first served. Returns how many went out. */
-    pump(): number {
+    /** Hands out free turns, first come first served, up to `limit` in flight (at most the
+     *  gate's own). Returns how many went out. */
+    pump(limit: number = max): number {
       let granted = 0
-      while (inFlight < max && waiters.length) {
+      while (inFlight < Math.min(max, limit) && waiters.length) {
         waiters.shift()!.grant()
         granted++
       }

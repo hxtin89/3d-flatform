@@ -2,15 +2,16 @@
 //
 // A satellite tile loads as plain satellite, through the library's own path, whether the ortho
 // covers it or not: the descent to the sharpest zoom is what it is with the ortho off. Once the
-// basemap is idle after the entrance flight and a covered tile has settled on screen, the ortho
-// tiles over the same ground are fetched, a worker colour-corrects the ortho into the raw
+// entrance flight is over and a covered tile has settled on screen, the ortho tiles over the
+// same ground are fetched, a worker colour-corrects the ortho into the raw
 // satellite's colour and blends it in (ortho-compose.worker.ts), and the result replaces the
 // tile's image in its own texture (ortho-upgrade.ts). So the ortho adds no mesh, no draw call,
 // no texture, no shader code and no GPU memory: the imagery graph, the colour match, fog,
 // vignette and ground patch all see an ordinary 512 px satellite tile. What it adds is ortho
 // downloads, worker time and one in-place texture upload per upgraded tile, and those are what
-// its gates limit: the zoom, the density, the link, settled tiles only, an idle basemap, at most
-// `maxOrthoRequests` ortho requests and `maxConcurrentComposes` upgrades in flight.
+// its gates limit: the zoom, the density, the link, settled tiles only, at most
+// `maxOrthoRequests` ortho requests in flight (`busyOrthoRequests` while the basemap or the
+// point stream loads) and `maxConcurrentComposes` upgrades.
 //
 // A failed or undecodable ortho child leaves its part of the tile to the satellite; a tile
 // whose children all fail, or whose worker fails or times out, stays satellite while it is
@@ -25,6 +26,7 @@ import {
   createOrthoUpgrader, type Bitmap, type ComposeOutcome, type SatelliteBytes, type UpgradeEngine,
   type UpgradeTexture, type UpgraderStats,
 } from './ortho-upgrade'
+import { orthoTrace } from './ortho-trace'
 
 export interface OrthoCompositeConfig {
   /** Lowest basemap zoom the ortho is composited into. */
@@ -36,8 +38,13 @@ export interface OrthoCompositeConfig {
   maxConcurrentComposes: number
   /** Ortho requests in flight at once. */
   maxOrthoRequests: number
-  /** How long a covered tile stays settled on screen, with the basemap idle, before its ortho is fetched. */
+  /** Ortho requests in flight while the basemap or the point stream loads. */
+  busyOrthoRequests: number
+  /** How long a covered tile stays settled on screen in a moving view before its ortho is
+   *  fetched, and how long the view stays still before a composite goes in. */
   settleMs: number
+  /** A finished composite goes in after this long even if the view has not stood still. */
+  maxSwapHoldMs: number
   /** 401/403 responses after which a source is switched off for the session. */
   forbiddenLimit: number
 }
@@ -84,6 +91,8 @@ export interface OrthoCompositeOptions {
   pointArrivals: () => number
   /** The point stream has tiles queued, downloading or parsing. */
   pointsBusy: () => boolean
+  /** performance.now() of the camera's last move (globe.ts). */
+  viewMovedAt: () => number
   meta: OrthoMeta
   /** The survey's ENU→ECEF matrix (column-major), the frame the fields are placed in. */
   rootTransform: ArrayLike<number>
@@ -96,6 +105,8 @@ export interface OrthoCompositeOptions {
   /** See PlannerOptions.thinUnderPatch. */
   thinUnderPatch: boolean
   debugKinds: boolean
+  /** Every ortho request skips the browser cache, as on a first visit (?orthocold). */
+  bypassCache?: boolean
 }
 
 type WorkerReply =
@@ -157,7 +168,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     }, 15000)
     worker.onmessage = (event: MessageEvent<WorkerReply>) => {
       const reply = event.data
-      if (reply.type === 'ready') { clearTimeout(timer); ready = true; resolve(true); return }
+      if (reply.type === 'ready') { clearTimeout(timer); ready = true; orthoTrace.mark('workerReady'); resolve(true); return }
       if (reply.type === 'init-failed') {
         clearTimeout(timer)
         console.warn(`[drone ortho] ${reply.reason}; the basemap stays satellite only.`)
@@ -224,7 +235,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
   /**
    * One ortho tile: a Blob, 'empty' (out of bounds, or the 72-80 B blank the server sends inside
    * the bbox but outside the footprint) or null (refused or failed). It waits for a turn from the
-   * gate, which only lets requests out while the basemap is idle.
+   * gate, which the upgrader opens wider once the basemap and the point stream are idle.
    */
   async function fetchChild(source: number, z: number, x: number, y: number, signal: AbortSignal, onGrant: () => void): Promise<Blob | 'empty' | null> {
     await gate.turn(signal)
@@ -235,11 +246,17 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     signal.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(), config.fetchTimeoutMs)
     counts.requests++
-    if (!counts.firstRequestAt) counts.firstRequestAt = performance.now()
+    const startedAt = performance.now()
+    if (!counts.firstRequestAt) counts.firstRequestAt = startedAt
+    orthoTrace.mark('firstRequest', startedAt)
+    let status = 0
+    let bytes = 0
     try {
       // Low priority: on a shared connection the satellite tiles, which every view needs, go first.
-      const response = await fetch(options.orthoTileUrl(s.id, s.format, z, x, y),
-        { signal: controller.signal, priority: 'low' } as RequestInit)
+      const response = await fetch(options.orthoTileUrl(s.id, s.format, z, x, y), {
+        signal: controller.signal, priority: 'low', ...(options.bypassCache ? { cache: 'no-store' } : {}),
+      } as RequestInit)
+      status = response.status
       if (response.status === 401 || response.status === 403) {
         counts.forbidden++
         const n = (forbiddenBySource.get(source) ?? 0) + 1
@@ -255,6 +272,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       if (!response.ok) { counts.childFailures++; return null }
       const blob = await response.blob()
       counts.orthoBytes += blob.size
+      bytes = blob.size
       return blob.size < 100 ? 'empty' : blob
     } catch {
       if (signal.aborted) throw abortError()
@@ -264,6 +282,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
       gate.release()
+      if (!signal.aborted) orthoTrace.child({ ms: performance.now() - startedAt, bytes, status })
     }
   }
 
@@ -278,6 +297,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       throw error
     }
     if (signal.aborted) return { type: 'aborted' }
+    orthoTrace.tile(`${plan.z}/${plan.x}/${plan.y}`, 'fetched')
     const children = got.map(({ child, result }) => ({ ...child, blob: result instanceof Blob ? result : null }))
     if (!children.some((child) => child.blob)) {
       return got.every((g) => g.result === 'empty') ? { type: 'empty' } : { type: 'failed' }
@@ -309,7 +329,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     get ready() { return ready && worker !== null && !disposed },
     plan: (z, x, y) => planner?.(z, x, y) ?? null,
     compose: composeTile,
-    pump: () => { gate.pump() },
+    pump: (limit) => { gate.pump(limit) },
     get requestsWaiting() { return gate.waiting },
   }
 
@@ -322,9 +342,13 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     pointArrivals: options.pointArrivals,
     pointsBusy: options.pointsBusy,
     upgradesAllowed: options.upgradesAllowed,
+    viewMovedAt: options.viewMovedAt,
     settleMs: config.settleMs,
     maxConcurrentComposes: config.maxConcurrentComposes,
+    busyRequests: config.busyOrthoRequests,
+    maxSwapHoldMs: config.maxSwapHoldMs,
     density,
+    trace: orthoTrace,
   })
 
   return {

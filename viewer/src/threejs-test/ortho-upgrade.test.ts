@@ -100,17 +100,26 @@ function fakeEngine() {
     covered: true,
     children: 1,
     pumps: 0,
+    /** The limit of every pump, undefined for the engine's own. */
+    pumpLimits: [] as Array<number | undefined>,
     requestsWaiting: 0,
     plan(z: number, x: number) { return this.covered && z >= 15 ? planFor(x, this.children) : null },
     compose(p: TilePlan, _bytes: ArrayBuffer, signal: AbortSignal, onGrant: () => void) {
       return new Promise<ComposeOutcome>((resolve) => { calls.push({ signal, onGrant, resolve, plan: p }) })
     },
-    pump() { this.pumps++ },
+    pump(limit?: number) {
+      this.pumps++
+      this.pumpLimits.push(limit)
+    },
   }
   return { engine, calls }
 }
 
-function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; maxConcurrent?: number; failDecode?: boolean } = {}) {
+function setup(over: {
+  allowed?: boolean; density?: 'half' | 'full' | 'off'; maxConcurrent?: number; failDecode?: boolean
+  /** Pass the camera's last move (env.movedAt) instead of leaving it to the traversals. */
+  camera?: boolean; maxSwapHoldMs?: number
+} = {}) {
   const tiles = fakeTiles()
   const { engine, calls } = fakeEngine()
   const bytes = new Map<object, ArrayBuffer>()
@@ -127,6 +136,7 @@ function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; max
     pointsBusy: false,
     uploads: [] as any[],
     decodes: 0,
+    movedAt: 0,
   }
   const upgrader = createOrthoUpgrader({
     tiles, satellite, engine: engine as any,
@@ -139,8 +149,11 @@ function setup(over: { allowed?: boolean; density?: 'half' | 'full' | 'off'; max
     pointArrivals: () => env.points,
     pointsBusy: () => env.pointsBusy,
     upgradesAllowed: () => env.allowed,
+    viewMovedAt: over.camera ? () => env.movedAt : undefined,
     settleMs: 1000,
     maxConcurrentComposes: over.maxConcurrent ?? 2,
+    busyRequests: 2,
+    maxSwapHoldMs: over.maxSwapHoldMs,
     density: over.density ?? 'half',
     now: () => clock.now,
   })
@@ -163,26 +176,41 @@ const xs = (calls: Array<{ plan: TilePlan }>) => new Set(calls.map((c) => c.plan
 
 // --- tests -------------------------------------------------------------------------------
 
-test('nothing starts while the basemap is busy, bodies included; it starts settleMs after it went idle', () => {
+test('while the basemap or the point stream loads, upgrades start and only busyRequests go out; idle, all may', () => {
   const s = setup()
   s.add()
   s.tiles.stats.downloading = 1
-  s.tickRange(0, 3000)
-  assert.equal(s.calls.length, 0, 'a body still streaming counts as busy')
+  s.tickRange(0, 500)
+  assert.equal(s.calls.length, 1, 'a settled tile starts while the basemap still loads')
+  assert.equal(s.engine.pumpLimits.at(-1), 2, 'a body still streaming counts as loading')
   s.tiles.stats.downloading = 0
-  s.tickRange(3250, 4000)
-  assert.equal(s.calls.length, 0, 'not before the dwell')
-  s.tiles.stats.parsing = 1
-  s.tickAt(4100)
-  s.tiles.stats.parsing = 0
-  s.tickRange(4250, 5000)
-  assert.equal(s.calls.length, 0, 'one busy tick starts the dwell over')
-  s.tickAt(5250)
-  assert.equal(s.calls.length, 1)
+  s.env.pointsBusy = true
+  s.tickAt(750)
+  assert.equal(s.engine.pumpLimits.at(-1), 2, 'the point stream loading caps it too')
+  s.env.pointsBusy = false
   s.tiles.processNodeQueue.running = true
+  s.tickAt(1000)
+  assert.equal(s.engine.pumpLimits.at(-1), 2, 'so does a running node queue')
+  s.tiles.processNodeQueue.running = false
+  s.tickAt(1250)
+  assert.equal(s.engine.pumpLimits.at(-1), undefined, 'both idle: up to the engine\'s own limit')
+  s.upgrader.dispose()
+})
+
+test('in a moving view a tile dwells settleMs; in a view still for 300 ms it starts at once', () => {
+  const s = setup()
   s.add()
-  s.tickRange(5500, 9000)
-  assert.equal(s.calls.length, 1, 'a running node queue blocks too')
+  for (let t = 0; t <= 750; t += 250) { s.move(); s.tickAt(t) }
+  assert.equal(s.calls.length, 0, 'moving, and settled for less than settleMs')
+  s.move()
+  s.tickAt(1000)
+  assert.equal(s.calls.length, 1, 'settled for settleMs while the view moved')
+  const b = s.add()
+  b.tile.traversal.lastFrameVisited = s.tiles.frameCount
+  s.tickAt(1100)
+  assert.equal(s.calls.length, 1, 'the view moved 100 ms ago')
+  s.tickAt(1300)
+  assert.deepEqual(xs(s.calls.slice(1)), new Set([b.x]), 'still for 300 ms: no dwell')
   s.upgrader.dispose()
 })
 
@@ -258,23 +286,6 @@ test('a tile that leaves the view before all its requests went out is aborted; o
   s.upgrader.dispose()
 })
 
-test('ortho requests wait while point tiles load, and go out anyway after 8 s', () => {
-  const s = setup()
-  s.add()
-  s.env.pointsBusy = true
-  s.tickRange(0, 1000)
-  assert.equal(s.calls.length, 1, 'the compose starts and joins the line')
-  const pumpsWhileBusy = s.engine.pumps
-  s.tickRange(1250, 7750)
-  assert.equal(s.engine.pumps, pumpsWhileBusy, 'no request goes out while the point stream is busy')
-  s.tickRange(8000, 8250)
-  assert.ok(s.engine.pumps > pumpsWhileBusy, 'a stream that never drains does not starve the ortho')
-  s.env.pointsBusy = false
-  const before = s.engine.pumps
-  s.tickAt(8500)
-  assert.equal(s.engine.pumps, before + 1)
-  s.upgrader.dispose()
-})
 
 test('the swap installs the composite in the same texture, closes the satellite once, one per tick, never in an arrival tick', async () => {
   const s = setup()
@@ -340,6 +351,43 @@ test('a swap waits for a still view, and for the end of a flight; a revert only 
   s.move()
   s.tickAt(4350)
   assert.equal(a.texture.image.label, 'revert')
+  s.upgrader.dispose()
+})
+
+test('with the camera passed, traversals from loading or retried tiles do not hold a swap; a camera move does', async () => {
+  const s = setup({ camera: true })
+  const a = s.add()
+  const sat = a.texture.image
+  s.tickRange(0, 500)
+  assert.equal(s.calls.length, 1)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  s.env.movedAt = 600
+  for (let t = 750; t <= 1500; t += 250) { s.move(); s.tickAt(t) }
+  assert.equal(a.texture.image, sat, 'the camera moved at 600: held for settleMs')
+  s.move()
+  s.tickAt(1750)
+  assert.equal(a.texture.image.label, 'comp', 'the basemap traversed this tick, the camera did not')
+  s.upgrader.dispose()
+})
+
+test('a composite held longer than maxSwapHoldMs goes in at the next frame without an arrival', async () => {
+  const s = setup({ maxSwapHoldMs: 3000 })
+  const a = s.add()
+  const sat = a.texture.image
+  s.tickRange(0, 500)
+  s.calls[0].resolve({ type: 'done', bitmap: new FakeBitmap('comp'), edge: true })
+  await flush()
+  for (let t = 750; t <= 3250; t += 250) { s.move(); s.tickAt(t) }
+  assert.equal(a.texture.image, sat, 'the view keeps moving: held up to the limit')
+  s.move()
+  s.env.points++
+  s.tickAt(3500)
+  assert.equal(a.texture.image, sat, 'over the limit, but a point tile arrived this frame')
+  s.move()
+  s.tickAt(3750)
+  assert.equal(a.texture.image.label, 'comp')
+  assert.equal(s.upgrader.stats().swapsAfterHoldLimit, 1)
   s.upgrader.dispose()
 })
 

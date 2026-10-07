@@ -81,12 +81,9 @@ Facts a new session should know:
    - convenience: restore last session, drag-and-drop import, ASC CDL export;
    - a "Film" tab folding Tone & colour into the editor (needs the user's sign-off, since it touches
      Film Warm).
-5. **Ortho leftovers (not the grade):**
-   - frame smoothness of the swaps in a visible window;
-   - streaming cost on a phone;
-   - the ortho reads ~0.1 stops too red;
-   - requests to Andrea: Calibrate Colors, lossy 512 px re-export or the GeoTIFF, a per-point flight ID.
-6. **Merge and push** of the whole stack: only when the user says so.
+5. **Ortho leftovers (not the grade):** moved to `plans/handover-ortho-speed.md`, which also
+   covers the loading speed (2026-10-07).
+6. **Merge and push** of the whole stack: done, see "Where things are".
 
 ## How to test here
 
