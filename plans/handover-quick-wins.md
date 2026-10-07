@@ -5,66 +5,15 @@ Covers the work of 2026-09-24 to 2026-10-05 on the ranked optimisation list (the
 **Canopy Quick Wins**: https://claude.ai/artifact/95759FcUacJzgYpYUjM48z — update it via its url
 (read first, then republish), changelog entry on top; never publish a second page.
 
-## 0. Start here (2026-10-06)
+## 0. Start here (2026-10-07)
 
-**State (2026-10-06, evening):** everything in this file is merged and pushed, and there is one line:
-`sbb-main` = `origin/sbb-main` = `sbb/quick-wins`. It holds `de49bd1` (`9fa87e2` plus the real tower
-position and the Big trees layer, merged by another session), the point-memory readout (`35da422`,
-merged as `b7a2a09`; tree passed tsc, 88 tests and the build) and the handover commits. The user asked
-for the branches to be merged together, so `sbb/point-memory-readout` is deleted and `sbb/quick-wins`
-only mirrors `sbb-main` as this worktree's checkout. Nothing is half-built and nothing is uncommitted.
-
-**2026-10-06, night — the grade editor stack merged, not pushed:** on the user's "I first want to
-merge the grade editor into it", `sbb/grade-editor` (41 commits: tone mapping, colour match, drone
-ortho upgrade, grade editor; fork `5b3080d`, before every quick win) was merged into `sbb-main` as
-`435b7c9` on the branch `sbb/merge-grade-editor` in this worktree. Seven files conflicted (20
-hunks); the resolutions are in the merge commit's message and in `plans/handover-grade-editor.md`.
-Two real clashes: the cloud volumes (1.5's shared far/near materials vs the haze variant: kept 1.5,
-haze through a per-material handle) and the ortho upgrade, which required an open tile image where
-1.8 closes every basemap image after upload (it now checks against `map.userData.imageSize`, which
-globe.ts records). Checks on the merged tree: tsc clean, 302 tests, build, browser on WebGPU and
-WebGL2 (volume clouds with haze on, ortho swaps 9 / mismatches 0 / re-uploads 0, grade LUT stage
-compiled and baked, `__wild.dots.memory`). Nine `500` resource errors appear mid-flight on the dev
-server on both backends; a fresh boot's first 6 s are all 200, so they are the dev proxy's MapTiler
-resets (known, see tile-retry.ts), not the merge; the production build has no proxy. **Pushed
-2026-10-07:** `sbb-main` = `sbb/quick-wins` = `2bb7c57`; the temporary merge branch is deleted.
-The main folder and `sbb-prod` still need their fast-forward and rebuild.
-
-**No quick win was given up in the merge**, but each side had to bend, and the figures in this
-file were measured before the merge. Re-measure these when there is time (not urgent):
-- **1.8, basemap images closed after upload — kept.** The ortho upgrade swaps a tile's image in
-  place and used to require the old image to be open; it now checks the new bitmap against the
-  size `globe.ts` records (`map.userData.imageSize`). The composite bitmap is closed after its
-  upload like any other, and a revert decodes the kept JPEG bytes again. Cost that stays: the
-  ortho keeps the JPEG bytes (~50 KB a tile) of covered tiles only. Check once on a phone that
-  upgraded tiles still show after a long roam (no re-upload from a closed image: `reuploadsAfterClose`
-  must stay 0, `orthoStats().sizeMismatch` 0).
-- **1.5, one shared near-cloud shader — kept.** Each volume material now has two graph variants,
-  plain and hazed; the haze switch rebuilds the two cloud materials once. Builds after Start (1.4)
-  are therefore 0 only while nobody flips the haze or the grade; both are user actions.
-- **1.2 / map graph cache:** the globe keys on `imageryEffectsKey` (ours, includes the vignette);
-  the other line's `imageryEffectsVersion` still exists and bumps on the same three flags. Harmless
-  duplicate; remove one when touching point-cloud.ts next.
-- **Frame cost of the new stages** (not quick wins, but they move the baseline every figure above
-  was taken against): tone curve + haze + sky, eye-dome lighting (+0.18 ms measured on its branch),
-  the colour match (+0.04 ms), the grade LUT tap (~0.01 ms), and the ortho's in-place uploads
-  (0.4 ms each, never in an arrival frame). The HUD-closed frame of 4.1–5.9 ms and the cloud GPU
-  2.6 ms should be re-read on the merged tree before any new optimisation is judged against them.
-- **Eagle bench:** the stress primitive is ours (pulled or instanced by config); the other line only
-  changed a comment there. The calibration (2.4) is unchanged and still open.
-
-**The memory readout is built:** `__wild.dots.memory` in the console (point-memory.ts, section 9 step 1).
-First reading, hidden pane, constrained tier, landing view: 40 resident / 26 selected / 26 drawn tiles,
-d = 0.65 by tiles and 0.67 by points; 34 point textures on the GPU, 35.5 MiB (26 drawn 28.2 MiB, 8
-hidden 7.3 MiB, 0 orphans) against the unload plugin's 33 MiB estimate; CPU point data 42.5 MiB
-(16.1 B/pt); JS heap 150 MiB. The cache floor is 900 tiles, so d falls as a session roams; read it
-after a minute of roaming too.
-
-**2026-10-06, late:** the user stopped the one-mesh-per-parrot work mid-build: "leave the parrots as
-they are. I want to get rid of them at all." The parrot flock is to be removed from the app, not
-optimised. The merge (one skinned mesh a bird, the map picked per vertex, one draw a bird, verified
-in the pane) was discarded unmerged; nothing of it is in any branch. Do not touch the flock until the
-user asks for its removal.
+**State.** Everything is merged and pushed, nothing is half-built or uncommitted. There is one
+line: `sbb-main` = `origin/sbb-main` = `sbb/quick-wins` (this worktree's checkout of it). Since the
+quick wins it gained, in order: the real tower position and Big trees (`de49bd1`), the point-memory
+readout (`b7a2a09`), the whole grade-editor stack (`435b7c9`: tone mapping, colour match, drone ortho
+upgrade, grade editor), and from another session the sky with the volumetric ground fog (`9635557`),
+vite 7 (`577923f`, `1a36b03`) and `npm audit fix` (`ce09bb1`). On `ce09bb1` in this worktree: plain
+`npm ci`, tsc, 323 tests and the build pass.
 
 **Talk to the user in plain names, not item numbers.** The numbers are the IDs of the ranked list in
 the appendix of `plans/handover-dot-geometry-ab.md`: 1.x quick wins, 2.x bigger projects, 3.x
@@ -93,57 +42,109 @@ measure first.
 | 3.1–3.8 | Culling inside tiles, tile prep in a worker, edge softening, output pass, colour in vertex stage, smaller point data, fewer map tiles under the patch, Android labels | Open, each needs a measurement or a phone first |
 | — | Strong-tier map ceiling (whole map at the landing view) | Built 2026-10-05 |
 | B8 | Evicted point texture leak | Fixed 2026-10-05 |
+| — | Point-memory readout for the device session (`__wild.dots.memory`) | Built 2026-10-06 |
+
+**The grade-editor merge: no quick win was given up**, but two of them bent, and every figure in
+this file was taken before it. Keep in mind for later:
+- **1.8, basemap images freed after upload.** The ortho upgrade (`ortho-upgrade.ts`) swapped a tile's
+  image in place and needed the old image open. It now checks a new bitmap against the size globe.ts
+  records at load (`map.userData.imageSize`) and closes its own composites after upload; a revert
+  decodes the kept satellite JPEG bytes (~50 KB a covered tile, the one memory cost that stays).
+  Verified on WebGPU and WebGL2: 9 swaps, 0 size mismatches, `reuploadsAfterClose` 0. **Check once
+  on a phone** after a long roam: `__three.globe.stats().reuploadsAfterClose` and
+  `__three.globe.orthoStats().sizeMismatch` must stay 0.
+- **1.5, one shared near-cloud shader.** The cloud haze now switches per material through a small
+  handle (`VolumeMaterialHandle` in environment-layer.ts) instead of per cloud. Flipping the haze or
+  the grade rebuilds shaders once; both are user actions, so 1.4's "no builds after Start" holds for
+  a session that does not touch them.
+- **Duplicate to tidy:** globe.ts keys its graph cache on `imageryEffectsKey()`; the other line's
+  `imageryEffectsVersion()` still exists in point-cloud.ts and bumps on the same flags. Remove one.
+- **The baseline moved.** The frame now also runs the tone curve, haze, sky, eye-dome lighting
+  (+0.18 ms on its branch), the colour match (+0.04 ms), the grade tap (~0.01 ms), the ortho's
+  in-place uploads (0.4 ms each, never in an arrival frame), and the sky's sun shadows and ground
+  fog. Re-read the HUD-closed frame (was 4.1–5.9 ms) and the cloud GPU time (was 2.6 ms) on the
+  merged build before judging any new optimisation against them.
+
+**Memory readout:** `__wild.dots.memory` reports the drawn share of resident point tiles, point bytes
+on the GPU from three's memory map (drawn / hidden / orphan), CPU point bytes and Chrome's heap. First
+reading (pane, constrained, landing view): d = 0.65 by tiles, 0.67 by points; 35.5 MiB of point
+textures; 42.5 MiB CPU; heap 150 MiB. GPU memory and the real tab footprint come from the OS task
+manager only. Section 9 step 1.
+
+**Parrots:** on 2026-10-06 the user said "leave the parrots as they are. I want to get rid of them at
+all." Do not optimise them; remove the flock only when she asks (field-model-layer.ts flock section,
+held-tracks.ts and its test, the `parrots` block in config.ts, `public/assets/models/parrot/`).
 
 **Waiting on the user:**
-1. In the main folder: `git merge --ff-only origin/sbb-main` (its local `sbb-main` was still at
-   `ec64335` on 2026-10-06).
-2. Rebuild `sbb-prod`; the live page has none of rounds 3 and 4 yet.
-3. A device session with Jan (desktop, weak laptop, Android, iPhone). It covers the benchmark
-   calibration (2.4), the phone memory reading that gates 2.3, and the phone-only 3.x items.
+1. **Server `sbb-prod`** (`/srv/projekte/wide/wi-dev`) was at `7f22bb6` on 2026-10-07, before the sky
+   merge. Steps: `git fetch origin && git merge --ff-only origin/sbb-main`, then in `viewer/`
+   `npm ci && npm run build` (plain `npm ci` works since `1a36b03`). Then on the live page: Design →
+   Colour grade is there and a slider changes the frame; `__three.globe.orthoStats()` shows swaps
+   with `sizeMismatch: 0`; `__three.globe.stats().reuploadsAfterClose` is 0; `__wild.dots.memory`
+   answers; no HTTP 500s in the console (the dev server showed nine, from its MapTiler proxy).
+2. **Main folder:** fast-forward to `origin/sbb-main` for the latest handover commit (docs only).
+3. **Device session with Jan** (desktop, weak laptop, Android, iPhone): the benchmark calibration
+   (2.4), `__wild.dots.memory` per device at the landing view and after a minute of roaming (decides
+   2.3), the phone-only 3.x items, and the closed-image check above.
 
-**Next for a session, in the recommended order:**
-1. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether tile
-   arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation press
-   (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
+**Next for a session without devices, in order:**
+1. **Re-read the baseline** on the merged build: HUD-closed frame time and cloud GPU ms, with the
+   shipped look on. GPU ratios work in the hidden pane with `?bgclock`; absolute frame times need a
+   visible window.
+2. **Checks in a visible Chrome window** (Claude in Chrome on localhost:5177, or the user): whether
+   tile arrivals still lead the worst frames on the pulled default (decides 3.2), the first rotation
+   press (`__wild.pivotDebug.pickMs`), and the Start-screen power saving.
+3. **Tidy:** the `imageryEffectsVersion` / `imageryEffectsKey` duplicate.
+4. **Branch cleanup, only with the user's OK.** Fully contained in `sbb-main`, locally:
+   `sbb/colour-matching`, `sbb/grade-editor`, `sbb/ortho-upgrade`, `sbb/tone-mapping`,
+   `sbb/tower-site-big-trees`, `sbb/volumetric-ground-fog`, `sbb/object-position-regression` (some are
+   checked out in other worktrees and cannot be deleted while those exist). On GitHub, merged:
+   `sbb/grade-editor`, `sbb/tone-mapping`, `sbb/volumetric-ground-fog`, `sbb/tower-site-big-trees`,
+   `sbb/object-position-regression` and older ones; `git branch -r --merged sbb-main` lists them.
 
-**Do not:** touch the parrot flock (it goes away; see above); build the 2.3 spec (section 9); raise
-the medium or constrained map ceilings before phone memory is known; propose merging into `main` (the user keeps `sbb-main` apart). Before building any
-other item from the old list, re-check it against the current code first (it worked for 2.3).
+**Other sessions' lines, not ours:** `sky` (ahead of `sbb-main`, the sky session, worktree `sky`) and
+`sbb/ortho-speed` (worktree `sbb-colour-matching`, branched from `1a36b03`, so it already has the
+closed-image fix; a dry-run merge into `sbb-main` is clean). Don't touch them.
+
+**Do not:** touch the parrot flock; build the 2.3 spec (section 9); raise the medium or constrained
+map ceilings before phone memory is known; propose merging into `main` (the user keeps `sbb-main`
+apart). Before building any other item from the old list, re-check it against the current code first.
+
+**Commit messages:** a subject a colleague understands, plus at most one sentence; **no
+Co-Authored-By trailer** (the user's rule, memory `commit-message-style`). The merge commit
+`435b7c9` and this session's handover commits broke that rule; they are pushed, so they stay.
 
 ## 1. Where things stand
 
 | Line | Head | State |
 |---|---|---|
-| `sbb-main` | = `sbb/quick-wins` | Pushed 2026-10-06. Holds rounds 1-4 below, `e996937` (panels start minimized), `e1eb4a1` (measured model heights), `de49bd1` (real tower position, Big trees), the point-memory readout (`b7a2a09`) and this handover. `sbb-prod` builds from it; the user rebuilds the server herself. The main folder's local `sbb-main` may lag: `git merge --ff-only origin/sbb-main` there. |
-| `sbb/quick-wins` | = `sbb-main` | This worktree's checkout; pushed together with `sbb-main` (`git push origin sbb/quick-wins sbb/quick-wins:sbb-main`). |
+| `sbb-main` | = `sbb/quick-wins` | Pushed. Holds rounds 1-4 below, the point-memory readout, the grade-editor stack, the sky and fog, vite 7 and this handover. `sbb-prod` builds from it; the user rebuilds the server herself. |
+| `sbb/quick-wins` | = `sbb-main` | This worktree's checkout; push both names together: `git push origin sbb/quick-wins sbb/quick-wins:sbb-main`. |
 
 - Worktree: `C:\projects\WIDE_3d-flatform\.claude\worktrees\point-reorder-thinning-flicker-f48d6c`,
-  on `sbb/quick-wins`. It has `viewer/.env` and `node_modules`. After a session restart it can be
-  back on `claude/point-reorder-thinning-flicker-f48d6c` (`30ed49e`, old main code): run
-  `git checkout sbb/quick-wins` first. `sbb-main` cannot be checked out here (the main folder holds
-  it); start new branches from it instead.
+  on `sbb/quick-wins`. It has `viewer/.env` and a vite-7 `node_modules` (`npm ci` on `ce09bb1`).
+  After a session restart it can be back on `claude/point-reorder-thinning-flicker-f48d6c` (old main
+  code): run `git checkout sbb/quick-wins` first. `sbb-main` cannot be checked out here (the main
+  folder holds it); start new branches from it.
 - Dev server: `preview_start viewer-dev` (`.claude/launch.json`, port 5177). `preview_start` reads
   `launch.json` from the folder the session was launched in, so if the session started elsewhere,
-  run `BROWSER=none npx vite --port 5177 --strictPort` in `viewer/` in the background and
-  `preview_start {url}`. Check it serves this worktree: `/src/threejs-test/still-frame.ts` must answer
-  200. Other ports get no basemap (the local MapTiler key only answers listed ports).
+  run `BROWSER=none npx vite --port 5177 --strictPort --host 127.0.0.1` in `viewer/` in the
+  background and `preview_start {url}`. Check it serves this worktree (a file only this tree has
+  must answer 200), and that no stale server from another session holds 5177. Other ports get no
+  basemap (the local MapTiler key only answers listed ports).
 - The main folder `C:\projects\WIDE_3d-flatform` has `sbb-main` checked out and is shared with other
-  sessions: check `git status` there before any merge, and never switch its branch.
-- Checks: `npx tsc --noEmit`, `npm run bench:verify` (85 tests) and `npm run build` pass on `9fa87e2`.
-- Merge procedure used for rounds 3 and 4 (ask before pushing). A worktree-isolated session may not
-  run git in the main folder, so:
+  sessions: never switch its branch, and a worktree-isolated session may not run git there.
+- Checks: `npx tsc --noEmit`, `npm run bench:verify` (323 tests) and `npm run build` pass on `ce09bb1`.
+- Merge procedure (ask before pushing):
   1. `git fetch`; `sbb-main` = `origin/sbb-main`.
   2. Dry run: `git merge-tree --write-tree --name-only sbb-main <branch>` (a bare tree hash = no
-     conflicts). If `sbb-main` moved, test that tree: `git archive` it into the scratchpad (from
-     `viewer/`; `tar --force-local`), junction `node_modules`, run tsc, tests and the build.
-  3. Here: `git checkout --detach sbb-main`, `git merge --no-ff <branch>` (message without trailer),
-     check `HEAD^{tree}` equals the tested tree.
-  4. `git push origin HEAD:sbb-main`, then `git checkout <branch>`, `git merge --ff-only <merge>`,
-     push the branch.
-  5. The user fast-forwards the main folder and rebuilds `sbb-prod` (`/srv/projekte/wide/wi-dev`).
-- Peer sessions (Living dashboard analysis, Tone mapping, Tone-mapping review) share the main folder
-  and the browser pane: ask before borrowing the pane. `sbb/tone-mapping` and
-  `sbb/volumetric-ground-fog` fork at `5b3080d`, before all of this, and will conflict on merge.
+     conflicts).
+  3. On a branch off `sbb-main` here: `git merge --no-ff <branch>`, short message, no trailer.
+     Resolve, then tsc, tests, build and a browser check on WebGPU and WebGL2.
+  4. `git push origin <merge-branch>:sbb-main`, fast-forward `sbb/quick-wins` to it, push it, delete
+     the merge branch.
+  5. The user fast-forwards the main folder and rebuilds `sbb-prod`.
+- Peer sessions share the main folder and the browser pane: ask before borrowing the pane.
 
 ## 2. Implemented, and what it gained
 
