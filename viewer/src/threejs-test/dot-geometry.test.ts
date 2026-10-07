@@ -95,7 +95,7 @@ test('a runtime switch swaps corners in place and leaves the point data alone', 
   const mesh = new THREE.Mesh(g, material)
   initDotState(mesh, { feed: 'instanced', shape: 'quad', points: 10, orderIsFair: true, hasColour: true })
   const versionBefore = material.version
-  const position = g.getAttribute('position')
+  const position = g.getAttribute('position') as THREE.BufferAttribute
   const uv = g.getAttribute('uv')
   const index = g.index
   const positionVersion = position.version

@@ -209,3 +209,26 @@ export function bakeFogNoise3D(size: number, period = 4, octaves = 4, seed = 3):
   for (let i = 0; i < raw.length; i++) data[i] = Math.round((raw[i] - lo) * scale)
   return data
 }
+
+// ---- how the march reads the tiles (ground-fog.ts)
+// The wind and the rise move the reads by offsets accumulated on the CPU and wrapped, because a
+// raw time uniform would lose precision after a few hours of session. A wrap is invisible only
+// where every read built on an offset moves by whole tiles when the offset jumps back by its
+// period: the period times each scale below must be a whole number (fog-noise.test.ts).
+
+/** Wind offsets wrap at this many tiles: whole for the plain reads (scale 1) and for the finer
+ *  wisp octave, read at WISP_FINE_SCALE (23 tiles). */
+export const DRIFT_PERIOD = 10
+/** The rise wraps at this many wisp heights: the '2d' source's slice hash repeats over it, and so
+ *  do its sheared finer octave (WISP_2D_SHEAR_X/Y: 10, −8 tiles) and the 3D texture's z reads
+ *  (WISP_3D_Z_SCALE, WISP_3D_FINE_Z_SCALE: 4 and 9 tiles). The 'procedural' comparison path is
+ *  not periodic and jumps on a wrap. */
+export const RISE_PERIOD = 16
+/** The finer wisp octave's ground scale against the coarse one's, in both texture sources. */
+export const WISP_FINE_SCALE = 2.3
+/** The 3D texture's z, in tiles per wisp height: the coarse octave and the finer one. */
+export const WISP_3D_Z_SCALE = 0.25
+export const WISP_3D_FINE_Z_SCALE = 0.5625
+/** The '2d' source's finer octave is sheared with height: tiles in x and in y per wisp height. */
+export const WISP_2D_SHEAR_X = 0.625
+export const WISP_2D_SHEAR_Y = -0.5

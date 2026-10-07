@@ -4,7 +4,7 @@ import { EXPERIENCE_CONFIG } from './config.ts'
 import { flightSseFloor, matrixPrecisionWanted } from './flight-quality.ts'
 
 const { flightSse, flightSseRampMs, sse } = EXPERIENCE_CONFIG.lod
-const floor = (msSinceLanding: number, targetSse = sse, flying = false) =>
+const floor = (msSinceLanding: number, targetSse: number = sse, flying = false) =>
   flightSseFloor({ flying, msSinceLanding, targetSse })
 
 test('the flight is pinned to the coarse floor regardless of elapsed time', () => {

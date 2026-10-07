@@ -4,8 +4,10 @@
 // abandon a bake it has started). Without Worker support it bakes inline, and so it does from
 // the first error on: a worker that fails to load or throws would otherwise leave every bake
 // pending.
-import { bakeFogNoise, bakeFogNoise3D, type FogNoiseSettings } from './fog-noise'
-import type { FogNoiseRequest } from './fog-noise.worker'
+// Extension-qualified imports, because fog-noise-baker.test.ts loads this module under
+// node --test, which does not resolve extensionless specifiers.
+import { bakeFogNoise, bakeFogNoise3D, type FogNoiseSettings } from './fog-noise.ts'
+import type { FogNoiseRequest } from './fog-noise.worker.ts'
 
 export interface FogNoiseBaker {
   /** Resolves with the RGBA8 texels, or null when a newer 2D request replaced this one. */
@@ -18,10 +20,15 @@ export interface FogNoiseBaker {
 type Dimension = FogNoiseRequest['dimension']
 interface Job { request: FogNoiseRequest; inline: () => Uint8Array; resolve: (data: Uint8Array | null) => void }
 
-export function createFogNoiseBaker(): FogNoiseBaker {
+/** The bake worker. Written out as `new Worker(new URL(…, import.meta.url))` so Vite bundles it. */
+const startBakeWorker = () => new Worker(new URL('./fog-noise.worker.ts', import.meta.url), { type: 'module' })
+
+/** `createWorker` is for the tests, which hand in a fake; a throw means no worker, as without
+ *  Worker support. */
+export function createFogNoiseBaker(createWorker: () => Worker = startBakeWorker): FogNoiseBaker {
   let worker: Worker | null = null
   try {
-    worker = new Worker(new URL('./fog-noise.worker.ts', import.meta.url), { type: 'module' })
+    worker = createWorker()
   } catch {
     worker = null
   }

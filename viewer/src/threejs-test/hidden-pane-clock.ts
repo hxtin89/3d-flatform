@@ -84,8 +84,10 @@ if (new URLSearchParams(location.search).has('bgclock')) {
   }
   window.setTimeout = ((handler: TimerHandler, ms?: number, ...args: unknown[]) => schedule(handler, ms ?? 0, false, args)) as typeof window.setTimeout
   window.setInterval = ((handler: TimerHandler, ms?: number, ...args: unknown[]) => schedule(handler, ms ?? 0, true, args)) as typeof window.setInterval
-  window.clearTimeout = (id?: number) => { if (id !== undefined && !timers.delete(id)) nativeClearTimeout(id) }
-  window.clearInterval = (id?: number) => { if (id !== undefined && !timers.delete(id)) nativeClearInterval(id) }
+  // Cast like the two above: with Node's types loaded too (tsconfig.test.json) the globals also
+  // take Node's timer handles, which these never see in a browser.
+  window.clearTimeout = ((id?: number) => { if (id !== undefined && !timers.delete(id)) nativeClearTimeout(id) }) as typeof window.clearTimeout
+  window.clearInterval = ((id?: number) => { if (id !== undefined && !timers.delete(id)) nativeClearInterval(id) }) as typeof window.clearInterval
   window.requestIdleCallback = ((callback: IdleRequestCallback) =>
     schedule(() => callback({ didTimeout: false, timeRemaining: () => 8 }), 1, false, [])) as typeof window.requestIdleCallback
   console.info('[bgclock] frames and timers run from a MessageChannel — frame times are not display times')

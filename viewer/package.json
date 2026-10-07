@@ -17,6 +17,7 @@
     "three": "^0.185.0"
   },
   "devDependencies": {
+    "@types/node": "^24.19.1",
     "@types/three": "^0.185.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "typescript": "^5.4.0",

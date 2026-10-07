@@ -19,9 +19,10 @@ npm run build          # tsc (typecheck, noEmit) + vite build --base=/livingdash
 npm run build -- livingdashboard-sbb                  # same, built for /livingdashboard-sbb/ instead
 npm run preview -- livingdashboard-sbb --port 5177    # preview a build; give the path it was built for
 npm run audio:prepare  # regenerate browser audio loops from source-assets/ (writes to public/sounds/)
+npx tsc --noEmit -p tsconfig.test.json                # typecheck the app and the *.test.ts files together
 ```
 
-There is **no linter** in this package, and no general test runner: `npm run bench:verify` runs the handful of `src/threejs-test/*.test.ts` files under `node --test`, and `tsc` (via `npm run build`) is the only static check. `tsconfig.json` is `strict` but `noUnusedLocals`/`noUnusedParameters` are off.
+There is **no linter** in this package, and no general test runner: `npm run bench:verify` runs the `src/threejs-test/*.test.ts` files under `node --test` (type stripping only, so a module a test loads imports its neighbours with the `.ts` extension), and `tsc` is the only static check. `tsconfig.json` (run by `npm run build`, or `npx tsc --noEmit -p .`) checks the app with browser types and leaves the tests out; `tsconfig.test.json` adds the tests and Node's types (`@types/node`). Both are `strict` but `noUnusedLocals`/`noUnusedParameters` are off.
 
 Tiles are served separately by the root pipeline (`cd ..; npm run pipeline:serve` → static tiles on :8081); the dev server proxies `/tiles` there. In practice the Three.js app loads tiles from CloudFront by default (see env below), not the local proxy.
 

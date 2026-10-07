@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  bakeFogNoise, bakeFogNoise3D, bakeLayer, fbm2, finishLayer, NOISE_KINDS, perlin2, ridged2, sampleLayer, value2,
+  bakeFogNoise, bakeFogNoise3D, bakeLayer, DRIFT_PERIOD, fbm2, finishLayer, NOISE_KINDS, perlin2, ridged2, RISE_PERIOD,
+  sampleLayer, value2, WISP_2D_SHEAR_X, WISP_2D_SHEAR_Y, WISP_3D_FINE_Z_SCALE, WISP_3D_Z_SCALE, WISP_FINE_SCALE,
   worley2, type NoiseLayerSettings,
 } from './fog-noise.ts'
 
@@ -86,4 +87,31 @@ test('the 3D baseline tiles along x, y and z', () => {
     inside /= size - 1
     assert.ok(meanStep(axis, size - 1, 0) < inside * 2, `axis ${axis}: wrap step ${meanStep(axis, size - 1, 0)} vs ${inside}`)
   }
+})
+
+// The wind and the rise reach the march as offsets wrapped on the CPU (ground-fog.ts). When one
+// jumps back by its period, every read built on it must move by whole tiles, or the fog would
+// visibly jump once per wrap — minutes apart, so easy to miss by eye.
+test('the wind and rise wrap periods move every noise read by whole tiles', () => {
+  const whole = (x: number) => Math.abs(x - Math.round(x)) < 1e-9
+  // Scale 1: the coverage, billow and erosion reads and the coarse wisp octave; for the rise,
+  // the '2d' source's slice hash, which repeats every RISE_PERIOD slices.
+  assert.ok(Number.isInteger(DRIFT_PERIOD), `DRIFT_PERIOD ${DRIFT_PERIOD}`)
+  assert.ok(Number.isInteger(RISE_PERIOD), `RISE_PERIOD ${RISE_PERIOD}`)
+  const reads: [string, number, number][] = [
+    ['finer wisp octave, drift', DRIFT_PERIOD, WISP_FINE_SCALE],
+    ['3D texture z, coarse octave', RISE_PERIOD, WISP_3D_Z_SCALE],
+    ['3D texture z, finer octave', RISE_PERIOD, WISP_3D_FINE_Z_SCALE],
+    ['2D finer octave shear, x', RISE_PERIOD, WISP_2D_SHEAR_X],
+    ['2D finer octave shear, y', RISE_PERIOD, WISP_2D_SHEAR_Y],
+  ]
+  for (const [read, period, scale] of reads) assert.ok(whole(period * scale), `${read}: ${period} × ${scale} = ${period * scale}`)
+  // The scales the periods were chosen for (10 × 2.3 = 23; 16 × 0.25, 0.5625, 0.625, 0.5 = 4, 9,
+  // 10, 8): a changed scale has to be checked against its period again.
+  assert.deepEqual(
+    [WISP_FINE_SCALE, WISP_3D_Z_SCALE, WISP_3D_FINE_Z_SCALE, WISP_2D_SHEAR_X, Math.abs(WISP_2D_SHEAR_Y)],
+    [2.3, 0.25, 0.5625, 0.625, 0.5],
+  )
+  // And the check bites: a rise period of 12 would leave the finer 3D read 6.75 tiles along.
+  assert.equal(whole(12 * WISP_3D_FINE_Z_SCALE), false)
 })

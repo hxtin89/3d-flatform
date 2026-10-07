@@ -75,7 +75,10 @@ import { EXPERIENCE_CONFIG } from './config'
 import type { CloudHaze } from './atmosphere-haze'
 import type { DaylightState } from './environment-layer'
 import type { SkyLight } from './sky-atmosphere'
-import type { FogNoiseSettings } from './fog-noise'
+import {
+  DRIFT_PERIOD, RISE_PERIOD, WISP_2D_SHEAR_X, WISP_2D_SHEAR_Y, WISP_3D_FINE_Z_SCALE, WISP_3D_Z_SCALE, WISP_FINE_SCALE,
+  type FogNoiseSettings,
+} from './fog-noise'
 import type { FogNoiseBaker } from './fog-noise-baker'
 import { extinctionForVisibility, miePhaseParameters, multipleScatteringOctaves, RAYLEIGH_SEA_LEVEL_PER_M } from './fog-optics'
 import type { DensitySliceRequest } from './fog-noise-editor'
@@ -85,18 +88,13 @@ import { cloudTransmittance } from './sky-clouds'
 
 const CONFIG = EXPERIENCE_CONFIG.volumetricFog
 export type FogNoiseSource = '2d' | '3d' | 'procedural'
-/** Wind offsets wrap at this many tiles: whole for the plain reads (period 1) and for the
- *  finer wisp octave read at 2.3× (23 tiles). */
-const DRIFT_PERIOD = 10
+// The wind and rise wrap periods (DRIFT_PERIOD, RISE_PERIOD) and the scales of the wisp reads
+// that must stay whole against them live in fog-noise.ts, where a node test checks them.
 /** Linear depth in the fog depth pass, stored in units of this many metres so the far plane
  *  (650 km) fits a half float: ~0.25 m resolution at 400 m. */
 const DEPTH_UNIT_M = 16
 /** Stored where nothing was drawn (the sky): beyond the far plane. */
 const SKY_DEPTH = 65_000
-/** The rise wraps at this many wisp heights: the slice hash repeats over it, and so do the
- *  sheared finer octave (10, −8 tiles) and the 3D texture's z reads (4 and 9 tiles). The
- *  'procedural' comparison path is not periodic and jumps on a wrap. */
-const RISE_PERIOD = 16
 /** The drawing buffer the presets' cost was measured on (2000 × 1125, 2026-09-30). */
 const MARCH_REFERENCE_PIXELS = 2000 * 1125
 /** Share of a ray's steps for the sparse plumes above the dense layer. 0.35 at 24 steps
@@ -383,7 +381,7 @@ export function createGroundFogLayer(opts: {
     wispAmount: uniform(params.wispAmount), plumeAmount: uniform(params.plumeAmount),
     // Wind and rise as wrapped offsets, accumulated on the CPU: a raw time uniform would lose
     // precision after a few hours of session. Each wraps at a period every read built on it
-    // repeats over, so a wrap is invisible — DRIFT_PERIOD and RISE_PERIOD below.
+    // repeats over, so a wrap is invisible — DRIFT_PERIOD and RISE_PERIOD in fog-noise.ts.
     offCoverage: uniform(new THREE.Vector2()), offBillow: uniform(new THREE.Vector2()),
     offErosion: uniform(new THREE.Vector2()), offWisp: uniform(new THREE.Vector2()), rise: uniform(0),
     gHG: uniform(0.98), gD: uniform(0.5), alpha: uniform(20), wD: uniform(0.48),
@@ -599,14 +597,14 @@ export function createGroundFogLayer(opts: {
           // The default path: the same two octaves from a tileable 3D texture, one trilinear
           // read each (no mips — and level 0 explicitly, as they may run in non-uniform control
           // flow), where the 2D path spends three filtered reads.
-          wispA = noise3dNode.sample(vec3(q, vz.mul(0.25))).level(float(0)).r
-          wispB = noise3dNode.sample(vec3(q.mul(2.3), vz.mul(0.5625).add(0.37))).level(float(0)).r
+          wispA = noise3dNode.sample(vec3(q, vz.mul(WISP_3D_Z_SCALE))).level(float(0)).r
+          wispB = noise3dNode.sample(vec3(q.mul(WISP_FINE_SCALE), vz.mul(WISP_3D_FINE_Z_SCALE).add(0.37))).level(float(0)).r
         } else {
           const wispLod = lod(u.wispScaleInv)
           const lower = noiseNode.sample(q.add(sliceOffset(k))).level(wispLod).b
           const upper = noiseNode.sample(q.add(sliceOffset(k.add(1)))).level(wispLod).b
           wispA = mix(lower, upper, blend)
-          wispB = noiseNode.sample(q.mul(2.3).add(vec2(vz.mul(0.625), vz.mul(-0.5)))).level(wispLod.add(1.2)).b
+          wispB = noiseNode.sample(q.mul(WISP_FINE_SCALE).add(vec2(vz.mul(WISP_2D_SHEAR_X), vz.mul(WISP_2D_SHEAR_Y)))).level(wispLod.add(1.2)).b
         }
         // The 2D layers only say where and how high mist can stand; left at that, every clump
         // is a prism extruded through the band's height, and seen obliquely the prisms read as

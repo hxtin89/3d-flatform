@@ -187,7 +187,7 @@ test('the editor\'s loop against the host as a worker: transfers, pool, one uplo
   const n = 33
   const host = createGradeBakeHost()
   const pool = createBufferPool(n)
-  let texture = identityTexels(n).slice() // what lut.image.data holds
+  let texture: Uint16Array = identityTexels(n).slice() // what lut.image.data holds
   const inbox: BakeMessage[] = [] // the worker's queue, after the transfer
   const scheduler = createBakeScheduler({
     post: (message) => { inbox.push(across(message, [message.out])) },
