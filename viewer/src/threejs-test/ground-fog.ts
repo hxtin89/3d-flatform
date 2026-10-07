@@ -15,8 +15,8 @@
 // test. A ray that lands on the bare map ends at `groundLevelM` inside the sphere-fade dome (a
 // real gap), or at the band's bottom where that is higher, and at the virtual canopy outside
 // it. Inside the box the ray is split where it
-// crosses the top of the dense layer: a quarter of the `steps` go to the sparse plumes above,
-// three quarters to the mist and puffs below, crowded toward the camera by a power law.
+// crosses the top of the dense layer: 35 % of the `steps` go to the sparse plumes above,
+// the rest to the mist and puffs below, crowded toward the camera by a power law.
 // A per-pixel jitter turns what banding is left into grain: interleaved gradient noise moved
 // every frame, for the temporal filter to average away, or fixed white noise without it.
 //
@@ -99,6 +99,11 @@ const SKY_DEPTH = 65_000
 const RISE_PERIOD = 16
 /** The drawing buffer the presets' cost was measured on (2000 × 1125, 2026-09-30). */
 const MARCH_REFERENCE_PIXELS = 2000 * 1125
+/** Share of a ray's steps for the sparse plumes above the dense layer. 0.35 at 24 steps
+ *  gives them the 8 samples they had at 32 steps and 0.25 (2026-10-07): the stretch just
+ *  above the split holds ~43 % of the plumes' visible optical depth. The dense mist takes
+ *  the rest, 16 of 24. */
+const SPARSE_SHARE = 0.35
 type Preset = keyof typeof CONFIG.qualityByPreset
 
 /** Build-time options: changing one rebuilds the shaders. Everything else is a uniform. */
@@ -776,16 +781,16 @@ export function createGroundFogLayer(opts: {
         : fract(sin(dot(screenCoordinate.xy, vec2(12.9898, 78.233))).mul(43758.5453))
       const stepsF = float(u.steps)
       // Two segments, split where the ray crosses the top of the dense layer (mist and
-      // puffs): above it only sparse plumes stand, so a descending ray gets a quarter of its
-      // steps up there and three quarters below — the thin puff layer is resolved instead of
-      // hatched. The dense segment keeps the power-law crowding toward the camera.
+      // puffs): above it only sparse plumes stand, so they get SPARSE_SHARE of the steps
+      // and the dense layer the rest — the thin puff layer is resolved instead of hatched.
+      // The dense segment keeps the power-law crowding toward the camera.
       const zSplit = floorZ.add(max(u.top, u.puffCentre.add(u.puffHeight.mul(2)))).add(u.topSoft)
       const descending = d.z.lessThan(0)
       const tCross = zSplit.sub(o.z).div(descending.select(min(d.z, -1e-5), max(d.z, 1e-5)))
       const tMid = clamp(tCross, tEnter, tExit)
       const lengthFirst = tMid.sub(tEnter)
       const lengthSecond = tExit.sub(tMid)
-      const firstShare = floor(stepsF.mul(descending.select(0.25, 0.75)))
+      const firstShare = floor(stepsF.mul(descending.select(SPARSE_SHARE, 1 - SPARSE_SHARE)))
       const stepsFirst: any = lengthFirst.lessThan(0.01).select(float(0), lengthSecond.lessThan(0.01).select(stepsF, firstShare))
       const cosTheta = dot(d, shared.sunDirectionEnu)
       const sunUp = max(shared.sunDirectionEnu.z, 0.06)

@@ -1804,8 +1804,10 @@ export const EXPERIENCE_CONFIG = {
     /** Samples per ray through the band. The main cost knob together with the resolution,
      *  about linear: +0.85 / +1.4 / +2.4 / +3.6 ms for 16 / 24 / 40 / 64 at half resolution
      *  (same measurement, same look; on it 24 looked all but the same as 40 and 16 showed
-     *  grain). The look dialled in on 2026-09-30 runs 32, on the strong preset too. */
-    steps: 32,
+     *  grain). 32 until 2026-10-07; 24 then measured −0.30 ms at the landing view and
+     *  −0.11 ms at a low horizon view (strong, 1280 × 960), with stills of the frozen fog
+     *  no further apart than two at 32, and the user chose it. */
+    steps: 24,
     /** How the samples crowd toward the camera in the dense segment of the ray (the mist
      *  and puffs; the sparse plume segment above is spaced evenly): 1 spaces them evenly,
      *  2 puts half of them in the nearest quarter, where detail is resolvable. */
@@ -1861,12 +1863,12 @@ export const EXPERIENCE_CONFIG = {
     fillCanopyHoles: true,
     /** Picked by the loader benchmark, on top of the values above. Against a 60 fps frame,
      *  10 fps is 3.3 ms. Measured 2026-09-30 with the defaults of 517dc5a (strong then at 40
-     *  steps): +2.5, +1.5 and +0.35 ms. Strong runs the 32 steps dialled in on 2026-09-30,
-     *  which the same measurement puts at about +2 ms. */
+     *  steps): +2.5, +1.5 and +0.35 ms. Since 2026-10-07 every preset runs a quarter fewer
+     *  steps than before (32 / 24 / 20 → 24 / 18 / 16). */
     qualityByPreset: {
-      strong: { resolutionScale: 0.5, steps: 32 },
-      medium: { resolutionScale: 0.5, steps: 24 },
-      constrained: { resolutionScale: 0.25, steps: 20 },
+      strong: { resolutionScale: 0.5, steps: 24 },
+      medium: { resolutionScale: 0.5, steps: 18 },
+      constrained: { resolutionScale: 0.25, steps: 16 },
     },
     // ---- the band, metres above the area floor
     bottomM: 15,
