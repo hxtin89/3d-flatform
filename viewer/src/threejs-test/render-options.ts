@@ -60,10 +60,9 @@ export const DEFAULT_OPTIONS: RenderOptions = {
   // Off: an annotation layer to switch on from the panel, not part of the default look.
   bigTrees: false,
   donationShape: true,
-  // On while the science data is new on this branch, so it is seen; whether it belongs in
-  // the default look is a decision for the merge.
-  protectedAreas: true,
-  trails: true,
+  // Off: annotation layers to switch on from the panel, like the big trees.
+  protectedAreas: false,
+  trails: false,
   // Off: the per-tile derivation has never had a fair test — until the errorScale fix it
   // was fed a spacing twice the real one, and the Largest dot ceiling then cut off the
   // compensation exactly where a coarse tile needed it. One predictable size while the
