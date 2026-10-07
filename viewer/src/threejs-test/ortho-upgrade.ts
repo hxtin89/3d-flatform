@@ -13,6 +13,7 @@
 import {
   createSettlePicker, isSettledTile, parseSatelliteZxy, TILE_LOADED, type OrthoDensity, type TilePlan,
 } from './ortho-plan.ts'
+import type { OrthoGate, OrthoTrace } from './ortho-trace.ts'
 
 /** An ImageBitmap, or a stand-in in the tests. A closed ImageBitmap reads 0 x 0. */
 export interface Bitmap { readonly width: number; readonly height: number; close(): void }
@@ -102,6 +103,8 @@ export interface UpgraderOptions {
   maxConcurrentComposes: number
   density: OrthoDensity | 'off'
   now?: () => number
+  /** Where the time goes (ortho-trace.ts): the gates of every tick and each tile's steps. */
+  trace?: OrthoTrace
 }
 
 export interface UpgraderStats {
@@ -194,8 +197,9 @@ function textureOf(tile: any): UpgradeTexture | null {
 }
 
 export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
-  const { tiles, satellite, engine } = o
+  const { tiles, satellite, engine, trace } = o
   const clock = o.now ?? (() => performance.now())
+  const keyOf = (zxy: { z: number; x: number; y: number }) => `${zxy.z}/${zxy.x}/${zxy.y}`
   let enabled = true
   let density = o.density
   let disposed = false
@@ -274,6 +278,8 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
       const bytes = satellite.get(texture)
       if (!bytes) continue
       found++
+      trace?.tile(keyOf(zxy), 'seen', now)
+      trace?.mark('firstSeen', now)
       if (hasWork(tile)) continue
       out.push({ key: tile, tile, priority: tile.traversal.error, urgent: still && nearUpgraded(tile), texture, bytes, plan, zxy })
     }
@@ -287,13 +293,21 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     const at = density as OrthoDensity
     const job: Job = { kind: 'ortho', controller: new AbortController(), granted: 0, children: c.plan.children.length }
     jobs.set(tile, job)
-    engine.compose(c.plan, c.bytes, job.controller.signal, () => { job.granted++ }).then((out) => {
+    const key = keyOf(c.zxy)
+    trace?.tile(key, 'picked')
+    trace?.mark('firstPick')
+    engine.compose(c.plan, c.bytes, job.controller.signal, () => {
+      job.granted++
+      trace?.tile(key, 'granted')
+    }).then((out) => {
       const aborted = job.controller.signal.aborted
       if (out.type === 'done') {
         if (aborted) out.bitmap.close()
         else swaps.push({ kind: 'ortho', tile, scene, texture, bitmap: out.bitmap, density: at, edge: out.edge })
+        trace?.tile(key, aborted ? 'abandoned' : 'composed')
         return
       }
+      trace?.tile(key, 'abandoned')
       if (out.type === 'aborted' || aborted) return
       counts.fallbacks++
       if (out.type === 'empty') remember(`${at}:${c.zxy.z}/${c.zxy.x}/${c.zxy.y}`)
@@ -371,6 +385,9 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     counts.lastSwapAt = clock()
     if (swap.kind === 'ortho') {
       entries.set(tile, { texture, density: swap.density!, composite: true })
+      const zxy = zxyOf(tile)
+      if (zxy) trace?.tile(keyOf(zxy), 'swapped')
+      trace?.mark('firstSwap')
       counts.composed++
       if (swap.edge) counts.edgeTiles++
       else counts.fullTiles++
@@ -390,6 +407,15 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
   function tick(): void {
     if (disposed) return
     const now = clock()
+    const gates: OrthoGate[] = []
+    try {
+      step(now, gates)
+    } finally {
+      trace?.gates(gates, now)
+    }
+  }
+
+  function step(now: number, gates: OrthoGate[]): void {
     const stats = tiles.stats
     const busy = stats.queued + stats.downloading + stats.parsing > 0 || tiles.processNodeQueue?.running === true
     const points = o.pointArrivals()
@@ -413,11 +439,16 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     // tile, and, for upgrades, only in a view held still for settleMs outside a flight: point
     // tiles the moving dome reveals upload without an arrival, so a moving view is no place for a
     // swap. A revert (Off) only waits for arrivals.
+    const allowed = o.upgradesAllowed()
     if (swaps.length) {
       const still = now - lastTraversalAt >= o.settleMs
-      const hold = arrived || (!reverting() && (!still || !o.upgradesAllowed()))
-      if (hold) counts.swapDeferrals++
-      else applySwap(takeSwap())
+      const hold = arrived || (!reverting() && (!still || !allowed))
+      if (hold) {
+        counts.swapDeferrals++
+        gates.push(arrived ? 'swapHeldByArrival' : 'swapHeldByMotion')
+      } else {
+        applySwap(takeSwap())
+      }
     }
     if (reverting()) {
       picker.clear()
@@ -425,9 +456,18 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
       waiting = swaps.length
       return
     }
-    if (busy || !o.upgradesAllowed() || !engine.ready) {
+    if (!allowed) gates.push('notAllowed')
+    else trace?.mark('allowed', now)
+    if (busy) gates.push('basemapBusy')
+    else if (allowed) trace?.mark('basemapIdleAfterLanding', now)
+    if (!engine.ready) gates.push('workerStarting')
+    if (jobs.size) gates.push('working')
+    if (busy || !allowed || !engine.ready) {
       picker.clear()
       waiting = swaps.length
+      // Only for the trace: the tiles that would be candidates, so a tile's wait starts when it
+      // settles, not when the gates open.
+      if (trace && allowed && engine.ready) candidates(now)
       return
     }
     const found = candidates(now)
@@ -439,7 +479,10 @@ export function createOrthoUpgrader(o: UpgraderOptions): OrthoUpgrader {
     if (!pointsBusy) pointsBusySince = -1
     else if (pointsBusySince < 0) pointsBusySince = now
     if (!pointsBusy || now - pointsBusySince >= POINTS_BUSY_LIMIT_MS) engine.pump()
+    else if (engine.requestsWaiting) gates.push('requestsHeldByPoints')
+    if (!jobs.size && !swaps.length && found.length) gates.push('dwelling')
     waiting = found.length - started.length + swaps.length
+    if (!found.length && !jobs.size && !swaps.length && counts.composed) trace?.mark('landingComplete', now)
   }
 
   function onLoadModel(): void { basemapArrivals++ }

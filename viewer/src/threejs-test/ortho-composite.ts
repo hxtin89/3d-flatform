@@ -25,6 +25,7 @@ import {
   createOrthoUpgrader, type Bitmap, type ComposeOutcome, type SatelliteBytes, type UpgradeEngine,
   type UpgradeTexture, type UpgraderStats,
 } from './ortho-upgrade'
+import { orthoTrace } from './ortho-trace'
 
 export interface OrthoCompositeConfig {
   /** Lowest basemap zoom the ortho is composited into. */
@@ -96,6 +97,8 @@ export interface OrthoCompositeOptions {
   /** See PlannerOptions.thinUnderPatch. */
   thinUnderPatch: boolean
   debugKinds: boolean
+  /** Every ortho request skips the browser cache, as on a first visit (?orthocold). */
+  bypassCache?: boolean
 }
 
 type WorkerReply =
@@ -157,7 +160,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     }, 15000)
     worker.onmessage = (event: MessageEvent<WorkerReply>) => {
       const reply = event.data
-      if (reply.type === 'ready') { clearTimeout(timer); ready = true; resolve(true); return }
+      if (reply.type === 'ready') { clearTimeout(timer); ready = true; orthoTrace.mark('workerReady'); resolve(true); return }
       if (reply.type === 'init-failed') {
         clearTimeout(timer)
         console.warn(`[drone ortho] ${reply.reason}; the basemap stays satellite only.`)
@@ -235,11 +238,17 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     signal.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(), config.fetchTimeoutMs)
     counts.requests++
-    if (!counts.firstRequestAt) counts.firstRequestAt = performance.now()
+    const startedAt = performance.now()
+    if (!counts.firstRequestAt) counts.firstRequestAt = startedAt
+    orthoTrace.mark('firstRequest', startedAt)
+    let status = 0
+    let bytes = 0
     try {
       // Low priority: on a shared connection the satellite tiles, which every view needs, go first.
-      const response = await fetch(options.orthoTileUrl(s.id, s.format, z, x, y),
-        { signal: controller.signal, priority: 'low' } as RequestInit)
+      const response = await fetch(options.orthoTileUrl(s.id, s.format, z, x, y), {
+        signal: controller.signal, priority: 'low', ...(options.bypassCache ? { cache: 'no-store' } : {}),
+      } as RequestInit)
+      status = response.status
       if (response.status === 401 || response.status === 403) {
         counts.forbidden++
         const n = (forbiddenBySource.get(source) ?? 0) + 1
@@ -255,6 +264,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       if (!response.ok) { counts.childFailures++; return null }
       const blob = await response.blob()
       counts.orthoBytes += blob.size
+      bytes = blob.size
       return blob.size < 100 ? 'empty' : blob
     } catch {
       if (signal.aborted) throw abortError()
@@ -264,6 +274,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
       gate.release()
+      if (!signal.aborted) orthoTrace.child({ ms: performance.now() - startedAt, bytes, status })
     }
   }
 
@@ -278,6 +289,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
       throw error
     }
     if (signal.aborted) return { type: 'aborted' }
+    orthoTrace.tile(`${plan.z}/${plan.x}/${plan.y}`, 'fetched')
     const children = got.map(({ child, result }) => ({ ...child, blob: result instanceof Blob ? result : null }))
     if (!children.some((child) => child.blob)) {
       return got.every((g) => g.result === 'empty') ? { type: 'empty' } : { type: 'failed' }
@@ -325,6 +337,7 @@ export function createOrthoComposite(options: OrthoCompositeOptions): OrthoCompo
     settleMs: config.settleMs,
     maxConcurrentComposes: config.maxConcurrentComposes,
     density,
+    trace: orthoTrace,
   })
 
   return {

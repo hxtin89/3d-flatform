@@ -99,6 +99,8 @@ export interface Globe {
     pointArrivals: () => number
     /** The point stream has tiles queued, downloading or parsing: ortho requests wait for it. */
     pointsBusy: () => boolean
+    /** Ortho requests skip the browser cache, as on a first visit (?orthocold). */
+    bypassCache?: boolean
   }): Promise<boolean>
   /** Off puts the satellite back into upgraded tiles from their kept bytes; On upgrades again. */
   setOrthoEnabled(on: boolean): void

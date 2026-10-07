@@ -15,6 +15,7 @@ import { domeFadeAt, pickFirstPoint, warmUpPick, type PickDome, type PickScreen,
 import { drawnDotDiameterPx, type DotSizeRule } from './dot-size'
 import { loadColourField, colourFieldMatchesFrame, type ColourField } from './colour-field'
 import type { OrthoDensity } from './ortho-plan'
+import { orthoTrace } from './ortho-trace'
 import { createCloudNoiseTexture } from './cloud-noise'
 import { createGlobe, type Globe } from './globe'
 import { createFoveation, type Foveation, type FoveationSettings } from './foveation'
@@ -562,6 +563,7 @@ const onLoaderStart = () => {
   loaderEl.classList.add('finishing')
   rainCycleStartedAt = now
   loaderFlightStarted = true
+  orthoTrace.mark('start', now)
   // Park the cloud until the flight has closed most of the distance. The loader
   // staged the camera at the flight's destination, so the tiles the reveal needs
   // are already resident — pausing the streamer keeps them, because unloading
@@ -3948,9 +3950,16 @@ function attachDroneOrtho(): void {
   const patch = DESIGN.groundPatch
   const thinUnderPatch = patch.enabled && patch.amount >= 1 && patch.colorMix >= 1
     && !EXPERIENCE_CONFIG.lod.sphereFade.enabled
+  // ?orthoreq=<n>&orthojobs=<n>: ortho requests and upgrades in flight, for timing other limits.
+  const limit = (name: string, fallback: number) => Math.max(1, Number(params.get(name)) || fallback)
   void globe.attachOrtho({
     meta, rootTransform: colourFieldInUse.rootTransform, fieldBaseUrl,
-    config: DRONE_ORTHO, density, thinUnderPatch, debugKinds: params.has('orthokinds'),
+    config: {
+      ...DRONE_ORTHO,
+      maxOrthoRequests: limit('orthoreq', DRONE_ORTHO.maxOrthoRequests),
+      maxConcurrentComposes: limit('orthojobs', DRONE_ORTHO.maxConcurrentComposes),
+    },
+    density, thinUnderPatch, debugKinds: params.has('orthokinds'),
     // Upgrades start after the Start click and never during a flight: they wait for the view.
     upgradesAllowed: () => loaderFlightStarted && !cameraFlight.active,
     pointArrivals: arrivalsSoFar,
@@ -3959,6 +3968,7 @@ function attachDroneOrtho(): void {
       const s = (stream?.tiles as any)?.stats
       return !!s && s.queued + s.downloading + s.parsing > 0
     },
+    bypassCache: params.has('orthocold'),
   }).then((ok) => { orthoAttachResult = ok; syncDroneOrthoPanel() })
 }
 function syncColourMatch(): void {
@@ -6488,6 +6498,9 @@ async function main(): Promise<void> {
     renderer, scene, camera, uniforms, globe, stream, markerLayer,
     rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
     groundPatchMask, depthOfField, grade: gradeDebug, groundFog,
+    /** Where the drone ortho's loading time goes, from the Start click on (ortho-trace.ts):
+     *  report(); reset() and mark('start') time a later view the same way. */
+    orthoTrace,
     /** The fog band's frame: its floor in the shader's ENU frame and the survey centre. */
     fogFrame: () => ({ floorZ: groundFogFloorZ, centre: [cloudCenterEnu.x, cloudCenterEnu.y] }),
   }
