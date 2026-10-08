@@ -807,8 +807,9 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
 )
 
 /**
- * The built graph, keyed by the only two things that can still change its shape: the colour
- * attribute's component count, and which effects are compiled in.
+ * A graph embeds the exact uniform nodes it was built with. Tiles in one stream may share
+ * it, but another stream's CloudUniforms must have its own graph even when the feed and
+ * effect flags match. The outer map keys by object identity, never by dataset name.
  *
  * `effectsVersion` rather than an explicit invalidation call, so a flag flip cannot leave a
  * stale graph behind: `setCloudEffectEnabled` bumps it, the next lookup misses, and every
@@ -816,7 +817,8 @@ const tileDebugTint: any = uniform(new THREE.Color(0xffffff)).onObjectUpdate(
  * hit the cache.
  */
 let effectsVersion = 0
-const cloudGraphCache = new Map<string, { sizeNode: any; positionNode: any; colorNode: any; cornerNode: any }>()
+type CloudGraph = { sizeNode: any; positionNode: any; colorNode: any; cornerNode: any }
+const cloudGraphCache = new Map<CloudUniforms, Map<string, CloudGraph>>()
 
 /** The basemap builds its own graph from the same effect flags and needs the same cache
  *  invalidation — see globe.ts. */
@@ -844,7 +846,7 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
 }
 
 /**
- * Forget the pulled feed's graphs, once no tile draws with them.
+ * Forget one stream's pulled graphs, once its loaded tiles have switched feeds.
  *
  * Each pulled graph's texel reference keeps pointing at the last material it drew, and its
  * inner texture node at that tile's point-data texture: three updates them per draw and
@@ -852,10 +854,18 @@ export function setCloudEffectEnabled(effect: CloudEffect, enabled: boolean): bo
  * the texture's array — up to 4.3 MB per graph for the overview tile. Dropping the graphs
  * lets it go. A later return to the pulled feed builds each graph once more.
  */
-export function dropPulledCloudGraphs(): void {
-  for (const key of [...cloudGraphCache.keys()]) {
-    if (key.startsWith('pulled-')) cloudGraphCache.delete(key)
+export function dropPulledCloudGraphs(u: CloudUniforms): void {
+  const graphs = cloudGraphCache.get(u)
+  if (!graphs) return
+  for (const key of [...graphs.keys()]) {
+    if (key.startsWith('pulled-')) graphs.delete(key)
   }
+  if (graphs.size === 0) cloudGraphCache.delete(u)
+}
+
+/** Do not let a disposed stream's graphs (or last pulled texture) stay cache-reachable. */
+export function dropCloudGraphsForUniforms(u: CloudUniforms): void {
+  cloudGraphCache.delete(u)
 }
 
 /**
@@ -951,7 +961,7 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
   // no colour attribute, so its key is the shape instead of the colour size.
   const feedKey = mode.feed === 'pulled' ? `pulled-${mode.shape}` : `${colorItemSize}`
   const key = `${feedKey}|${effectsVersion}`
-  const cached = cloudGraphCache.get(key)
+  const cached = cloudGraphCache.get(u)?.get(key)
   if (cached) return cached
 
   const thinScale = tileThinScale
@@ -1242,7 +1252,12 @@ function cloudGraphFor(u: CloudUniforms, colorItemSize: number, mode: DotMode = 
   })()
 
   const graph = { sizeNode, positionNode, colorNode: buildColorNode(), cornerNode }
-  cloudGraphCache.set(key, graph)
+  let graphs = cloudGraphCache.get(u)
+  if (!graphs) {
+    graphs = new Map<string, CloudGraph>()
+    cloudGraphCache.set(u, graphs)
+  }
+  graphs.set(key, graph)
   return graph
 }
 

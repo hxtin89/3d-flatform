@@ -806,6 +806,13 @@
 
     <div id="panel" class="card">
       <button class="close" data-close="panel">×</button>
+      <p class="opt-head">Location</p>
+      <div class="row" id="locationRow">
+        <label class="h" for="worldLocation">Point-cloud site</label>
+        <select id="worldLocation" aria-describedby="locationStatus"></select>
+        <button class="act primary" id="flyToLocation" type="button" disabled>✈ Fly</button>
+        <span class="weather-note" id="locationStatus">Loading locations…</span>
+      </div>
       <!-- Zoom-levels / point-source panel, merged in from jan-threejs-test but not yet
            wired: point-source.ts is in the tree, main.ts is not driving it. Hidden
            rather than left showing "Reading area manifest…" for ever. Unhide together

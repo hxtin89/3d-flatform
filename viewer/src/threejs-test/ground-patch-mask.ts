@@ -120,6 +120,8 @@ export interface GroundPatchMask {
    * it is never displayed — and keep its point arrays, dot mesh and material alive.
    */
   removeTile(object: THREE.Object3D): void
+  /** Reuse the same GPU textures for a different survey, clearing all old coverage. */
+  reset(): void
   /**
    * Stop taking tiles, for when the lattice could not be sized: without an extent the
    * queue is never worked, so every tile loaded afterwards would be kept alive.
@@ -286,6 +288,7 @@ export function createGroundPatchMask(opts: {
   let cursor = 0
   /** Set by disable(): the lattice has no extent, so nothing is queued any more. */
   let disabled = false
+  let generation = 0
   // The attribute the in-flight tile started on, so a swap under us is detectable.
   let slicePosition: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null = null
   let splatChecks = 0
@@ -426,6 +429,7 @@ export function createGroundPatchMask(opts: {
     grid,
 
     async setExtent({ tilesetUrl, rootTileSet, enuInverse: inverse, maxDepth, bounds }) {
+      const startedFor = generation
       const root = rootTileSet?.root
       const children: any[] = root?.children ?? []
       if (!children.length) return 0
@@ -452,6 +456,7 @@ export function createGroundPatchMask(opts: {
           return null
         }
       }))
+      if (startedFor !== generation) return 0
 
       for (const subtree of subtrees) {
         const subRoot = subtree?.root
@@ -541,6 +546,31 @@ export function createGroundPatchMask(opts: {
       // The head may be mid-splat; its cursor and attribute belong to it alone.
       if (at === 0) { cursor = 0; slicePosition = null }
       queue.splice(at, 1)
+    },
+
+    reset() {
+      generation++
+      queue.length = 0
+      cursor = 0
+      slicePosition = null
+      enuInverse = null
+      enuInverseWorldSet = false
+      surveyBounds = null
+      disabled = false
+      cellsUsed = 0
+      indexDirty = false
+      dirtyCells.clear()
+      strays.length = 0
+      splatLog.length = 0
+      splatChecks = 0
+      splatMinX = splatMinY = Infinity
+      splatMaxX = splatMaxY = -Infinity
+      grid.cols = grid.rows = 0
+      grid.originX = grid.originY = 0
+      cells.fill(0)
+      indexData.fill(0)
+      texture.needsUpdate = true
+      index.needsUpdate = true
     },
 
     disable() {

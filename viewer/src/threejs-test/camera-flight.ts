@@ -47,6 +47,8 @@ export interface CameraFlightDeps {
 
 export interface CameraFlightController {
   readonly active: boolean
+  /** Stop an in-progress local-ENU flight before ownership moves to another survey. */
+  cancel(): void
   toCloud(durationMs?: number, startFromOverview?: boolean): void
   /** Re-aim an arc that is already in the air. The Start button can fire before
    * the parcel GeoJSON lands; this bends only the tail of the curve, so there
@@ -114,6 +116,12 @@ export function createCameraFlight(deps: CameraFlightDeps): CameraFlightControll
   return {
     get active() {
       return flight !== null
+    },
+
+    cancel() {
+      flight = null
+      deps.onProgress(1)
+      deps.setControlsEnabled(true)
     },
 
     destination() {

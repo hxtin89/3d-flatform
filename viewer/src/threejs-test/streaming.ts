@@ -7,7 +7,7 @@ import { LoadRegionPlugin, SphereRegion, UnloadTilesPlugin } from '3d-tiles-rend
 import { recordArrival } from './arrival-cost'
 import {
   applyMatrixPrecision, createCloudMaterial, setHighPrecisionMatrices, rebuildEffectMaterial,
-  effectMaterialStale, dropPulledCloudGraphs,
+  effectMaterialStale, dropPulledCloudGraphs, dropCloudGraphsForUniforms,
   POINT_COLOR_ATTRIBUTE, POINT_DATA_PROPERTY, POINT_POSITION_ATTRIBUTE, type CloudUniforms,
 } from './point-cloud'
 import {
@@ -107,6 +107,10 @@ export interface StreamingCloud {
   setLeafLoading(enabled: boolean): void
   /** 0 = p02, 1 = p10, 2 = p100. */
   setDensityCeiling(level: number): void
+  /** Background APH sites may retain z0 overview, never adaptive residual nodes. */
+  setTraversalPolicy(policy: 'active' | 'aph-overview-background'): void
+  /** Skip distant background sites during traversal; Infinity restores the normal view. */
+  setDistanceCutoff(metres: number): void
   /** Push this frame's traversal error and stopped-here flag into the visible tiles'
    *  materials, for the false-colour inspector. A no-op while it is switched off. */
   updateDebugTiles(active: boolean): void
@@ -595,6 +599,8 @@ export function createStreamingCloud(opts: {
   let renderGateActive = false
   /** The fade band inside the render sphere's rim, or null for none. */
   let domeBand: DomeBand | null = null
+  let traversalPolicy: 'active' | 'aph-overview-background' = 'active'
+  let distanceCutoffM = Infinity
   /**
    * The dome's fade factor for a tile, 1 while no band is in force.
    *
@@ -649,6 +655,24 @@ export function createStreamingCloud(opts: {
   const viewErrorBeforeDome = (tiles as any).calculateTileViewError.bind(tiles)
   ;(tiles as any).calculateTileViewError = (tile: any, target: any) => {
     viewErrorBeforeDome(tile, target)
+    if (!target.inView) return
+    if (traversalPolicy === 'aph-overview-background') {
+      const uri: string | undefined = tile?.content?.uri ?? tile?.content?.url
+      if (uri) {
+        const clean = uri.replace(/\\/g, '/')
+        const z0 = /(?:^|\/)z0\//.test(clean)
+        if (!z0 || (!/\.json(?:$|[?#])/i.test(clean) && !/(?:^|\/)points\/z0\//.test(clean))) {
+          target.inView = false
+          target.error = 0
+          return
+        }
+      }
+    }
+    if (target.distanceFromCamera >= distanceCutoffM) {
+      target.inView = false
+      target.error = 0
+      return
+    }
     if (!domeBand || !(domeBand.rimDetailFactor > 1) || !target.inView) return
     const fade = domeFadeFor(tile)
     if (fade < 1) target.error /= 1 + (domeBand.rimDetailFactor - 1) * (1 - fade)
@@ -1448,9 +1472,9 @@ export function createStreamingCloud(opts: {
       })
       // Tiles still waiting for their reveal hang under a live tile, so the walk above has
       // them already.
-      // Every loaded tile now draws with an instanced graph, and tiles still in flight build
-      // in the new mode, so the cached pulled graphs only hold the last texture they drew.
-      if (dotMode.feed === 'instanced') dropPulledCloudGraphs()
+      // This stream's loaded tiles now draw with instanced graphs; another site's stream
+      // may still use pulled graphs, so only release this uniform set's pulled entries.
+      if (dotMode.feed === 'instanced') dropPulledCloudGraphs(uniforms)
       return changed
     },
     dotMode: () => ({ ...dotMode }),
@@ -1473,6 +1497,10 @@ export function createStreamingCloud(opts: {
       renderSphere.center.copy(centerWorld)
       tiles.group.worldToLocal(renderSphere.center)
       renderSphere.radius = radius
+    },
+    setTraversalPolicy(policy) { traversalPolicy = policy },
+    setDistanceCutoff(metres) {
+      distanceCutoffM = Number.isFinite(metres) && metres > 0 ? metres : Infinity
     },
     sampleGroundZ(centreEnu: THREE.Vector2, radiusM: number, enuInverse: THREE.Matrix4) {
       // Deliberately not a raycast. The load-model handler above parks every
@@ -1929,6 +1957,7 @@ export function createStreamingCloud(opts: {
       scene.remove(tiles.group)
       tiles.dispose()
       lifecycle.abort()
+      dropCloudGraphsForUniforms(uniforms)
     },
   }
 }

@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { LineBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import {
   cloudEffectsVersion, createUniforms, setCloudShadowTexture, setGroundPatchMask,
-  setCloudEffectEnabled, type CloudEffect,
+  setCloudEffectEnabled, type CloudEffect, type CloudUniforms,
 } from './point-cloud'
 import { COMPILED_TERMS, compiledTermsWanted, type CompiledTerm } from './compiled-terms'
 import { domeFadeAt, pickFirstPoint, warmUpPick, type PickDome, type PickScreen, type PickTile } from './cloud-pick'
@@ -27,7 +27,13 @@ import {
 import { createStreamingCloud, type StreamingCloud, type StreamingStats } from './streaming'
 import { densityCeilingForRange } from './viewer-request-volume'
 import { densityBandForUri, densityLevelColor, shortBandLabel } from './density-band'
-import { fetchGlobeManifest } from './manifest'
+import { fetchGlobeManifest, type GlobeManifest } from './manifest'
+import { createPointSource, type PointSourceController, type ResolvedSource } from './point-source'
+import {
+  allocateWorldMemoryBudget, configuredWorldDatasets, coverageDatasetIds,
+  handoffCandidate, HandoffDwell, type WorldDatasetDefinition, type WorldDatasetId,
+  type WorldFootprint,
+} from './world-datasets'
 import { createMarkerLayer, type MarkerActionTarget, type MarkerLayer } from './marker-layer'
 import { createRainLayer, type RainLayer } from './rain-layer'
 import { Fps } from './stats'
@@ -67,6 +73,7 @@ import {
 } from './render-options'
 import type { MemoryBudgetSnapshot } from './streaming'
 import { maptilerKeyForHost } from '../maptiler-key'
+import { buildWorldSurveyFrame, type WorldSurveyFrame } from './world-frame'
 
 // ---------------------------------------------------------------- config
 const params = new URLSearchParams(location.search)
@@ -75,7 +82,8 @@ const domain = (import.meta.env.VITE_AWS_MEDIA_CLOUDFRONT_DISTRIBUTION_DOMAIN ??
 const folder = (import.meta.env.VITE_POINTCLOUD_TILES_FOLDER ?? 'pointcloud-tiles').replace(/^\/+|\/+$/g, '')
 const baseUrl = domain ? `https://${domain}/${folder}` : ''
 const MAPTILER_KEY = maptilerKeyForHost()
-const dataset = params.get('dataset') ?? 'peru-b2-globe'
+const worldDefinitions = configuredWorldDatasets(params.get('dataset'))
+const dataset = worldDefinitions[0].logicalDataset
 /** 3DGS-Machbarkeitstest: Spark rendert dieses INRIA-Splat-Modell in einem
  * eigenen WebGL-Overlay (siehe gaussian-splat-layer.ts). Kleinster ladbarer
  * Downsample der ply-result-Ablage (61 MB). */
@@ -133,7 +141,8 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
  * can be aimed at the parcel centroid without the boot sequence ever waiting on
  * it. `?shape=` accepts an absolute URL for a future booking API. */
 const donationShapeUrl = params.get('shape') ?? shapeAssetUrl(EXPERIENCE_CONFIG.donationShape.sourcePath)
-const donationShapePromise: Promise<DonationShapeSource | null> = fetchDonationShape(donationShapeUrl)
+const donationShapePromise: Promise<DonationShapeSource | null> = (worldDefinitions[0].hasPeruContent
+  ? fetchDonationShape(donationShapeUrl) : Promise.resolve(null))
   .catch((error) => {
     console.warn('[donation-shape] source unavailable', donationShapeUrl, error)
     return null
@@ -147,8 +156,13 @@ const bootMark = (name: string): void => { performance.mark(`boot:${name}`) }
  * there as before; the empty catch only keeps an early rejection from being reported
  * as unhandled in the meantime. */
 bootMark('manifest-start')
-const manifestRequest: ReturnType<typeof fetchGlobeManifest> | null = baseUrl ? fetchGlobeManifest(baseUrl, dataset) : null
-manifestRequest?.catch(() => {})
+const manifestRequests = new Map<WorldDatasetId, ReturnType<typeof fetchGlobeManifest>>()
+if (baseUrl) for (const definition of worldDefinitions) {
+  const request = fetchGlobeManifest(baseUrl, definition.logicalDataset)
+  request.catch(() => {})
+  manifestRequests.set(definition.id, request)
+}
+const manifestRequest = manifestRequests.get(worldDefinitions[0].id) ?? null
 const FIELD_VIDEO_URL = 'https://d2ijqnyf2ixq2j.cloudfront.net/media/smaller-image-bettter/WI-Imagefilm-WebsiteHeaderHD.mp4'
 
 // ---------------------------------------------------------------- dom helpers
@@ -424,8 +438,7 @@ function applyBenchPreset(): void {
   console.info(
     `[eagle-bench] ${measured && measured.preset
       ? `${Math.round(measured.pointsAtTarget / 1000)}k of ${Math.round(measured.maxPoints / 1000)}k pts @${EXPERIENCE_CONFIG.eagleBench.targetFps}fps (${measured.samples} samples)`
-      : 'no measurement (heuristic fallback)'} → preset ${preset}${
-      presetOverride ? ' (forced by ?preset)' : ''}`,
+      : 'no measurement (heuristic fallback)'} → preset ${preset}${presetOverride ? ' (forced by ?preset)' : ''}`,
   )
   // Every stage's median frame, for re-tuning the bars per device: the verdict only says
   // which stages held the target. On window as well, so a phone's figures can be read
@@ -436,7 +449,7 @@ function applyBenchPreset(): void {
       .join(' · ')
     console.info(`[eagle-bench] stages (${measured.stress}, ${forceWebGL ? 'WebGL2' : renderer.backend?.constructor?.name ?? '?'}, dpr ${window.devicePixelRatio}): ${stages}`)
   }
-  ;(window as any).__benchReport = {
+  ; (window as any).__benchReport = {
     preset, forced: Boolean(presetOverride), measured,
     backend: (renderer as any).backend?.constructor?.name ?? null,
     devicePixelRatio: window.devicePixelRatio,
@@ -623,6 +636,53 @@ const camera = new THREE.PerspectiveCamera(
   EXPERIENCE_CONFIG.atmosphere.maximumFarM,
 )
 const uniforms = createUniforms()
+interface WorldRuntime {
+  definition: WorldDatasetDefinition
+  status: 'loading' | 'ready' | 'failed'
+  error: string | null
+  manifest: GlobeManifest | null
+  frame: WorldSurveyFrame | null
+  uniforms: CloudUniforms
+  pointSource: PointSourceController | null
+  source: ResolvedSource | null
+  stream: StreamingCloud | null
+  stats: StreamingStats | null
+  maskExtentBuilt: boolean
+}
+const worldSites = new Map<WorldDatasetId, WorldRuntime>(worldDefinitions.map((definition) => [definition.id, {
+  definition, status: 'loading', error: null, manifest: null, frame: null,
+  uniforms: createUniforms(),
+  pointSource: null, source: null, stream: null, stats: null, maskExtentBuilt: false,
+}]))
+let activeWorldId = worldDefinitions[0].id
+let worldIsWebGPU = false
+const worldHandoffDwell = new HandoffDwell()
+const worldLocationEl = $<HTMLSelectElement>('#worldLocation')
+const flyToLocationEl = $<HTMLButtonElement>('#flyToLocation')
+const locationStatusEl = $('#locationStatus')
+for (const runtime of worldSites.values()) {
+  const option = document.createElement('option')
+  option.value = runtime.definition.id
+  option.textContent = `${runtime.definition.label} — loading`
+  option.disabled = true
+  worldLocationEl.append(option)
+}
+worldLocationEl.value = activeWorldId
+function updateWorldPicker(): void {
+  for (const runtime of worldSites.values()) {
+    const option = [...worldLocationEl.options].find((entry) => entry.value === runtime.definition.id)
+    if (!option) continue
+    option.disabled = runtime.status !== 'ready'
+    option.textContent = runtime.definition.label + (runtime.status === 'ready' ? '' : ` — ${runtime.status}`)
+  }
+  const selected = worldSites.get(worldLocationEl.value as WorldDatasetId)
+  flyToLocationEl.disabled = bootLoading || selected?.status !== 'ready' || selected.definition.id === activeWorldId
+  const active = worldSites.get(activeWorldId)
+  locationStatusEl.textContent = active?.status === 'ready'
+    ? `Active · ${active.definition.label}` : active?.error ?? 'Loading locations…'
+}
+worldLocationEl.addEventListener('change', updateWorldPicker)
+flyToLocationEl.addEventListener('click', () => { navigateToWorld(worldLocationEl.value as WorldDatasetId) })
 const fps = new Fps()
 // Owns the frame's draw call: it either routes the scene through the DoF pass or
 // falls back to renderer.render, so there is one render path either way.
@@ -802,8 +862,6 @@ function applyGroundPatchExtent(): void {
   uniforms.groundPatchCellSizeM.value = cellSizeM
   uniforms.groundPatchIndexSize.value = indexSize
 }
-/** Guards the one-shot extent fix — the survey rectangle never changes. */
-let groundPatchMaskBuilt = false
 /** Survey extent in ENU for the ground-patch lattice, from the manifest. */
 let maskBoundsEnu: { minX: number; minY: number; maxX: number; maxY: number } | null = null
 let lastFieldTier: PerformanceTier | null = null
@@ -1022,7 +1080,7 @@ function applyPixelRatio(): void {
   // change or refinement targets are computed against a stale backbuffer size.
   renderer.setSize(window.innerWidth, window.innerHeight)
   globe?.setResolution()
-  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  for (const site of worldSites.values()) site.stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
 }
 
 function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderOptionKey[]): void {
@@ -1069,14 +1127,14 @@ function applyRenderOptions(effective: Readonly<RenderOptions>, changed: RenderO
         environmentLayer?.setGradingEnabled(effective.daylightGrading)
         break
       case 'fieldModels':
-        fieldModelLayer?.setVisible(effective.fieldModels)
+        fieldModelLayer?.setVisible(worldSites.get(activeWorldId)?.definition.hasPeruContent === true && effective.fieldModels)
         break
       case 'markers':
-        markerLayer?.setVisible(effective.markers)
+        markerLayer?.setVisible(worldSites.get(activeWorldId)?.definition.hasPeruContent === true && effective.markers)
         if (!effective.markers) setAimMode(false, false)
         break
       case 'donationShape':
-        donationShapeLayer?.setVisible(effective.donationShape)
+        donationShapeLayer?.setVisible(worldSites.get(activeWorldId)?.definition.hasPeruContent === true && effective.donationShape)
         break
       case 'dynamicPointSize':
         applyPointSize()
@@ -1142,7 +1200,7 @@ for (const rowDef of RENDER_OPTION_ROWS) {
   row.append(label, button, note)
   // A row may ask to live beside the controls it governs; the rest share the list.
   const mount = rowDef.mount ? document.getElementById(rowDef.mount) : null
-  ;(mount ?? optionRowsEl).appendChild(row)
+    ; (mount ?? optionRowsEl).appendChild(row)
   optionButtons.set(rowDef.key, button)
 }
 // Buttons are created before any option transition occurs, so initialise their
@@ -2420,6 +2478,7 @@ let areaHeightsKnown = false
 let groundFogFloorZ = 0
 let navigationClearance: number = EXPERIENCE_CONFIG.navigation.zoomStopHeightM
 let navigationFloorZ = navigationClearance
+let handoffClearancePending = false
 let navigationBoundsRadius = 2500
 const vignetteEl = $<HTMLDivElement>('#vignette')
 const navigationCameraEnu = new THREE.Vector3()
@@ -2560,6 +2619,19 @@ function applyFrameMoveGovernor(): void {
 }
 
 function constrainControlsCamera(): void {
+  if (handoffClearancePending && globe) {
+    const frame = worldSites.get(activeWorldId)?.frame
+    if (frame) {
+      const eyeZ = worldToEnu(camera.position, navigationCameraEnu).z
+      navigationFloorZ = Math.min(frame.navigationFloorZ, Math.max(navigationFloorZ, eyeZ - 1))
+      const radius = Math.min(frame.navigationClearance,
+        Math.max(globe.controls.cameraRadius, eyeZ - frame.areaMinZ - 1))
+      globe.controls.cameraRadius = radius
+      globe.controls.minDistance = radius
+      handoffClearancePending = navigationFloorZ < frame.navigationFloorZ
+        || radius < frame.navigationClearance
+    }
+  }
   applyFrameMoveGovernor()
   enforceNavigationBounds()
 }
@@ -2791,7 +2863,8 @@ const cameraFlight = createCameraFlight({
   cloudCentre: () => cloudCenterEnu,
   // Evaluated at toCloud() time, so the arc lands on the donation parcel once
   // its GeoJSON is in and falls back to the survey centre until then.
-  flightTarget: () => donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu,
+  flightTarget: () => worldSites.get(activeWorldId)?.definition.hasPeruContent
+    ? donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu : cloudCenterEnu,
   flightDestinationOffset: () => donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM,
   navigationFloorZ: () => navigationFloorZ,
   setControlsEnabled: (enabled) => { if (globe) globe.controls.enabled = enabled },
@@ -2810,7 +2883,7 @@ const cameraFlight = createCameraFlight({
  * volume is what fills the frame from a legal viewing height.
  */
 function donationFlightOffset(): EnuOffset | null {
-  if (!donationShapeLayer) return null
+  if (!worldSites.get(activeWorldId)?.definition.hasPeruContent || !donationShapeLayer) return null
   const config = EXPERIENCE_CONFIG.donationShape
   const extent = donationShapeLayer.frameExtent()
   const halfVertical = THREE.MathUtils.degToRad(camera.fov) * 0.5
@@ -3126,8 +3199,8 @@ bindDesignSlider('sphereInnerM', sphereFadeSettings.innerRadiusM, (v) =>
   v > sphereFadeSettings.outerRadiusM
     ? `${Math.round(v)} m · clamped to outer`
     : asMetres(v), (v) => {
-  sphereFadeSettings.innerRadiusM = v
-})
+      sphereFadeSettings.innerRadiusM = v
+    })
 bindDesignSlider('sphereOpacity', sphereFadeSettings.debugOpacity, asPercent, (v) => {
   sphereFadeSettings.debugOpacity = v
 })
@@ -3163,23 +3236,23 @@ bindDesignSlider('sphereFadeOut', sphereFadeSettings.fadeOut, (v) => v.toFixed(1
 // focus spot slides at full side view. 0 growth and 0 drop is the fixed dome.
 bindDesignSlider('sphereGrowth', sphereFadeSettings.growth, (v) =>
   v > 0 ? `${v.toFixed(2)} × distance` : 'off · fixed size', (v) => {
-  sphereFadeSettings.growth = v
-})
+    sphereFadeSettings.growth = v
+  })
 bindDesignSlider('sphereMaxRadius', sphereFadeSettings.maxRadiusM, asMetres, (v) => {
   sphereFadeSettings.maxRadiusM = v
 })
 bindDesignSlider('sphereRimDetail', sphereFadeSettings.rimDetailFactor, (v) =>
   v > 1 ? `${v.toFixed(1)}× coarser at the rim` : 'off', (v) => {
-  sphereFadeSettings.rimDetailFactor = v
-})
+    sphereFadeSettings.rimDetailFactor = v
+  })
 bindDesignSlider('sphereBandThinning', sphereFadeSettings.bandThinning, (v) =>
   v > 0 ? asPercent(v) : 'off', (v) => {
-  sphereFadeSettings.bandThinning = v
-})
+    sphereFadeSettings.bandThinning = v
+  })
 bindDesignSlider('sphereFocusDrop', sphereFadeSettings.focusDrop, (v) =>
   v > 0 ? `${Math.round(v * 100)} % down` : 'off · middle', (v) => {
-  sphereFadeSettings.focusDrop = v
-})
+    sphereFadeSettings.focusDrop = v
+  })
 const sphereGateReadoutEl = $('#sphereGateReadout')
 
 const sphereFadeCentreRawEnu = new THREE.Vector3()
@@ -3262,6 +3335,297 @@ function updateDomePin(): void {
   enuToWorld(destination.endEnu, domeEyeWorld)
   enuToWorld(destination.lookEnu, domeLookWorld)
   sphereFade.pinAlong(domeEyeWorld, domeLookWorld)
+}
+
+function worldLift(frame: WorldSurveyFrame): number {
+  return groundSnap ? -(frame.areaMinZ + frame.areaOriginHeight) + pointCloudLiftM : 0
+}
+
+/** The panel and basemap keep their shared uniforms; every point stream owns its own nodes. */
+function syncWorldUniforms(site: WorldRuntime, active: boolean): void {
+  const target = site.uniforms as unknown as Record<string, { value: any }>
+  const source = uniforms as unknown as Record<string, { value: any }>
+  for (const key of Object.keys(source)) {
+    const from = source[key]?.value
+    const to = target[key]
+    if (!to) continue
+    if (to.value?.copy && from !== undefined) to.value.copy(from)
+    else to.value = from
+  }
+  const frame = site.frame
+  if (!frame) return
+  renderToEcefMatrix(frame.enuInverse, site.uniforms.enuInverse.value)
+  const lift = worldLift(frame)
+  site.uniforms.canopyBaseZ.value = frame.areaMinZ + lift + 8
+  site.uniforms.canopyTopZ.value = frame.areaMinZ + lift + frame.areaSpan
+  site.uniforms.cloudDeckHeight.value = frame.areaMinZ + lift + EXPERIENCE_CONFIG.pointLighting.cloudDeckHeightM
+  site.uniforms.groundFogBaseZ.value = frame.areaMinZ + lift
+  if (!active) {
+    site.uniforms.maskMode.value = 0
+    site.uniforms.vignetteStrength.value = 0
+    site.uniforms.sphereFadeRadius.value = 1e9
+    site.uniforms.groundPatchAmount.value = 0
+  }
+  site.stream?.group.position.copy(frame.enuUp).multiplyScalar(heightOffsetEnabled ? lift : 0)
+}
+
+function startWorldGroundPatch(site: WorldRuntime): void {
+  if (site.definition.id !== activeWorldId || site.maskExtentBuilt || !site.stream || !site.frame || !site.source) return
+  const root = (site.stream.tiles as any).rootTileSet
+  if (!root?.root) return
+  site.maskExtentBuilt = true
+  const generation = worldPatchGeneration
+  const patch = EXPERIENCE_CONFIG.design.groundPatch
+  void groundPatchMask.setExtent({
+    tilesetUrl: site.source.url, rootTileSet: root, enuInverse: enuInverseRender,
+    maxDepth: patch.maskMaxDepth, bounds: site.frame.maskBoundsEnu,
+  }).then((boxes) => {
+    if (site.definition.id !== activeWorldId || generation !== worldPatchGeneration) return
+    if (!boxes) {
+      console.warn(`[ground-patch] no usable boxes for ${site.definition.label}`)
+      uniforms.groundPatchAmount.value = 0
+      groundPatchMask.disable()
+      return
+    }
+    applyGroundPatchExtent()
+    applyGroundPatchAmount()
+    site.stream?.tiles.forEachLoadedModel((model: THREE.Object3D) => {
+      model.traverse((object: any) => {
+        if (object.isPoints) groundPatchMask.addTile(object)
+      })
+    })
+  }).catch((error) => {
+    if (site.definition.id !== activeWorldId || generation !== worldPatchGeneration) return
+    console.warn(`[ground-patch] ${site.definition.label} extent failed`, error)
+    uniforms.groundPatchAmount.value = 0
+    groundPatchMask.disable()
+  })
+}
+
+function mountWorldStream(site: WorldRuntime): StreamingCloud | null {
+  if (site.stream) return site.stream
+  if (site.status !== 'ready' || !site.source || !site.frame) return null
+  syncWorldUniforms(site, site.definition.id === activeWorldId)
+  const source = site.source
+  const worldStream = createStreamingCloud({
+    tilesetUrl: source.url, requestVolumes: source.requestVolumes, limits: source.limits,
+    camera, renderer, scene: ecefRoot, uniforms: site.uniforms, errorTarget: sseAuto,
+    debugVolume: showDiagnostics, dotMode: effectiveDotMode(),
+    onPointTile: (object, url) => {
+      if (site.definition.id === activeWorldId) groundPatchMask.addTile(object, url)
+    },
+    onPointTileDisposed: (object) => {
+      if (site.definition.id === activeWorldId) groundPatchMask.removeTile(object)
+    },
+    onRootError: (url, error) => {
+      console.warn(`[world:${site.definition.id}] root unavailable`, url, error)
+      site.status = 'failed'
+      site.error = `Tiles unavailable · ${site.definition.label}`
+      updateWorldPicker()
+      queueMicrotask(() => {
+        if (disposed || activeWorldId !== site.definition.id) return
+        if (site.definition.id === 'peru-b2' || worldDefinitions.length === 1) showLoadError(site.error!)
+        else activateWorld('peru-b2', true)
+      })
+    },
+  })
+  site.stream = worldStream
+  worldStream.group.visible = pointCloudRevealed
+  worldStream.setLeafLoading(site.definition.id === activeWorldId && renderOptions.effective().leafLoading)
+  worldStream.setParseBudget(maxParses)
+  worldStream.setArrivalBudget(tileBudgetOn ? tilesPerFrame : 0)
+  worldStream.setHighPrecision(appliedHighPrecision ?? highPrecisionMatrices)
+  worldStream.tiles.addEventListener('load-root-tileset' as any, () => startWorldGroundPatch(site))
+  return worldStream
+}
+
+let lastWorldBudgetKey = ''
+let worldPatchGeneration = 0
+function syncWorldCoverage(): void {
+  const allowed = new Set(coverageDatasetIds(worldDefinitions, activeWorldId, pointTree))
+  for (const site of worldSites.values()) {
+    if (!allowed.has(site.definition.id) || site.status !== 'ready') {
+      if (site.stream && site.definition.id !== activeWorldId) {
+        site.stream.dispose()
+        site.stream = null
+        site.stats = null
+      }
+      continue
+    }
+    const worldStream = mountWorldStream(site)
+    if (!worldStream) continue
+    const active = site.definition.id === activeWorldId
+    syncWorldUniforms(site, active)
+    worldStream.setTraversalPolicy(active ? 'active' : 'aph-overview-background')
+    worldStream.setDistanceCutoff(active ? Infinity : 20_000)
+    if (!active) {
+      worldStream.setPovLoad(null)
+      worldStream.setMaskSphere(null, 0)
+      worldStream.setRenderSphere(null, 0)
+      worldStream.setErrorTarget(16)
+      worldStream.setDensityCeiling(0)
+    }
+  }
+  const mounted = [...worldSites.values()].filter((site) => site.stream)
+  const budget = !renderOptions.effective().presetBudgets ? COMPARE_STREAM_BUDGET
+    : benchPreset === 'strong' ? { cacheBytes: 384 * MIB, gpuBytes: 256 * MIB }
+      : benchPreset === 'medium' ? { cacheBytes: 256 * MIB, gpuBytes: 176 * MIB }
+        : { cacheBytes: 160 * MIB, gpuBytes: 112 * MIB }
+  const key = `${activeWorldId}:${mounted.map((site) => site.definition.id).join(',')}:${budget.cacheBytes}:${budget.gpuBytes}`
+  if (key === lastWorldBudgetKey) return
+  lastWorldBudgetKey = key
+  const shares = allocateWorldMemoryBudget(budget, mounted.map((site) => site.definition.id), activeWorldId)
+  for (const site of mounted) {
+    const share = shares[site.definition.id]
+    const active = site.definition.id === activeWorldId
+    // A tile-count floor would override the byte split (one z0 tile can be
+    // much larger than another), so bytes remain the residency authority.
+    site.stream!.tiles.lruCache.minSize = 0
+    site.stream!.setMemoryBudgetExact({
+      maxBytesSize: share.cacheBytes,
+      minBytesSize: Math.round(share.cacheBytes * 0.75),
+      maxSize: active ? 1200 : 240,
+      gpuBytesTarget: share.gpuBytes,
+    })
+  }
+}
+
+function rebuildWorldEnvironment(site: WorldRuntime): void {
+  if (!site.frame || !site.manifest || !cloudNoiseTexture) return
+  environmentLayer?.dispose()
+  environmentLayer = createEnvironmentLayer({
+    scene: ecefRoot, renderer, fog: distanceFog, uniforms,
+    enuFrame, zOffset, surveyCentreEnu: cloudCenterEnu,
+    surveyRadiusM: navigationBoundsRadius,
+    originLonLat: site.manifest.enuOriginLonLat,
+    cloudNoiseTexture, isWebGPU: worldIsWebGPU, reducedMotion,
+    onCloudStateChange: updateCloudControls,
+  })
+  updateCloudControls(environmentLayer.getCloudState())
+  updateTimeControls(environmentLayer.getDaylightState())
+  applyFogTint()
+  environmentLayer.setCloudShadowStrength(Number($<HTMLInputElement>('#cloudShadowStrength').value))
+}
+
+function activateWorld(id: WorldDatasetId, moveCamera: boolean): boolean {
+  const site = worldSites.get(id)
+  if (site?.status !== 'ready' || !site.frame || !site.manifest || !site.source) return false
+  if (id === activeWorldId) return true
+  const priorCameraRadius = globe?.controls.cameraRadius ?? navigationClearance
+  if (moveCamera) {
+    cameraFlight.cancel()
+    setAimMode(false, false)
+    globe?.forceResetState()
+  }
+  worldHandoffDwell.reset()
+  markMapInteracted()
+  activeWorldId = id
+  const frame = site.frame
+  enuFrame.copy(frame.enuFrame)
+  enuInverse.copy(frame.enuInverse)
+  enuUp.copy(frame.enuUp)
+  cloudCenterEnu.copy(frame.cloudCenterEnu)
+  areaMinZ = frame.areaMinZ
+  areaOriginHeight = frame.areaOriginHeight
+  areaSpan = frame.areaSpan
+  areaHeightsKnown = true
+  navigationClearance = frame.navigationClearance
+  navigationFloorZ = frame.navigationFloorZ
+  navigationBoundsRadius = frame.navigationBoundsRadius
+  maskBoundsEnu = frame.maskBoundsEnu
+  groundPlanePointEnu.set(cloudCenterEnu.x, cloudCenterEnu.y, cloudCenterEnu.z - 40)
+  uniforms.maskCenter.value.set(cloudCenterEnu.x, cloudCenterEnu.y)
+  stream = site.stream
+  appliedHighPrecision = null
+  lastStreamStats = site.stats
+  maskWorldActive = false
+  initialPovDone = true
+  sphereFade?.dispose()
+  worldPatchGeneration++
+  groundPatchMask.reset()
+  uniforms.groundPatchAmount.value = 0
+  for (const runtime of worldSites.values()) runtime.maskExtentBuilt = false
+  refreshOriginDerived()
+  applyPointCloudLift()
+  handoffClearancePending = false
+  if (!moveCamera && !freeOrbit) {
+    const eyeZ = worldToEnu(camera.position, navigationCameraEnu).z
+    navigationFloorZ = Math.min(frame.navigationFloorZ, eyeZ - 1)
+    handoffClearancePending = navigationFloorZ < frame.navigationFloorZ
+      || priorCameraRadius < frame.navigationClearance
+  }
+  if (globe) {
+    const radius = freeOrbit ? 1 : moveCamera ? navigationClearance
+      : Math.min(navigationClearance, priorCameraRadius)
+    globe.controls.cameraRadius = radius
+    globe.controls.minDistance = radius
+    sphereFade = createSphereFade({
+      camera, ellipsoid: globe.ellipsoid, scene, worldToEnu, enuToWorld,
+      sideViewFactor: () => sideViewFactor, settings: sphereFadeSettings,
+    })
+  }
+  if (moveCamera) {
+    const [x, y, z] = EXPERIENCE_CONFIG.flight.destinationOffsetM
+    const target = cloudCenterEnu
+    const eye = new THREE.Vector3(target.x + x, target.y + y, Math.max(target.z + z, navigationFloorZ + 2))
+    camera.position.copy(enuToWorld(eye))
+    camera.up.copy(enuUp)
+    camera.lookAt(enuToWorld(target))
+    camera.updateMatrixWorld()
+  }
+  updateOrigin(true)
+  if (globe && moveCamera) {
+    const controls = globe.controls as any
+    globe.forceResetState()
+    controls.pivotPoint?.copy(cloudCenterEcef)
+    controls.zoomPoint?.copy(cloudCenterEcef)
+    controls.rotationInertiaPivot?.copy(cloudCenterEcef)
+  }
+  rebuildWorldEnvironment(site)
+  const peru = site.definition.hasPeruContent
+  markerLayer?.setVisible(peru && renderOptions.effective().markers)
+  fieldModelLayer?.setVisible(peru && renderOptions.effective().fieldModels)
+  donationShapeLayer?.setVisible(peru && renderOptions.effective().donationShape)
+  timeDockEl.hidden = !peru
+  syncWorldCoverage()
+  stream = site.stream
+  foveation?.dispose()
+  viewAngle?.dispose()
+  viewDepth?.dispose()
+  foveation = stream ? createFoveation(stream.tiles, camera, foveationSettings) : null
+  viewAngle = stream ? createViewAngleCorrection(stream.tiles, camera, enuUp) : null
+  if (viewAngle) viewAngle.settings.enabled = renderOptions.effective().viewAngleError
+  viewDepth = stream ? createViewDepthCorrection(stream.tiles, camera) : null
+  stream?.refreshEffects()
+  stream?.setDotMode(effectiveDotMode())
+  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  site.maskExtentBuilt = false
+  startWorldGroundPatch(site)
+  setPointCloudRevealed(true)
+  sseAuto = -1
+  worldLocationEl.value = id
+  updateWorldPicker()
+  return true
+}
+
+function navigateToWorld(id: WorldDatasetId): void {
+  if (!bootLoading) activateWorld(id, true)
+}
+
+function updateWorldHandoff(now: number): void {
+  if (bootLoading || cameraFlight.active || !pointCloudRevealed) { worldHandoffDwell.reset(); return }
+  const active = worldSites.get(activeWorldId)
+  if (!active?.definition.overviewNeighbors?.length) return
+  const sites: Partial<Record<WorldDatasetId, WorldFootprint>> = {}
+  for (const site of worldSites.values()) sites[site.definition.id] = {
+    id: site.definition.id, status: site.status,
+    enuInverse: site.frame?.enuInverse ?? null,
+    surveyBbox: site.frame?.surveyBbox ?? null,
+    overviewNeighbors: site.definition.overviewNeighbors ?? [],
+  }
+  const candidate = handoffCandidate(sites[activeWorldId]!, sites, renderToEcef(camera.position))
+  const next = worldHandoffDwell.update(candidate, now)
+  if (next) activateWorld(next, false)
 }
 
 roundDotsToggleEl.addEventListener('click', () => {
@@ -4078,7 +4442,7 @@ function applyViewportSize(): void {
   globe?.setResolution()
   // Resolution feeds the SSE pixel measure, so refinement targets would otherwise be
   // computed against a stale backbuffer. Same measure drives the drawn point size.
-  stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
+  for (const site of worldSites.values()) site.stream?.tiles.setResolutionFromRenderer(camera, renderer as any)
   applyPointSize()
   gaussianSplatLayer?.resize()
   updateFoveationGuides()
@@ -4091,11 +4455,13 @@ if (typeof ResizeObserver !== 'undefined') {
 // ---------------------------------------------------------------- streaming / HUD / loop
 let flightEndedAt = -Infinity
 let wasFlying = false
+let lastWorldPickerBootLoading = bootLoading
+let lastBackgroundEffectsVersion = cloudEffectsVersion()
 let appliedHighPrecision: boolean | null = null
 
 function setPointCloudRevealed(revealed: boolean): void {
   pointCloudRevealed = revealed
-  if (stream) stream.group.visible = revealed
+  for (const site of worldSites.values()) if (site.stream) site.stream.group.visible = revealed
 }
 
 /**
@@ -4137,11 +4503,12 @@ function updateMatrixPrecision(now: number): void {
   // applied without ever reaching a material.
   if (want === appliedHighPrecision || !stream) return
   appliedHighPrecision = want
-  stream.setHighPrecision(want)
+  for (const site of worldSites.values()) site.stream?.setHighPrecision(want)
 }
 
 function updateStreaming(now: number): StreamingStats | null {
   if (!stream) return null
+  syncWorldCoverage()
   // Parked during the entrance flight: no traversal, no fetches, no parsing —
   // and no unloading either, so the tiles the loader already put in place for
   // the destination survive until the reveal.
@@ -4206,6 +4573,7 @@ function updateStreaming(now: number): StreamingStats | null {
     thinning: sphereFadeSettings.bandThinning,
   } : undefined)
   applySphereFadeUniforms(dome)
+  syncWorldUniforms(worldSites.get(activeWorldId)!, true)
   // The eye the point-of-view load refines from: the flight's landing pose while it is
   // in the air (a mid-air retarget moves it once), the staged boot pose before that —
   // the two are the same formula, so the set does not change when Start is pressed.
@@ -4246,6 +4614,13 @@ function updateStreaming(now: number): StreamingStats | null {
     farM: Math.max(thinFarM, thinNearM + 50),
   } : null)
   lastStreamStats = stream.stats()
+  worldSites.get(activeWorldId)!.stats = lastStreamStats
+  for (const site of worldSites.values()) {
+    if (site.definition.id === activeWorldId || !site.stream) continue
+    syncWorldUniforms(site, false)
+    site.stream.update()
+    site.stats = site.stream.stats()
+  }
   return lastStreamStats
 }
 
@@ -4508,14 +4883,14 @@ function updateHud(stats: StreamingStats | null): void {
   // The dome's two gates, in the panel next to their sliders rather than on the HUD.
   sphereGateReadoutEl.textContent = stats && sphereFadeSettings.enabled && sphereFade?.placed()
     ? `load gate cut ${stats.loadGateCut} boxes · drawing ${stats.renderGateTiles - stats.renderGateHidden} of ${stats.renderGateTiles} tiles`
-      + ` · radius ${Math.round(sphereFade.innerRadius())} m`
-      + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
-      + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
-      + (initialPovActive()
-        ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
-          ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
-        : '')
-      + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
+    + ` · radius ${Math.round(sphereFade.innerRadius())} m`
+    + (lastThinning && lastThinning.domeCut > 0 ? ` · band thinned ${fmtInt(lastThinning.domeCut)} pts` : '')
+    + (sphereFade.stats().focusDrop > 0.005 ? ` · focus ${Math.round(sphereFade.stats().focusDrop * 100)} % down` : '')
+    + (initialPovActive()
+      ? ` · loading the landing view from its own eye${Number.isFinite(stats.povRadius)
+        ? `, capped at ${Math.round(stats.povRadius)} m (${fmtInt(stats.povPoints)} pts)` : ''}`
+      : '')
+    + (sphereFade.stats().pinned ? ' · pinned at the landing until you touch the map' : '')
     : sphereFadeSettings.enabled ? 'waiting for the first ground hit' : 'off'
   // The basemap keeps its last traversed count when imagery is switched off — the group
   // is hidden and the traversal skipped, but visibleTiles is never cleared.
@@ -4688,7 +5063,8 @@ function nanWatch(stage: string): void {
 const recoverPoseEnu = new THREE.Vector3()
 function recoverCameraPose(): void {
   if (!enuFrameReady) return
-  const target = donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu
+  const target = worldSites.get(activeWorldId)?.definition.hasPeruContent
+    ? donationShapeLayer?.flightTargetEnu() ?? cloudCenterEnu : cloudCenterEnu
   const offset = donationFlightOffset() ?? EXPERIENCE_CONFIG.flight.destinationOffsetM
   recoverPoseEnu.set(target.x + offset[0], target.y + offset[1], target.z + offset[2])
   enuToWorld(recoverPoseEnu, navigationCameraWorld)
@@ -4705,6 +5081,10 @@ function recoverCameraPose(): void {
 
 function loop(now: number): void {
   if (graphicsFailed) return
+  if (bootLoading !== lastWorldPickerBootLoading) {
+    lastWorldPickerBootLoading = bootLoading
+    updateWorldPicker()
+  }
   fps.tick(now)
   recordFrame(now)
   // Solo-Modus: nur die 3DGS-Ansicht rendern, alles andere ruht (spart die
@@ -4716,6 +5096,13 @@ function loop(now: number): void {
   updateOrigin()
   nanWatch('updateOrigin')
   syncCompiledShaderTerms()
+  const effectsVersion = cloudEffectsVersion()
+  if (effectsVersion !== lastBackgroundEffectsVersion) {
+    lastBackgroundEffectsVersion = effectsVersion
+    for (const site of worldSites.values()) {
+      if (site.definition.id !== activeWorldId) site.stream?.refreshEffects()
+    }
+  }
   cameraFlight.update(now)
   nanWatch('cameraFlight')
   updateCloudReveal()
@@ -4732,6 +5119,7 @@ function loop(now: number): void {
   beginFrameMoveGovernor()
   globe?.update(constrainControlsCamera)
   nanWatch('controls')
+  updateWorldHandoff(now)
   if (!Number.isFinite(camera.position.x + camera.position.y + camera.position.z)) {
     recoverCameraPose()
   }
@@ -4768,12 +5156,13 @@ function loop(now: number): void {
   const options = renderOptions.effective()
   // After updateStreaming, which handed the shader this frame's dome.
   const modelDomeLive = readModelDome()
-  if (options.fieldModels) {
+  const peruActive = worldSites.get(activeWorldId)?.definition.hasPeruContent === true
+  if (peruActive && options.fieldModels) {
     updateFieldModelFades(modelDomeLive)
     fieldModelLayer?.update(now)
   }
-  if (options.donationShape) donationShapeLayer?.update(now, camera)
-  if (options.markers) {
+  if (peruActive && options.donationShape) donationShapeLayer?.update(now, camera)
+  if (peruActive && options.markers) {
     updateTowerSensorFade(modelDomeLive)
     markerLayer?.update(
       now,
@@ -4831,6 +5220,7 @@ async function main(): Promise<void> {
   setLoadProgress(0.16, 'Graphics ready. Connecting to the field station …')
   const backend: any = (renderer as any).backend
   const isWebGPU = Boolean(backend?.isWebGPUBackend ?? (backend && /WebGPU/i.test(backend.constructor?.name)))
+  worldIsWebGPU = isWebGPU
   const badge = $('#backend')
   badge.textContent = isWebGPU ? 'WebGPU' : 'WebGL2'
   badge.classList.toggle('webgl', !isWebGPU)
@@ -4862,6 +5252,32 @@ async function main(): Promise<void> {
   setStatus('Loading adaptive point-cloud tree…')
   setLoadProgress(0.22, 'Loading survey area and coordinates …')
   const manifest = await manifestRequest
+  const initialSite = worldSites.get(activeWorldId)!
+  initialSite.manifest = manifest
+  initialSite.frame = buildWorldSurveyFrame(manifest)
+  initialSite.pointSource = createPointSource({ baseUrl, manifest, basePack: pointTree })
+  initialSite.source = initialSite.pointSource.base()
+  initialSite.status = 'ready'
+  updateWorldPicker()
+  for (const definition of worldDefinitions.slice(1)) {
+    const site = worldSites.get(definition.id)!
+    void manifestRequests.get(definition.id)!.then((nextManifest) => {
+      if (disposed) return
+      site.manifest = nextManifest
+      site.frame = buildWorldSurveyFrame(nextManifest)
+      site.pointSource = createPointSource({ baseUrl, manifest: nextManifest, basePack: pointTree })
+      site.source = site.pointSource.base()
+      site.status = 'ready'
+      updateWorldPicker()
+      syncWorldCoverage()
+    }).catch((error) => {
+      if (disposed) return
+      site.status = 'failed'
+      site.error = error instanceof Error ? error.message : String(error)
+      console.warn(`[world] ${definition.label} unavailable`, error)
+      updateWorldPicker()
+    })
+  }
   bootMark('manifest-end')
   setLoadProgress(0.28, 'Survey area located. Building the scene …')
   enuFrame.fromArray(manifest.rootTransform)
@@ -4950,31 +5366,9 @@ async function main(): Promise<void> {
     onActivateAim: activateAimTarget,
     onDismissAim: dismissAimMode,
   })
-  // Lifted out of the call because the ground-patch mask resolves the per-cell
-  // subtree links relative to it.
-  const pointTilesetUrl = pointTree === 'aph'
-    ? `${baseUrl}/${manifest.adaptiveHierarchyDataset}/${manifest.adaptiveHierarchyTilesetFile}`
-    : `${baseUrl}/${manifest.oneLodTreeDataset}/${manifest.oneLodTreeTilesetFile}`
-  stream = createStreamingCloud({
-    tilesetUrl: pointTilesetUrl,
-    requestVolumes: pointTree !== 'aph',
-    // The APH quadtree only pays off with residency to match: the Cesium
-    // reference runs a 1 GiB cache, the One-LOD defaults sit at 96 MiB and would
-    // evict close-range nodes as fast as they arrive. Keep `cacheMinTiles` in step
-    // with the bytes — see the same object in point-source.ts for why.
-    limits: pointTree === 'aph'
-      ? { cacheMinBytes: 256 * 1024 * 1024, cacheMaxBytes: 768 * 1024 * 1024, cacheMinTiles: 900, cacheMaxTiles: 1200, gpuBytesTarget: 384 * 1024 * 1024 }
-      : undefined,
-    camera,
-    renderer,
-    scene: ecefRoot,
-    uniforms,
-    errorTarget: sseAuto,
-    debugVolume: showDiagnostics,
-    onPointTile: (object, url) => groundPatchMask.addTile(object, url),
-    onPointTileDisposed: (object) => groundPatchMask.removeTile(object),
-    dotMode: effectiveDotMode(),
-  })
+  stream = mountWorldStream(initialSite)
+  if (!stream) throw new Error('Initial point stream could not be mounted')
+  syncWorldCoverage()
   // Options can be selected before the async boot sequence creates the stream.
   stream.setLeafLoading(renderOptions.effective().leafLoading)
   applyArrivalBudget()
@@ -4998,221 +5392,189 @@ async function main(): Promise<void> {
   // multiplier, so it composes with the two above in any order.
   viewDepth = createViewDepthCorrection(stream.tiles, camera)
   applyHeightOffset()
-  // The rectangle is settled exactly once, off the critical path: the survey never
-  // moves. Coverage then accumulates from the point tiles the renderer loads anyway
-  // — see ground-patch-mask for why the points, and not the node boxes, are the only
-  // source fine enough to leave the river showing.
-  stream.tiles.addEventListener('load-root-tileset' as any, () => {
-    if (groundPatchMaskBuilt) return
-    groundPatchMaskBuilt = true
-    const patch = EXPERIENCE_CONFIG.design.groundPatch
-    void groundPatchMask.setExtent({
-      tilesetUrl: pointTilesetUrl,
-      rootTileSet: (stream as any).tiles.rootTileSet,
-      enuInverse: enuInverseRender,
-      maxDepth: patch.maskMaxDepth,
-      // The manifest's own extent, in ENU. Preferred over the tileset's node boxes:
-      // that walk composes transforms differently from the splat and lands ~7 km out in
-      // y, which put the near half of the survey outside the lattice and left it bare.
-      bounds: maskBoundsEnu,
-    }).then((boxes) => {
-      if (!boxes) {
-        console.warn('[ground-patch] tileset carried no usable node boxes — patch stays off')
-        uniforms.groundPatchAmount.value = 0
-        groundPatchMask.disable()
-        return
-      }
-      applyGroundPatchExtent()
-      console.info(`[ground-patch] lattice sized from ${boxes} node boxes`)
-      }).catch((error) => {
-      console.warn('[ground-patch] extent failed — patch stays off', error)
-      uniforms.groundPatchAmount.value = 0
-      groundPatchMask.disable()
-    })
-  })
-  // Debug handle for streaming diagnosis in the console.
-  ;(window as any).__wild = {
-    stream,
-    camera,
-    get flight() { return cameraFlight.active },
-    get sse() { return sseAuto },
-    get range() { return rangeDebug },
-    /** Off-axis error correction — flip `.enabled` to A/B it against a still view. */
-    get viewDepth() { return viewDepth },
-    /** The dome under the view centre — `.stats()` for where it sits and whether it is
-     *  frozen, `.settings` to drive it from the console. */
-    get sphereFade() { return sphereFade },
-    /** Whether the streamer is still refining the landing view from its own eye. */
-    get initialPov() { return initialPovActive() },
-    /**
-     * Optional shader terms (compiled-terms.ts). `force('vignette' | 'foveaBend' |
-     * 'debugPalette', true)` keeps one in while its feature is off — the old inert shader,
-     * the other arm of a pixel or GPU-time A/B — and `force(name, false)` lets it go again.
-     * `.state` says which are forced and which effect version the shaders are on.
-     */
-    /**
-     * Where a rotation pressed at (ndcX, ndcY) would pivot (`pivotM`, a distance along the
-     * cursor ray), with its parts: the dot the cursor is on (`picked`), the map hit the
-     * controls start from (`mapM`), and for comparison the old canopy lift (`lifted`, whose
-     * time is in `lift.pickMs`). For checking the pivot against what is on screen; it moves
-     * nothing.
-     */
-    pivotProbe(ndcX = 0, ndcY = 0) {
-      const map = new THREE.Vector3()
-      if (!screenPivot(ndcX, ndcY, map)) return { reason: 'no ground under that point' }
-      const out = new THREE.Vector3()
-      const pickDebug: PivotDebug = { reason: null, passes: [] }
-      const liftDebug: PivotDebug = { reason: null, passes: [] }
-      const pickOutcome = pickPivot(map, out, pickDebug)
-      const picked = pickOutcome === 'hit' ? out.distanceTo(camera.position) : null
-      const liftStarted = performance.now()
-      const lifted = liftToCanopy(map, out, liftDebug) ? out.distanceTo(camera.position) : null
-      liftDebug.pickMs = +(performance.now() - liftStarted).toFixed(2)
-      const mapM = map.distanceTo(camera.position)
-      // What a press there would pivot on now: the dot, or the map through a gap.
-      const pivotM = picked ?? (pickOutcome === 'miss' ? mapM : lifted ?? mapM)
-      return { mapM, picked, lifted, pivotM, pickOutcome, pick: pickDebug, lift: liftDebug }
-    },
-    shaderTerms: {
-      force(name: CompiledTerm, on: boolean) {
-        if (!COMPILED_TERMS.includes(name)) throw new Error(`expected one of ${COMPILED_TERMS.join(', ')}, got ${name}`)
-        if (on) forcedShaderTerms.add(name)
-        else forcedShaderTerms.delete(name)
-        syncCompiledShaderTerms()
-        return this.state
+    // Debug handle for streaming diagnosis in the console.
+    ; (window as any).__wild = {
+      stream,
+      camera,
+      get flight() { return cameraFlight.active },
+      get sse() { return sseAuto },
+      get range() { return rangeDebug },
+      /** Off-axis error correction — flip `.enabled` to A/B it against a still view. */
+      get viewDepth() { return viewDepth },
+      /** The dome under the view centre — `.stats()` for where it sits and whether it is
+       *  frozen, `.settings` to drive it from the console. */
+      get sphereFade() { return sphereFade },
+      /** Whether the streamer is still refining the landing view from its own eye. */
+      get initialPov() { return initialPovActive() },
+      /**
+       * Optional shader terms (compiled-terms.ts). `force('vignette' | 'foveaBend' |
+       * 'debugPalette', true)` keeps one in while its feature is off — the old inert shader,
+       * the other arm of a pixel or GPU-time A/B — and `force(name, false)` lets it go again.
+       * `.state` says which are forced and which effect version the shaders are on.
+       */
+      /**
+       * Where a rotation pressed at (ndcX, ndcY) would pivot (`pivotM`, a distance along the
+       * cursor ray), with its parts: the dot the cursor is on (`picked`), the map hit the
+       * controls start from (`mapM`), and for comparison the old canopy lift (`lifted`, whose
+       * time is in `lift.pickMs`). For checking the pivot against what is on screen; it moves
+       * nothing.
+       */
+      pivotProbe(ndcX = 0, ndcY = 0) {
+        const map = new THREE.Vector3()
+        if (!screenPivot(ndcX, ndcY, map)) return { reason: 'no ground under that point' }
+        const out = new THREE.Vector3()
+        const pickDebug: PivotDebug = { reason: null, passes: [] }
+        const liftDebug: PivotDebug = { reason: null, passes: [] }
+        const pickOutcome = pickPivot(map, out, pickDebug)
+        const picked = pickOutcome === 'hit' ? out.distanceTo(camera.position) : null
+        const liftStarted = performance.now()
+        const lifted = liftToCanopy(map, out, liftDebug) ? out.distanceTo(camera.position) : null
+        liftDebug.pickMs = +(performance.now() - liftStarted).toFixed(2)
+        const mapM = map.distanceTo(camera.position)
+        // What a press there would pivot on now: the dot, or the map through a gap.
+        const pivotM = picked ?? (pickOutcome === 'miss' ? mapM : lifted ?? mapM)
+        return { mapM, picked, lifted, pivotM, pickOutcome, pick: pickDebug, lift: liftDebug }
       },
-      get state() {
-        return { forced: [...forcedShaderTerms], effectsVersion: cloudEffectsVersion() }
+      shaderTerms: {
+        force(name: CompiledTerm, on: boolean) {
+          if (!COMPILED_TERMS.includes(name)) throw new Error(`expected one of ${COMPILED_TERMS.join(', ')}, got ${name}`)
+          if (on) forcedShaderTerms.add(name)
+          else forcedShaderTerms.delete(name)
+          syncCompiledShaderTerms()
+          return this.state
+        },
+        get state() {
+          return { forced: [...forcedShaderTerms], effectsVersion: cloudEffectsVersion() }
+        },
       },
-    },
-    /**
-     * The dot-geometry A/B from the console: `__wild.dots.set('tri')`, `set('quad')`,
-     * `set('pulled')`, `set('instanced')`, or several at once — `set('tri', 'pulled')`.
-     * `.state` says what is requested, what is drawn and how the loaded tiles are split.
-     */
-    dots: {
-      set(...values: string[]) {
-        // Every argument is checked before anything changes: a typo halfway through must
-        // not leave the requested mode ahead of what the stream draws.
-        let shape = requestedDotShape
-        let feed = requestedDotFeed
-        for (const value of values) {
-          const parsedShape = parseDotShape(value)
-          const parsedFeed = parseDotFeed(value)
-          if (parsedShape) shape = parsedShape
-          else if (parsedFeed) feed = parsedFeed
-          else throw new Error(`expected quad, tri, pulled or instanced, got ${value}`)
-        }
-        requestedDotShape = shape
-        requestedDotFeed = feed
-        const changed = applyDotShapeSetting()
-        return { requested: { shape: requestedDotShape, feed: requestedDotFeed }, effective: effectiveDotMode(), changed }
-      },
-      get state() {
-        const tiles: Record<string, number> = {}
-        // CPU bytes held per point, per feed: every distinct ArrayBuffer a loaded dot mesh
-        // keeps reachable, counted once. A buffer held in two places is booked to the first
-        // holder in this order: the point-data texture, the carrier's arrays, the dot
-        // geometry's (the shared quad index and the corner buffers left out), and the
-        // loader's copy of the tile on engineData.metadata. So a pulled carrier's view of
-        // its texture reads under `texture`, and an instanced geometry's wrap of the
-        // carrier's arrays under `carrier`. Leaves out the mask's in-flight tile and
-        // anything held by a stale render object of a tile the dome keeps hidden, so a heap
-        // snapshot can read a little higher.
-        type Bytes = { points: number; carrier: number; dotGeometry: number; texture: number; tileMetadata: number; packedCarriers: number }
-        const bytes: Record<string, Bytes> = {}
-        const seen = new Set<ArrayBufferLike>()
-        const count = (entry: Bytes, key: keyof Bytes, buffer: ArrayBufferLike | undefined) => {
-          if (!buffer || seen.has(buffer)) return
-          seen.add(buffer)
-          entry[key] += buffer.byteLength
-        }
-        stream?.tiles.forEachLoadedModel((model: THREE.Object3D, tile: any) => {
-          model.traverse((object: THREE.Object3D) => {
-            if (!isDotMesh(object)) return
-            const dot = object.userData.dot
-            const key = `${dot.feed}/${dot.shape}`
-            tiles[key] = (tiles[key] ?? 0) + 1
-            const entry = bytes[dot.feed] ??= { points: 0, carrier: 0, dotGeometry: 0, texture: 0, tileMetadata: 0, packedCarriers: 0 }
-            entry.points += dot.points
-            count(entry, 'texture', (object.material as any)?.pointData?.image?.data?.buffer)
-            const carrier = (object.parent as any)?.geometry as THREE.BufferGeometry | undefined
-            if (carrier) {
-              for (const attribute of Object.values(carrier.attributes)) count(entry, 'carrier', (attribute as any).array?.buffer)
-              if (carrier.getAttribute('position')?.itemSize === 4) entry.packedCarriers++
-            }
-            for (const attribute of Object.values(object.geometry.attributes)) {
-              if (attribute.count > 8) count(entry, 'dotGeometry', (attribute as any).array?.buffer)
-            }
-            const metadata = tile?.engineData?.metadata
-            count(entry, 'tileMetadata', metadata?.featureTable?.buffer)
-            count(entry, 'tileMetadata', metadata?.batchTable?.buffer)
-          })
-        })
-        const cpuBytesPerPoint: Record<string, Record<string, number>> = {}
-        for (const [feed, entry] of Object.entries(bytes)) {
-          const per = (value: number) => Number((value / Math.max(1, entry.points)).toFixed(2))
-          cpuBytesPerPoint[feed] = {
-            total: per(entry.carrier + entry.dotGeometry + entry.texture + entry.tileMetadata),
-            carrier: per(entry.carrier),
-            dotGeometry: per(entry.dotGeometry),
-            texture: per(entry.texture),
-            tileMetadata: per(entry.tileMetadata),
-            packedCarriers: entry.packedCarriers,
+      /**
+       * The dot-geometry A/B from the console: `__wild.dots.set('tri')`, `set('quad')`,
+       * `set('pulled')`, `set('instanced')`, or several at once — `set('tri', 'pulled')`.
+       * `.state` says what is requested, what is drawn and how the loaded tiles are split.
+       */
+      dots: {
+        set(...values: string[]) {
+          // Every argument is checked before anything changes: a typo halfway through must
+          // not leave the requested mode ahead of what the stream draws.
+          let shape = requestedDotShape
+          let feed = requestedDotFeed
+          for (const value of values) {
+            const parsedShape = parseDotShape(value)
+            const parsedFeed = parseDotFeed(value)
+            if (parsedShape) shape = parsedShape
+            else if (parsedFeed) feed = parsedFeed
+            else throw new Error(`expected quad, tri, pulled or instanced, got ${value}`)
           }
-        }
-        return {
-          requested: { shape: requestedDotShape, feed: requestedDotFeed },
-          effective: effectiveDotMode(),
-          stream: stream?.dotMode() ?? null,
-          loadedDotMeshes: tiles,
-          cpuBytesPerPoint,
-        }
+          requestedDotShape = shape
+          requestedDotFeed = feed
+          const changed = applyDotShapeSetting()
+          return { requested: { shape: requestedDotShape, feed: requestedDotFeed }, effective: effectiveDotMode(), changed }
+        },
+        get state() {
+          const tiles: Record<string, number> = {}
+          // CPU bytes held per point, per feed: every distinct ArrayBuffer a loaded dot mesh
+          // keeps reachable, counted once. A buffer held in two places is booked to the first
+          // holder in this order: the point-data texture, the carrier's arrays, the dot
+          // geometry's (the shared quad index and the corner buffers left out), and the
+          // loader's copy of the tile on engineData.metadata. So a pulled carrier's view of
+          // its texture reads under `texture`, and an instanced geometry's wrap of the
+          // carrier's arrays under `carrier`. Leaves out the mask's in-flight tile and
+          // anything held by a stale render object of a tile the dome keeps hidden, so a heap
+          // snapshot can read a little higher.
+          type Bytes = { points: number; carrier: number; dotGeometry: number; texture: number; tileMetadata: number; packedCarriers: number }
+          const bytes: Record<string, Bytes> = {}
+          const seen = new Set<ArrayBufferLike>()
+          const count = (entry: Bytes, key: keyof Bytes, buffer: ArrayBufferLike | undefined) => {
+            if (!buffer || seen.has(buffer)) return
+            seen.add(buffer)
+            entry[key] += buffer.byteLength
+          }
+          stream?.tiles.forEachLoadedModel((model: THREE.Object3D, tile: any) => {
+            model.traverse((object: THREE.Object3D) => {
+              if (!isDotMesh(object)) return
+              const dot = object.userData.dot
+              const key = `${dot.feed}/${dot.shape}`
+              tiles[key] = (tiles[key] ?? 0) + 1
+              const entry = bytes[dot.feed] ??= { points: 0, carrier: 0, dotGeometry: 0, texture: 0, tileMetadata: 0, packedCarriers: 0 }
+              entry.points += dot.points
+              count(entry, 'texture', (object.material as any)?.pointData?.image?.data?.buffer)
+              const carrier = (object.parent as any)?.geometry as THREE.BufferGeometry | undefined
+              if (carrier) {
+                for (const attribute of Object.values(carrier.attributes)) count(entry, 'carrier', (attribute as any).array?.buffer)
+                if (carrier.getAttribute('position')?.itemSize === 4) entry.packedCarriers++
+              }
+              for (const attribute of Object.values(object.geometry.attributes)) {
+                if (attribute.count > 8) count(entry, 'dotGeometry', (attribute as any).array?.buffer)
+              }
+              const metadata = tile?.engineData?.metadata
+              count(entry, 'tileMetadata', metadata?.featureTable?.buffer)
+              count(entry, 'tileMetadata', metadata?.batchTable?.buffer)
+            })
+          })
+          const cpuBytesPerPoint: Record<string, Record<string, number>> = {}
+          for (const [feed, entry] of Object.entries(bytes)) {
+            const per = (value: number) => Number((value / Math.max(1, entry.points)).toFixed(2))
+            cpuBytesPerPoint[feed] = {
+              total: per(entry.carrier + entry.dotGeometry + entry.texture + entry.tileMetadata),
+              carrier: per(entry.carrier),
+              dotGeometry: per(entry.dotGeometry),
+              texture: per(entry.texture),
+              tileMetadata: per(entry.tileMetadata),
+              packedCarriers: entry.packedCarriers,
+            }
+          }
+          return {
+            requested: { shape: requestedDotShape, feed: requestedDotFeed },
+            effective: effectiveDotMode(),
+            stream: stream?.dotMode() ?? null,
+            loadedDotMeshes: tiles,
+            cpuBytesPerPoint,
+          }
+        },
       },
-    },
-    /** 0 while the cinematic flight runs, 1 once it has settled. */
-    get flightProgress() { return cinematicFlightProgress },
-    get flightStarted() { return loaderFlightStarted },
-    get controls() { return globe?.controls ?? null },
-    /** Why the last press did or did not lift the pivot onto the canopy. */
-    get pivotDebug() { return pivotDebug },
-    /** How often the per-frame camera step was clamped, and the last clamp's numbers. */
-    get navDebug() { return navDebug },
-    /** Force an origin rebase onto the camera — for testing rebase-during-drag. */
-    rebase: () => updateOrigin(true),
-    /** Every height in one place, as the ruler last read them. */
-    get heights() { return heightRulerMarks },
-    mask: groundPatchMask,
-    /**
-     * GPU milliseconds for the last frame. Zero unless started with ?gputime, and the
-     * query pool has to be resolved before info carries anything, so this is async.
-     * Wall-clock frame time cannot answer questions about shading cost on a vsync-locked
-     * display: it snaps to whole refresh intervals.
-     */
-    async resolveGpuMs() {
-      await (renderer as any).resolveTimestampsAsync?.()
-      return (renderer.info as any).render?.timestamp ?? 0
-    },
-    /** Diagnostic: what the mask holds under a screen pixel. */
-    probeMask: probeMaskAt,
-    /** Floating origin: the two ENU frames and where the origin currently sits.
-     * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
-    origin: {
-      get stats() { return originStats() },
-      get position() { return getOrigin() },
-      enuFrame,
-      enuFrameRender,
-      enuInverse,
-      enuInverseRender,
-    },
-  }
+      /** 0 while the cinematic flight runs, 1 once it has settled. */
+      get flightProgress() { return cinematicFlightProgress },
+      get flightStarted() { return loaderFlightStarted },
+      get controls() { return globe?.controls ?? null },
+      /** Why the last press did or did not lift the pivot onto the canopy. */
+      get pivotDebug() { return pivotDebug },
+      /** How often the per-frame camera step was clamped, and the last clamp's numbers. */
+      get navDebug() { return navDebug },
+      /** Force an origin rebase onto the camera — for testing rebase-during-drag. */
+      rebase: () => updateOrigin(true),
+      /** Every height in one place, as the ruler last read them. */
+      get heights() { return heightRulerMarks },
+      mask: groundPatchMask,
+      /**
+       * GPU milliseconds for the last frame. Zero unless started with ?gputime, and the
+       * query pool has to be resolved before info carries anything, so this is async.
+       * Wall-clock frame time cannot answer questions about shading cost on a vsync-locked
+       * display: it snaps to whole refresh intervals.
+       */
+      async resolveGpuMs() {
+        await (renderer as any).resolveTimestampsAsync?.()
+        return (renderer.info as any).render?.timestamp ?? 0
+      },
+      /** Diagnostic: what the mask holds under a screen pixel. */
+      probeMask: probeMaskAt,
+      /** Floating origin: the two ENU frames and where the origin currently sits.
+       * While the origin is (0,0,0) the ECEF and render pairs must be identical. */
+      origin: {
+        get stats() { return originStats() },
+        get position() { return getOrigin() },
+        enuFrame,
+        enuFrameRender,
+        enuInverse,
+        enuInverseRender,
+      },
+    }
 
   environmentLayer = createEnvironmentLayer({
     scene: ecefRoot,
     renderer,
     fog: distanceFog,
     uniforms,
-    enuFrame,
+    enuFrame: enuFrame.clone(),
     zOffset,
     surveyCentreEnu: cloudCenterEnu,
     surveyRadiusM: navigationBoundsRadius,
@@ -5232,7 +5594,7 @@ async function main(): Promise<void> {
   soundToggleEl.disabled = false
   audioLayer.update(environmentLayer.getDaylightState(), rainVisualActive)
 
-  if (manifest.areaBbox) {
+  if (manifest.areaBbox && initialSite.definition.hasPeruContent) {
     markerLayer = createMarkerLayer({
       scene: ecefRoot,
       overlay: $('#markerOverlay'),
@@ -5254,7 +5616,7 @@ async function main(): Promise<void> {
     })
   }
   const donationSource = await donationShapePromise
-  if (donationSource && globe) {
+  if (donationSource && globe && initialSite.definition.hasPeruContent) {
     const ellipsoid = (globe as any).ellipsoid
     const shapeEcef = new THREE.Vector3()
     const shapeEnu = new THREE.Vector3()
@@ -5345,11 +5707,11 @@ async function main(): Promise<void> {
     cloudCenterEnu.y + EXPERIENCE_CONFIG.markers.centreOffsetM[1],
     areaMinZ,
   )
-  void createFieldModelLayer({
+  if (initialSite.definition.hasPeruContent) void createFieldModelLayer({
     scene: ecefRoot,
     camera,
-    enuFrame,
-    zOffset,
+    enuFrame: initialSite.frame!.enuFrame,
+    zOffset: worldLift(initialSite.frame!),
     originEnu: fieldOrigin,
     performanceTier: environmentLayer.getCloudState().tier,
     reducedMotion,
@@ -5360,8 +5722,8 @@ async function main(): Promise<void> {
       fieldModelLayer = layer
       // The GLTFs load lazily — apply the flag and the lift that are effective right
       // now, not the ones from when loading started.
-      layer.setVisible(renderOptions.effective().fieldModels)
-      layer.setZOffset(zOffset)
+      layer.setVisible(activeWorldId === initialSite.definition.id && renderOptions.effective().fieldModels)
+      layer.setZOffset(worldLift(initialSite.frame!))
       if (lastFieldTier) layer.setPerformanceTier(lastFieldTier)
       layer.setDaylightPhase(environmentLayer?.getDaylightState().phase ?? 'day')
       if (modelEditorEnabled) {
@@ -5379,152 +5741,152 @@ async function main(): Promise<void> {
     }
   }).catch((error) => console.warn('[field-models] optional layer failed', error))
 
-  // ?compare=1: everything above is created normally, then compare mode
-  // switches the optimisations off in one atomic pass — same code path as the
-  // panel master toggle, so live and boot behaviour cannot drift apart.
+    // ?compare=1: everything above is created normally, then compare mode
+    // switches the optimisations off in one atomic pass — same code path as the
+    // panel master toggle, so live and boot behaviour cannot drift apart.
 
-  ;(window as any).__three = {
-    renderer, scene, camera, uniforms, globe, stream, markerLayer,
-    rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
-    groundPatchMask,
-  }
-  /**
-   * Where the drawn point size comes from, per band: the spacing read off the tiles, the
-   * diameter that spacing actually resolves to on screen, and how much of the band is
-   * pinned against `Largest dot`.
-   *
-   * `drawnPx` goes through `drawnDiameterCssPx`, the same mirror the Overdraw readout
-   * uses, at the tile's own centre depth and with its own `thinScale` — so it moves with
-   * the mode switch, both sliders and the thinning, exactly as the shader does.
-   *
-   * It replaces a `pxAtTarget` column that could not say anything per band. That figure
-   * was `errorTarget / errorScale` put through the clamp, and a tile's own metres never
-   * entered it: a tile sitting exactly on the target projects to the same spacing
-   * whatever level it is, so the column printed one number eight times and, by sitting
-   * in a per-band table, implied it was eight measurements.
-   *
-   * `atCeiling` is the number the size work is aimed at. A band reading 100% is drawing
-   * every one of its points at `Largest dot` — the per-tile derivation has been clamped
-   * away there and the level is contributing nothing but paint.
-   */
-  ;(window as any).__spacing = () => {
-    type BandStat = {
-      tiles: number; min: number; max: number; ownMin: number; ownMax: number
-      drawnMin: number; drawnMax: number; points: number; ceiling: number
+    ; (window as any).__three = {
+      renderer, scene, camera, uniforms, globe, stream, markerLayer,
+      rainLayer, environmentLayer, fieldModelLayer, donationShapeLayer, loop, renderOptions,
+      groundPatchMask,
     }
-    const byBand = new Map<string, BandStat>()
-    const forward = new THREE.Vector3()
-    const centre = new THREE.Vector3()
-    camera.getWorldDirection(forward)
-    const ceilingPx = Math.max(uniforms.sizeMaxPx.value, uniforms.sizeMinPx.value)
-    for (const tile of (stream?.tiles.visibleTiles ?? []) as Set<any>) {
-      let spacing = NaN
-      let own = NaN
-      let drawn = NaN
-      let points = 0
-      tile?.engineData?.scene?.traverse((object: any) => {
-        const value = object?.material?.userData?.effectiveSpacingM
-          ?? object?.material?.userData?.pointSpacingM
-        if (typeof value !== 'number') return
-        spacing = value
-        own = object.material.userData.pointSpacingM ?? value
-        if (isDotMesh(object)) points += drawnPoints(object)
-        // The carrier still holds the tile's real point bounds; the dot geometry's own
-        // sphere describes the corner offsets — see shadedPixelArea for the same trap.
-        const carrier = object.parent as THREE.Object3D | null
-        const geometry = carrier ? (carrier as any).geometry : null
-        if (!geometry) return
-        if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-        if (!geometry.boundingSphere) return
-        centre.copy(geometry.boundingSphere.center).applyMatrix4(carrier!.matrixWorld)
-        const depth = Math.max(centre.sub(camera.position).dot(forward), camera.near)
-        drawn = drawnDiameterCssPx(value, depth, object.material?.userData?.thinScale?.value ?? 1)
-      })
-      if (!Number.isFinite(spacing) || !Number.isFinite(drawn)) continue
-      const band = densityBandForUri(String(tile?.content?.uri ?? ''))
-      const entry = byBand.get(band) ?? {
-        tiles: 0, min: Infinity, max: -Infinity, ownMin: Infinity, ownMax: -Infinity,
-        drawnMin: Infinity, drawnMax: -Infinity, points: 0, ceiling: 0,
+    /**
+     * Where the drawn point size comes from, per band: the spacing read off the tiles, the
+     * diameter that spacing actually resolves to on screen, and how much of the band is
+     * pinned against `Largest dot`.
+     *
+     * `drawnPx` goes through `drawnDiameterCssPx`, the same mirror the Overdraw readout
+     * uses, at the tile's own centre depth and with its own `thinScale` — so it moves with
+     * the mode switch, both sliders and the thinning, exactly as the shader does.
+     *
+     * It replaces a `pxAtTarget` column that could not say anything per band. That figure
+     * was `errorTarget / errorScale` put through the clamp, and a tile's own metres never
+     * entered it: a tile sitting exactly on the target projects to the same spacing
+     * whatever level it is, so the column printed one number eight times and, by sitting
+     * in a per-band table, implied it was eight measurements.
+     *
+     * `atCeiling` is the number the size work is aimed at. A band reading 100% is drawing
+     * every one of its points at `Largest dot` — the per-tile derivation has been clamped
+     * away there and the level is contributing nothing but paint.
+     */
+    ; (window as any).__spacing = () => {
+      type BandStat = {
+        tiles: number; min: number; max: number; ownMin: number; ownMax: number
+        drawnMin: number; drawnMax: number; points: number; ceiling: number
       }
-      entry.tiles++
-      entry.points += points
-      entry.min = Math.min(entry.min, spacing)
-      entry.max = Math.max(entry.max, spacing)
-      entry.ownMin = Math.min(entry.ownMin, own)
-      entry.ownMax = Math.max(entry.ownMax, own)
-      entry.drawnMin = Math.min(entry.drawnMin, drawn)
-      entry.drawnMax = Math.max(entry.drawnMax, drawn)
-      if (drawn >= ceilingPx - 1e-6) entry.ceiling += points
-      byBand.set(band, entry)
+      const byBand = new Map<string, BandStat>()
+      const forward = new THREE.Vector3()
+      const centre = new THREE.Vector3()
+      camera.getWorldDirection(forward)
+      const ceilingPx = Math.max(uniforms.sizeMaxPx.value, uniforms.sizeMinPx.value)
+      for (const tile of (stream?.tiles.visibleTiles ?? []) as Set<any>) {
+        let spacing = NaN
+        let own = NaN
+        let drawn = NaN
+        let points = 0
+        tile?.engineData?.scene?.traverse((object: any) => {
+          const value = object?.material?.userData?.effectiveSpacingM
+            ?? object?.material?.userData?.pointSpacingM
+          if (typeof value !== 'number') return
+          spacing = value
+          own = object.material.userData.pointSpacingM ?? value
+          if (isDotMesh(object)) points += drawnPoints(object)
+          // The carrier still holds the tile's real point bounds; the dot geometry's own
+          // sphere describes the corner offsets — see shadedPixelArea for the same trap.
+          const carrier = object.parent as THREE.Object3D | null
+          const geometry = carrier ? (carrier as any).geometry : null
+          if (!geometry) return
+          if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+          if (!geometry.boundingSphere) return
+          centre.copy(geometry.boundingSphere.center).applyMatrix4(carrier!.matrixWorld)
+          const depth = Math.max(centre.sub(camera.position).dot(forward), camera.near)
+          drawn = drawnDiameterCssPx(value, depth, object.material?.userData?.thinScale?.value ?? 1)
+        })
+        if (!Number.isFinite(spacing) || !Number.isFinite(drawn)) continue
+        const band = densityBandForUri(String(tile?.content?.uri ?? ''))
+        const entry = byBand.get(band) ?? {
+          tiles: 0, min: Infinity, max: -Infinity, ownMin: Infinity, ownMax: -Infinity,
+          drawnMin: Infinity, drawnMax: -Infinity, points: 0, ceiling: 0,
+        }
+        entry.tiles++
+        entry.points += points
+        entry.min = Math.min(entry.min, spacing)
+        entry.max = Math.max(entry.max, spacing)
+        entry.ownMin = Math.min(entry.ownMin, own)
+        entry.ownMax = Math.max(entry.ownMax, own)
+        entry.drawnMin = Math.min(entry.drawnMin, drawn)
+        entry.drawnMax = Math.max(entry.drawnMax, drawn)
+        if (drawn >= ceilingPx - 1e-6) entry.ceiling += points
+        byBand.set(band, entry)
+      }
+      return [...byBand.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+        .map(([band, entry]) => ({
+          band,
+          tiles: entry.tiles,
+          points: entry.points,
+          ownM: `${entry.ownMin.toFixed(2)} – ${entry.ownMax.toFixed(2)}`,
+          effectiveM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
+          drawnPx: `${entry.drawnMin.toFixed(2)} – ${entry.drawnMax.toFixed(2)}`,
+          atCeiling: `${Math.round(100 * entry.ceiling / Math.max(entry.points, 1))}%`,
+        }))
     }
-    return [...byBand.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
-      .map(([band, entry]) => ({
-        band,
-        tiles: entry.tiles,
-        points: entry.points,
-        ownM: `${entry.ownMin.toFixed(2)} – ${entry.ownMax.toFixed(2)}`,
-        effectiveM: `${entry.min.toFixed(2)} – ${entry.max.toFixed(2)}`,
-        drawnPx: `${entry.drawnMin.toFixed(2)} – ${entry.drawnMax.toFixed(2)}`,
-        atCeiling: `${Math.round(100 * entry.ceiling / Math.max(entry.points, 1))}%`,
-      }))
-  }
-  // Named camera poses, so a change can be measured at the view it was tuned against
-  // rather than at wherever the camera happened to stop. See render-bench.ts.
-  ;(window as any).__poses = createRenderBench({
-    camera,
-    sample: () => ({
-      points: lastStreamStats?.points ?? 0,
-      tiles: lastStreamStats?.visible ?? 0,
-      drawCalls: lastDrawCalls,
-      overdraw: Number(lastOverdraw.toFixed(2)),
-      areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
-      dots: roundDots ? 'A round' : 'B square',
-      // What the stream actually draws, after the Square rule. Overdraw and area per point
-      // change units between the shapes (the triangle rasterises 1.325 d², the quad 1 d²),
-      // so a sample that does not say which one produced it cannot be compared. Read from
-      // the stream rather than the request, which can run ahead of it.
-      dotShape: stream?.dotMode().shape ?? effectiveDotShape(),
-      dotFeed: stream?.dotMode().feed ?? requestedDotFeed,
-    }),
-    // The boot and flight brakes hold the error target far above the working band, so a
-    // measurement taken under them describes the brake and not the setting being tested.
-    // `bootLoading` stays true until the entrance is started, so this reads as "press
-    // start first" rather than as a fault.
-    unsettled: () => {
-      if (bootLoading) return 'still on the loader — start the experience first'
-      if (cameraFlight.active) return 'the camera is flying'
-      if ((lastStreamStats?.progress ?? 0) < 1) return 'tiles are still arriving'
-      if (sseAuto > 32) return `the error target is still braked at ${sseAuto.toFixed(0)}`
-      return null
-    },
-    // The value pollGpuMs() already keeps fresh, rather than a second resolve — see the
-    // note on RenderBenchOptions.gpuMs for why a resolve of its own reads double.
-    gpuMs: () => gpuMs,
-    // GlobeControls damps toward its own idea of where the camera was going, so a jump
-    // has to clear that state or the camera slides back out of the pose.
-    afterJump: () => globe?.forceResetState?.(),
-  })
-  // Tile-arrival cost, read from the console as __cost.report(). Separate from __poses
-  // because that one measures a parked, fully-streamed view by construction — the exact
-  // condition in which an arrival cost is zero. See arrival-cost.ts.
-  ;(window as any).__cost = {
-    report: () => costReport(renderer),
-    reset: () => resetCost(),
-  }
-  ;(window as any).__bench = async (frames = 60) => {
-    const started = performance.now()
-    for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
-    const ms = (performance.now() - started) / frames
-    return {
-      frames,
-      msPerFrame: Number(ms.toFixed(2)),
-      fps: Number((1000 / ms).toFixed(1)),
-      density: lastStreamStats?.density,
-      visiblePoints: lastStreamStats?.points,
-      sse: sseAuto,
+    // Named camera poses, so a change can be measured at the view it was tuned against
+    // rather than at wherever the camera happened to stop. See render-bench.ts.
+    ; (window as any).__poses = createRenderBench({
+      camera,
+      sample: () => ({
+        points: lastStreamStats?.points ?? 0,
+        tiles: lastStreamStats?.visible ?? 0,
+        drawCalls: lastDrawCalls,
+        overdraw: Number(lastOverdraw.toFixed(2)),
+        areaPerPoint: Number(lastAreaPerPoint.toFixed(2)),
+        dots: roundDots ? 'A round' : 'B square',
+        // What the stream actually draws, after the Square rule. Overdraw and area per point
+        // change units between the shapes (the triangle rasterises 1.325 d², the quad 1 d²),
+        // so a sample that does not say which one produced it cannot be compared. Read from
+        // the stream rather than the request, which can run ahead of it.
+        dotShape: stream?.dotMode().shape ?? effectiveDotShape(),
+        dotFeed: stream?.dotMode().feed ?? requestedDotFeed,
+      }),
+      // The boot and flight brakes hold the error target far above the working band, so a
+      // measurement taken under them describes the brake and not the setting being tested.
+      // `bootLoading` stays true until the entrance is started, so this reads as "press
+      // start first" rather than as a fault.
+      unsettled: () => {
+        if (bootLoading) return 'still on the loader — start the experience first'
+        if (cameraFlight.active) return 'the camera is flying'
+        if ((lastStreamStats?.progress ?? 0) < 1) return 'tiles are still arriving'
+        if (sseAuto > 32) return `the error target is still braked at ${sseAuto.toFixed(0)}`
+        return null
+      },
+      // The value pollGpuMs() already keeps fresh, rather than a second resolve — see the
+      // note on RenderBenchOptions.gpuMs for why a resolve of its own reads double.
+      gpuMs: () => gpuMs,
+      // GlobeControls damps toward its own idea of where the camera was going, so a jump
+      // has to clear that state or the camera slides back out of the pose.
+      afterJump: () => globe?.forceResetState?.(),
+    })
+    // Tile-arrival cost, read from the console as __cost.report(). Separate from __poses
+    // because that one measures a parked, fully-streamed view by construction — the exact
+    // condition in which an arrival cost is zero. See arrival-cost.ts.
+    ; (window as any).__cost = {
+      report: () => costReport(renderer),
+      reset: () => resetCost(),
     }
-  }
+    ; (window as any).__bench = async (frames = 60) => {
+      const started = performance.now()
+      for (let index = 0; index < frames; index++) await (renderer as any).renderAsync(scene, camera)
+      const ms = (performance.now() - started) / frames
+      return {
+        frames,
+        msPerFrame: Number(ms.toFixed(2)),
+        fps: Number((1000 / ms).toFixed(1)),
+        density: lastStreamStats?.density,
+        visiblePoints: lastStreamStats?.points,
+        sse: sseAuto,
+      }
+    }
 }
 
 function dispose(): void {
@@ -5543,7 +5905,7 @@ function dispose(): void {
   modelTransformEditor?.dispose()
   fieldModelLayer?.dispose()
   environmentLayer?.dispose()
-  stream?.dispose()
+  for (const site of worldSites.values()) site.stream?.dispose()
   globe?.dispose()
   depthOfField.dispose()
   cloudNoiseTexture?.dispose()
